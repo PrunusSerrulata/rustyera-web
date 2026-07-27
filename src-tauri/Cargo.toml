@@ -1,0 +1,29 @@
+[package]
+name = "era-web-tauri"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2.5.3", features = [] }
+
+[dependencies]
+blake3.workspace = true
+era-protocol = { path = "../../../crates/era-protocol" }
+era-debug-protocol = { path = "../../../crates/era-debug-protocol" }
+era-runtime = { path = "../../../crates/era-runtime" }
+era-runtime-protocol = { path = "../../../crates/era-runtime-protocol" }
+era-web-bridge = { path = "../../../crates/era-web-bridge" }
+fontdb = "0.22.0"
+glob = "0.3.3"
+schemars = "=1.2.1"
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2.11.1", features = [] }
+tauri-plugin-dialog = "2.4.0"
+tempfile = "3.20.0"
+unicode-normalization = "0.1.24"
+walkdir = "2.5.0"
+
+[lints]
+workspace = true

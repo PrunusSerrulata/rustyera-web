@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "RustyEra",
+  "version": "0.1.0",
+  "identifier": "org.rustyera.web",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "RustyEra",
+        "width": 1000,
+        "height": 720,
+        "minWidth": 640,
+        "minHeight": 480,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: blob: data:; media-src 'self' asset: blob: data:; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all"
+  }
+}

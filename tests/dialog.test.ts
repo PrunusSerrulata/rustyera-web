@@ -1,0 +1,20 @@
+import { mount } from "@vue/test-utils";
+import { describe, expect, it } from "vitest";
+
+import DraggableDialog from "@/components/DraggableDialog.vue";
+
+describe("DraggableDialog", () => {
+  it("closes with Escape and reports accessible dialog semantics", async () => {
+    const wrapper = mount(DraggableDialog, {
+      attachTo: document.body,
+      props: { open: true, title: "测试对话框" },
+      slots: { default: "内容" },
+    });
+    const dialog = document.body.querySelector<HTMLElement>("[role=dialog]")!;
+    expect(dialog.getAttribute("aria-label")).toBe("测试对话框");
+    dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("close")).toHaveLength(1);
+    wrapper.unmount();
+  });
+});

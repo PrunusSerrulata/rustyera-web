@@ -1,0 +1,7 @@
+dist/
+node_modules/
+public/wasm/
+src-tauri/gen/
+src-tauri/target/
+test-results/
+playwright-report/
