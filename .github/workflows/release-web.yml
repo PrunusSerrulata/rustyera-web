@@ -84,17 +84,25 @@ jobs:
       - run: npm ci
       - run: npm run check:core-rev
       - run: cargo check --workspace --all-targets --locked
-      - run: npm run tauri build
+      - name: Build portable Windows application
+        if: runner.os == 'Windows'
+        run: npm run tauri build -- --no-bundle
+      - name: Archive portable Windows application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path target/release/era-web-tauri.exe -DestinationPath rustyera-web-windows-x86_64-portable.zip
+      - name: Build Tauri bundles
+        if: runner.os != 'Windows'
+        run: npm run tauri build
       - uses: actions/upload-artifact@v7
         with:
           name: rustyera-web-${{ matrix.name }}
           path: |
+            rustyera-web-*-portable.zip
             target/release/bundle/**/*.dmg
             target/release/bundle/**/*.AppImage
             target/release/bundle/**/*.deb
             target/release/bundle/**/*.rpm
-            target/release/bundle/**/*.msi
-            target/release/bundle/**/*.exe
           if-no-files-found: error
           retention-days: 7
 
@@ -122,5 +130,3 @@ jobs:
             packages/**/*.AppImage
             packages/**/*.deb
             packages/**/*.rpm
-            packages/**/*.msi
-            packages/**/*.exe
