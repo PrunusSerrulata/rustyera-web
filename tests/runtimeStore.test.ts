@@ -163,7 +163,109 @@ describe("runtime store session lifecycle", () => {
     expect(bridge.submitDebug).toHaveBeenLastCalledWith(expect.objectContaining({ type: "hello" }));
   });
 
-  it("uses envelope epochs and remounts presentation rows for each snapshot", async () => {
+  it("loads open debugger surfaces after stopping and selects a populated call stack", async () => {
+    const grant = { grant_id: { high: 1, low: 1 }, program_generation: 1 };
+    const stop = {
+      session_epoch: 2,
+      pause_epoch: 3,
+      program_generation: 1,
+      runtime_revision: 4,
+    };
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          debugEvent("grant", { token: grant }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_changed", { phase: "debug_paused", epoch: 2 }),
+          debugEvent("response", { type: "accepted" }, 2),
+          debugEvent("stopped", { stop, selected_fiber: 7 }, 2),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          debugEvent(
+            "response",
+            {
+              type: "variable_page",
+              value: {
+                stop,
+                variables: [
+                  {
+                    symbol_key: [1],
+                    name: "RESULT",
+                    storage: "global",
+                    value_kind: "integer",
+                    dimensions: [],
+                  },
+                ],
+              },
+            },
+            3,
+          ),
+          debugEvent(
+            "response",
+            {
+              type: "fiber_page",
+              value: {
+                stop,
+                fibers: [{ fiber_id: 7, state: "debug_paused", frame_count: 2 }],
+              },
+            },
+            4,
+          ),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          debugEvent(
+            "response",
+            {
+              type: "call_stack",
+              value: {
+                stop,
+                fiber_id: 7,
+                frames: [{ frame_id: 9, function_name: "EVENTFIRST", instruction: 12 }],
+              },
+            },
+            5,
+          ),
+        ],
+      });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+
+    await store.openDebugDialog("variables");
+    await store.openDebugDialog("stack");
+    await vi.advanceTimersByTimeAsync(48);
+
+    expect(bridge.submitDebug).toHaveBeenCalledWith({
+      type: "request",
+      value: { grant, command: { type: "list_variables", stop, cursor: null, limit: 256 } },
+    });
+    expect(bridge.submitDebug).toHaveBeenCalledWith({
+      type: "request",
+      value: { grant, command: { type: "list_fibers", stop, cursor: null, limit: 256 } },
+    });
+    expect(bridge.submitDebug).toHaveBeenCalledWith({
+      type: "request",
+      value: { grant, command: { type: "read_call_stack", stop, fiber_id: 7 } },
+    });
+    expect(store.debugVariables.map((variable) => variable.name)).toEqual(["RESULT"]);
+    expect(store.debugFibers.map((fiber) => fiber.fiber_id)).toEqual([7]);
+    expect(store.debugFrames.map((frame) => frame.function_name)).toEqual(["EVENTFIRST"]);
+  });
+
+  it("uses the newest envelope epoch across presentation snapshots", async () => {
     bridge.pump.mockResolvedValueOnce({
       ...emptyBatch(),
       events: [
@@ -194,7 +296,6 @@ describe("runtime store session lifecycle", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(store.runtimeEpoch).toBe(9);
-    expect(store.presentationGeneration).toBe(2);
   });
 });
 

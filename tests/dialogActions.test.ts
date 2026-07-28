@@ -127,7 +127,8 @@ describe("dialog actions", () => {
     await wrapper.setProps({ open: true });
     await nextTick();
 
-    expect(document.body.querySelector<HTMLOListElement>(".log-list")!.scrollTop).toBe(480);
+    expect(document.body.querySelector<HTMLUListElement>(".log-list")!.scrollTop).toBe(480);
+    expect(document.body.querySelector("ol.log-list")).toBeNull();
     expect(document.body.querySelector(".log-list li")!.textContent).toMatch(
       /^\[\d{2}:\d{2}:\d{2}\] INFO {2}ready$/,
     );

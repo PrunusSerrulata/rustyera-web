@@ -1,6 +1,10 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use era_debug_protocol::{
+    AuthorizedDebugRequest, DEBUG_PROTOCOL_VERSION, DebugCommand, DebugGrant, DebugHello,
+    DebugMessage, DebugResponse, DebugScope, DebugStop, GrantToken,
+};
 use era_protocol::{ProtocolBytes, decode_canonical, encode_canonical};
 use era_runtime::RuntimeDriveBudget;
 use era_runtime_protocol::{
@@ -37,6 +41,7 @@ fn eratw_reaches_day_one_through_the_web_bridge() {
         .ok()
         .and_then(|value| value.parse::<usize>().ok());
     let trace_pumps = std::env::var_os("ERA_WEB_TRACE_PUMPS").is_some();
+    let validate_debug = std::env::var_os("ERA_WEB_VALIDATE_DEBUG").is_some();
     let started = Instant::now();
     let mut session = WebSession::new(WebSessionOptions::default()).unwrap();
     session.pump(RuntimeDriveBudget::default()).unwrap();
@@ -63,6 +68,11 @@ fn eratw_reaches_day_one_through_the_web_bridge() {
     let mut returning_to_title = false;
     let mut returned_title_wait_seen = false;
     let mut display_text = String::new();
+    let mut debug_requested = false;
+    let mut debug_grant: Option<GrantToken> = None;
+    let mut debug_variables_seen = false;
+    let mut debug_fibers_seen = false;
+    let mut debug_stack_seen = false;
     let deadline = Instant::now() + Duration::from_mins(30);
 
     while Instant::now() < deadline {
@@ -95,6 +105,100 @@ fn eratw_reaches_day_one_through_the_web_bridge() {
             let message_type = event.message["type"].as_str().unwrap_or_default();
             let value = event.message.get("value").cloned().unwrap_or(Value::Null);
             match message_type {
+                "grant" => {
+                    let grant: DebugGrant = from_value(value);
+                    debug_grant = Some(grant.token);
+                    session
+                        .submit_debug(
+                            &DebugMessage::Request(AuthorizedDebugRequest {
+                                grant: grant.token,
+                                command: DebugCommand::Pause,
+                            }),
+                            None,
+                        )
+                        .unwrap();
+                }
+                "stopped" => {
+                    let stopped: DebugStop = from_value(value);
+                    let grant = debug_grant.expect("debug stopped without a grant");
+                    for command in [
+                        DebugCommand::ListVariables {
+                            stop: stopped.stop,
+                            cursor: None,
+                            limit: 256,
+                        },
+                        DebugCommand::ListFibers {
+                            stop: stopped.stop,
+                            cursor: None,
+                            limit: 256,
+                        },
+                    ] {
+                        session
+                            .submit_debug(
+                                &DebugMessage::Request(AuthorizedDebugRequest { grant, command }),
+                                None,
+                            )
+                            .unwrap();
+                    }
+                }
+                "response" => {
+                    let response: DebugResponse = from_value(value);
+                    match response {
+                        DebugResponse::VariablePage(page) => {
+                            assert!(
+                                !page.variables.is_empty(),
+                                "eraTW debugger returned no variables"
+                            );
+                            debug_variables_seen = true;
+                        }
+                        DebugResponse::FiberPage(page) => {
+                            assert!(!page.fibers.is_empty(), "eraTW debugger returned no fibers");
+                            debug_fibers_seen = true;
+                            let fiber = page
+                                .fibers
+                                .iter()
+                                .find(|fiber| fiber.frame_count > 0)
+                                .expect("eraTW debugger returned no fiber with stack frames");
+                            session
+                                .submit_debug(
+                                    &DebugMessage::Request(AuthorizedDebugRequest {
+                                        grant: debug_grant.expect("fiber page without a grant"),
+                                        command: DebugCommand::ReadCallStack {
+                                            stop: page.stop,
+                                            fiber_id: fiber.fiber_id,
+                                        },
+                                    }),
+                                    None,
+                                )
+                                .unwrap();
+                        }
+                        DebugResponse::CallStack(stack) => {
+                            assert!(
+                                !stack.frames.is_empty(),
+                                "eraTW debugger returned an empty stack"
+                            );
+                            debug_stack_seen = true;
+                        }
+                        DebugResponse::Accepted
+                        | DebugResponse::VariableValue(_)
+                        | DebugResponse::GameFieldPage(_)
+                        | DebugResponse::GameFieldValue(_)
+                        | DebugResponse::OperandStack(_)
+                        | DebugResponse::Console(_)
+                        | DebugResponse::Breakpoints(_)
+                        | DebugResponse::VariablesWritten(_)
+                        | DebugResponse::GameFieldsWritten(_)
+                        | DebugResponse::ScriptOutput(_) => {}
+                    }
+                    if debug_variables_seen && debug_fibers_seen && debug_stack_seen {
+                        eprintln!(
+                            "WEB_DEBUG_MILESTONE variables=true fibers=true stack=true elapsed_ms={}",
+                            started.elapsed().as_millis()
+                        );
+                        return;
+                    }
+                }
+                "error" if validate_debug => panic!("debug protocol error: {value}"),
                 "project_load_report" => {
                     if value["payload_required"].as_bool() == Some(true) {
                         session.load_project(host.take_manifest().unwrap()).unwrap();
@@ -173,6 +277,25 @@ fn eratw_reaches_day_one_through_the_web_bridge() {
                         let wait: InputWait = from_value(value["value"].clone());
                         if returning_to_title {
                             returned_title_wait_seen = true;
+                            continue;
+                        }
+                        if validate_debug && !debug_requested {
+                            debug_requested = true;
+                            session
+                                .submit_debug(
+                                    &DebugMessage::Hello(DebugHello {
+                                        versions: era_protocol::VersionRange::exact(
+                                            DEBUG_PROTOCOL_VERSION,
+                                        ),
+                                        requested_scopes: vec![
+                                            DebugScope::VariablesRead,
+                                            DebugScope::ExecutionRead,
+                                            DebugScope::ExecutionControl,
+                                        ],
+                                    }),
+                                    None,
+                                )
+                                .unwrap();
                             continue;
                         }
                         if stop_before_answer == Some(answer_index) {

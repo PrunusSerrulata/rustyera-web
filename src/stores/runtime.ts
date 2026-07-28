@@ -50,7 +50,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const fonts = ref<string[]>(["system-ui", "sans-serif", "serif", "monospace"]);
   const phase = ref("negotiating");
   const runtimeEpoch = ref<number | bigint>(0);
-  const presentationGeneration = ref(0);
   const status = ref("请选择 Era 项目文件夹");
   const projectOpen = ref(false);
   const sessionReady = ref(false);
@@ -214,7 +213,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       }
       if (event.channel === "runtime")
         await handleRuntime(event.message as RuntimeMessage, event.correlationId);
-      else handleDebug(event.message as any, event.correlationId);
+      else await handleDebug(event.message as any, event.correlationId);
       index += 1;
     }
     if (batchMediaDirty) await synchronizeMedia();
@@ -275,7 +274,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "presentation_snapshot":
         applySnapshot(presentation, value);
-        presentationGeneration.value += 1;
         batchMediaDirty = true;
         break;
       case "presentation_delta":
@@ -638,7 +636,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
     sessionReady.value = false;
     phase.value = "negotiating";
     runtimeEpoch.value = 0;
-    presentationGeneration.value = 0;
     inputUndo.value = null;
     fault.value = null;
     debugPausePending = false;
@@ -834,7 +831,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
   }
 
-  function handleDebug(message: any, correlationId?: number | bigint): void {
+  async function handleDebug(message: any, correlationId?: number | bigint): Promise<void> {
     if (message.type === "grant") {
       debugPausePending = false;
       debugGrantRefreshNeeded = false;
@@ -852,6 +849,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
       debugPauseWanted = false;
       debugStop.value = message.value;
       forgetDebugRequest(correlationId);
+      // The stop token is authoritative only after this event. Refresh here so dialog
+      // visibility cannot race a Vue watcher against the pause response.
+      await refreshOpenDebugSurfaces();
     } else if (message.type === "response") {
       forgetDebugRequest(correlationId);
       const response = message.value;
@@ -861,8 +861,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
         debugVariableValues.value[debugVariableKey(response.value)] = formatDebugValue(
           response.value.value,
         );
-      } else if (response.type === "fiber_page") debugFibers.value = response.value.fibers ?? [];
-      else if (response.type === "call_stack") debugFrames.value = response.value.frames ?? [];
+      } else if (response.type === "fiber_page") {
+        debugFibers.value = response.value.fibers ?? [];
+        const selected = selectedDebugFiber(debugStop.value);
+        const fiber =
+          debugFibers.value.find((candidate) => candidate.fiber_id === selected) ??
+          debugFibers.value.find((candidate) => candidate.frame_count > 0);
+        if (stackOpen.value && fiber)
+          await debugCommand({
+            type: "read_call_stack",
+            stop: debugStopToken(debugStop.value),
+            fiber_id: fiber.fiber_id,
+          });
+      } else if (response.type === "call_stack") debugFrames.value = response.value.frames ?? [];
       else if (response.type === "console") {
         debugOutput.value.push(...(response.value.output ?? []));
         if (response.value.value != null)
@@ -958,9 +969,28 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function openDebugDialog(kind: "console" | "variables" | "stack"): Promise<void> {
     if (kind === "console") debugConsoleOpen.value = true;
-    else if (kind === "variables") variablesOpen.value = true;
-    else stackOpen.value = true;
-    await pauseDebug();
+    else if (kind === "variables") {
+      variablesOpen.value = true;
+      debugVariables.value = [];
+      debugVariableValues.value = {};
+    } else {
+      stackOpen.value = true;
+      debugFibers.value = [];
+      debugFrames.value = [];
+    }
+    if (debugStopToken(debugStop.value)) await refreshOpenDebugSurfaces();
+    else await pauseDebug();
+  }
+
+  async function refreshOpenDebugSurfaces(): Promise<void> {
+    const stop = debugStopToken(debugStop.value);
+    if (!stop) return;
+    const commands = [];
+    if (variablesOpen.value)
+      commands.push(debugCommand({ type: "list_variables", stop, cursor: null, limit: 256 }));
+    if (stackOpen.value)
+      commands.push(debugCommand({ type: "list_fibers", stop, cursor: null, limit: 256 }));
+    await Promise.all(commands);
   }
 
   async function stepDebug(): Promise<void> {
@@ -1081,7 +1111,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
     fonts,
     phase,
     runtimeEpoch,
-    presentationGeneration,
     status,
     projectOpen,
     prompt,

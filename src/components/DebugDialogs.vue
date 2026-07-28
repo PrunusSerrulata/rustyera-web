@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { ref } from "vue";
 
 import DraggableDialog from "@/components/DraggableDialog.vue";
 import { debugStopToken, debugVariableKey } from "@/core/debug";
@@ -7,33 +7,6 @@ import { useRuntimeStore } from "@/stores/runtime";
 
 const store = useRuntimeStore();
 const source = ref("");
-
-watch(
-  () => [store.variablesOpen, debugStopToken(store.debugStop)] as const,
-  ([open, stop]) => {
-    if (open && stop) {
-      void store.debugCommand({
-        type: "list_variables",
-        stop,
-        cursor: null,
-        limit: 256,
-      });
-    }
-  },
-);
-watch(
-  () => [store.stackOpen, debugStopToken(store.debugStop)] as const,
-  ([open, stop]) => {
-    if (open && stop) {
-      void store.debugCommand({
-        type: "list_fibers",
-        stop,
-        cursor: null,
-        limit: 256,
-      });
-    }
-  },
-);
 
 async function consoleCommand(execute: boolean): Promise<void> {
   const stop = debugStopToken(store.debugStop);

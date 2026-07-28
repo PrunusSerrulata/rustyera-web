@@ -7,7 +7,7 @@ import { formatLogEntry, formatLogTime, logLevelLabel } from "@/core/log";
 const props = defineProps<{ open: boolean; entries: any[] }>();
 const emit = defineEmits<{ close: []; clear: [] }>();
 const threshold = ref("info");
-const list = ref<HTMLOListElement>();
+const list = ref<HTMLUListElement>();
 const ranks: Record<string, number> = { debug: 0, info: 1, warning: 2, error: 3 };
 const visible = computed(() =>
   props.entries.filter((entry) => ranks[entry.level] >= ranks[threshold.value]),
@@ -71,13 +71,13 @@ function download(): void {
       ><button type="button" @click="download">导出</button
       ><button type="button" @click="emit('clear')">清空</button>
     </div>
-    <ol ref="list" class="log-list">
+    <ul ref="list" class="log-list">
       <li v-for="(entry, index) in visible" :key="index" :class="entry.level">
         <span class="log-bracket">[</span><time>{{ formatLogTime(entry.timestamp) }}</time
         ><span class="log-bracket">] </span
         ><strong class="log-level">{{ logLevelLabel(entry.level) }}</strong
         ><span class="log-message">{{ ` ${entry.message}` }}</span>
       </li>
-    </ol>
+    </ul>
   </DraggableDialog>
 </template>

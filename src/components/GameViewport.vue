@@ -10,18 +10,16 @@ import { useRuntimeStore } from "@/stores/runtime";
 
 const store = useRuntimeStore();
 const viewport = ref<HTMLElement>();
-let followedHistoryRevision: number | null = null;
 const virtualizer = useVirtualizer(
   computed(() => {
-    const epoch = store.runtimeEpoch;
-    const generation = store.presentationGeneration;
     return {
       count: store.presentation.lines.length,
       getScrollElement: () => viewport.value ?? null,
       estimateSize: () => 26,
       overscan: 20,
+      // Preserve measured rows across same-epoch snapshots, but isolate restarted sessions.
       getItemKey: (index: number) =>
-        `${generation}:${epoch}:${store.presentation.lines[index]?.line_id ?? index}`,
+        `${store.runtimeEpoch}:${store.presentation.lines[index]?.line_id ?? index}`,
     };
   }),
 );
@@ -29,10 +27,8 @@ const items = computed(() => virtualizer.value.getVirtualItems());
 
 watch(
   () => store.presentation.historyRevision,
-  async (revision) => {
-    followedHistoryRevision = revision;
+  async () => {
     await nextTick();
-    virtualizer.value.measure();
     goBottom();
   },
 );
@@ -50,18 +46,6 @@ function click(event: MouseEvent): void {
   }
 }
 
-function measureHistory(): void {
-  requestAnimationFrame(() => {
-    virtualizer.value.measure();
-    if (followedHistoryRevision === store.presentation.historyRevision) goBottom();
-  });
-}
-
-function cancelOutputFollow(event: Event): void {
-  if (event instanceof KeyboardEvent && !["ArrowUp", "PageUp", "Home"].includes(event.key)) return;
-  followedHistoryRevision = null;
-}
-
 onMounted(() => store.projectViewport());
 </script>
 
@@ -72,11 +56,6 @@ onMounted(() => store.projectViewport());
     tabindex="0"
     @click="click"
     @contextmenu.prevent="store.skip"
-    @load.capture="measureHistory"
-    @pointerdown="cancelOutputFollow"
-    @touchstart.passive="cancelOutputFollow"
-    @wheel.passive="cancelOutputFollow"
-    @keydown="cancelOutputFollow"
   >
     <div class="background-layer">
       <MediaImage
