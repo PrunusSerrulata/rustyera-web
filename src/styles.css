@@ -183,6 +183,9 @@ select {
   overflow-wrap: break-word;
   contain: layout paint;
 }
+.game-line .html-node:is(p) {
+  margin: 0;
+}
 .align-center {
   text-align: center;
 }

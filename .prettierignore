@@ -1,4 +1,5 @@
 dist/
+.playwright-browsers/
 node_modules/
 public/wasm/
 src-tauri/gen/

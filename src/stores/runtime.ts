@@ -3,6 +3,14 @@ import { defineStore } from "pinia";
 import { computed, reactive, ref, shallowReactive } from "vue";
 
 import { AudioEngine } from "@/core/audio";
+import {
+  debugStopToken,
+  debugVariableKey,
+  formatDebugValue,
+  refreshDebugStop,
+  selectedDebugFiber,
+  sourceLineStepCommand,
+} from "@/core/debug";
 import { preferredRuntimeLocales, resolveGameTextStyle } from "@/core/gameText";
 import { applyDelta, applySnapshot, emptyPresentation, plainLine } from "@/core/presentation";
 import { decodeServicePayload, encodeServicePayload } from "@/core/serviceCodec";
@@ -58,7 +66,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const debugVariables = ref<any[]>([]);
   const debugFibers = ref<any[]>([]);
   const debugFrames = ref<any[]>([]);
-  const singleStep = ref(false);
+  const debugVariableValues = ref<Record<string, string>>({});
   const heldKeys = new Set<number>();
   const audio = new AudioEngine(bridge, preferences.value);
   let pumpTimer: number | undefined;
@@ -68,6 +76,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let projectRuntimeStartedAt: number | undefined;
   let projectUsedCompiledCache = false;
   let batchMediaDirty = false;
+  let debugPausePending = false;
 
   const effectivePreferences = computed(() => previewPreferences.value ?? preferences.value);
   const gameTextStyle = computed(() =>
@@ -75,6 +84,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   );
   const canInteract = computed(
     () => presentation.inputWait != null && phase.value !== "debug_paused" && !fault.value,
+  );
+  const canStepDebug = computed(
+    () => debugStopToken(debugStop.value) != null && selectedDebugFiber(debugStop.value) != null,
   );
 
   async function initialize(): Promise<void> {
@@ -233,6 +245,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "state_changed":
         phase.value = value.phase;
+        if (value.phase !== "debug_paused") debugStop.value = null;
         break;
       case "presentation_snapshot":
         applySnapshot(presentation, value);
@@ -528,7 +541,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
         message_skip: messageSkip,
       },
     });
-    if (singleStep.value && debugGrant.value) await debugCommand({ type: "pause" });
   }
 
   async function undo(): Promise<void> {
@@ -701,6 +713,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function enableDebug(): Promise<void> {
+    await ensureSession();
     if (!debugEnabled.value) {
       await bridge.submitDebug({
         type: "hello",
@@ -725,31 +738,52 @@ export const useRuntimeStore = defineStore("runtime", () => {
         type: "revoke",
         value: { grant_id: debugGrant.value.token.grant_id, reason: "disabled by user" },
       });
+      debugPausePending = false;
       debugEnabled.value = false;
       debugGrant.value = null;
+      debugStop.value = null;
     }
   }
 
   function handleDebug(message: any): void {
     if (message.type === "grant") {
+      debugPausePending = false;
       debugGrant.value = message.value;
       debugEnabled.value = true;
+      if (projectOpen.value) void pauseDebug();
     } else if (message.type === "revoke") {
+      debugPausePending = false;
       debugGrant.value = null;
       debugEnabled.value = false;
+      debugStop.value = null;
     } else if (message.type === "stopped") {
+      debugPausePending = false;
       debugStop.value = message.value;
     } else if (message.type === "response") {
       const response = message.value;
+      debugStop.value = refreshDebugStop(debugStop.value, response.value);
       if (response.type === "variable_page") debugVariables.value = response.value.variables ?? [];
-      else if (response.type === "fiber_page") debugFibers.value = response.value.fibers ?? [];
+      else if (response.type === "variable_value") {
+        debugVariableValues.value[debugVariableKey(response.value)] = formatDebugValue(
+          response.value.value,
+        );
+      } else if (response.type === "fiber_page") debugFibers.value = response.value.fibers ?? [];
       else if (response.type === "call_stack") debugFrames.value = response.value.frames ?? [];
       else if (response.type === "console") {
         debugOutput.value.push(...(response.value.output ?? []));
         if (response.value.value != null)
-          debugOutput.value.push(`=> ${String(response.value.value)}`);
+          debugOutput.value.push(`=> ${formatDebugValue(response.value.value)}`);
+        for (const diagnostic of response.value.diagnostics ?? []) {
+          debugOutput.value.push(`[${diagnostic.code}] ${diagnostic.message}`);
+        }
+        for (const changed of response.value.changed_variables ?? []) {
+          debugVariableValues.value[debugVariableKey(changed)] = formatDebugValue(changed.value);
+        }
       }
-    } else if (message.type === "error") log("warning", message.value.message);
+    } else if (message.type === "error") {
+      debugPausePending = false;
+      log("warning", message.value.message);
+    }
   }
 
   async function debugCommand(command: any): Promise<void> {
@@ -758,6 +792,50 @@ export const useRuntimeStore = defineStore("runtime", () => {
       type: "request",
       value: { grant: debugGrant.value.token, command },
     });
+  }
+
+  async function pauseDebug(): Promise<void> {
+    if (!debugGrant.value || debugStopToken(debugStop.value) || debugPausePending) return;
+    debugPausePending = true;
+    try {
+      await debugCommand({ type: "pause" });
+    } catch (error) {
+      debugPausePending = false;
+      throw error;
+    }
+  }
+
+  async function openDebugDialog(kind: "console" | "variables" | "stack"): Promise<void> {
+    if (kind === "console") debugConsoleOpen.value = true;
+    else if (kind === "variables") variablesOpen.value = true;
+    else stackOpen.value = true;
+    await pauseDebug();
+  }
+
+  async function stepDebug(): Promise<void> {
+    const command = sourceLineStepCommand(debugStop.value);
+    if (!command) return;
+    const previousStop = debugStop.value;
+    debugStop.value = null;
+    try {
+      await debugCommand(command);
+    } catch (error) {
+      debugStop.value = previousStop;
+      throw error;
+    }
+  }
+
+  async function continueDebug(): Promise<void> {
+    const stop = debugStopToken(debugStop.value);
+    if (!stop) return;
+    const previousStop = debugStop.value;
+    debugStop.value = null;
+    try {
+      await debugCommand({ type: "continue", stop });
+    } catch (error) {
+      debugStop.value = previousStop;
+      throw error;
+    }
   }
 
   async function savePreferences(value: Preferences): Promise<void> {
@@ -833,10 +911,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       void undo();
     } else if (event.key === "F10" && debugEnabled.value) {
       event.preventDefault();
-      const stop = debugStop.value?.token;
-      const fiber = debugStop.value?.fiber_id;
-      if (stop && fiber != null)
-        void debugCommand({ type: "step", stop, fiber_id: fiber, kind: "into" });
+      void stepDebug();
     }
   }
 
@@ -870,7 +945,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     debugVariables,
     debugFibers,
     debugFrames,
-    singleStep,
+    debugVariableValues,
+    canStepDebug,
     canInteract,
     initialize,
     openProject,
@@ -889,6 +965,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     restoreSnapshot,
     enableDebug,
     debugCommand,
+    openDebugDialog,
+    stepDebug,
+    continueDebug,
     savePreferences,
     preview,
     shutdown,

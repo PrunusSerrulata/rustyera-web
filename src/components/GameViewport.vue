@@ -22,7 +22,7 @@ const virtualizer = useVirtualizer(
 const items = computed(() => virtualizer.value.getVirtualItems());
 
 watch(
-  () => store.presentation.revision,
+  () => store.presentation.historyRevision,
   async () => {
     await nextTick();
     goBottom();
@@ -30,6 +30,7 @@ watch(
 );
 
 function goBottom(): void {
+  if (!store.presentation.lines.length) return;
   virtualizer.value.scrollToIndex(Math.max(0, store.presentation.lines.length - 1), {
     align: "end",
   });
@@ -53,7 +54,6 @@ onMounted(() => store.projectViewport());
     class="game-viewport"
     tabindex="0"
     @click="click"
-    @load.capture="goBottom"
     @contextmenu.prevent="store.skip"
   >
     <div class="background-layer">

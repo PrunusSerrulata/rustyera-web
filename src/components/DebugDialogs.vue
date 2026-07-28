@@ -2,18 +2,19 @@
 import { ref, watch } from "vue";
 
 import DraggableDialog from "@/components/DraggableDialog.vue";
+import { debugStopToken, debugVariableKey } from "@/core/debug";
 import { useRuntimeStore } from "@/stores/runtime";
 
 const store = useRuntimeStore();
 const source = ref("");
 
 watch(
-  () => store.variablesOpen,
-  (open) => {
-    if (open && store.debugStop?.token) {
+  () => [store.variablesOpen, debugStopToken(store.debugStop)] as const,
+  ([open, stop]) => {
+    if (open && stop) {
       void store.debugCommand({
         type: "list_variables",
-        stop: store.debugStop.token,
+        stop,
         cursor: null,
         limit: 256,
       });
@@ -21,12 +22,12 @@ watch(
   },
 );
 watch(
-  () => store.stackOpen,
-  (open) => {
-    if (open && store.debugStop?.token) {
+  () => [store.stackOpen, debugStopToken(store.debugStop)] as const,
+  ([open, stop]) => {
+    if (open && stop) {
       void store.debugCommand({
         type: "list_fibers",
-        stop: store.debugStop.token,
+        stop,
         cursor: null,
         limit: 256,
       });
@@ -35,26 +36,28 @@ watch(
 );
 
 async function consoleCommand(execute: boolean): Promise<void> {
-  if (!source.value || !store.debugStop?.token) return;
+  const stop = debugStopToken(store.debugStop);
+  if (!source.value || !stop) return;
   await store.debugCommand({
     type: "console",
-    stop: store.debugStop.token,
+    stop,
     command: { type: execute ? "execute_safe" : "evaluate", source: source.value },
   });
   source.value = "";
 }
 
 function readVariable(variable: any): void {
-  if (!store.debugStop?.token) return;
+  const stop = debugStopToken(store.debugStop);
+  if (!stop) return;
   void store.debugCommand({
     type: "read_variable",
-    stop: store.debugStop.token,
+    stop,
     value: {
       symbol_key: variable.symbol_key,
       storage: variable.storage,
       fiber_id: null,
       frame_id: null,
-      generation: store.debugStop.token.program_generation,
+      generation: stop.program_generation,
       character: null,
       indices: [],
     },
@@ -62,10 +65,11 @@ function readVariable(variable: any): void {
 }
 
 function readStack(fiber: any): void {
-  if (store.debugStop?.token)
+  const stop = debugStopToken(store.debugStop);
+  if (stop)
     void store.debugCommand({
       type: "read_call_stack",
-      stop: store.debugStop.token,
+      stop,
       fiber_id: fiber.fiber_id,
     });
 }
@@ -89,13 +93,13 @@ function readStack(fiber: any): void {
       <span class="spacer" /><button
         type="button"
         class="primary"
-        :disabled="!source || !store.debugStop?.token"
+        :disabled="!source || !debugStopToken(store.debugStop)"
         @click="consoleCommand(false)"
       >
         求值</button
       ><button
         type="button"
-        :disabled="!source || !store.debugStop?.token"
+        :disabled="!source || !debugStopToken(store.debugStop)"
         @click="consoleCommand(true)"
       >
         安全执行
@@ -116,6 +120,7 @@ function readStack(fiber: any): void {
           <th>存储</th>
           <th>类型</th>
           <th>维度</th>
+          <th>值（双击读取）</th>
         </tr>
       </thead>
       <tbody>
@@ -129,6 +134,7 @@ function readStack(fiber: any): void {
           <td>{{ variable.storage }}</td>
           <td>{{ variable.value_kind }}</td>
           <td>{{ variable.dimensions.join(" × ") }}</td>
+          <td>{{ store.debugVariableValues[debugVariableKey(variable)] ?? "" }}</td>
         </tr>
       </tbody>
     </table>

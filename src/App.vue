@@ -100,43 +100,27 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
           <hr />
           <button
             :disabled="!store.debugEnabled"
-            @click="
-              action(() => {
-                store.debugConsoleOpen = true;
-              })
-            "
+            @click="action(() => store.openDebugDialog('console'))"
           >
             控制台…
           </button>
           <button
             :disabled="!store.debugEnabled"
-            @click="
-              action(() => {
-                store.variablesOpen = true;
-              })
-            "
+            @click="action(() => store.openDebugDialog('variables'))"
           >
             变量查看器…
           </button>
           <button
             :disabled="!store.debugEnabled"
-            @click="
-              action(() => {
-                store.stackOpen = true;
-              })
-            "
+            @click="action(() => store.openDebugDialog('stack'))"
           >
             Fibers / 调用栈…
           </button>
-          <button
-            :disabled="!store.debugEnabled"
-            @click="
-              action(() => {
-                store.singleStep = !store.singleStep;
-              })
-            "
-          >
-            {{ store.singleStep ? "关闭单步运行" : "开启单步运行" }}
+          <button :disabled="!store.canStepDebug" @click="action(store.stepDebug)">
+            单步运行 (F10)
+          </button>
+          <button :disabled="!store.debugStop" @click="action(store.continueDebug)">
+            继续运行
           </button>
           <hr />
           <button

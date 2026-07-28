@@ -3,5 +3,10 @@
   "identifier": "main-window",
   "description": "Minimum capabilities for the shared RustyEra frontend",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-save"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "dialog:allow-open",
+    "dialog:allow-save"
+  ]
 }

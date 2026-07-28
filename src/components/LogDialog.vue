@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 
 import DraggableDialog from "@/components/DraggableDialog.vue";
 
 const props = defineProps<{ open: boolean; entries: any[] }>();
 const emit = defineEmits<{ close: []; clear: [] }>();
 const threshold = ref("info");
+const list = ref<HTMLOListElement>();
 const ranks: Record<string, number> = { debug: 0, info: 1, warning: 2, error: 3 };
 const visible = computed(() =>
   props.entries.filter((entry) => ranks[entry.level] >= ranks[threshold.value]),
@@ -16,6 +17,16 @@ const text = computed(() =>
       (entry) => `${entry.timestamp.toISOString()} [${entry.level.toUpperCase()}] ${entry.message}`,
     )
     .join("\n"),
+);
+
+watch(
+  () => props.open,
+  async (open) => {
+    if (!open) return;
+    await nextTick();
+    if (list.value) list.value.scrollTop = list.value.scrollHeight;
+  },
+  { immediate: true },
 );
 
 async function copy(): Promise<void> {
@@ -63,7 +74,7 @@ function download(): void {
       ><button type="button" @click="download">导出</button
       ><button type="button" @click="emit('clear')">清空</button>
     </div>
-    <ol class="log-list">
+    <ol ref="list" class="log-list">
       <li v-for="(entry, index) in visible" :key="index" :class="entry.level">
         <time>{{ entry.timestamp.toLocaleTimeString() }}</time> {{ entry.message }}
       </li>

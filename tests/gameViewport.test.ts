@@ -8,6 +8,7 @@ const projectViewport = vi.hoisted(() => vi.fn());
 const store = reactive({
   presentation: {
     revision: 1,
+    historyRevision: 1,
     lines: [{ line_id: 1, alignment: "left", runs: [] }],
     backgrounds: [],
     resources: { sprites: [], canvases: [] },
@@ -35,19 +36,30 @@ describe("game viewport", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     store.presentation.revision = 1;
+    store.presentation.historyRevision = 1;
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
       callback(0);
       return 1;
     });
   });
 
-  it("always follows a new presentation revision to the last line", async () => {
+  it("follows new history output but ignores non-history presentation changes", async () => {
     const wrapper = shallowMount(GameViewport);
     store.presentation.revision += 1;
     await nextTick();
     await nextTick();
 
+    expect(scrollToIndex).not.toHaveBeenCalled();
+
+    store.presentation.historyRevision += 1;
+    await nextTick();
+    await nextTick();
+
     expect(scrollToIndex).toHaveBeenCalledWith(0, { align: "end" });
+
+    scrollToIndex.mockClear();
+    await wrapper.get("main").trigger("load");
+    expect(scrollToIndex).not.toHaveBeenCalled();
     wrapper.unmount();
   });
 

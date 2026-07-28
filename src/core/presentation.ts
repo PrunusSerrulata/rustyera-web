@@ -2,6 +2,7 @@ import type { DisplayLine } from "@/core/types";
 
 export interface PresentationState {
   revision: number;
+  historyRevision: number;
   title: string;
   lines: DisplayLine[];
   backgrounds: any[];
@@ -18,6 +19,7 @@ export interface PresentationState {
 export function emptyPresentation(): PresentationState {
   return {
     revision: 0,
+    historyRevision: 0,
     title: "RustyEra",
     lines: [],
     backgrounds: [],
@@ -33,9 +35,19 @@ export function emptyPresentation(): PresentationState {
 }
 
 export function applySnapshot(state: PresentationState, snapshot: any): void {
+  const previousLast = state.lines.at(-1);
+  const nextLines = [...(snapshot.history?.logical_lines ?? [])] as DisplayLine[];
+  const nextLast = nextLines.at(-1);
+  if (
+    nextLines.length > state.lines.length ||
+    nextLast?.line_id !== previousLast?.line_id ||
+    lineContentChanged(previousLast, nextLast)
+  ) {
+    state.historyRevision += 1;
+  }
   state.revision = snapshot.revision;
   state.title = snapshot.title;
-  state.lines = [...(snapshot.history?.logical_lines ?? [])];
+  state.lines = nextLines;
   state.backgrounds = snapshot.backgrounds ?? [];
   state.audio = snapshot.audio ?? [];
   state.inputWait = snapshot.input_wait ?? null;
@@ -50,10 +62,12 @@ export function applyDelta(state: PresentationState, delta: any): void {
   if (delta.base_revision !== state.revision) {
     throw new Error(`展示 revision 不连续：${state.revision} → ${delta.base_revision}`);
   }
+  let historyChanged = false;
   for (const operation of delta.operations ?? []) {
     switch (operation.type) {
       case "append_line":
         state.lines.push(operation.line);
+        historyChanged = true;
         break;
       case "delete_lines":
         state.lines.splice(Math.max(0, state.lines.length - operation.count), operation.count);
@@ -75,7 +89,10 @@ export function applyDelta(state: PresentationState, delta: any): void {
         break;
       case "replace_line": {
         const index = state.lines.findIndex((line) => line.line_id === operation.line_id);
-        if (index >= 0) state.lines[index] = operation.line;
+        if (index >= 0) {
+          historyChanged ||= lineContentChanged(state.lines[index], operation.line);
+          state.lines[index] = operation.line;
+        }
         break;
       }
       case "set_settings":
@@ -102,7 +119,48 @@ export function applyDelta(state: PresentationState, delta: any): void {
         break;
     }
   }
+  if (historyChanged) state.historyRevision += 1;
   state.revision = delta.new_revision;
+}
+
+function lineContentChanged(
+  left: DisplayLine | undefined,
+  right: DisplayLine | undefined,
+): boolean {
+  if (!left || !right) return left !== right;
+  return (
+    left.runs.length !== right.runs.length ||
+    left.runs.some(
+      (run, index) => runContentIdentity(run) !== runContentIdentity(right.runs[index]),
+    )
+  );
+}
+
+function runContentIdentity(run: any): string {
+  switch (run?.type) {
+    case "text":
+      return `text:${run.text}`;
+    case "button":
+      return `button:${(run.runs ?? []).map(runContentIdentity).join("|")}`;
+    case "image":
+      return `image:${run.placement?.resource_id}:${run.placement?.revision}:${run.alt_text ?? ""}`;
+    case "column_cell":
+      return `column:${(run.content ?? []).map(runContentIdentity).join("|")}`;
+    case "html_document":
+      return `html:${stableContent(run.document)}`;
+    case "shape":
+      return `shape:${stableContent(run.shape)}`;
+    default:
+      return `${run?.type ?? "unknown"}:${plainRun(run)}`;
+  }
+}
+
+function stableContent(value: any): string {
+  return (
+    JSON.stringify(value, (_key, child) =>
+      typeof child === "bigint" ? child.toString() : child,
+    ) ?? ""
+  );
 }
 
 function disableOldButtons(lines: DisplayLine[], generation: number): void {

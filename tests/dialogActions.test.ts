@@ -9,11 +9,15 @@ const debugStore = reactive({
   debugConsoleOpen: true,
   variablesOpen: true,
   stackOpen: true,
-  debugStop: { token: { program_generation: 1 } },
+  debugStop: {
+    stop: { program_generation: 1, pause_epoch: 2 },
+    selected_fiber: 7,
+  },
   debugOutput: [],
   debugVariables: [],
   debugFibers: [],
   debugFrames: [],
+  debugVariableValues: {},
   debugCommand,
 });
 
@@ -30,6 +34,10 @@ describe("dialog actions", () => {
     debugStore.debugConsoleOpen = true;
     debugStore.variablesOpen = true;
     debugStore.stackOpen = true;
+    debugStore.debugStop = {
+      stop: { program_generation: 1, pause_epoch: 2 },
+      selected_fiber: 7,
+    };
   });
 
   it("resets, saves, and cancels preferences", async () => {
@@ -73,6 +81,13 @@ describe("dialog actions", () => {
       expect.objectContaining({ command: expect.objectContaining({ type: "execute_safe" }) }),
     );
 
+    expect(debugCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "console",
+        stop: expect.objectContaining({ pause_epoch: 2 }),
+      }),
+    );
+
     for (const dialog of document.body.querySelectorAll<HTMLElement>("[role='dialog']")) {
       dialog.querySelector<HTMLButtonElement>("[aria-label='关闭']")!.click();
     }
@@ -95,6 +110,11 @@ describe("dialog actions", () => {
       createObjectURL: { configurable: true, value: createObjectURL },
       revokeObjectURL: { configurable: true, value: revokeObjectURL },
     });
+    const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get: () => 480,
+    });
     const wrapper = mount(LogDialog, {
       attachTo: document.body,
       props: {
@@ -102,6 +122,12 @@ describe("dialog actions", () => {
         entries: [{ timestamp: new Date("2026-01-01T00:00:00Z"), level: "info", message: "ready" }],
       },
     });
+    await nextTick();
+    await wrapper.setProps({ open: false });
+    await wrapper.setProps({ open: true });
+    await nextTick();
+
+    expect(document.body.querySelector<HTMLOListElement>(".log-list")!.scrollTop).toBe(480);
 
     await clickButton("复制");
     await clickButton("导出");
@@ -115,6 +141,8 @@ describe("dialog actions", () => {
     expect(wrapper.emitted("clear")).toHaveLength(1);
     expect(wrapper.emitted("close")).toHaveLength(1);
     wrapper.unmount();
+    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+    else delete (HTMLElement.prototype as any).scrollHeight;
   });
 });
 

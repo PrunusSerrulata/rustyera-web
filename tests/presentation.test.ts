@@ -21,6 +21,7 @@ describe("presentation projection", () => {
         ],
       },
     });
+    expect(state.historyRevision).toBe(1);
     applyDelta(state, {
       base_revision: 4,
       new_revision: 5,
@@ -41,7 +42,46 @@ describe("presentation projection", () => {
       ],
     });
     expect(state.revision).toBe(5);
+    expect(state.historyRevision).toBe(2);
     expect(state.lines.map(plainLine)).toEqual(["new", "next"]);
+  });
+
+  it("does not mark settings-only deltas as new game output", () => {
+    const state = emptyPresentation();
+    applyDelta(state, {
+      base_revision: 0,
+      new_revision: 1,
+      operations: [{ type: "set_title", title: "changed" }],
+    });
+    expect(state.historyRevision).toBe(0);
+  });
+
+  it("marks an image replacement as output even when both images have empty alt text", () => {
+    const state = emptyPresentation();
+    const imageLine = (resourceId: string) => ({
+      line_id: 1,
+      temporary: true,
+      logical_line_start: true,
+      line_end: false,
+      alignment: "left",
+      runs: [
+        {
+          type: "image",
+          placement: { resource_id: resourceId, revision: 1 },
+        },
+      ],
+    });
+    applySnapshot(state, {
+      revision: 1,
+      title: "images",
+      history: { logical_lines: [imageLine("first")] },
+    });
+    applyDelta(state, {
+      base_revision: 1,
+      new_revision: 2,
+      operations: [{ type: "replace_line", line_id: 1, line: imageLine("second") }],
+    });
+    expect(state.historyRevision).toBe(2);
   });
 
   it("rejects a revision gap so the caller can resynchronize", () => {
