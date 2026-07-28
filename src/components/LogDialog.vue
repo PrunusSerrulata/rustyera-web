@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from "vue";
 
 import DraggableDialog from "@/components/DraggableDialog.vue";
+import { formatLogEntry, formatLogTime, logLevelLabel } from "@/core/log";
 
 const props = defineProps<{ open: boolean; entries: any[] }>();
 const emit = defineEmits<{ close: []; clear: [] }>();
@@ -12,11 +13,7 @@ const visible = computed(() =>
   props.entries.filter((entry) => ranks[entry.level] >= ranks[threshold.value]),
 );
 const text = computed(() =>
-  visible.value
-    .map(
-      (entry) => `${entry.timestamp.toISOString()} [${entry.level.toUpperCase()}] ${entry.message}`,
-    )
-    .join("\n"),
+  visible.value.length ? `${visible.value.map((entry) => formatLogEntry(entry)).join("\n")}\n` : "",
 );
 
 watch(
@@ -76,7 +73,10 @@ function download(): void {
     </div>
     <ol ref="list" class="log-list">
       <li v-for="(entry, index) in visible" :key="index" :class="entry.level">
-        <time>{{ entry.timestamp.toLocaleTimeString() }}</time> {{ entry.message }}
+        <span class="log-bracket">[</span><time>{{ formatLogTime(entry.timestamp) }}</time
+        ><span class="log-bracket">] </span
+        ><strong class="log-level">{{ logLevelLabel(entry.level) }}</strong
+        ><span class="log-message">{{ ` ${entry.message}` }}</span>
       </li>
     </ol>
   </DraggableDialog>

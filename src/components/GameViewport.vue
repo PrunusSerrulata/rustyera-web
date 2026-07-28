@@ -16,7 +16,8 @@ const virtualizer = useVirtualizer(
     getScrollElement: () => viewport.value ?? null,
     estimateSize: () => 26,
     overscan: 20,
-    getItemKey: (index: number) => store.presentation.lines[index]?.line_id ?? index,
+    getItemKey: (index: number) =>
+      `${store.runtimeEpoch}:${store.presentation.lines[index]?.line_id ?? index}`,
   })),
 );
 const items = computed(() => virtualizer.value.getVirtualItems());
@@ -45,6 +46,10 @@ function click(event: MouseEvent): void {
   }
 }
 
+function measureHistory(): void {
+  requestAnimationFrame(() => virtualizer.value.measure());
+}
+
 onMounted(() => store.projectViewport());
 </script>
 
@@ -55,6 +60,7 @@ onMounted(() => store.projectViewport());
     tabindex="0"
     @click="click"
     @contextmenu.prevent="store.skip"
+    @load.capture="measureHistory"
   >
     <div class="background-layer">
       <MediaImage

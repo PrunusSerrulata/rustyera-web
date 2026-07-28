@@ -61,6 +61,19 @@ export class BrowserBridge implements FrontendBridge {
     } satisfies ProjectOpenMetrics;
   }
 
+  async restartProject(): Promise<ProjectOpenMetrics> {
+    if (!this.project) throw new Error("没有打开的项目");
+    const started = performance.now();
+    await this.worker.call("loadProject", await this.project.scan());
+    return {
+      quickScanMs: 0,
+      cacheReadMs: 0,
+      sourceReadMs: performance.now() - started,
+      submitMs: 0,
+      cacheImported: false,
+    };
+  }
+
   async reloadProject(): Promise<void> {
     if (!this.project) throw new Error("没有打开的项目");
     await this.submitRuntime({ type: "reload_project", value: await this.project.reloadRequest() });

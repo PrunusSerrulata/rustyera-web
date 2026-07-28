@@ -7,11 +7,13 @@ import {
   debugStopToken,
   debugVariableKey,
   formatDebugValue,
+  isStaleDebugGrantError,
   refreshDebugStop,
   selectedDebugFiber,
   sourceLineStepCommand,
 } from "@/core/debug";
 import { preferredRuntimeLocales, resolveGameTextStyle } from "@/core/gameText";
+import { MessageSkipController } from "@/core/messageSkip";
 import { applyDelta, applySnapshot, emptyPresentation, plainLine } from "@/core/presentation";
 import { decodeServicePayload, encodeServicePayload } from "@/core/serviceCodec";
 import {
@@ -20,6 +22,7 @@ import {
   type Preferences,
   type PumpBatch,
   type RuntimeMessage,
+  type SessionOptions,
 } from "@/core/types";
 import { platformBridge } from "@/platform";
 
@@ -45,6 +48,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const previewPreferences = ref<Preferences | null>(null);
   const fonts = ref<string[]>(["system-ui", "sans-serif", "serif", "monospace"]);
   const phase = ref("negotiating");
+  const runtimeEpoch = ref<number | bigint>(0);
   const status = ref("请选择 Era 项目文件夹");
   const projectOpen = ref(false);
   const sessionReady = ref(false);
@@ -70,6 +74,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const heldKeys = new Set<number>();
   const audio = new AudioEngine(bridge, preferences.value);
   let pumpTimer: number | undefined;
+  let compiledCacheTimer: number | undefined;
   let exportState: ExportState | undefined;
   let importBytes: Uint8Array | undefined;
   let nextEnvironmentRevision = 1;
@@ -77,6 +82,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let projectUsedCompiledCache = false;
   let batchMediaDirty = false;
   let debugPausePending = false;
+  let debugGrantRefreshNeeded = false;
+  let sessionTransitioning = false;
+  const messageSkip = new MessageSkipController();
 
   const effectivePreferences = computed(() => previewPreferences.value ?? preferences.value);
   const gameTextStyle = computed(() =>
@@ -107,17 +115,21 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } catch (error) {
       log("warning", `无法读取系统字体：${String(error)}`);
     }
-    const batch = await bridge.createSession({
+    const batch = await bridge.createSession(sessionOptions());
+    sessionReady.value = true;
+    await handleBatch(batch);
+    schedulePump(0);
+  }
+
+  function sessionOptions(): SessionOptions {
+    return {
       clientName: bridge.kind === "tauri" ? "rustyera-vue-tauri" : "rustyera-vue-wasm",
       availableFonts: fonts.value,
       preferredLocales: preferredRuntimeLocales(navigator.languages),
       audioAvailable: true,
       debugScopeMask: 1023,
       maximumEnvelopeBytes: 512 * 1024 * 1024,
-    });
-    sessionReady.value = true;
-    await handleBatch(batch);
-    schedulePump(0);
+    };
   }
 
   async function openProject(): Promise<void> {
@@ -146,7 +158,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function schedulePump(delay = 16): void {
-    if (!sessionReady.value || pumpTimer != null) return;
+    if (!sessionReady.value || sessionTransitioning || pumpTimer != null) return;
     pumpTimer = window.setTimeout(() => {
       pumpTimer = undefined;
       void pumpOnce();
@@ -154,7 +166,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function pumpOnce(): Promise<void> {
-    if (pumping.value) return;
+    if (pumping.value || sessionTransitioning) return;
     pumping.value = true;
     try {
       const batch = await bridge.pump();
@@ -201,6 +213,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
       index += 1;
     }
     if (batchMediaDirty) await synchronizeMedia();
+    if (debugGrantRefreshNeeded) {
+      debugGrantRefreshNeeded = false;
+      await requestDebugGrant();
+    } else if (debugEnabled.value && projectOpen.value) {
+      await pauseDebug();
+    }
+    await continueMessageSkip();
   }
 
   async function handleRuntime(
@@ -227,7 +246,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
           status.value = "项目编译完成";
           await send({ type: "start", value: { mode: { type: "new_game", seed: null } } });
           if (!projectUsedCompiledCache)
-            window.setTimeout(() => {
+            compiledCacheTimer = window.setTimeout(() => {
+              compiledCacheTimer = undefined;
               void beginCompiledCacheExport().catch((error) => {
                 exportState = undefined;
                 log("warning", `编译缓存生成失败：${String(error)}`);
@@ -245,6 +265,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "state_changed":
         phase.value = value.phase;
+        runtimeEpoch.value = value.epoch ?? runtimeEpoch.value;
         if (value.phase !== "debug_paused") debugStop.value = null;
         break;
       case "presentation_snapshot":
@@ -517,7 +538,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function skip(): Promise<void> {
-    if (presentation.inputWait?.kind === "enter_key" && !presentation.inputWait.stop_message_skip) {
+    const wait = presentation.inputWait;
+    if (canInteract.value && messageSkip.start(wait)) {
       await submitIntent({ type: "enter" }, true);
     }
   }
@@ -531,6 +553,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function submitIntent(intent: any, messageSkip: boolean): Promise<void> {
     const wait = presentation.inputWait;
     if (!wait) return;
+    if (!messageSkip) resetMessageSkip();
     await send({
       type: "input",
       value: {
@@ -543,17 +566,87 @@ export const useRuntimeStore = defineStore("runtime", () => {
     });
   }
 
+  async function continueMessageSkip(): Promise<void> {
+    const wait = presentation.inputWait;
+    if (messageSkip.continue(wait)) await submitIntent({ type: "enter" }, true);
+  }
+
+  function resetMessageSkip(): void {
+    messageSkip.cancel();
+  }
+
   async function undo(): Promise<void> {
     if (inputUndo.value?.token)
       await send({ type: "input_undo_request", value: { token: inputUndo.value.token } });
   }
 
   async function restart(): Promise<void> {
-    await send({ type: "start", value: { mode: { type: "new_game", seed: null } } });
+    if (!projectOpen.value || sessionTransitioning) return;
+    sessionTransitioning = true;
+    if (pumpTimer != null) {
+      window.clearTimeout(pumpTimer);
+      pumpTimer = undefined;
+    }
+    if (compiledCacheTimer != null) {
+      window.clearTimeout(compiledCacheTimer);
+      compiledCacheTimer = undefined;
+    }
+    while (pumping.value)
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    status.value = "正在创建新的 Runtime session…";
+    resetMessageSkip();
+    await audio
+      .synchronize([])
+      .catch((error) => log("warning", `重新开始时停止音频失败：${String(error)}`));
+    resetSessionState();
+    try {
+      const batch = await bridge.createSession(sessionOptions());
+      sessionReady.value = true;
+      await handleBatch(batch);
+      projectRuntimeStartedAt = performance.now();
+      const metrics = await bridge.restartProject();
+      projectUsedCompiledCache = metrics.cacheImported;
+      log(
+        "info",
+        `项目重新读取：快速扫描 ${metrics.quickScanMs.toFixed(0)} ms，缓存读取 ${metrics.cacheReadMs.toFixed(0)} ms，源码读取 ${metrics.sourceReadMs.toFixed(0)} ms，提交 ${metrics.submitMs.toFixed(0)} ms${metrics.cacheImported ? "（已导入编译缓存）" : "（冷编译）"}`,
+      );
+      status.value = "正在编译项目…";
+    } catch (error) {
+      const message = `重新开始失败：${String(error)}`;
+      status.value = message;
+      log("error", message);
+    } finally {
+      sessionTransitioning = false;
+      schedulePump(0);
+    }
   }
 
   async function returnToTitle(): Promise<void> {
+    resetMessageSkip();
     await send({ type: "return_to_title", value: {} });
+  }
+
+  function resetSessionState(): void {
+    Object.assign(presentation, emptyPresentation());
+    sessionReady.value = false;
+    phase.value = "negotiating";
+    runtimeEpoch.value = 0;
+    inputUndo.value = null;
+    fault.value = null;
+    debugPausePending = false;
+    debugGrantRefreshNeeded = false;
+    debugEnabled.value = false;
+    debugGrant.value = null;
+    debugStop.value = null;
+    debugOutput.value = [];
+    debugVariables.value = [];
+    debugFibers.value = [];
+    debugFrames.value = [];
+    debugVariableValues.value = {};
+    prompt.value = "";
+    exportState = undefined;
+    importBytes = undefined;
+    nextEnvironmentRevision = 1;
   }
 
   async function reloadProject(): Promise<void> {
@@ -715,24 +808,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function enableDebug(): Promise<void> {
     await ensureSession();
     if (!debugEnabled.value) {
-      await bridge.submitDebug({
-        type: "hello",
-        value: {
-          versions: { minimum: { major: 4, minor: 0 }, maximum: { major: 4, minor: 0 } },
-          requested_scopes: [
-            "variables_read",
-            "variables_write",
-            "game_fields_read",
-            "game_fields_write",
-            "execution_read",
-            "execution_control",
-            "console_evaluate",
-            "console_execute",
-            "breakpoints_manage",
-            "script_output",
-          ],
-        },
-      });
+      await requestDebugGrant();
     } else if (debugGrant.value) {
       await bridge.submitDebug({
         type: "revoke",
@@ -748,9 +824,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
   function handleDebug(message: any): void {
     if (message.type === "grant") {
       debugPausePending = false;
+      debugGrantRefreshNeeded = false;
       debugGrant.value = message.value;
       debugEnabled.value = true;
-      if (projectOpen.value) void pauseDebug();
+      debugStop.value = null;
     } else if (message.type === "revoke") {
       debugPausePending = false;
       debugGrant.value = null;
@@ -783,7 +860,34 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } else if (message.type === "error") {
       debugPausePending = false;
       log("warning", message.value.message);
+      if (debugEnabled.value && isStaleDebugGrantError(message.value)) {
+        debugGrant.value = null;
+        debugStop.value = null;
+        debugGrantRefreshNeeded = true;
+      }
     }
+  }
+
+  async function requestDebugGrant(): Promise<void> {
+    await bridge.submitDebug({
+      type: "hello",
+      value: {
+        versions: { minimum: { major: 4, minor: 0 }, maximum: { major: 4, minor: 0 } },
+        requested_scopes: [
+          "variables_read",
+          "variables_write",
+          "game_fields_read",
+          "game_fields_write",
+          "execution_read",
+          "execution_control",
+          "console_evaluate",
+          "console_execute",
+          "breakpoints_manage",
+          "script_output",
+        ],
+      },
+    });
+    schedulePump(0);
   }
 
   async function debugCommand(command: any): Promise<void> {
@@ -795,7 +899,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function pauseDebug(): Promise<void> {
-    if (!debugGrant.value || debugStopToken(debugStop.value) || debugPausePending) return;
+    if (
+      !debugGrant.value ||
+      debugStopToken(debugStop.value) ||
+      debugPausePending ||
+      !["running", "waiting_input", "waiting_external"].includes(phase.value)
+    )
+      return;
     debugPausePending = true;
     try {
       await debugCommand({ type: "pause" });
@@ -927,6 +1037,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     gameTextStyle,
     fonts,
     phase,
+    runtimeEpoch,
     status,
     projectOpen,
     prompt,

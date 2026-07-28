@@ -186,6 +186,13 @@ select {
 .game-line .html-node:is(p) {
   margin: 0;
 }
+.game-line:has(.media-image, .canvas-replay),
+.game-line .html-node:is(p):has(.media-image, .canvas-replay) {
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  line-height: 0;
+}
 .align-center {
   text-align: center;
 }
@@ -230,7 +237,10 @@ select {
 .canvas-replay {
   display: inline-block;
   position: relative;
-  vertical-align: middle;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  vertical-align: top;
   image-rendering: auto;
 }
 .media-sprite {
@@ -374,17 +384,28 @@ select {
     0.82rem ui-monospace,
     monospace;
 }
-.log-list .warning {
-  color: #e8c373;
+.log-list li {
+  color: #e8e9ed;
+  white-space: pre-wrap;
 }
-.log-list .error {
-  color: #ff858e;
+.log-list .log-level {
+  font-weight: 700;
 }
-.log-list .debug {
-  color: #8e96a6;
+.log-list .warning .log-level {
+  color: #ffbf00;
+}
+.log-list .error .log-level {
+  color: #ff0000;
+}
+.log-list .info .log-level {
+  color: #ffffff;
+}
+.log-list .debug .log-level {
+  color: #a0a0a0;
 }
 .log-list time {
-  color: #777f90;
+  color: #00c853;
+  font-weight: 700;
 }
 .debug-output,
 .fault-message {

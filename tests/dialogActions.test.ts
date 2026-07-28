@@ -128,6 +128,11 @@ describe("dialog actions", () => {
     await nextTick();
 
     expect(document.body.querySelector<HTMLOListElement>(".log-list")!.scrollTop).toBe(480);
+    expect(document.body.querySelector(".log-list li")!.textContent).toMatch(
+      /^\[\d{2}:\d{2}:\d{2}\] INFO {2}ready$/,
+    );
+    expect(document.body.querySelector(".log-list time")).not.toBeNull();
+    expect(document.body.querySelector(".log-list .log-level")?.textContent).toBe("INFO ");
 
     await clickButton("复制");
     await clickButton("导出");

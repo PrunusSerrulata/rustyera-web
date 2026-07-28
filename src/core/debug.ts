@@ -18,6 +18,15 @@ export function refreshDebugStop(current: any, response: any): any {
   return current && response?.stop ? { ...current, stop: response.stop } : current;
 }
 
+export function isStaleDebugGrantError(error: any): boolean {
+  const code = String(error?.code ?? "")
+    .toLowerCase()
+    .replaceAll("_", "");
+  return (
+    code === "permissiondenied" && String(error?.message ?? "").includes("debug grant is stale")
+  );
+}
+
 export function debugVariableKey(value: any): string {
   return stableDebugText(value?.symbol_key ?? value?.reference?.symbol_key ?? value);
 }

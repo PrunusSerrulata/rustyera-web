@@ -15,6 +15,7 @@ import type {
 
 export class TauriBridge implements FrontendBridge {
   readonly kind = "tauri" as const;
+  private projectPath?: string;
 
   createSession(options: SessionOptions): Promise<PumpBatch> {
     return invoke("create_session", { options });
@@ -35,7 +36,13 @@ export class TauriBridge implements FrontendBridge {
   async openProject(): Promise<ProjectOpenMetrics | undefined> {
     const path = await open({ directory: true, multiple: false, title: "打开 Era 项目" });
     if (typeof path !== "string") return undefined;
+    this.projectPath = path;
     return invoke("open_project", { path });
+  }
+
+  restartProject(): Promise<ProjectOpenMetrics> {
+    if (!this.projectPath) return Promise.reject(new Error("没有打开的项目"));
+    return invoke("open_project", { path: this.projectPath });
   }
 
   async reloadProject(): Promise<void> {

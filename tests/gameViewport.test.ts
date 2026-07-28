@@ -3,9 +3,12 @@ import { nextTick, reactive, ref } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const scrollToIndex = vi.hoisted(() => vi.fn());
+const measure = vi.hoisted(() => vi.fn());
+const virtualOptions = vi.hoisted(() => ({ value: undefined as any }));
 const continueFromViewport = vi.hoisted(() => vi.fn());
 const projectViewport = vi.hoisted(() => vi.fn());
 const store = reactive({
+  runtimeEpoch: 1,
   presentation: {
     revision: 1,
     historyRevision: 1,
@@ -20,13 +23,16 @@ const store = reactive({
 });
 
 vi.mock("@tanstack/vue-virtual", () => ({
-  useVirtualizer: () =>
-    ref({
+  useVirtualizer: (options: any) => {
+    virtualOptions.value = options;
+    return ref({
       getVirtualItems: () => [],
       getTotalSize: () => 0,
       measureElement: vi.fn(),
+      measure,
       scrollToIndex,
-    }),
+    });
+  },
 }));
 vi.mock("@/stores/runtime", () => ({ useRuntimeStore: () => store }));
 
@@ -60,6 +66,7 @@ describe("game viewport", () => {
     scrollToIndex.mockClear();
     await wrapper.get("main").trigger("load");
     expect(scrollToIndex).not.toHaveBeenCalled();
+    expect(measure).toHaveBeenCalledOnce();
     wrapper.unmount();
   });
 
@@ -68,6 +75,22 @@ describe("game viewport", () => {
     await wrapper.get("main").trigger("click", { button: 0 });
 
     expect(continueFromViewport).toHaveBeenCalledOnce();
+    wrapper.unmount();
+  });
+
+  it("starts continuous Enter-wait skipping from a viewport context menu", async () => {
+    const wrapper = shallowMount(GameViewport);
+    await wrapper.get("main").trigger("contextmenu");
+
+    expect(store.skip).toHaveBeenCalledOnce();
+    wrapper.unmount();
+  });
+
+  it("isolates virtual row keys across runtime epochs", () => {
+    const wrapper = shallowMount(GameViewport);
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1");
+    store.runtimeEpoch = 2;
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("2:1");
     wrapper.unmount();
   });
 });

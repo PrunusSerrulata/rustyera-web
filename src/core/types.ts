@@ -57,6 +57,7 @@ export interface FrontendBridge {
   submitDebug(message: DebugMessage, correlationId?: number): Promise<number | bigint>;
   pump(): Promise<PumpBatch>;
   openProject(): Promise<ProjectOpenMetrics | undefined>;
+  restartProject(): Promise<ProjectOpenMetrics>;
   submitProjectSource(): Promise<void>;
   reloadProject(): Promise<void>;
   readResource(relativePath: string): Promise<Uint8Array>;

@@ -4,6 +4,7 @@ import {
   debugStopToken,
   debugVariableKey,
   formatDebugValue,
+  isStaleDebugGrantError,
   refreshDebugStop,
   selectedDebugFiber,
   sourceLineStepCommand,
@@ -37,5 +38,12 @@ describe("debug protocol projection", () => {
       ...stopped,
       stop: refreshed,
     });
+  });
+
+  it("recognizes stale grants regardless of enum projection style", () => {
+    const message = "debug grant is stale or belongs to another session generation";
+    expect(isStaleDebugGrantError({ code: "permission_denied", message })).toBe(true);
+    expect(isStaleDebugGrantError({ code: "PermissionDenied", message })).toBe(true);
+    expect(isStaleDebugGrantError({ code: "stale_stop", message })).toBe(false);
   });
 });

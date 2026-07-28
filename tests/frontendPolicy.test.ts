@@ -32,5 +32,19 @@ describe("frontend host and image-line policy", () => {
 
     const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
     expect(stylesheet).toMatch(/\.game-line \.html-node:is\(p\)\s*\{\s*margin:\s*0;/);
+    expect(stylesheet).toMatch(
+      /\.game-line:has\(\.media-image, \.canvas-replay\)[\s\S]*?margin:\s*0;[\s\S]*?padding:\s*0;[\s\S]*?line-height:\s*0;/,
+    );
+  });
+
+  it("styles timestamps and fixed-width log levels like the TUI", () => {
+    const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
+    expect(stylesheet).toMatch(
+      /\.log-list time\s*\{[^}]*color:\s*#00c853;[^}]*font-weight:\s*700;/s,
+    );
+    expect(stylesheet).toMatch(/\.log-list \.error \.log-level\s*\{\s*color:\s*#ff0000;/);
+    expect(stylesheet).toMatch(/\.log-list \.warning \.log-level\s*\{\s*color:\s*#ffbf00;/);
+    expect(stylesheet).toMatch(/\.log-list \.info \.log-level\s*\{\s*color:\s*#ffffff;/);
+    expect(stylesheet).toMatch(/\.log-list \.debug \.log-level\s*\{\s*color:\s*#a0a0a0;/);
   });
 });
