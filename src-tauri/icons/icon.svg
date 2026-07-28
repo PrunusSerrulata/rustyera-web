@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x1="160" y1="96" x2="864" y2="928" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#102852"/>
+      <stop offset="1" stop-color="#020c25"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="300" y1="220" x2="730" y2="810" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ff7a18"/>
+      <stop offset="1" stop-color="#e64c00"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="28" stdDeviation="30" flood-color="#000716" flood-opacity=".42"/>
+    </filter>
+  </defs>
+
+  <!-- The transparent corners and rounded 824 px body follow the macOS icon silhouette. -->
+  <rect x="100" y="100" width="824" height="824" rx="190" fill="url(#background)" filter="url(#shadow)"/>
+  <rect x="112" y="112" width="800" height="800" rx="178" fill="none" stroke="#36517c" stroke-width="8" opacity=".55"/>
+
+  <g fill="url(#accent)">
+    <rect x="472" y="202" width="80" height="116" rx="24"/>
+    <rect x="472" y="706" width="80" height="116" rx="24"/>
+    <rect x="706" y="472" width="116" height="80" rx="24"/>
+    <rect x="202" y="472" width="116" height="80" rx="24"/>
+    <rect x="664" y="274" width="80" height="116" rx="24" transform="rotate(45 704 332)"/>
+    <rect x="280" y="658" width="80" height="116" rx="24" transform="rotate(45 320 716)"/>
+    <rect x="658" y="664" width="116" height="80" rx="24" transform="rotate(45 716 704)"/>
+    <rect x="274" y="280" width="116" height="80" rx="24" transform="rotate(45 332 320)"/>
+    <circle cx="512" cy="512" r="250"/>
+  </g>
+  <circle cx="512" cy="512" r="170" fill="url(#background)"/>
+
+  <path d="M382 396h260a62 62 0 0 1 62 62v150a62 62 0 0 1-62 62h-60l-64 60v-60H382a62 62 0 0 1-62-62V458a62 62 0 0 1 62-62Z"
+        fill="url(#background)" stroke="url(#accent)" stroke-width="24" stroke-linejoin="round"/>
+  <circle cx="376" cy="447" r="12" fill="#f3660c"/>
+  <circle cx="416" cy="447" r="12" fill="#f3660c"/>
+  <circle cx="456" cy="447" r="12" fill="#f3660c"/>
+  <path d="m390 522 60 54-60 54M488 630h76" fill="none" stroke="url(#accent)" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
