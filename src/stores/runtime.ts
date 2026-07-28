@@ -3,6 +3,7 @@ import { defineStore } from "pinia";
 import { computed, reactive, ref, shallowReactive } from "vue";
 
 import { AudioEngine } from "@/core/audio";
+import { preferredRuntimeLocales, resolveGameTextStyle } from "@/core/gameText";
 import { applyDelta, applySnapshot, emptyPresentation, plainLine } from "@/core/presentation";
 import { decodeServicePayload, encodeServicePayload } from "@/core/serviceCodec";
 import {
@@ -69,6 +70,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let batchMediaDirty = false;
 
   const effectivePreferences = computed(() => previewPreferences.value ?? preferences.value);
+  const gameTextStyle = computed(() =>
+    resolveGameTextStyle(effectivePreferences.value, presentation.lines),
+  );
   const canInteract = computed(
     () => presentation.inputWait != null && phase.value !== "debug_paused" && !fault.value,
   );
@@ -94,9 +98,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const batch = await bridge.createSession({
       clientName: bridge.kind === "tauri" ? "rustyera-vue-tauri" : "rustyera-vue-wasm",
       availableFonts: fonts.value,
-      preferredLocales: navigator.languages.length
-        ? [...navigator.languages]
-        : ["zh-CN", "ja", "en"],
+      preferredLocales: preferredRuntimeLocales(navigator.languages),
       audioAvailable: true,
       debugScopeMask: 1023,
       maximumEnvelopeBytes: 512 * 1024 * 1024,
@@ -507,6 +509,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
   }
 
+  async function continueFromViewport(): Promise<void> {
+    if (canInteract.value && presentation.inputWait?.kind === "enter_key") {
+      await submitIntent({ type: "enter" }, false);
+    }
+  }
+
   async function submitIntent(intent: any, messageSkip: boolean): Promise<void> {
     const wait = presentation.inputWait;
     if (!wait) return;
@@ -841,6 +849,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     presentation,
     preferences,
     effectivePreferences,
+    gameTextStyle,
     fonts,
     phase,
     status,
@@ -868,6 +877,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     submitText,
     activate,
     skip,
+    continueFromViewport,
     undo,
     restart,
     returnToTitle,

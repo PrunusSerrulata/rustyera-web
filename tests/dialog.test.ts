@@ -17,4 +17,20 @@ describe("DraggableDialog", () => {
     expect(wrapper.emitted("close")).toHaveLength(1);
     wrapper.unmount();
   });
+
+  it("does not let title-bar dragging steal the close button pointer", async () => {
+    const wrapper = mount(DraggableDialog, {
+      attachTo: document.body,
+      props: { open: true, title: "测试对话框" },
+      slots: { default: "内容" },
+    });
+    const close = document.body.querySelector<HTMLButtonElement>("[aria-label='关闭']")!;
+
+    close.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    close.click();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted("close")).toHaveLength(1);
+    wrapper.unmount();
+  });
 });

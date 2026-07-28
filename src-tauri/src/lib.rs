@@ -67,7 +67,7 @@ struct ProjectOpenMetrics {
 impl Preferences {
     fn normalized(mut self) -> Self {
         self.schema_version = 1;
-        self.font_size_override_px = self.font_size_override_px.map(|size| size.clamp(8, 72));
+        self.font_size_override_px = Some(self.font_size_override_px.unwrap_or(12).clamp(8, 72));
         self.image_scale = if self.image_scale.is_finite() {
             self.image_scale.clamp(0.25, 4.0)
         } else {
@@ -273,18 +273,23 @@ async fn read_resource_prefix(
 }
 
 #[tauri::command]
-fn storage_request(
+async fn storage_request(
     state: State<'_, AppState>,
     request: StorageRequest,
 ) -> Result<StorageResponse, String> {
-    let response = state
-        .storage
-        .lock()
-        .map_err(lock_error)?
-        .as_mut()
-        .ok_or_else(|| "no project storage is open".to_owned())?
-        .handle(request);
-    Ok(response)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let response = state
+            .storage
+            .lock()
+            .map_err(lock_error)?
+            .as_mut()
+            .ok_or_else(|| "no project storage is open".to_owned())?
+            .handle(request);
+        Ok(response)
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -431,7 +436,7 @@ fn default_preferences() -> Preferences {
     Preferences {
         schema_version: 1,
         font_family_override: None,
-        font_size_override_px: None,
+        font_size_override_px: Some(12),
         image_scale: 1.0,
         master_volume: 1.0,
     }
@@ -510,5 +515,16 @@ mod tests {
             b"firstsecond"
         );
         assert!(state.cache_writer.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn missing_or_legacy_font_size_normalizes_to_twelve_pixels() {
+        let normalized = Preferences {
+            font_size_override_px: None,
+            ..default_preferences()
+        }
+        .normalized();
+
+        assert_eq!(normalized.font_size_override_px, Some(12));
     }
 }

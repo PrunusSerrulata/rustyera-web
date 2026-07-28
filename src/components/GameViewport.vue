@@ -5,12 +5,11 @@ import { computed, nextTick, onMounted, ref, watch } from "vue";
 import HtmlNode from "@/components/HtmlNode.vue";
 import MediaImage from "@/components/MediaImage.vue";
 import RunRenderer from "@/components/RunRenderer.vue";
+import { isViewportContinuationClick } from "@/core/viewportInteraction";
 import { useRuntimeStore } from "@/stores/runtime";
 
 const store = useRuntimeStore();
 const viewport = ref<HTMLElement>();
-const follow = ref(true);
-const hasNew = ref(false);
 const virtualizer = useVirtualizer(
   computed(() => ({
     count: store.presentation.lines.length,
@@ -25,28 +24,24 @@ const items = computed(() => virtualizer.value.getVirtualItems());
 watch(
   () => store.presentation.revision,
   async () => {
-    if (follow.value) {
-      await nextTick();
-      virtualizer.value.scrollToIndex(Math.max(0, store.presentation.lines.length - 1), {
-        align: "end",
-      });
-    } else hasNew.value = true;
+    await nextTick();
+    goBottom();
   },
 );
 
-function scroll(): void {
-  const element = viewport.value;
-  if (!element) return;
-  follow.value = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
-  if (follow.value) hasNew.value = false;
-}
-
 function goBottom(): void {
-  follow.value = true;
-  hasNew.value = false;
   virtualizer.value.scrollToIndex(Math.max(0, store.presentation.lines.length - 1), {
     align: "end",
   });
+  requestAnimationFrame(() => {
+    if (viewport.value) viewport.value.scrollTop = viewport.value.scrollHeight;
+  });
+}
+
+function click(event: MouseEvent): void {
+  if (viewport.value && isViewportContinuationClick(event, viewport.value)) {
+    void store.continueFromViewport();
+  }
 }
 
 onMounted(() => store.projectViewport());
@@ -57,7 +52,8 @@ onMounted(() => store.projectViewport());
     ref="viewport"
     class="game-viewport"
     tabindex="0"
-    @scroll.passive="scroll"
+    @click="click"
+    @load.capture="goBottom"
     @contextmenu.prevent="store.skip"
   >
     <div class="background-layer">
@@ -92,6 +88,5 @@ onMounted(() => store.projectViewport());
         <HtmlNode v-for="(node, nodeIndex) in document.nodes" :key="nodeIndex" :node="node" />
       </template>
     </div>
-    <button v-if="hasNew" class="new-output" @click="goBottom">有新内容 ↓</button>
   </main>
 </template>

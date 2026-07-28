@@ -19,7 +19,22 @@ const text = computed(() =>
 );
 
 async function copy(): Promise<void> {
-  await navigator.clipboard.writeText(text.value);
+  try {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(text.value);
+      return;
+    }
+  } catch {
+    // Sandboxed WebViews can expose Clipboard but reject it without a user permission grant.
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text.value;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
 }
 
 function download(): void {
@@ -44,8 +59,9 @@ function download(): void {
           <option>error</option>
         </select></label
       >
-      <button @click="copy">复制</button><button @click="download">导出</button
-      ><button @click="emit('clear')">清空</button>
+      <button type="button" @click="copy">复制</button
+      ><button type="button" @click="download">导出</button
+      ><button type="button" @click="emit('clear')">清空</button>
     </div>
     <ol class="log-list">
       <li v-for="(entry, index) in visible" :key="index" :class="entry.level">

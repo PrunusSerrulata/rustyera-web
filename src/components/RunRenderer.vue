@@ -21,8 +21,15 @@ const textStyle = computed(() => {
       [style.underline && "underline", style.strikeout && "line-through"]
         .filter(Boolean)
         .join(" ") || undefined,
-    fontFamily: style.font_family ?? undefined,
-    fontSize: style.font_millipoints ? `${style.font_millipoints / 1000}pt` : undefined,
+    fontFamily: store.effectivePreferences.fontFamilyOverride
+      ? "var(--game-font)"
+      : (style.font_family ?? undefined),
+    fontSize:
+      store.effectivePreferences.fontSizeOverridePx != null
+        ? "var(--game-size)"
+        : style.font_millipoints
+          ? `${style.font_millipoints / 1000}pt`
+          : undefined,
   };
 });
 

@@ -41,7 +41,7 @@ export function normalizePreferences(value: Preferences): Preferences {
     fontFamilyOverride: value.fontFamilyOverride || null,
     fontSizeOverridePx:
       value.fontSizeOverridePx == null
-        ? null
+        ? 12
         : Math.round(Math.min(72, Math.max(8, value.fontSizeOverridePx))),
     imageScale: Number.isFinite(value.imageScale)
       ? Math.min(4, Math.max(0.25, value.imageScale))

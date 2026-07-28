@@ -14,7 +14,11 @@ export function resourceUrl(
     .readResource(resourceId)
     .then((bytes) =>
       URL.createObjectURL(new Blob([bytes as BlobPart], { type: mediaType(resourceId) })),
-    );
+    )
+    .catch((error) => {
+      cache.delete(key);
+      throw error;
+    });
   cache.set(key, value);
   return value;
 }

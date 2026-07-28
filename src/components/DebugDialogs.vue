@@ -86,8 +86,20 @@ function readStack(fiber: any): void {
       @keyup.enter="consoleCommand(false)"
     />
     <footer class="dialog-actions">
-      <span class="spacer" /><button class="primary" @click="consoleCommand(false)">求值</button
-      ><button @click="consoleCommand(true)">安全执行</button>
+      <span class="spacer" /><button
+        type="button"
+        class="primary"
+        :disabled="!source || !store.debugStop?.token"
+        @click="consoleCommand(false)"
+      >
+        求值</button
+      ><button
+        type="button"
+        :disabled="!source || !store.debugStop?.token"
+        @click="consoleCommand(true)"
+      >
+        安全执行
+      </button>
     </footer>
   </DraggableDialog>
 

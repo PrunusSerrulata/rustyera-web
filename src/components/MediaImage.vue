@@ -3,18 +3,27 @@ import { computed, ref, watchEffect } from "vue";
 
 import CanvasReplay from "@/components/CanvasReplay.vue";
 import { resourceUrl } from "@/core/resources";
+import type { PresentationLength } from "@/core/types";
 import { platformBridge } from "@/platform";
 import { useRuntimeStore } from "@/stores/runtime";
 
 const props = defineProps<{ placement: any; alt?: string }>();
 const store = useRuntimeStore();
 const source = ref("");
+const failed = ref(false);
 const hovered = ref(false);
-const sprite = computed(() =>
-  store.presentation.resources.sprites?.find(
-    (item: any) => item.name === props.placement.resource_id,
-  ),
+const activeResourceId = computed(() =>
+  hovered.value && props.placement.hover_resource_id
+    ? props.placement.hover_resource_id
+    : props.placement.resource_id,
 );
+const sprite = computed(() => {
+  const key = activeResourceId.value.toUpperCase();
+  return store.presentation.resources.sprites?.find(
+    (item: any) => String(item.name).toUpperCase() === key,
+  );
+});
+const frame = computed(() => sprite.value?.frames?.[0]);
 const canvasReplay = computed(() => {
   const canvasId = sprite.value?.canvas_id;
   return canvasId == null
@@ -22,29 +31,101 @@ const canvasReplay = computed(() => {
     : store.presentation.resources.canvases?.find((item: any) => item.canvas_id === canvasId);
 });
 
-watchEffect(async () => {
-  let id =
-    hovered.value && props.placement.hover_resource_id
-      ? props.placement.hover_resource_id
-      : props.placement.resource_id;
-  const frame = sprite.value?.frames?.[0];
-  if (frame?.resource_id) id = frame.resource_id;
-  if (!canvasReplay.value)
-    source.value = await resourceUrl(platformBridge(), id, props.placement.revision);
+watchEffect((onCleanup) => {
+  const resourceId = frame.value?.resource_id ?? activeResourceId.value;
+  if (!resourceId || canvasReplay.value) {
+    source.value = "";
+    failed.value = false;
+    return;
+  }
+  let active = true;
+  source.value = "";
+  failed.value = false;
+  void resourceUrl(platformBridge(), resourceId, props.placement.revision)
+    .then((value) => {
+      if (active) source.value = value;
+    })
+    .catch(() => {
+      if (active) failed.value = true;
+    });
+  onCleanup(() => {
+    active = false;
+  });
 });
 
-const style = computed(() => {
-  const scale = store.effectivePreferences.imageScale;
-  const opacity = props.placement.opacity?.denominator
+const dimensions = computed(() => {
+  const spriteWidth = positive(sprite.value?.size?.[0]);
+  const spriteHeight = positive(sprite.value?.size?.[1]);
+  const requestedWidth = projectLength(props.placement.requested_width);
+  const requestedHeight = projectLength(props.placement.requested_height);
+  let width = requestedWidth ?? spriteWidth;
+  let height = requestedHeight ?? spriteHeight;
+  if (width != null && height == null && spriteWidth && spriteHeight) {
+    height = (width * spriteHeight) / spriteWidth;
+  } else if (height != null && width == null && spriteWidth && spriteHeight) {
+    width = (height * spriteWidth) / spriteHeight;
+  }
+  if (!sprite.value) {
+    width ??= logicalPixels(props.placement.width);
+    height ??= logicalPixels(props.placement.height);
+  }
+  return { width, height };
+});
+
+const opacity = computed(() =>
+  props.placement.opacity?.denominator
     ? props.placement.opacity.numerator / props.placement.opacity.denominator
-    : 1;
+    : 1,
+);
+const scale = computed(() => store.effectivePreferences.imageScale);
+const directStyle = computed(() => ({
+  width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
+  height: dimensions.value.height ? `${dimensions.value.height * scale.value}px` : undefined,
+  top: verticalOffset(),
+  opacity: opacity.value,
+  zIndex: props.placement.depth,
+}));
+const spriteStyle = computed(() => ({
+  width: `${(dimensions.value.width ?? 0) * scale.value}px`,
+  height: `${(dimensions.value.height ?? 0) * scale.value}px`,
+  top: verticalOffset(),
+  opacity: opacity.value,
+  zIndex: props.placement.depth,
+}));
+const spriteSourceStyle = computed(() => {
+  const rectangle = frame.value?.source_rectangle ?? [0, 0, 0, 0];
+  const sourceWidth = positive(rectangle[2]) ?? positive(sprite.value?.size?.[0]) ?? 1;
+  const sourceHeight = positive(rectangle[3]) ?? positive(sprite.value?.size?.[1]) ?? 1;
+  const ratioX = ((dimensions.value.width ?? sourceWidth) * scale.value) / sourceWidth;
+  const ratioY = ((dimensions.value.height ?? sourceHeight) * scale.value) / sourceHeight;
   return {
-    width: props.placement.width ? `${(props.placement.width / 1000) * scale}px` : undefined,
-    height: props.placement.height ? `${(props.placement.height / 1000) * scale}px` : undefined,
-    opacity,
-    zIndex: props.placement.depth,
+    left: `${-Number(rectangle[0] ?? 0) * ratioX}px`,
+    top: `${-Number(rectangle[1] ?? 0) * ratioY}px`,
+    transform: `scale(${ratioX}, ${ratioY})`,
   };
 });
+
+function projectLength(value: PresentationLength | undefined): number | undefined {
+  if (!value) return undefined;
+  if (value.unit === "pixels") return Math.abs(Number(value.value));
+  if (value.unit === "logical") return Math.abs(Number(value.value)) / 1000;
+  return (Math.abs(Number(value.value)) * store.gameTextStyle.fontSizePx) / 100;
+}
+
+function logicalPixels(value: unknown): number | undefined {
+  const result = Math.abs(Number(value)) / 1000;
+  return Number.isFinite(result) && result > 0 ? result : undefined;
+}
+
+function positive(value: unknown): number | undefined {
+  const result = Math.abs(Number(value));
+  return Number.isFinite(result) && result > 0 ? result : undefined;
+}
+
+function verticalOffset(): string | undefined {
+  const y = projectLength(props.placement.requested_y);
+  return y ? `${y * scale.value}px` : undefined;
+}
 </script>
 
 <template>
@@ -53,14 +134,24 @@ const style = computed(() => {
     :replay="canvasReplay"
     :scale="store.effectivePreferences.imageScale"
   />
+  <span
+    v-else-if="sprite && frame && source && dimensions.width && dimensions.height"
+    class="media-image media-sprite"
+    :style="spriteStyle"
+    @mouseenter="hovered = true"
+    @mouseleave="hovered = false"
+  >
+    <img :src="source" :alt="alt ?? ''" :style="spriteSourceStyle" draggable="false" />
+  </span>
   <img
-    v-else
+    v-else-if="source"
     class="media-image"
     :src="source"
     :alt="alt ?? ''"
-    :style="style"
+    :style="directStyle"
     draggable="false"
     @mouseenter="hovered = true"
     @mouseleave="hovered = false"
   />
+  <span v-else-if="failed && alt" class="media-image-fallback">{{ alt }}</span>
 </template>

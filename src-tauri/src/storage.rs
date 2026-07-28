@@ -120,7 +120,7 @@ impl StorageHost {
                             .replace('\\', "/");
                         if pattern
                             .as_ref()
-                            .is_some_and(|value| !value.matches_path(entry.path()))
+                            .is_some_and(|value| !value.matches_path(Path::new(&relative)))
                         {
                             continue;
                         }
@@ -180,8 +180,8 @@ impl StorageHost {
     fn namespace_root(&self, namespace: StorageNamespace) -> PathBuf {
         match namespace {
             StorageNamespace::Project => self.project_root.join("project"),
-            StorageNamespace::Save => self.project_root.join("save"),
-            StorageNamespace::GlobalSave => self.project_root.join("global"),
+            // Emuera stores normal slots and global.sav in the project's sav directory.
+            StorageNamespace::Save | StorageNamespace::GlobalSave => self.project_root.join("sav"),
             StorageNamespace::Data => self.project_root.join("data"),
             StorageNamespace::Log => self.project_root.join("logs"),
             StorageNamespace::Resource => self.project_root.clone(),
@@ -283,5 +283,44 @@ mod tests {
         let root = Path::new("project");
         assert!(resolve(root, "../secret").is_err());
         assert!(resolve(root, "/secret").is_err());
+    }
+
+    #[test]
+    fn emuera_save_directory_is_used_for_slots_and_global_data() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join("sav")).unwrap();
+        fs::write(directory.path().join("sav/save01.sav"), b"slot").unwrap();
+        fs::write(directory.path().join("sav/global.sav"), b"global").unwrap();
+        let mut storage = StorageHost::new(directory.path().to_owned());
+
+        let listed = storage.handle(StorageRequest {
+            request_id: 1,
+            namespace: StorageNamespace::Save,
+            relative_path: String::new(),
+            operation: StorageOperation::List {
+                pattern: Some("save*.sav".into()),
+                recursive: false,
+            },
+            idempotency_key: String::new(),
+            deadline_ns: None,
+        });
+        let StorageResult::Listed { entries } = listed.result else {
+            panic!("expected a save listing");
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].relative_path, "save01.sav");
+
+        let global = storage.handle(StorageRequest {
+            request_id: 2,
+            namespace: StorageNamespace::GlobalSave,
+            relative_path: "global.sav".into(),
+            operation: StorageOperation::Read,
+            idempotency_key: String::new(),
+            deadline_ns: None,
+        });
+        let StorageResult::Read { data, .. } = global.result else {
+            panic!("expected global save data");
+        };
+        assert_eq!(data.as_slice(), b"global");
     }
 }

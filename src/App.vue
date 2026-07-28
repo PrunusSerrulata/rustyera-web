@@ -31,10 +31,8 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
   <div
     class="app-shell"
     :style="{
-      '--user-font': store.effectivePreferences.fontFamilyOverride ?? 'system-ui',
-      '--user-size': store.effectivePreferences.fontSizeOverridePx
-        ? `${store.effectivePreferences.fontSizeOverridePx}px`
-        : '16px',
+      '--game-font': store.gameTextStyle.fontFamily,
+      '--game-size': store.gameTextStyle.fontSize,
       '--game-background': store.presentation.settings.background
         ? `rgba(${store.presentation.settings.background.red}, ${store.presentation.settings.background.green}, ${store.presentation.settings.background.blue}, ${store.presentation.settings.background.alpha / 255})`
         : '#101114',

@@ -30,6 +30,12 @@ function center(): void {
 
 function begin(event: PointerEvent): void {
   if (!panel.value) return;
+  if (
+    event.target instanceof Element &&
+    event.target.closest("button, input, select, textarea, a, [data-no-drag]")
+  ) {
+    return;
+  }
   drag = {
     pointerId: event.pointerId,
     dx: event.clientX - position.value.x,
@@ -114,7 +120,16 @@ onUnmounted(() => window.removeEventListener("resize", clamp));
           @pointercancel="end"
         >
           <span>{{ title }}</span>
-          <button type="button" class="icon-button" aria-label="关闭" @click="close">×</button>
+          <button
+            type="button"
+            class="icon-button"
+            aria-label="关闭"
+            data-no-drag
+            @pointerdown.stop
+            @click="close"
+          >
+            ×
+          </button>
         </header>
         <div class="dialog-content"><slot /></div>
       </section>

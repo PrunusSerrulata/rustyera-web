@@ -25,13 +25,16 @@ const imagePlacement = computed(() =>
         resource_id: props.node.semantic.source,
         hover_resource_id: props.node.semantic.hover_source,
         mask_resource_id: props.node.semantic.mask_source,
-        width: length(props.node.semantic.width),
-        height: length(props.node.semantic.height),
+        width: 0,
+        height: 0,
         x: 0,
-        y: length(props.node.semantic.y),
+        y: 0,
         depth: 0,
         opacity: { numerator: 1, denominator: 1 },
         revision: 0,
+        requested_width: props.node.semantic.width,
+        requested_height: props.node.semantic.height,
+        requested_y: props.node.semantic.y,
       }
     : null,
 );
@@ -39,11 +42,6 @@ const imagePlacement = computed(() =>
 function activate(): void {
   const interaction = props.node.interaction;
   if (interaction?.enabled) void store.activate({ epoch: interaction.epoch, id: interaction.id });
-}
-
-function length(value: any): number {
-  if (!value) return 0;
-  return value.unit === "pixels" ? value.value * 1000 : value.value * 10;
 }
 </script>
 

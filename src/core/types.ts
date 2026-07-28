@@ -28,7 +28,7 @@ export interface Preferences {
 export const defaultPreferences = (): Preferences => ({
   schemaVersion: 1,
   fontFamilyOverride: null,
-  fontSizeOverridePx: null,
+  fontSizeOverridePx: 12,
   imageScale: 1,
   masterVolume: 1,
 });
@@ -137,4 +137,12 @@ export interface MediaPlacement {
   revision: number;
   hover_resource_id?: string;
   mask_resource_id?: string;
+  requested_width?: PresentationLength;
+  requested_height?: PresentationLength;
+  requested_y?: PresentationLength;
 }
+
+export type PresentationLength =
+  | { unit: "logical"; value: number }
+  | { unit: "font_height_hundredths"; value: number }
+  | { unit: "pixels"; value: number };

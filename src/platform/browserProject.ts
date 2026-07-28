@@ -211,15 +211,19 @@ export class BrowserProject {
 
   private async namespace(namespace: string): Promise<FileSystemDirectoryHandle> {
     if (namespace === "resource") return this.root;
-    const names: Record<string, string> = {
-      project: "project",
-      save: "save",
-      global_save: "global",
-      data: "data",
-      log: "logs",
-    };
-    return this.root.getDirectoryHandle(names[namespace] ?? "data", { create: true });
+    return this.root.getDirectoryHandle(storageDirectoryName(namespace), { create: true });
   }
+}
+
+export function storageDirectoryName(namespace: string): string {
+  const names: Record<string, string> = {
+    project: "project",
+    save: "sav",
+    global_save: "sav",
+    data: "data",
+    log: "logs",
+  };
+  return names[namespace] ?? "data";
 }
 
 function classify(path: string, roots: Set<string>): string | undefined {

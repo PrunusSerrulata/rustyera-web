@@ -28,6 +28,27 @@ to an isolated `wasm-pack` executable instead of modifying `PATH`.
 The generated `public/wasm` directory is a build artifact and must not be committed. For the native
 application, run `npm run tauri dev`; release packages use `npm run tauri build`.
 
+## Testing
+
+Install the E2E Chromium build once, then run the frontend checks:
+
+```sh
+npm run test:e2e:install
+npm test
+npm run typecheck
+npm run lint
+npm run format:check
+npm run build
+npm run build:wasm
+npm run test:e2e
+```
+
+The Playwright wrapper stores Chromium in the fixed local directory `.playwright-browsers` under
+this frontend. The directory is ignored by Git and survives ordinary `npm ci` runs, so subsequent
+E2E tests do not download the browser again. Set `PLAYWRIGHT_BROWSERS_PATH` only when CI or another
+isolated environment needs a different cache location. Re-run `npm run test:e2e:install` after a
+Playwright upgrade requests a newer browser revision.
+
 ## Browser requirements
 
 The complete browser experience targets current desktop Chromium over HTTPS or localhost. It uses

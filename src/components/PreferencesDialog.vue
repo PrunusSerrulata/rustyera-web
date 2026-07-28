@@ -39,14 +39,14 @@ function reset(): void {
   <DraggableDialog :open="open" title="偏好设置" @close="cancel">
     <form class="preferences-form" @submit.prevent="save">
       <label>
-        <span>字体</span>
+        <span>游戏文本字体</span>
         <select v-model="draft.fontFamilyOverride">
           <option :value="null">跟随游戏设置</option>
           <option v-for="font in fonts" :key="font" :value="font">{{ font }}</option>
         </select>
       </label>
       <label>
-        <span>字号</span>
+        <span>游戏文本字号</span>
         <div class="inline-field">
           <input
             v-model.number="draft.fontSizeOverridePx"
@@ -54,7 +54,7 @@ function reset(): void {
             min="8"
             max="72"
             step="1"
-            placeholder="跟随游戏"
+            placeholder="12"
           />
           <span>px</span>
         </div>
