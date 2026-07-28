@@ -1,5 +1,7 @@
 name: Build and publish Web/Tauri frontend
 
+run-name: Web/Tauri ${{ inputs.tag_name || github.sha }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -16,6 +18,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-web-${{ inputs.tag_name || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   browser:
@@ -45,7 +51,8 @@ jobs:
         with:
           name: rustyera-web-browser
           path: rustyera-web-browser.zip
-          archive: false
+          if-no-files-found: error
+          retention-days: 7
 
   tauri:
     name: Tauri (${{ matrix.name }})
@@ -75,14 +82,18 @@ jobs:
       - run: npm run check:core-rev
       - run: cargo check --workspace --all-targets --locked
       - run: npm run tauri build
-      - name: Archive Tauri bundles
-        shell: pwsh
-        run: Compress-Archive -Path target/release/bundle/* -DestinationPath rustyera-web-${{ matrix.name }}.zip
       - uses: actions/upload-artifact@v7
         with:
           name: rustyera-web-${{ matrix.name }}
-          path: rustyera-web-${{ matrix.name }}.zip
-          archive: false
+          path: |
+            target/release/bundle/**/*.dmg
+            target/release/bundle/**/*.AppImage
+            target/release/bundle/**/*.deb
+            target/release/bundle/**/*.rpm
+            target/release/bundle/**/*.msi
+            target/release/bundle/**/*.exe
+          if-no-files-found: error
+          retention-days: 7
 
   publish:
     if: inputs.publish_type != 'none'
@@ -96,11 +107,17 @@ jobs:
         with:
           path: packages
           merge-multiple: true
-          skip-decompress: true
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag_name }}
           target_commitish: ${{ github.sha }}
           prerelease: ${{ inputs.publish_type == 'prerelease' }}
           generate_release_notes: true
-          files: packages/*.zip
+          files: |
+            packages/**/*.zip
+            packages/**/*.dmg
+            packages/**/*.AppImage
+            packages/**/*.deb
+            packages/**/*.rpm
+            packages/**/*.msi
+            packages/**/*.exe
