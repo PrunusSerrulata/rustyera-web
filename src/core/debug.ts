@@ -27,6 +27,10 @@ export function isStaleDebugGrantError(error: any): boolean {
   );
 }
 
+export function sameDebugGrant(left: any, right: any): boolean {
+  return stableDebugText(left) === stableDebugText(right);
+}
+
 export function debugVariableKey(value: any): string {
   return stableDebugText(value?.symbol_key ?? value?.reference?.symbol_key ?? value);
 }

@@ -6,9 +6,9 @@ use era_runtime::RuntimeDriveBudget;
 use era_runtime_protocol::{
     EffectAcknowledgement, EffectBatch, EffectOutcome, EffectOutcomeStatus, FrontendInput,
     GetKeyStateResponse, ImageMetadataRequest, ImageMetadataResponse, InputIntent, InputWait,
-    LocalDateTimeResponse, RandomSeedResponse, RuntimeMessage, ServiceError, ServiceKind,
-    ServiceRequest, ServiceResponse, ServiceResult, StartMode, StartRequest, StorageRequest,
-    WaitKind,
+    LocalDateTimeResponse, RandomSeedResponse, ReturnToTitleRequest, RuntimeMessage, ServiceError,
+    ServiceKind, ServiceRequest, ServiceResponse, ServiceResult, StartMode, StartRequest,
+    StorageRequest, WaitKind,
 };
 use era_web_bridge::{WebSession, WebSessionOptions};
 use serde::de::DeserializeOwned;
@@ -60,6 +60,8 @@ fn eratw_reaches_day_one_through_the_web_bridge() {
     let mut answer_index = 0;
     let mut pump_index = 0_u64;
     let mut started_game = false;
+    let mut returning_to_title = false;
+    let mut returned_title_wait_seen = false;
     let mut display_text = String::new();
     let deadline = Instant::now() + Duration::from_mins(30);
 
@@ -169,6 +171,10 @@ fn eratw_reaches_day_one_through_the_web_bridge() {
                 "wait_changed" => {
                     if matches!(value["type"].as_str(), Some("opened" | "updated")) {
                         let wait: InputWait = from_value(value["value"].clone());
+                        if returning_to_title {
+                            returned_title_wait_seen = true;
+                            continue;
+                        }
                         if stop_before_answer == Some(answer_index) {
                             eprintln!(
                                 "WEB_WAIT_MILESTONE answer_index={answer_index} elapsed_ms={}",
@@ -193,7 +199,15 @@ fn eratw_reaches_day_one_through_the_web_bridge() {
                                 source_elapsed.as_millis(),
                                 started.elapsed().as_millis()
                             );
-                            return;
+                            display_text.clear();
+                            returning_to_title = true;
+                            session
+                                .submit_runtime(
+                                    &RuntimeMessage::ReturnToTitle(ReturnToTitleRequest {}),
+                                    None,
+                                )
+                                .unwrap();
+                            continue;
                         } else {
                             panic!("unexpected wait after {answer_index} answers");
                         };
@@ -216,6 +230,18 @@ fn eratw_reaches_day_one_through_the_web_bridge() {
                 "command_rejected" => panic!("runtime command rejected: {value}"),
                 _ => {}
             }
+        }
+        if returned_title_wait_seen {
+            assert!(
+                display_text.contains("TW_title000"),
+                "returned title presentation did not contain TW_title000; strings={} ",
+                display_excerpt(&display_text)
+            );
+            eprintln!(
+                "WEB_RETURN_TITLE_MILESTONE image=TW_title000 total_ms={}",
+                started.elapsed().as_millis()
+            );
+            return;
         }
     }
     panic!("web bridge did not reach day one within 30 minutes");
@@ -348,6 +374,10 @@ fn collect_strings(value: &Value, output: &mut String) {
         }
         _ => {}
     }
+}
+
+fn display_excerpt(value: &str) -> String {
+    value.chars().take(4_000).collect()
 }
 
 fn from_value<T: DeserializeOwned>(value: Value) -> T {

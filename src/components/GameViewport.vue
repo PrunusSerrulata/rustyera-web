@@ -10,22 +10,29 @@ import { useRuntimeStore } from "@/stores/runtime";
 
 const store = useRuntimeStore();
 const viewport = ref<HTMLElement>();
+let followedHistoryRevision: number | null = null;
 const virtualizer = useVirtualizer(
-  computed(() => ({
-    count: store.presentation.lines.length,
-    getScrollElement: () => viewport.value ?? null,
-    estimateSize: () => 26,
-    overscan: 20,
-    getItemKey: (index: number) =>
-      `${store.runtimeEpoch}:${store.presentation.lines[index]?.line_id ?? index}`,
-  })),
+  computed(() => {
+    const epoch = store.runtimeEpoch;
+    const generation = store.presentationGeneration;
+    return {
+      count: store.presentation.lines.length,
+      getScrollElement: () => viewport.value ?? null,
+      estimateSize: () => 26,
+      overscan: 20,
+      getItemKey: (index: number) =>
+        `${generation}:${epoch}:${store.presentation.lines[index]?.line_id ?? index}`,
+    };
+  }),
 );
 const items = computed(() => virtualizer.value.getVirtualItems());
 
 watch(
   () => store.presentation.historyRevision,
-  async () => {
+  async (revision) => {
+    followedHistoryRevision = revision;
     await nextTick();
+    virtualizer.value.measure();
     goBottom();
   },
 );
@@ -34,9 +41,6 @@ function goBottom(): void {
   if (!store.presentation.lines.length) return;
   virtualizer.value.scrollToIndex(Math.max(0, store.presentation.lines.length - 1), {
     align: "end",
-  });
-  requestAnimationFrame(() => {
-    if (viewport.value) viewport.value.scrollTop = viewport.value.scrollHeight;
   });
 }
 
@@ -47,7 +51,15 @@ function click(event: MouseEvent): void {
 }
 
 function measureHistory(): void {
-  requestAnimationFrame(() => virtualizer.value.measure());
+  requestAnimationFrame(() => {
+    virtualizer.value.measure();
+    if (followedHistoryRevision === store.presentation.historyRevision) goBottom();
+  });
+}
+
+function cancelOutputFollow(event: Event): void {
+  if (event instanceof KeyboardEvent && !["ArrowUp", "PageUp", "Home"].includes(event.key)) return;
+  followedHistoryRevision = null;
 }
 
 onMounted(() => store.projectViewport());
@@ -61,6 +73,10 @@ onMounted(() => store.projectViewport());
     @click="click"
     @contextmenu.prevent="store.skip"
     @load.capture="measureHistory"
+    @pointerdown="cancelOutputFollow"
+    @touchstart.passive="cancelOutputFollow"
+    @wheel.passive="cancelOutputFollow"
+    @keydown="cancelOutputFollow"
   >
     <div class="background-layer">
       <MediaImage

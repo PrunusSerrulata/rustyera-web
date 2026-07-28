@@ -6,6 +6,7 @@ import {
   formatDebugValue,
   isStaleDebugGrantError,
   refreshDebugStop,
+  sameDebugGrant,
   selectedDebugFiber,
   sourceLineStepCommand,
 } from "@/core/debug";
@@ -45,5 +46,10 @@ describe("debug protocol projection", () => {
     expect(isStaleDebugGrantError({ code: "permission_denied", message })).toBe(true);
     expect(isStaleDebugGrantError({ code: "PermissionDenied", message })).toBe(true);
     expect(isStaleDebugGrantError({ code: "stale_stop", message })).toBe(false);
+  });
+
+  it("compares grant tokens with bigint fields by value", () => {
+    expect(sameDebugGrant({ grant_id: { low: 2n } }, { grant_id: { low: 2n } })).toBe(true);
+    expect(sameDebugGrant({ grant_id: { low: 2n } }, { grant_id: { low: 3n } })).toBe(false);
   });
 });

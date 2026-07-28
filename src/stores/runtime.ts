@@ -9,6 +9,7 @@ import {
   formatDebugValue,
   isStaleDebugGrantError,
   refreshDebugStop,
+  sameDebugGrant,
   selectedDebugFiber,
   sourceLineStepCommand,
 } from "@/core/debug";
@@ -49,6 +50,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const fonts = ref<string[]>(["system-ui", "sans-serif", "serif", "monospace"]);
   const phase = ref("negotiating");
   const runtimeEpoch = ref<number | bigint>(0);
+  const presentationGeneration = ref(0);
   const status = ref("请选择 Era 项目文件夹");
   const projectOpen = ref(false);
   const sessionReady = ref(false);
@@ -82,7 +84,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let projectUsedCompiledCache = false;
   let batchMediaDirty = false;
   let debugPausePending = false;
+  let debugPauseWanted = false;
   let debugGrantRefreshNeeded = false;
+  const pendingDebugRequests = new Map<string, { grant: any; commandType: string | undefined }>();
   let sessionTransitioning = false;
   const messageSkip = new MessageSkipController();
 
@@ -184,6 +188,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     batchMediaDirty = false;
     for (let index = 0; index < batch.events.length;) {
       const event = batch.events[index];
+      if (event.epoch != null) runtimeEpoch.value = event.epoch;
       if (event.channel === "runtime" && event.message.type === "service_request") {
         const requests = [];
         while (index < batch.events.length) {
@@ -209,15 +214,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
       }
       if (event.channel === "runtime")
         await handleRuntime(event.message as RuntimeMessage, event.correlationId);
-      else handleDebug(event.message as any);
+      else handleDebug(event.message as any, event.correlationId);
       index += 1;
     }
     if (batchMediaDirty) await synchronizeMedia();
     if (debugGrantRefreshNeeded) {
       debugGrantRefreshNeeded = false;
       await requestDebugGrant();
-    } else if (debugEnabled.value && projectOpen.value) {
-      await pauseDebug();
+    } else if (debugPauseWanted) {
+      await requestPendingDebugPause();
     }
     await continueMessageSkip();
   }
@@ -270,6 +275,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "presentation_snapshot":
         applySnapshot(presentation, value);
+        presentationGeneration.value += 1;
         batchMediaDirty = true;
         break;
       case "presentation_delta":
@@ -330,7 +336,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
           await requestCompiledCacheExport();
         break;
       case "log":
-        log(value.level ?? "info", value.message, true);
+        if (!isRecoverableStaleDebugLog(value.message))
+          log(value.level ?? "info", value.message, true);
         break;
       case "command_rejected":
         log("warning", value.message ?? "Runtime 拒绝了命令", true);
@@ -631,10 +638,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
     sessionReady.value = false;
     phase.value = "negotiating";
     runtimeEpoch.value = 0;
+    presentationGeneration.value = 0;
     inputUndo.value = null;
     fault.value = null;
     debugPausePending = false;
+    debugPauseWanted = false;
     debugGrantRefreshNeeded = false;
+    pendingDebugRequests.clear();
     debugEnabled.value = false;
     debugGrant.value = null;
     debugStop.value = null;
@@ -809,19 +819,22 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await ensureSession();
     if (!debugEnabled.value) {
       await requestDebugGrant();
-    } else if (debugGrant.value) {
-      await bridge.submitDebug({
-        type: "revoke",
-        value: { grant_id: debugGrant.value.token.grant_id, reason: "disabled by user" },
-      });
+    } else {
+      if (debugGrant.value)
+        await bridge.submitDebug({
+          type: "revoke",
+          value: { grant_id: debugGrant.value.token.grant_id, reason: "disabled by user" },
+        });
       debugPausePending = false;
+      debugPauseWanted = false;
+      pendingDebugRequests.clear();
       debugEnabled.value = false;
       debugGrant.value = null;
       debugStop.value = null;
     }
   }
 
-  function handleDebug(message: any): void {
+  function handleDebug(message: any, correlationId?: number | bigint): void {
     if (message.type === "grant") {
       debugPausePending = false;
       debugGrantRefreshNeeded = false;
@@ -830,13 +843,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
       debugStop.value = null;
     } else if (message.type === "revoke") {
       debugPausePending = false;
+      debugPauseWanted = false;
       debugGrant.value = null;
       debugEnabled.value = false;
       debugStop.value = null;
     } else if (message.type === "stopped") {
       debugPausePending = false;
+      debugPauseWanted = false;
       debugStop.value = message.value;
+      forgetDebugRequest(correlationId);
     } else if (message.type === "response") {
+      forgetDebugRequest(correlationId);
       const response = message.value;
       debugStop.value = refreshDebugStop(debugStop.value, response.value);
       if (response.type === "variable_page") debugVariables.value = response.value.variables ?? [];
@@ -858,14 +875,30 @@ export const useRuntimeStore = defineStore("runtime", () => {
         }
       }
     } else if (message.type === "error") {
-      debugPausePending = false;
-      log("warning", message.value.message);
+      const request = forgetDebugRequest(correlationId);
+      if (request?.commandType === "pause") debugPausePending = false;
       if (debugEnabled.value && isStaleDebugGrantError(message.value)) {
-        debugGrant.value = null;
-        debugStop.value = null;
-        debugGrantRefreshNeeded = true;
+        const currentToken = debugGrant.value?.token;
+        if (!currentToken || !request || sameDebugGrant(request.grant, currentToken)) {
+          debugGrant.value = null;
+          debugStop.value = null;
+          debugGrantRefreshNeeded = true;
+        }
+      } else {
+        if (request?.commandType === "pause") debugPauseWanted = false;
+        log("warning", message.value.message);
       }
     }
+  }
+
+  function forgetDebugRequest(
+    correlationId?: number | bigint,
+  ): { grant: any; commandType: string | undefined } | undefined {
+    if (correlationId == null) return undefined;
+    const key = String(correlationId);
+    const request = pendingDebugRequests.get(key);
+    pendingDebugRequests.delete(key);
+    return request;
   }
 
   async function requestDebugGrant(): Promise<void> {
@@ -892,14 +925,22 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function debugCommand(command: any): Promise<void> {
     if (!debugGrant.value) return;
-    await bridge.submitDebug({
+    const grant = debugGrant.value.token;
+    const messageId = await bridge.submitDebug({
       type: "request",
-      value: { grant: debugGrant.value.token, command },
+      value: { grant, command },
     });
+    pendingDebugRequests.set(String(messageId), { grant, commandType: command?.type });
   }
 
   async function pauseDebug(): Promise<void> {
+    debugPauseWanted = true;
+    await requestPendingDebugPause();
+  }
+
+  async function requestPendingDebugPause(): Promise<void> {
     if (
+      !debugPauseWanted ||
       !debugGrant.value ||
       debugStopToken(debugStop.value) ||
       debugPausePending ||
@@ -926,6 +967,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const command = sourceLineStepCommand(debugStop.value);
     if (!command) return;
     const previousStop = debugStop.value;
+    debugPauseWanted = false;
     debugStop.value = null;
     try {
       await debugCommand(command);
@@ -939,6 +981,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const stop = debugStopToken(debugStop.value);
     if (!stop) return;
     const previousStop = debugStop.value;
+    debugPauseWanted = false;
     debugStop.value = null;
     try {
       await debugCommand({ type: "continue", stop });
@@ -1038,6 +1081,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     fonts,
     phase,
     runtimeEpoch,
+    presentationGeneration,
     status,
     projectOpen,
     prompt,
@@ -1088,6 +1132,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
 function at(value: any, key: number): any {
   return value instanceof Map ? value.get(key) : value?.[key];
+}
+
+function isRecoverableStaleDebugLog(message: unknown): boolean {
+  const text = String(message ?? "");
+  return (
+    text.includes("debug request failed") &&
+    text.includes("debug grant is stale or belongs to another session generation")
+  );
 }
 
 function mapOf(...entries: [number, unknown][]): Map<number, unknown> {

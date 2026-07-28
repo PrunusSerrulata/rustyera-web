@@ -41,6 +41,8 @@ describe("runtime store session lifecycle", () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     bridge.createSession.mockResolvedValue(emptyBatch());
+    let nextDebugMessageId = 1;
+    bridge.submitDebug.mockImplementation(async () => nextDebugMessageId++);
     bridge.pump.mockResolvedValue(emptyBatch());
     bridge.restartProject.mockResolvedValue({
       quickScanMs: 1,
@@ -74,7 +76,7 @@ describe("runtime store session lifecycle", () => {
     );
   });
 
-  it("uses the newest grant in a batch and renegotiates a stale grant", async () => {
+  it("attaches without pausing and retries a requested pause with a renewed grant", async () => {
     const oldToken = { grant_id: { high: 1, low: 1 }, program_generation: 1 };
     const newToken = { grant_id: { high: 1, low: 2 }, program_generation: 2 };
     bridge.pump
@@ -83,16 +85,25 @@ describe("runtime store session lifecycle", () => {
         events: [
           runtimeEvent("state_changed", { phase: "running", epoch: 2 }),
           debugEvent("grant", { token: oldToken }),
-          debugEvent("grant", { token: newToken }),
         ],
       })
       .mockResolvedValueOnce({
         ...emptyBatch(),
         events: [
-          debugEvent("error", {
-            code: "permission_denied",
-            message: "debug grant is stale or belongs to another session generation",
+          debugEvent("grant", { token: newToken }),
+          runtimeEvent("log", {
+            level: "warning",
+            message:
+              "debug request failed [PermissionDenied]: debug grant is stale or belongs to another session generation",
           }),
+          debugEvent(
+            "error",
+            {
+              code: "permission_denied",
+              message: "debug grant is stale or belongs to another session generation",
+            },
+            2,
+          ),
         ],
       });
     const store = useRuntimeStore();
@@ -100,30 +111,110 @@ describe("runtime store session lifecycle", () => {
     await store.enableDebug();
     await vi.advanceTimersByTimeAsync(0);
 
+    expect(bridge.submitDebug).toHaveBeenCalledTimes(1);
+    expect(bridge.submitDebug).toHaveBeenLastCalledWith(expect.objectContaining({ type: "hello" }));
+
+    await store.openDebugDialog("variables");
+    expect(bridge.submitDebug).toHaveBeenLastCalledWith({
+      type: "request",
+      value: { grant: oldToken, command: { type: "pause" } },
+    });
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(bridge.submitDebug).toHaveBeenCalledTimes(3);
     expect(bridge.submitDebug).toHaveBeenLastCalledWith({
       type: "request",
       value: { grant: newToken, command: { type: "pause" } },
     });
+    expect(store.logs).toEqual([]);
+  });
 
+  it("renegotiates when the runtime rejects the current grant", async () => {
+    const token = { grant_id: { high: 1, low: 1 }, program_generation: 1 };
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_changed", { phase: "running", epoch: 2 }),
+          debugEvent("grant", { token }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          debugEvent(
+            "error",
+            {
+              code: "permission_denied",
+              message: "debug grant is stale or belongs to another session generation",
+            },
+            2,
+          ),
+        ],
+      });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+    await store.openDebugDialog("console");
     await vi.advanceTimersByTimeAsync(16);
+
+    expect(bridge.submitDebug).toHaveBeenCalledTimes(3);
     expect(bridge.submitDebug).toHaveBeenLastCalledWith(expect.objectContaining({ type: "hello" }));
+  });
+
+  it("uses envelope epochs and remounts presentation rows for each snapshot", async () => {
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "presentation_snapshot",
+          {
+            revision: 1,
+            title: "first",
+            history: { logical_lines: [] },
+          },
+          undefined,
+          8,
+        ),
+        runtimeEvent(
+          "presentation_snapshot",
+          {
+            revision: 2,
+            title: "title",
+            history: { logical_lines: [] },
+          },
+          undefined,
+          9,
+        ),
+      ],
+    });
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.runtimeEpoch).toBe(9);
+    expect(store.presentationGeneration).toBe(2);
   });
 });
 
-function runtimeEvent(type: string, value: unknown) {
+function runtimeEvent(type: string, value: unknown, correlationId?: number, epoch?: number) {
   return {
     channel: "runtime" as const,
     sequence: 0,
     messageId: 0,
+    correlationId,
+    epoch,
     message: { type, value },
   };
 }
 
-function debugEvent(type: string, value: unknown) {
+function debugEvent(type: string, value: unknown, correlationId?: number) {
   return {
     channel: "debug" as const,
     sequence: 0,
     messageId: 0,
+    correlationId,
     message: { type, value },
   };
 }
