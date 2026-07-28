@@ -93,6 +93,14 @@ export class BrowserProject {
     return new Uint8Array(await (await handle.getFile()).arrayBuffer());
   }
 
+  async readResourcePrefix(relativePath: string, maximumBytes: number): Promise<Uint8Array> {
+    const normalized = safePath(relativePath);
+    const handle = this.files.get(normalized.toLocaleLowerCase());
+    if (!handle) throw new Error(`未知资源：${relativePath}`);
+    const file = await handle.getFile();
+    return new Uint8Array(await file.slice(0, maximumBytes).arrayBuffer());
+  }
+
   async storage(request: any): Promise<any> {
     try {
       const root = await this.namespace(request.namespace);

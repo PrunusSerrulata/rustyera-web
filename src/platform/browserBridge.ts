@@ -2,10 +2,12 @@ import type {
   DebugMessage,
   FrontendBridge,
   Preferences,
+  ProjectOpenMetrics,
   PumpBatch,
   RuntimeMessage,
   SessionOptions,
 } from "@/core/types";
+import { decodeImageMetadata } from "@/core/imageMetadata";
 import { BrowserProject } from "@/platform/browserProject";
 import { database, loadBrowserPreferences, saveBrowserPreferences } from "@/platform/database";
 import { WorkerClient } from "@/platform/workerClient";
@@ -14,6 +16,7 @@ export class BrowserBridge implements FrontendBridge {
   readonly kind = "browser" as const;
   private readonly worker = new WorkerClient();
   private project?: BrowserProject;
+  private cacheWriter?: FileSystemWritableFileStream;
 
   createSession(options: SessionOptions): Promise<PumpBatch> {
     return this.worker.call("create", options);
@@ -39,7 +42,7 @@ export class BrowserBridge implements FrontendBridge {
     return this.worker.call("pump");
   }
 
-  async openProject(): Promise<void> {
+  async openProject(): Promise<ProjectOpenMetrics | undefined> {
     if (!window.showDirectoryPicker)
       throw new Error("此浏览器不支持直接打开目录，请使用桌面 Chromium。");
     const handle = await window.showDirectoryPicker({ mode: "readwrite" });
@@ -47,7 +50,15 @@ export class BrowserBridge implements FrontendBridge {
     if (permission !== "granted") throw new Error("运行完整游戏需要项目目录的读写权限。");
     await database.handles.put({ key: "last-project", handle });
     this.project = new BrowserProject(handle);
+    const started = performance.now();
     await this.worker.call("loadProject", await this.project.scan());
+    return {
+      quickScanMs: 0,
+      cacheReadMs: 0,
+      sourceReadMs: performance.now() - started,
+      submitMs: 0,
+      cacheImported: false,
+    } satisfies ProjectOpenMetrics;
   }
 
   async reloadProject(): Promise<void> {
@@ -55,9 +66,19 @@ export class BrowserBridge implements FrontendBridge {
     await this.submitRuntime({ type: "reload_project", value: await this.project.reloadRequest() });
   }
 
+  async submitProjectSource(): Promise<void> {
+    if (!this.project) throw new Error("没有打开的项目");
+    await this.worker.call("loadProject", await this.project.scan());
+  }
+
   readResource(relativePath: string): Promise<Uint8Array> {
     if (!this.project) return Promise.reject(new Error("没有打开的项目"));
     return this.project.readResource(relativePath);
+  }
+
+  async readImageMetadata(relativePath: string): Promise<ReturnType<typeof decodeImageMetadata>> {
+    if (!this.project) throw new Error("没有打开的项目");
+    return decodeImageMetadata(await this.project.readResourcePrefix(relativePath, 1024 * 1024));
   }
 
   handleStorage(request: any): Promise<any> {
@@ -105,6 +126,30 @@ export class BrowserBridge implements FrontendBridge {
     anchor.download = name;
     anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  async writeCompiledCacheChunk(
+    bytes: Uint8Array,
+    reset: boolean,
+    complete: boolean,
+  ): Promise<void> {
+    if (!this.project) throw new Error("没有打开的项目");
+    if (reset) {
+      const privateDirectory = await this.project.root.getDirectoryHandle(".rustyera", {
+        create: true,
+      });
+      const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
+      const handle = await cacheDirectory.getFileHandle("compiled-project-v8.bin.zst", {
+        create: true,
+      });
+      this.cacheWriter = await handle.createWritable({ keepExistingData: false });
+    }
+    if (!this.cacheWriter) throw new Error("编译缓存写入尚未开始");
+    await this.cacheWriter.write(bytes as FileSystemWriteChunkType);
+    if (complete) {
+      await this.cacheWriter.close();
+      this.cacheWriter = undefined;
+    }
   }
 
   async close(): Promise<void> {

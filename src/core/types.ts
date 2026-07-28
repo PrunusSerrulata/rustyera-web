@@ -42,21 +42,37 @@ export interface SessionOptions {
   maximumEnvelopeBytes: number;
 }
 
+export interface ProjectOpenMetrics {
+  quickScanMs: number;
+  cacheReadMs: number;
+  sourceReadMs: number;
+  submitMs: number;
+  cacheImported: boolean;
+}
+
 export interface FrontendBridge {
   readonly kind: "tauri" | "browser";
   createSession(options: SessionOptions): Promise<PumpBatch>;
   submitRuntime(message: RuntimeMessage, correlationId?: number): Promise<number | bigint>;
   submitDebug(message: DebugMessage, correlationId?: number): Promise<number | bigint>;
   pump(): Promise<PumpBatch>;
-  openProject(): Promise<void>;
+  openProject(): Promise<ProjectOpenMetrics | undefined>;
+  submitProjectSource(): Promise<void>;
   reloadProject(): Promise<void>;
   readResource(relativePath: string): Promise<Uint8Array>;
+  readImageMetadata(relativePath: string): Promise<{
+    width: number;
+    height: number;
+    format: string;
+    animated: boolean;
+  }>;
   handleStorage(request: any): Promise<any>;
   listFonts(): Promise<string[]>;
   loadPreferences(): Promise<Preferences>;
   savePreferences(preferences: Preferences): Promise<Preferences>;
   openUpload(): Promise<Uint8Array | undefined>;
   saveDownload(name: string, bytes: Uint8Array): Promise<void>;
+  writeCompiledCacheChunk(bytes: Uint8Array, reset: boolean, complete: boolean): Promise<void>;
   close(): Promise<void>;
 }
 

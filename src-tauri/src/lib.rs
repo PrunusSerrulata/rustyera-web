@@ -5,12 +5,21 @@
     reason = "Tauri command arguments must be owned deserializable values"
 )]
 
+// Real Era projects create millions of short-lived parser and compiler allocations.
+// macOS's default zone allocator retains and fragments those pages across the later VM
+// startup phase, so the standalone host uses an allocator designed for this workload.
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(test)]
+mod day1_test;
 mod project;
 mod storage;
 
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use era_debug_protocol::DebugMessage;
 use era_runtime::RuntimeDriveBudget;
@@ -22,11 +31,17 @@ use tauri::{AppHandle, Manager, State};
 use crate::project::ProjectHost;
 use crate::storage::StorageHost;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct AppState {
-    session: Mutex<Option<WebSession>>,
-    project: Mutex<Option<ProjectHost>>,
-    storage: Mutex<Option<StorageHost>>,
+    session: Arc<Mutex<Option<WebSession>>>,
+    project: Arc<Mutex<Option<ProjectHost>>>,
+    storage: Arc<Mutex<Option<StorageHost>>>,
+    cache_writer: Arc<Mutex<Option<CacheWriter>>>,
+}
+
+struct CacheWriter {
+    temporary: tempfile::NamedTempFile,
+    target: PathBuf,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -37,6 +52,16 @@ struct Preferences {
     font_size_override_px: Option<u8>,
     image_scale: f64,
     master_volume: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectOpenMetrics {
+    quick_scan_ms: f64,
+    cache_read_ms: f64,
+    source_read_ms: f64,
+    submit_ms: f64,
+    cache_imported: bool,
 }
 
 impl Preferences {
@@ -58,81 +83,193 @@ impl Preferences {
 }
 
 #[tauri::command]
-fn create_session(
+async fn create_session(
     state: State<'_, AppState>,
     options: WebSessionOptions,
 ) -> Result<PumpBatch, String> {
-    let mut session = WebSession::new(options)?;
-    let initial = session.pump(RuntimeDriveBudget::default())?;
-    *state.session.lock().map_err(lock_error)? = Some(session);
-    Ok(initial)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut session = WebSession::new(options)?;
+        let initial = session.pump(RuntimeDriveBudget::default())?;
+        *state.session.lock().map_err(lock_error)? = Some(session);
+        Ok(initial)
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
 }
 
 #[tauri::command]
-fn submit_runtime(
+async fn submit_runtime(
     state: State<'_, AppState>,
     message: RuntimeMessage,
     correlation_id: Option<u64>,
 ) -> Result<u64, String> {
-    with_session(&state, |session| {
-        session.submit_runtime(&message, correlation_id)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        with_session(&state, |session| {
+            session.submit_runtime(&message, correlation_id)
+        })
     })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
 }
 
 #[tauri::command]
-fn submit_debug(
+async fn submit_debug(
     state: State<'_, AppState>,
     message: DebugMessage,
     correlation_id: Option<u64>,
 ) -> Result<u64, String> {
-    with_session(&state, |session| {
-        session.submit_debug(&message, correlation_id)
-    })
-}
-
-#[tauri::command]
-fn pump(state: State<'_, AppState>) -> Result<PumpBatch, String> {
-    with_session(&state, |session| {
-        session.pump(RuntimeDriveBudget {
-            maximum_vm_instructions: 100_000,
-            maximum_runtime_transitions: 1024,
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        with_session(&state, |session| {
+            session.submit_debug(&message, correlation_id)
         })
     })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
 }
 
 #[tauri::command]
-fn open_project(state: State<'_, AppState>, path: PathBuf) -> Result<u64, String> {
-    let host = ProjectHost::scan(&path, 1)?;
-    let manifest = host.manifest().clone();
-    let message_id = with_session(&state, |session| session.load_project(manifest))?;
-    *state.storage.lock().map_err(lock_error)? = Some(StorageHost::new(host.root().to_owned()));
-    *state.project.lock().map_err(lock_error)? = Some(host);
-    Ok(message_id)
-}
-
-#[tauri::command]
-fn reload_project(state: State<'_, AppState>) -> Result<u64, String> {
-    let request = state
-        .project
-        .lock()
-        .map_err(lock_error)?
-        .as_mut()
-        .ok_or_else(|| "no project is open".to_owned())?
-        .reload()?;
-    with_session(&state, |session| {
-        session.submit_runtime(&RuntimeMessage::ReloadProject(request), None)
+async fn pump(state: State<'_, AppState>) -> Result<PumpBatch, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        with_session(&state, |session| {
+            session.pump(RuntimeDriveBudget {
+                maximum_vm_instructions: 100_000,
+                maximum_runtime_transitions: 1024,
+            })
+        })
     })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
 }
 
 #[tauri::command]
-fn read_resource(state: State<'_, AppState>, relative_path: String) -> Result<Vec<u8>, String> {
-    state
-        .project
-        .lock()
-        .map_err(lock_error)?
-        .as_ref()
-        .ok_or_else(|| "no project is open".to_owned())?
-        .read_resource(&relative_path)
+async fn open_project(
+    state: State<'_, AppState>,
+    path: PathBuf,
+) -> Result<ProjectOpenMetrics, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let started = Instant::now();
+        let mut host = ProjectHost::scan_quick(&path, 1)?;
+        let quick_scan_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let identity = host.identity();
+        let cache_started = Instant::now();
+        let cache = host.compiled_cache()?;
+        let cache_read_ms = cache_started.elapsed().as_secs_f64() * 1000.0;
+        let mut source_read_ms = 0.0;
+        let submit_started = Instant::now();
+        let cache_imported = if let Some(cache) = cache {
+            if with_session(&state, |session| {
+                session.load_project_with_compiled_cache(identity, &cache)
+            })
+            .is_ok()
+            {
+                true
+            } else {
+                let source_started = Instant::now();
+                let manifest = host.take_manifest()?;
+                source_read_ms = source_started.elapsed().as_secs_f64() * 1000.0;
+                with_session(&state, |session| session.load_project(manifest))?;
+                false
+            }
+        } else {
+            let source_started = Instant::now();
+            let manifest = host.take_manifest()?;
+            source_read_ms = source_started.elapsed().as_secs_f64() * 1000.0;
+            with_session(&state, |session| session.load_project(manifest))?;
+            false
+        };
+        let submit_ms = submit_started.elapsed().as_secs_f64() * 1000.0 - source_read_ms;
+        *state.storage.lock().map_err(lock_error)? = Some(StorageHost::new(host.root().to_owned()));
+        *state.project.lock().map_err(lock_error)? = Some(host);
+        Ok(ProjectOpenMetrics {
+            quick_scan_ms,
+            cache_read_ms,
+            source_read_ms,
+            submit_ms,
+            cache_imported,
+        })
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn submit_project_source(state: State<'_, AppState>) -> Result<u64, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let manifest = state
+            .project
+            .lock()
+            .map_err(lock_error)?
+            .as_mut()
+            .ok_or_else(|| "no project is open".to_owned())?
+            .take_manifest()?;
+        with_session(&state, |session| session.load_project(manifest))
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn reload_project(state: State<'_, AppState>) -> Result<u64, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let request = state
+            .project
+            .lock()
+            .map_err(lock_error)?
+            .as_mut()
+            .ok_or_else(|| "no project is open".to_owned())?
+            .reload()?;
+        with_session(&state, |session| {
+            session.submit_runtime(&RuntimeMessage::ReloadProject(request), None)
+        })
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn read_resource(
+    state: State<'_, AppState>,
+    relative_path: String,
+) -> Result<Vec<u8>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .project
+            .lock()
+            .map_err(lock_error)?
+            .as_ref()
+            .ok_or_else(|| "no project is open".to_owned())?
+            .read_resource(&relative_path)
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn read_resource_prefix(
+    state: State<'_, AppState>,
+    relative_path: String,
+    maximum_bytes: u32,
+) -> Result<Vec<u8>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .project
+            .lock()
+            .map_err(lock_error)?
+            .as_ref()
+            .ok_or_else(|| "no project is open".to_owned())?
+            .read_resource_prefix(&relative_path, maximum_bytes.min(4 * 1024 * 1024))
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -218,6 +355,67 @@ fn write_export(path: PathBuf, bytes: Vec<u8>) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn write_compiled_cache_chunk(
+    state: State<'_, AppState>,
+    bytes: Vec<u8>,
+    reset: bool,
+    complete: bool,
+) -> Result<(), String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        write_compiled_cache_chunk_inner(&state, &bytes, reset, complete)
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+fn write_compiled_cache_chunk_inner(
+    state: &AppState,
+    bytes: &[u8],
+    reset: bool,
+    complete: bool,
+) -> Result<(), String> {
+    if reset {
+        let root = state
+            .project
+            .lock()
+            .map_err(lock_error)?
+            .as_ref()
+            .ok_or_else(|| "no project is open".to_owned())?
+            .root()
+            .to_owned();
+        let directory = root.join(".rustyera/cache");
+        fs::create_dir_all(&directory)
+            .map_err(|error| format!("cannot create compiled cache directory: {error}"))?;
+        let target = directory.join("compiled-project-v8.bin.zst");
+        let temporary = tempfile::NamedTempFile::new_in(&directory)
+            .map_err(|error| format!("cannot create temporary compiled cache: {error}"))?;
+        *state.cache_writer.lock().map_err(lock_error)? = Some(CacheWriter { temporary, target });
+    }
+    let mut guard = state.cache_writer.lock().map_err(lock_error)?;
+    let writer = guard
+        .as_mut()
+        .ok_or_else(|| "compiled cache write has not started".to_owned())?;
+    std::io::Write::write_all(&mut writer.temporary, bytes)
+        .map_err(|error| format!("cannot write compiled cache: {error}"))?;
+    if complete {
+        let writer = guard
+            .take()
+            .ok_or_else(|| "compiled cache writer disappeared".to_owned())?;
+        writer
+            .temporary
+            .as_file()
+            .sync_all()
+            .map_err(|error| format!("cannot sync compiled cache: {error}"))?;
+        writer
+            .temporary
+            .persist(writer.target)
+            .map_err(|error| format!("cannot replace compiled cache: {}", error.error))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn read_import(path: PathBuf) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|error| format!("cannot read import file: {error}"))
 }
@@ -240,7 +438,7 @@ fn default_preferences() -> Preferences {
 }
 
 fn with_session<T>(
-    state: &State<'_, AppState>,
+    state: &AppState,
     operation: impl FnOnce(&mut WebSession) -> Result<T, String>,
 ) -> Result<T, String> {
     let mut guard = state.session.lock().map_err(lock_error)?;
@@ -270,15 +468,47 @@ pub fn run() {
             submit_debug,
             pump,
             open_project,
+            submit_project_source,
             reload_project,
             read_resource,
+            read_resource_prefix,
             storage_request,
             list_fonts,
             load_preferences,
             save_preferences,
             write_export,
+            write_compiled_cache_chunk,
             read_import,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RustyEra web frontend");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compiled_cache_chunks_are_atomically_persisted() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join("ERB")).unwrap();
+        fs::write(directory.path().join("ERB/test.erb"), "@TEST\nRETURN").unwrap();
+        let state = AppState::default();
+        *state.project.lock().unwrap() =
+            Some(ProjectHost::scan_quick(directory.path(), 1).unwrap());
+
+        write_compiled_cache_chunk_inner(&state, b"first", true, false).unwrap();
+        write_compiled_cache_chunk_inner(&state, b"second", false, true).unwrap();
+
+        assert_eq!(
+            fs::read(
+                directory
+                    .path()
+                    .join(".rustyera/cache/compiled-project-v8.bin.zst")
+            )
+            .unwrap(),
+            b"firstsecond"
+        );
+        assert!(state.cache_writer.lock().unwrap().is_none());
+    }
 }

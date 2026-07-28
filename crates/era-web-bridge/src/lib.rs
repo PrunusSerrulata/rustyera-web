@@ -12,7 +12,8 @@ use era_runtime::{RuntimeDriveBudget, RuntimeDriveState, RuntimeOptions, Runtime
 use era_runtime_protocol::{
     ClientCapabilities, ClientHello, InputModality, ProjectIdentity, ProjectLoadRequest,
     ProjectManifest, RUNTIME_PROTOCOL_VERSION, RuntimeFeature, RuntimeLimits, RuntimeMessage,
-    SequenceAcknowledgement, ServerHello, ServiceCapability, ServiceKind, StorageCapabilities,
+    SequenceAcknowledgement, ServerHello, ServiceCapability, ServiceKind, StateExportKind,
+    StateImportBegin, StateImportChunk, StateImportCommit, StorageCapabilities,
 };
 use erabasic_vm::VmConfig;
 use serde::{Deserialize, Serialize};
@@ -212,14 +213,131 @@ impl WebSession {
     /// Returns an error if an input digest is malformed or the request cannot be queued.
     pub fn load_project(&mut self, manifest: ProjectManifest) -> Result<u64, String> {
         let identity = project_identity(&manifest)?;
+        self.load_project_request(identity, Some(manifest), None)
+    }
+
+    /// Import a compiled cache without copying the opaque payload through JavaScript.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the state transfer is rejected or cannot be completed.
+    pub fn load_project_with_compiled_cache(
+        &mut self,
+        identity: ProjectIdentity,
+        cache: &[u8],
+    ) -> Result<u64, String> {
+        let begin_message = self.submit_runtime(
+            &RuntimeMessage::StateImportBegin(StateImportBegin {
+                kind: StateExportKind::CompiledProjectCache,
+                total_bytes: u64::try_from(cache.len())
+                    .map_err(|_| "compiled cache is too large".to_owned())?,
+                digest: era_protocol::ProtocolBytes::new(blake3::hash(cache).as_bytes().to_vec()),
+                artifact_id: None,
+            }),
+            None,
+        )?;
+        let transfer_id = self.wait_for_transfer_event(
+            "state_import_accepted",
+            begin_message,
+            "compiled cache import was not accepted",
+        )?;
+        for (index, chunk) in cache.chunks(1024 * 1024).enumerate() {
+            self.submit_runtime(
+                &RuntimeMessage::StateImportChunk(StateImportChunk {
+                    transfer_id,
+                    offset: u64::try_from(index * 1024 * 1024)
+                        .map_err(|_| "compiled cache offset overflowed".to_owned())?,
+                    data: era_protocol::ProtocolBytes::new(chunk.to_vec()),
+                }),
+                None,
+            )?;
+            if index % 8 == 7 {
+                self.pump_transfer_progress()?;
+            }
+        }
+        let commit_message = self.submit_runtime(
+            &RuntimeMessage::StateImportCommit(StateImportCommit { transfer_id }),
+            None,
+        )?;
+        let ready_transfer = self.wait_for_transfer_event(
+            "state_import_ready",
+            commit_message,
+            "compiled cache import did not complete",
+        )?;
+        if ready_transfer != transfer_id {
+            return Err("compiled cache import returned a different transfer id".into());
+        }
+        self.load_project_request(identity, None, Some(transfer_id))
+    }
+
+    fn load_project_request(
+        &mut self,
+        identity: ProjectIdentity,
+        manifest: Option<ProjectManifest>,
+        compiled_cache_transfer_id: Option<u64>,
+    ) -> Result<u64, String> {
         self.submit_runtime(
             &RuntimeMessage::ProjectLoad(ProjectLoadRequest {
                 identity,
-                manifest: Some(manifest),
-                compiled_cache_transfer_id: None,
+                manifest,
+                compiled_cache_transfer_id,
             }),
             None,
         )
+    }
+
+    fn wait_for_transfer_event(
+        &mut self,
+        event_type: &str,
+        correlation_id: u64,
+        missing_message: &str,
+    ) -> Result<u64, String> {
+        for _ in 0..4096 {
+            let batch = self.pump(RuntimeDriveBudget::default())?;
+            for event in batch.events {
+                let message_type = event
+                    .message
+                    .get("type")
+                    .and_then(serde_json::Value::as_str);
+                if message_type == Some("command_rejected")
+                    && event.correlation_id == Some(correlation_id)
+                {
+                    let message = event
+                        .message
+                        .pointer("/value/message")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("runtime rejected state transfer");
+                    return Err(message.to_owned());
+                }
+                if message_type == Some(event_type) {
+                    return event
+                        .message
+                        .pointer("/value/transfer_id")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| format!("{event_type} omitted its transfer id"));
+                }
+            }
+        }
+        Err(missing_message.to_owned())
+    }
+
+    fn pump_transfer_progress(&mut self) -> Result<(), String> {
+        let batch = self.pump(RuntimeDriveBudget::default())?;
+        if let Some(rejection) = batch.events.into_iter().find(|event| {
+            event
+                .message
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                == Some("command_rejected")
+        }) {
+            return Err(rejection
+                .message
+                .pointer("/value/message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("runtime rejected compiled cache data")
+                .to_owned());
+        }
+        Ok(())
     }
 
     /// Drive a bounded slice and return typed JSON projections of every output envelope.

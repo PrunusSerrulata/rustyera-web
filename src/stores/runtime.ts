@@ -1,10 +1,10 @@
 import { blake3 } from "@noble/hashes/blake3.js";
-import { decode, encode } from "cbor-x";
 import { defineStore } from "pinia";
 import { computed, reactive, ref, shallowReactive } from "vue";
 
 import { AudioEngine } from "@/core/audio";
 import { applyDelta, applySnapshot, emptyPresentation, plainLine } from "@/core/presentation";
+import { decodeServicePayload, encodeServicePayload } from "@/core/serviceCodec";
 import {
   defaultPreferences,
   type InteractionToken,
@@ -23,7 +23,9 @@ interface LogEntry {
 
 interface ExportState {
   name: string;
-  bytes: number[];
+  kind: "download" | "compiled_cache";
+  chunks: Uint8Array[];
+  received: number;
   descriptor?: any;
 }
 
@@ -41,6 +43,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const prompt = ref("");
   const inputUndo = ref<any>(null);
   const fault = ref<any>(null);
+  const faultActionBusy = ref(false);
   const logs = shallowReactive<LogEntry[]>([]);
   const preferencesOpen = ref(false);
   const logsOpen = ref(false);
@@ -61,6 +64,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let exportState: ExportState | undefined;
   let importBytes: Uint8Array | undefined;
   let nextEnvironmentRevision = 1;
+  let projectRuntimeStartedAt: number | undefined;
+  let projectUsedCompiledCache = false;
+  let batchMediaDirty = false;
 
   const effectivePreferences = computed(() => previewPreferences.value ?? preferences.value);
   const canInteract = computed(
@@ -105,8 +111,18 @@ export const useRuntimeStore = defineStore("runtime", () => {
       await audio.unlock();
       await ensureSession();
       status.value = "正在读取项目…";
-      await bridge.openProject();
+      const metrics = await bridge.openProject();
+      if (!metrics) {
+        status.value = "已取消打开项目";
+        return;
+      }
       projectOpen.value = true;
+      projectUsedCompiledCache = metrics.cacheImported;
+      projectRuntimeStartedAt = performance.now();
+      log(
+        "info",
+        `项目读取：快速扫描 ${metrics.quickScanMs.toFixed(0)} ms，缓存读取 ${metrics.cacheReadMs.toFixed(0)} ms，源码读取 ${metrics.sourceReadMs.toFixed(0)} ms，提交 ${metrics.submitMs.toFixed(0)} ms${metrics.cacheImported ? "（已导入编译缓存）" : "（冷编译）"}`,
+      );
       status.value = "正在编译项目…";
       schedulePump(0);
     } catch (error) {
@@ -139,11 +155,38 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function handleBatch(batch: PumpBatch): Promise<void> {
-    for (const event of batch.events) {
+    batchMediaDirty = false;
+    for (let index = 0; index < batch.events.length;) {
+      const event = batch.events[index];
+      if (event.channel === "runtime" && event.message.type === "service_request") {
+        const requests = [];
+        while (index < batch.events.length) {
+          const candidate = batch.events[index];
+          if (candidate.channel !== "runtime" || candidate.message.type !== "service_request")
+            break;
+          requests.push(candidate);
+          index += 1;
+        }
+        for (let offset = 0; offset < requests.length; offset += 8) {
+          await Promise.all(
+            requests
+              .slice(offset, offset + 8)
+              .map((request) =>
+                handleService(
+                  (request.message as RuntimeMessage).value,
+                  safeNumber(request.correlationId),
+                ),
+              ),
+          );
+        }
+        continue;
+      }
       if (event.channel === "runtime")
         await handleRuntime(event.message as RuntimeMessage, event.correlationId);
       else handleDebug(event.message as any);
+      index += 1;
     }
+    if (batchMediaDirty) await synchronizeMedia();
   }
 
   async function handleRuntime(
@@ -156,13 +199,33 @@ export const useRuntimeStore = defineStore("runtime", () => {
         status.value = "Runtime 已就绪";
         break;
       case "project_load_report":
+        if (projectRuntimeStartedAt != null) {
+          log(
+            "info",
+            `Runtime 加载阶段 ${(performance.now() - projectRuntimeStartedAt).toFixed(0)} ms`,
+          );
+          projectRuntimeStartedAt = undefined;
+        }
         for (const diagnostic of value.diagnostics ?? []) {
           log(diagnostic.level ?? "info", formatDiagnostic(diagnostic), true);
         }
         if (value.success) {
           status.value = "项目编译完成";
           await send({ type: "start", value: { mode: { type: "new_game", seed: null } } });
-        } else if (!value.payload_required) {
+          if (!projectUsedCompiledCache)
+            window.setTimeout(() => {
+              void beginCompiledCacheExport().catch((error) => {
+                exportState = undefined;
+                log("warning", `编译缓存生成失败：${String(error)}`);
+              });
+            }, 1000);
+        } else if (value.payload_required) {
+          status.value = "编译缓存未命中，正在读取项目源码…";
+          projectUsedCompiledCache = false;
+          projectRuntimeStartedAt = performance.now();
+          await bridge.submitProjectSource();
+          schedulePump(0);
+        } else {
           status.value = "项目加载失败，请查看日志";
         }
         break;
@@ -171,7 +234,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "presentation_snapshot":
         applySnapshot(presentation, value);
-        await synchronizeMedia();
+        batchMediaDirty = true;
         break;
       case "presentation_delta":
         try {
@@ -180,7 +243,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           log("warning", String(error));
           await send({ type: "resynchronize", value: { after_sequence: null } });
         }
-        await synchronizeMedia();
+        batchMediaDirty = true;
         break;
       case "wait_changed":
         if (value.type === "opened" || value.type === "updated")
@@ -223,6 +286,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "diagnostic":
         log(value.level ?? "info", `[${value.code}] ${value.message}`, true);
+        if (
+          value.code === "runtime.compiled_cache_ready" &&
+          exportState?.kind === "compiled_cache" &&
+          !exportState.descriptor
+        )
+          await requestCompiledCacheExport();
         break;
       case "log":
         log(value.level ?? "info", value.message, true);
@@ -273,7 +342,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function handleService(request: any, correlationId?: number): Promise<void> {
     try {
-      const query = decode(new Uint8Array(request.payload));
+      const query = decodeServicePayload(new Uint8Array(request.payload));
       let response: Map<number, unknown>;
       switch (`${request.kind}/${request.operation}`) {
         case "entropy/random_seed": {
@@ -302,15 +371,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
         }
         case "image/image_metadata": {
           const resource = String(at(query, 0));
-          const bytes = await bridge.readResource(resource);
-          const bitmap = await createImageBitmap(new Blob([bytes as BlobPart]));
+          const metadata = await bridge.readImageMetadata(resource);
           response = mapOf(
-            [0, bitmap.width],
-            [1, bitmap.height],
-            [2, resource.split(".").at(-1)?.toLowerCase() ?? "unknown"],
-            [3, /\.(gif|webp)$/i.test(resource)],
+            [0, metadata.width],
+            [1, metadata.height],
+            [2, metadata.format],
+            [3, metadata.animated],
           );
-          bitmap.close();
           break;
         }
         case "image/image_pixel": {
@@ -372,7 +439,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           type: "service_response",
           value: {
             request_id: request.request_id,
-            result: { type: "ready", payload: encode(response) },
+            result: { type: "ready", payload: encodeServicePayload(response) },
           },
         },
         correlationId,
@@ -475,17 +542,74 @@ export const useRuntimeStore = defineStore("runtime", () => {
     schedulePump(0);
   }
 
+  function dismissFault(): void {
+    fault.value = null;
+  }
+
+  async function recoverFromFault(action: "title" | "reload"): Promise<void> {
+    if (faultActionBusy.value) return;
+    faultActionBusy.value = true;
+    fault.value = null;
+    status.value = action === "title" ? "正在返回主菜单…" : "正在重启并重新编译…";
+    try {
+      if (action === "title") await returnToTitle();
+      else await reloadProject();
+    } catch (error) {
+      const message = `错误恢复失败：${String(error)}`;
+      fault.value = { code: "frontend.recovery_failed", message };
+      status.value = message;
+      log("error", message);
+    } finally {
+      faultActionBusy.value = false;
+    }
+  }
+
+  async function exportDiagnosis(): Promise<void> {
+    try {
+      await exportSnapshot("diagnosis");
+    } catch (error) {
+      const message = `无法导出诊断快照：${String(error)}`;
+      status.value = message;
+      log("error", message);
+    }
+  }
+
   async function exportSnapshot(
     purpose: "normal" | "debug" | "diagnosis" = "normal",
   ): Promise<void> {
+    if (exportState) {
+      status.value = "另一项状态导出仍在进行，请稍后重试";
+      return;
+    }
     exportState = {
       name:
         purpose === "diagnosis" ? "runtime-diagnosis.snapshot" : `runtime-${timestamp()}.snapshot`,
-      bytes: [],
+      kind: "download",
+      chunks: [],
+      received: 0,
     };
     await send({
       type: "state_export_request",
       value: { kind: "vm_snapshot", snapshot_purpose: purpose },
+    });
+  }
+
+  async function beginCompiledCacheExport(): Promise<void> {
+    if (exportState) return;
+    exportState = {
+      name: "compiled-project-v8.bin.zst",
+      kind: "compiled_cache",
+      chunks: [],
+      received: 0,
+    };
+    status.value = "正在后台生成编译缓存…";
+    await requestCompiledCacheExport();
+  }
+
+  async function requestCompiledCacheExport(): Promise<void> {
+    await send({
+      type: "state_export_request",
+      value: { kind: "compiled_project_cache", snapshot_purpose: "normal" },
     });
   }
 
@@ -506,18 +630,33 @@ export const useRuntimeStore = defineStore("runtime", () => {
       type: "state_export_chunk_request",
       value: {
         transfer_id: exportState.descriptor.transfer_id,
-        offset: exportState.bytes.length,
+        offset: exportState.received,
         maximum_bytes: 1024 * 1024,
       },
     });
   }
 
   async function handleExportChunk(chunk: any): Promise<void> {
-    if (!exportState?.descriptor || chunk.offset !== exportState.bytes.length) return;
-    exportState.bytes.push(...chunk.data);
+    if (!exportState?.descriptor || chunk.offset !== exportState.received) return;
+    const bytes = new Uint8Array(chunk.data);
+    const reset = exportState.received === 0;
+    exportState.received += bytes.length;
+    if (exportState.kind === "compiled_cache") {
+      await bridge.writeCompiledCacheChunk(bytes, reset, chunk.complete);
+    } else {
+      exportState.chunks.push(bytes);
+    }
     if (!chunk.complete) await requestExportChunk();
     else {
-      await bridge.saveDownload(exportState.name, new Uint8Array(exportState.bytes));
+      if (exportState.kind === "download") {
+        const result = new Uint8Array(exportState.received);
+        let offset = 0;
+        for (const part of exportState.chunks) {
+          result.set(part, offset);
+          offset += part.length;
+        }
+        await bridge.saveDownload(exportState.name, result);
+      }
       status.value = `已导出 ${exportState.name}`;
       exportState = undefined;
     }
@@ -709,6 +848,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     prompt,
     inputUndo,
     fault,
+    faultActionBusy,
     logs,
     preferencesOpen,
     logsOpen,
@@ -732,6 +872,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     restart,
     returnToTitle,
     reloadProject,
+    dismissFault,
+    recoverFromFault,
+    exportDiagnosis,
     exportSnapshot,
     restoreSnapshot,
     enableDebug,
