@@ -70,7 +70,10 @@ export function applyDelta(state: PresentationState, delta: any): void {
         historyChanged = true;
         break;
       case "delete_lines":
-        state.lines.splice(Math.max(0, state.lines.length - operation.count), operation.count);
+        state.lines.splice(
+          Math.max(0, state.lines.length - Number(operation.count)),
+          Number(operation.count),
+        );
         break;
       case "clear":
         state.lines = [];
@@ -115,7 +118,7 @@ export function applyDelta(state: PresentationState, delta: any): void {
         disableOldButtons(state.lines, operation.generation);
         break;
       case "trim_lines":
-        state.lines.splice(0, Math.min(operation.count, state.lines.length));
+        state.lines.splice(0, Math.min(Number(operation.count), state.lines.length));
         break;
     }
   }

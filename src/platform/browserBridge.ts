@@ -48,7 +48,10 @@ export class BrowserBridge implements FrontendBridge {
     const handle = await window.showDirectoryPicker({ mode: "readwrite" });
     const permission = await handle.requestPermission?.({ mode: "readwrite" });
     if (permission !== "granted") throw new Error("运行完整游戏需要项目目录的读写权限。");
-    await database.handles.put({ key: "last-project", handle });
+    // Playwright supplies an RPC-backed FileSystemDirectoryHandle which intentionally cannot be
+    // structured-cloned into IndexedDB. Production handles continue to be persisted normally.
+    if (import.meta.env.VITE_RUSTYERA_TEST !== "1")
+      await database.handles.put({ key: "last-project", handle });
     this.project = new BrowserProject(handle);
     const started = performance.now();
     await this.worker.call("loadProject", await this.project.scan());
@@ -131,6 +134,10 @@ export class BrowserBridge implements FrontendBridge {
   }
 
   async saveDownload(name: string, bytes: Uint8Array): Promise<void> {
+    if (import.meta.env.VITE_RUSTYERA_TEST === "1") {
+      (window.__RUSTYERA_TEST_DOWNLOADS__ ??= []).push({ name, bytes: new Uint8Array(bytes) });
+      return;
+    }
     const url = URL.createObjectURL(
       new Blob([bytes as BlobPart], { type: "application/octet-stream" }),
     );

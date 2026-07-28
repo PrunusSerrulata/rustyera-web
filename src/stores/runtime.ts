@@ -1,6 +1,6 @@
 import { blake3 } from "@noble/hashes/blake3.js";
 import { defineStore } from "pinia";
-import { computed, reactive, ref, shallowReactive } from "vue";
+import { computed, reactive, ref, shallowReactive, toRaw } from "vue";
 
 import { AudioEngine } from "@/core/audio";
 import {
@@ -42,6 +42,18 @@ interface ExportState {
   descriptor?: any;
 }
 
+export type RuntimeStartKind = "new_game" | "traditional_save" | "vm_snapshot";
+
+export interface RuntimeTestConfiguration {
+  start: {
+    type: RuntimeStartKind;
+    seed?: number;
+    bytes?: Uint8Array;
+  };
+  clock?: string;
+  monotonicStartNs?: number;
+}
+
 export const useRuntimeStore = defineStore("runtime", () => {
   const bridge = platformBridge();
   const presentation = reactive(emptyPresentation());
@@ -78,6 +90,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let compiledCacheTimer: number | undefined;
   let exportState: ExportState | undefined;
   let importBytes: Uint8Array | undefined;
+  let importKind: Exclude<RuntimeStartKind, "new_game"> | undefined;
+  let pendingStart: RuntimeTestConfiguration["start"] = { type: "new_game" };
+  let testClock: Date | undefined;
+  let testEntropyState: bigint | undefined;
+  let testMonotonicNs: number | undefined;
   let nextEnvironmentRevision = 1;
   let projectRuntimeStartedAt: number | undefined;
   let projectUsedCompiledCache = false;
@@ -85,7 +102,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let debugPausePending = false;
   let debugPauseWanted = false;
   let debugGrantRefreshNeeded = false;
-  const pendingDebugRequests = new Map<string, { grant: any; commandType: string | undefined }>();
+  const pendingDebugRequests = new Map<
+    string,
+    {
+      grant: any;
+      commandType: string | undefined;
+      resolve?: (value: any) => void;
+      reject?: (error: Error) => void;
+    }
+  >();
   let sessionTransitioning = false;
   const messageSkip = new MessageSkipController();
 
@@ -111,6 +136,25 @@ export const useRuntimeStore = defineStore("runtime", () => {
     window.addEventListener("resize", projectViewport);
   }
 
+  function configureTestRun(configuration: RuntimeTestConfiguration): void {
+    if (import.meta.env.VITE_RUSTYERA_TEST !== "1")
+      throw new Error("测试运行配置只能在 VITE_RUSTYERA_TEST 中使用");
+    const { start } = configuration;
+    if (start.type === "new_game") {
+      if (!Number.isInteger(start.seed) || start.seed! < 0 || start.seed! > 0x7fff_ffff)
+        throw new Error("new_game 测试必须提供非负 32 位 seed");
+    } else if (!start.bytes?.length) {
+      throw new Error(`${start.type} 测试必须提供状态文件`);
+    }
+    pendingStart = { ...start, bytes: start.bytes ? new Uint8Array(start.bytes) : undefined };
+    testClock = configuration.clock
+      ? new Date(configuration.clock)
+      : new Date("2026-01-01T00:00:00Z");
+    if (Number.isNaN(testClock.getTime())) throw new Error("测试 clock 不是有效日期");
+    testEntropyState = BigInt(start.seed ?? 1) || 1n;
+    testMonotonicNs = configuration.monotonicStartNs ?? 1_000_000;
+  }
+
   async function ensureSession(): Promise<void> {
     if (sessionReady.value) return;
     try {
@@ -127,8 +171,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   function sessionOptions(): SessionOptions {
     return {
       clientName: bridge.kind === "tauri" ? "rustyera-vue-tauri" : "rustyera-vue-wasm",
-      availableFonts: fonts.value,
-      preferredLocales: preferredRuntimeLocales(navigator.languages),
+      // Vue wraps assigned arrays in proxies, which cannot cross the browser Worker boundary.
+      availableFonts: [...fonts.value],
+      preferredLocales: [...preferredRuntimeLocales(navigator.languages)],
       audioAvailable: true,
       debugScopeMask: 1023,
       maximumEnvelopeBytes: 512 * 1024 * 1024,
@@ -248,7 +293,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
         }
         if (value.success) {
           status.value = "项目编译完成";
-          await send({ type: "start", value: { mode: { type: "new_game", seed: null } } });
+          if (pendingStart.type === "new_game") {
+            await send({
+              type: "start",
+              value: { mode: { type: "new_game", seed: pendingStart.seed ?? null } },
+            });
+          } else {
+            await restoreState(pendingStart.type, pendingStart.bytes!);
+          }
           if (!projectUsedCompiledCache)
             compiledCacheTimer = window.setTimeout(() => {
               compiledCacheTimer = undefined;
@@ -314,11 +366,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
         await handleImportAccepted(value);
         break;
       case "state_import_ready":
+        if (!importKind) throw new Error("状态导入完成但没有待启动的状态类型");
         await send({
           type: "start",
-          value: { mode: { type: "vm_snapshot", transfer_id: value.transfer_id } },
+          value: { mode: { type: importKind, transfer_id: value.transfer_id } },
         });
         importBytes = undefined;
+        importKind = undefined;
         break;
       case "fault":
         fault.value = value;
@@ -387,12 +441,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
       let response: Map<number, unknown>;
       switch (`${request.kind}/${request.operation}`) {
         case "entropy/random_seed": {
-          const bytes = crypto.getRandomValues(new Uint32Array(2));
-          response = mapOf([0, (BigInt(bytes[0]) << 32n) | BigInt(bytes[1])]);
+          if (testEntropyState != null) {
+            testEntropyState =
+              (testEntropyState * 6364136223846793005n + 1442695040888963407n) &
+              0xffff_ffff_ffff_ffffn;
+            response = mapOf([0, testEntropyState]);
+          } else {
+            const bytes = crypto.getRandomValues(new Uint32Array(2));
+            response = mapOf([0, (BigInt(bytes[0]) << 32n) | BigInt(bytes[1])]);
+          }
           break;
         }
         case "clock/local_date_time": {
-          const now = new Date();
+          const now = testClock ?? new Date();
           response = mapOf(
             [0, now.getFullYear()],
             [1, now.getMonth() + 1],
@@ -564,7 +625,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
       value: {
         wait_id: wait.wait_id,
         token: wait.submission_token,
-        monotonic_time_ns: Math.round(performance.now() * 1_000_000),
+        monotonic_time_ns:
+          testMonotonicNs == null
+            ? Math.round(performance.now() * 1_000_000)
+            : (testMonotonicNs += 1_000_000),
         intent,
         message_skip: messageSkip,
       },
@@ -653,6 +717,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     prompt.value = "";
     exportState = undefined;
     importBytes = undefined;
+    importKind = undefined;
     nextEnvironmentRevision = 1;
   }
 
@@ -714,6 +779,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
     });
   }
 
+  function testTransferState(): Record<string, unknown> {
+    return {
+      export: exportState
+        ? {
+            name: exportState.name,
+            received: exportState.received,
+            descriptor: exportState.descriptor,
+          }
+        : null,
+      importKind,
+      importBytes: importBytes?.length ?? 0,
+    };
+  }
+
   async function beginCompiledCacheExport(): Promise<void> {
     if (exportState) return;
     exportState = {
@@ -757,8 +836,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function handleExportChunk(chunk: any): Promise<void> {
-    if (!exportState?.descriptor || chunk.offset !== exportState.received) return;
-    const bytes = new Uint8Array(chunk.data);
+    if (!exportState?.descriptor || Number(chunk.offset) !== exportState.received) return;
+    const bytes = Uint8Array.from(chunk.data, (value: number | bigint) => Number(value));
     const reset = exportState.received === 0;
     exportState.received += bytes.length;
     if (exportState.kind === "compiled_cache") {
@@ -785,11 +864,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function restoreSnapshot(): Promise<void> {
     const bytes = await bridge.openUpload();
     if (!bytes) return;
+    await restoreState("vm_snapshot", bytes);
+  }
+
+  async function restoreState(
+    kind: Exclude<RuntimeStartKind, "new_game">,
+    bytes: Uint8Array,
+  ): Promise<void> {
     importBytes = bytes;
+    importKind = kind;
     await send({
       type: "state_import_begin",
       value: {
-        kind: "vm_snapshot",
+        kind,
         total_bytes: bytes.length,
         digest: blake3(bytes),
         artifact_id: null,
@@ -853,7 +940,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       // visibility cannot race a Vue watcher against the pause response.
       await refreshOpenDebugSurfaces();
     } else if (message.type === "response") {
-      forgetDebugRequest(correlationId);
+      const request = forgetDebugRequest(correlationId);
       const response = message.value;
       debugStop.value = refreshDebugStop(debugStop.value, response.value);
       if (response.type === "variable_page") debugVariables.value = response.value.variables ?? [];
@@ -885,6 +972,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           debugVariableValues.value[debugVariableKey(changed)] = formatDebugValue(changed.value);
         }
       }
+      request?.resolve?.(response);
     } else if (message.type === "error") {
       const request = forgetDebugRequest(correlationId);
       if (request?.commandType === "pause") debugPausePending = false;
@@ -899,12 +987,18 @@ export const useRuntimeStore = defineStore("runtime", () => {
         if (request?.commandType === "pause") debugPauseWanted = false;
         log("warning", message.value.message);
       }
+      request?.reject?.(new Error(message.value.message ?? "debug request failed"));
     }
   }
 
-  function forgetDebugRequest(
-    correlationId?: number | bigint,
-  ): { grant: any; commandType: string | undefined } | undefined {
+  function forgetDebugRequest(correlationId?: number | bigint):
+    | {
+        grant: any;
+        commandType: string | undefined;
+        resolve?: (value: any) => void;
+        reject?: (error: Error) => void;
+      }
+    | undefined {
     if (correlationId == null) return undefined;
     const key = String(correlationId);
     const request = pendingDebugRequests.get(key);
@@ -913,35 +1007,112 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function requestDebugGrant(): Promise<void> {
-    await bridge.submitDebug({
-      type: "hello",
-      value: {
-        versions: { minimum: { major: 4, minor: 0 }, maximum: { major: 4, minor: 0 } },
-        requested_scopes: [
-          "variables_read",
-          "variables_write",
-          "game_fields_read",
-          "game_fields_write",
-          "execution_read",
-          "execution_control",
-          "console_evaluate",
-          "console_execute",
-          "breakpoints_manage",
-          "script_output",
-        ],
-      },
-    });
+    await bridge.submitDebug(
+      transportValue({
+        type: "hello",
+        value: {
+          versions: { minimum: { major: 4, minor: 0 }, maximum: { major: 4, minor: 0 } },
+          requested_scopes: [
+            "variables_read",
+            "variables_write",
+            "game_fields_read",
+            "game_fields_write",
+            "execution_read",
+            "execution_control",
+            "console_evaluate",
+            "console_execute",
+            "breakpoints_manage",
+            "script_output",
+          ],
+        },
+      }),
+    );
     schedulePump(0);
   }
 
   async function debugCommand(command: any): Promise<void> {
     if (!debugGrant.value) return;
     const grant = debugGrant.value.token;
-    const messageId = await bridge.submitDebug({
-      type: "request",
-      value: { grant, command },
-    });
+    const messageId = await bridge.submitDebug(
+      transportValue({
+        type: "request",
+        value: { grant, command },
+      }),
+    );
     pendingDebugRequests.set(String(messageId), { grant, commandType: command?.type });
+  }
+
+  async function debugRequest(command: any, timeoutMs = 10_000): Promise<any> {
+    if (!debugGrant.value) throw new Error("debug grant 尚未就绪");
+    const grant = debugGrant.value.token;
+    const messageId = await bridge.submitDebug(
+      transportValue({
+        type: "request",
+        value: { grant, command },
+      }),
+    );
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        pendingDebugRequests.delete(String(messageId));
+        reject(new Error(`debug ${command?.type ?? "request"} 超时`));
+      }, timeoutMs);
+      pendingDebugRequests.set(String(messageId), {
+        grant,
+        commandType: command?.type,
+        resolve: (value) => {
+          window.clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          window.clearTimeout(timer);
+          reject(error);
+        },
+      });
+      schedulePump(0);
+    });
+  }
+
+  async function inspectWatches(watches: string[]): Promise<Record<string, unknown>> {
+    if (!debugEnabled.value) {
+      await enableDebug();
+      await waitUntil(() => debugGrant.value != null, 10_000, "debug grant");
+    }
+    const alreadyStopped = debugStopToken(debugStop.value) != null;
+    if (!alreadyStopped) {
+      await pauseDebug();
+      await waitUntil(() => debugStopToken(debugStop.value) != null, 10_000, "debug stop");
+    }
+    const stop = debugStopToken(debugStop.value);
+    const page = await debugRequest({ type: "list_variables", stop, cursor: null, limit: 256 });
+    const variables = page.value?.variables ?? [];
+    const result: Record<string, unknown> = {};
+    for (const watch of watches) {
+      const [name, indexText] = watch.split(":", 2);
+      const variable = variables.find((candidate: any) => candidate.name === name);
+      if (!variable) {
+        result[watch] = { error: "not_found" };
+        continue;
+      }
+      const indices = indexText
+        ? indexText.split(",").map((value) => Number(value))
+        : (variable.dimensions ?? []).map(() => 0);
+      const response = await debugRequest({
+        type: "read_variable",
+        stop,
+        value: {
+          symbol_key: variable.symbol_key,
+          storage: variable.storage,
+          fiber_id: null,
+          frame_id: null,
+          generation: stop.program_generation,
+          character: null,
+          indices,
+        },
+      });
+      result[watch] = formatDebugValue(response.value?.value);
+    }
+    if (!alreadyStopped) await continueDebug();
+    return result;
   }
 
   async function pauseDebug(): Promise<void> {
@@ -1078,8 +1249,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function send(message: RuntimeMessage, correlationId?: number): Promise<void> {
-    await bridge.submitRuntime(message, correlationId);
+    await bridge.submitRuntime(transportValue(message), correlationId);
     schedulePump(0);
+  }
+
+  async function waitUntil(
+    predicate: () => boolean,
+    timeoutMs: number,
+    description: string,
+  ): Promise<void> {
+    const deadline = performance.now() + timeoutMs;
+    while (!predicate()) {
+      if (performance.now() >= deadline) throw new Error(`等待 ${description} 超时`);
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 16));
+    }
   }
 
   function log(level: LogEntry["level"], message: string, authoritative = false): void {
@@ -1149,6 +1332,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     restoreSnapshot,
     enableDebug,
     debugCommand,
+    inspectWatches,
     openDebugDialog,
     stepDebug,
     continueDebug,
@@ -1156,6 +1340,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     preview,
     shutdown,
     projectViewport,
+    configureTestRun,
+    restoreState,
+    testTransferState,
   };
 });
 
@@ -1179,6 +1366,21 @@ function safeNumber(value: number | bigint | undefined): number | undefined {
   return value == null ? undefined : Number(value);
 }
 
+function transportValue<T>(value: T): T {
+  if (value == null || typeof value !== "object") return value;
+  const raw = toRaw(value as object);
+  if (raw instanceof Uint8Array) return new Uint8Array(raw) as T;
+  if (raw instanceof Date) return new Date(raw) as T;
+  if (raw instanceof Map)
+    return new Map(
+      [...raw.entries()].map(([key, child]) => [transportValue(key), transportValue(child)]),
+    ) as T;
+  if (Array.isArray(raw)) return raw.map(transportValue) as T;
+  return Object.fromEntries(
+    Object.entries(raw).map(([key, child]) => [key, transportValue(child)]),
+  ) as T;
+}
+
 function escapeHtml(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
@@ -1186,7 +1388,7 @@ function escapeHtml(value: string): string {
 function formatDiagnostic(value: any): string {
   const source = value.source;
   return source
-    ? `${source.relative_path}:${(source.line ?? 0) + 1}:${(source.byte_column ?? 0) + 1}: [${value.code}] ${value.message}`
+    ? `${source.relative_path}:${Number(source.line ?? 0) + 1}:${Number(source.byte_column ?? 0) + 1}: [${value.code}] ${value.message}`
     : `[${value.code}] ${value.message}`;
 }
 

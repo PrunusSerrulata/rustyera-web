@@ -11,8 +11,6 @@
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[cfg(test)]
-mod day1_test;
 mod project;
 mod storage;
 

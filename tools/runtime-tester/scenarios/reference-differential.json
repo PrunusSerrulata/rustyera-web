@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "project": "../../../../emuera.em/emuera-reference-cli/tests/fixture",
+  "mode": "fixed",
+  "seed": 123456,
+  "goal": {
+    "output_contains": ["TITLE_CHARANUM=0"]
+  },
+  "comparison": {
+    "reference": true,
+    "ignore_output": ["^Now Loading", "^Warning Lv1:VariableSize\\.CSV:", "^Elapsed time:"]
+  },
+  "actions": [
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".prompt-bar input" },
+      "fields": ["count", "value", "visible", "enabled"],
+      "expect": { "count": 1, "value": "", "visible": true, "enabled": true }
+    },
+    {
+      "type": "assert_state",
+      "expect": { "projectOpen": true }
+    }
+  ],
+  "limits": {
+    "max_steps": 10,
+    "timeout_seconds": 60
+  }
+}

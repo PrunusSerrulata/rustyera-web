@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "project": "../../../../emuera.em/emuera-reference-cli/tests/fixture",
+  "mode": "fixed",
+  "seed": 123456,
+  "goal": {
+    "output_contains": ["TITLE_CHARANUM=0"]
+  },
+  "checkpoint": {},
+  "limits": {
+    "max_steps": 10,
+    "timeout_seconds": 60
+  }
+}

@@ -15,7 +15,10 @@ self.onmessage = async (event: MessageEvent) => {
   try {
     let result: unknown;
     if (method === "create") {
-      const wasmModuleUrl = "/wasm/era_web_wasm.js";
+      const wasmModuleUrl =
+        import.meta.env.VITE_RUSTYERA_TEST === "1"
+          ? "/__rustyera_test_wasm/era_web_wasm.js"
+          : "/wasm/era_web_wasm.js";
       const module = (await import(/* @vite-ignore */ wasmModuleUrl)) as WasmModule;
       await module.default();
       runtime = new module.WasmRuntime(args[0]);

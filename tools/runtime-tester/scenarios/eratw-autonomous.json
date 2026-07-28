@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eraTW",
+  "mode": "autonomous",
+  "goal": {
+    "output_contains": ["[Look]"]
+  },
+  "limits": {
+    "max_steps": 100,
+    "timeout_seconds": 900
+  }
+}

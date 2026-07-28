@@ -34,7 +34,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
       '--game-font': store.gameTextStyle.fontFamily,
       '--game-size': store.gameTextStyle.fontSize,
       '--game-background': store.presentation.settings.background
-        ? `rgba(${store.presentation.settings.background.red}, ${store.presentation.settings.background.green}, ${store.presentation.settings.background.blue}, ${store.presentation.settings.background.alpha / 255})`
+        ? `rgba(${store.presentation.settings.background.red}, ${store.presentation.settings.background.green}, ${store.presentation.settings.background.blue}, ${Number(store.presentation.settings.background.alpha) / 255})`
         : '#101114',
     }"
   >
@@ -151,7 +151,9 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
       <GameViewport />
       <form class="prompt-bar" @submit.prevent="store.submitText">
         <span v-if="store.presentation.inputWait?.countdown_remaining_ms != null" class="countdown"
-          >{{ Math.ceil(store.presentation.inputWait.countdown_remaining_ms / 1000) }}s</span
+          >{{
+            Math.ceil(Number(store.presentation.inputWait.countdown_remaining_ms) / 1000)
+          }}s</span
         >
         <input
           v-model="store.prompt"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test RustyEra Web"
+  short_description: "Drive deterministic RustyEra Web UI and differential tests"
+  default_prompt: "Use $test-rustyera-web to run a deterministic browser game-flow test and report the trace."

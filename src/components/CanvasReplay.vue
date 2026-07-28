@@ -49,10 +49,10 @@ async function render(): Promise<void> {
         break;
       case "set_pen":
         pen = argb(command.argb);
-        penWidth = command.width / 1000;
+        penWidth = Number(command.width) / 1000;
         break;
       case "set_font":
-        font = `${command.style_bits & 2 ? "italic " : ""}${command.style_bits & 1 ? "bold " : ""}${command.size / 1000}pt ${command.family}`;
+        font = `${Number(command.style_bits) & 2 ? "italic " : ""}${Number(command.style_bits) & 1 ? "bold " : ""}${Number(command.size) / 1000}pt ${command.family}`;
         break;
       case "draw_line":
         context.strokeStyle = pen;

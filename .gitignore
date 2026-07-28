@@ -5,6 +5,7 @@
 /public/wasm
 /playwright-report
 /test-results
+/.rustyera/test-runs
 /.playwright-browsers
 /src-tauri/gen
 /*.tsbuildinfo

@@ -27,7 +27,12 @@ export class WorkerClient {
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      this.worker.postMessage({ id, method, args });
+      try {
+        this.worker.postMessage({ id, method, args });
+      } catch (error) {
+        this.pending.delete(id);
+        reject(new Error(`Worker ${method} 消息不可克隆：${String(error)}`));
+      }
     });
   }
 

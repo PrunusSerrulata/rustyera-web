@@ -51,6 +51,19 @@ npm run build:wasm
 npm run test:e2e
 ```
 
+Deterministic game-flow tests use the real Vue UI and browser WASM worker:
+
+```sh
+npm run test:game -- run --scenario tools/runtime-tester/scenarios/reference-fixture.json
+npm run test:game -- serve --scenario tools/runtime-tester/scenarios/eratw-autonomous.json
+```
+
+`run` consumes a fixed action sequence. `serve` continues over NDJSON stdin after the fixed prefix,
+allowing an agent to inspect state, query DOM elements, and choose later inputs. Omit `seed` for a
+random seed recorded in the trace; set it to reproduce a run. Override long-test projects with
+`--project`, and enable Emuera comparison with a scenario's `comparison.reference` plus
+`--reference-command` (and `--reference-path-command` for Wine when required).
+
 The Playwright wrapper stores Chromium in the fixed local directory `.playwright-browsers` under
 this frontend. The directory is ignored by Git and survives ordinary `npm ci` runs, so subsequent
 E2E tests do not download the browser again. Set `PLAYWRIGHT_BROWSERS_PATH` only when CI or another

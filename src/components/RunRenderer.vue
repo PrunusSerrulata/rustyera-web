@@ -28,13 +28,13 @@ const textStyle = computed(() => {
       store.effectivePreferences.fontSizeOverridePx != null
         ? "var(--game-size)"
         : style.font_millipoints
-          ? `${style.font_millipoints / 1000}pt`
+          ? `${Number(style.font_millipoints) / 1000}pt`
           : undefined,
   };
 });
 
 function rgba(color: any): string {
-  return `rgba(${color.red}, ${color.green}, ${color.blue}, ${color.alpha / 255})`;
+  return `rgba(${color.red}, ${color.green}, ${color.blue}, ${Number(color.alpha) / 255})`;
 }
 </script>
 

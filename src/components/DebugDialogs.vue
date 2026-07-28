@@ -149,7 +149,9 @@ function readStack(fiber: any): void {
             <td>{{ frame.function_name }}</td>
             <td>{{ frame.instruction }}</td>
             <td>
-              {{ frame.source ? `${frame.source.relative_path}:${frame.source.line + 1}` : "" }}
+              {{
+                frame.source ? `${frame.source.relative_path}:${Number(frame.source.line) + 1}` : ""
+              }}
             </td>
           </tr>
         </tbody>

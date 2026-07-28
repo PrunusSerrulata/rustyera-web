@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "project": "../../../../emuera.em/emuera-reference-cli/tests/fixture",
+  "mode": "autonomous",
+  "seed": 123456,
+  "limits": {
+    "max_steps": 10,
+    "timeout_seconds": 60
+  }
+}

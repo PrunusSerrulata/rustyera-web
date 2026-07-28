@@ -60,6 +60,71 @@ describe("runtime store session lifecycle", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("starts a test new game with the configured deterministic seed", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    bridge.openProject.mockResolvedValue({
+      quickScanMs: 1,
+      cacheReadMs: 0,
+      sourceReadMs: 1,
+      submitMs: 1,
+      cacheImported: true,
+    });
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("project_load_report", { success: true, diagnostics: [] })],
+    });
+    const store = useRuntimeStore();
+    store.configureTestRun({ start: { type: "new_game", seed: 42 } });
+
+    await store.enableDebug();
+
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      {
+        type: "start",
+        value: { mode: { type: "new_game", seed: 42 } },
+      },
+      undefined,
+    );
+  });
+
+  it("imports a traditional save before starting the test runtime", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    bridge.openProject.mockResolvedValue({
+      quickScanMs: 1,
+      cacheReadMs: 0,
+      sourceReadMs: 1,
+      submitMs: 1,
+      cacheImported: true,
+    });
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", { success: true, diagnostics: [] }),
+        runtimeEvent("state_import_accepted", { transfer_id: 9 }),
+        runtimeEvent("state_import_ready", { transfer_id: 9, kind: "traditional_save" }),
+      ],
+    });
+    const store = useRuntimeStore();
+    store.configureTestRun({
+      start: { type: "traditional_save", bytes: new Uint8Array([1, 2, 3]) },
+    });
+
+    await store.enableDebug();
+
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "state_import_begin",
+        value: expect.objectContaining({ kind: "traditional_save", total_bytes: 3 }),
+      }),
+      undefined,
+    );
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      { type: "start", value: { mode: { type: "traditional_save", transfer_id: 9 } } },
+      undefined,
+    );
   });
 
   it("recreates the runtime and reopens the same project for Restart", async () => {

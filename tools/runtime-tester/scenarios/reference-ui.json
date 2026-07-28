@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "project": "../../../../emuera.em/emuera-reference-cli/tests/fixture",
+  "mode": "fixed",
+  "seed": 123456,
+  "actions": [
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-viewport" },
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".prompt-bar input" },
+      "expect": { "count": 1, "visible": true }
+    }
+  ],
+  "goal": {
+    "output_contains": ["TITLE_CHARANUM=0"]
+  },
+  "limits": {
+    "max_steps": 10,
+    "timeout_seconds": 60
+  }
+}

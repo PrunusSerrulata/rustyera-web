@@ -6,6 +6,8 @@ interface Window {
   showDirectoryPicker?: (options?: {
     mode?: "read" | "readwrite";
   }) => Promise<FileSystemDirectoryHandle>;
+  __RUSTYERA_TEST__?: import("@/testing/control").WebTestControl;
+  __RUSTYERA_TEST_DOWNLOADS__?: Array<{ name: string; bytes: Uint8Array }>;
 }
 
 interface FileSystemHandle {

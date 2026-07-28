@@ -138,8 +138,9 @@ export class BrowserProject {
         const file = await getFile(root, parts);
         const token = `${file.size}:${file.lastModified}`;
         if (operation.change_token && operation.change_token !== token) throw conflict();
-        const end = Math.min(file.size, operation.offset + operation.maximum_bytes);
-        const data = new Uint8Array(await file.slice(operation.offset, end).arrayBuffer());
+        const offset = Number(operation.offset);
+        const end = Math.min(file.size, offset + Number(operation.maximum_bytes));
+        const data = new Uint8Array(await file.slice(offset, end).arrayBuffer());
         result = {
           type: "read_chunk",
           data,

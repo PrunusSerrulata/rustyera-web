@@ -38,7 +38,7 @@ export class AudioEngine {
       } else if (!active || active.revision !== state.revision) {
         await this.play(state);
       } else {
-        active.gain.gain.value = state.volume_millionths / 1_000_000;
+        active.gain.gain.value = Number(state.volume_millionths) / 1_000_000;
       }
     }
     for (const channel of this.channels.keys()) if (!retained.has(channel)) this.stop(channel);
@@ -49,7 +49,7 @@ export class AudioEngine {
     if (effect.value.action === "stop") this.stop(effect.value.channel_id);
     else if (effect.value.action === "set_volume") {
       const active = this.channels.get(effect.value.channel_id);
-      if (active) active.gain.gain.value = effect.value.volume_millionths / 1_000_000;
+      if (active) active.gain.gain.value = Number(effect.value.volume_millionths) / 1_000_000;
     } else if (effect.value.resource_id) {
       await this.play({ ...effect.value, playing: true, revision: Date.now() });
     }
@@ -78,7 +78,7 @@ export class AudioEngine {
     const gain = context.createGain();
     source.buffer = buffer;
     source.loop = state.repeat_count < 0;
-    gain.gain.value = state.volume_millionths / 1_000_000;
+    gain.gain.value = Number(state.volume_millionths) / 1_000_000;
     source.connect(gain).connect(this.master!);
     source.start();
     source.onended = () => {
