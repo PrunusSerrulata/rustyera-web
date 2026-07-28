@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+webdriver = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
+
 [build-dependencies]
 tauri-build = { version = "2.5.3", features = [] }
 
@@ -22,6 +25,8 @@ serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2.11.1", features = [] }
 tauri-plugin-dialog = "2.4.0"
+tauri-plugin-wdio = { version = "1", optional = true }
+tauri-plugin-wdio-webdriver = { version = "1", optional = true }
 tempfile = "3.20.0"
 unicode-normalization = "0.1.24"
 walkdir = "2.5.0"

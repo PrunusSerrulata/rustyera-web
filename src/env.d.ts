@@ -1,5 +1,11 @@
 /// <reference types="vite/client" />
 
+interface ImportMetaEnv {
+  readonly VITE_RUSTYERA_TEST?: string;
+  readonly VITE_RUSTYERA_TAURI_TEST?: string;
+  readonly VITE_RUSTYERA_TEST_PROJECT?: string;
+}
+
 interface Window {
   __TAURI_INTERNALS__?: unknown;
   queryLocalFonts?: () => Promise<Array<{ family: string; fullName: string }>>;

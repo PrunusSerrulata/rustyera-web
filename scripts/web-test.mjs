@@ -147,6 +147,7 @@ async function execute(args) {
         }),
       { start: scenario.start, seed: scenario.seed, clock: scenario.clock, stateBytes },
     );
+    for (const action of scenario.before_open_actions ?? []) await runAction(page, action);
     await page.getByRole("button", { name: "打开 Era 项目…", exact: true }).click();
 
     if (scenario.comparison.reference && scenario.start.type !== "vm_snapshot") {
@@ -220,7 +221,7 @@ async function execute(args) {
         throw new Error(`${action.type} that advances a compared game must declare semantic_input`);
       if (reference && result.semanticInput != null)
         referenceObservation = await reference.step(String(result.semanticInput), scenario.watches);
-      if (["input", "click", "press"].includes(action.type)) steps += 1;
+      if (["input", "click", "dblclick", "press"].includes(action.type)) steps += 1;
       return result;
     }
 
@@ -258,7 +259,7 @@ async function execute(args) {
         continue;
       const result = await act(action, "fixed");
       if (result.query || result.state) trace.emit({ type: "query", step: steps, ...result });
-      if (["input", "click", "press"].includes(action.type)) {
+      if (["input", "click", "dblclick", "press"].includes(action.type)) {
         current = await observe();
         if (current.rust.fault) return fail("runtime_fault", 1, { fault: current.rust.fault });
         if (current.comparison && !current.comparison.equal) return fail("difference", 1);
@@ -303,7 +304,7 @@ async function execute(args) {
         throw new Error(`unknown agent operation ${command.op}`);
       const result = await act(action, "agent");
       if (result.query || result.state) trace.emit({ type: "query", ...result });
-      if (["input", "click", "press"].includes(action.type)) {
+      if (["input", "click", "dblclick", "press"].includes(action.type)) {
         current = await observe();
         if (current.rust.fault) return fail("runtime_fault", 1, { fault: current.rust.fault });
         if (current.comparison && !current.comparison.equal) return fail("difference", 1);

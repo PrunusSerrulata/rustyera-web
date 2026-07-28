@@ -22,7 +22,7 @@ export class BrowserBridge implements FrontendBridge {
     return this.worker.call("create", options);
   }
 
-  submitRuntime(message: RuntimeMessage, correlationId?: number): Promise<bigint> {
+  submitRuntime(message: RuntimeMessage, correlationId?: number | bigint): Promise<bigint> {
     return this.worker.call(
       "submitRuntime",
       message,
@@ -30,7 +30,7 @@ export class BrowserBridge implements FrontendBridge {
     );
   }
 
-  submitDebug(message: DebugMessage, correlationId?: number): Promise<bigint> {
+  submitDebug(message: DebugMessage, correlationId?: number | bigint): Promise<bigint> {
     return this.worker.call(
       "submitDebug",
       message,

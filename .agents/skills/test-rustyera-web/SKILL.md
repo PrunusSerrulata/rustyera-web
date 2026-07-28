@@ -1,13 +1,25 @@
 ---
 name: test-rustyera-web
-description: Drive rustyera-web through its real Vue UI, Chromium, and WASM worker for deterministic fixed-sequence, agent-directed, save/snapshot restore, DOM interaction, internal-state inspection, trace capture, and Emuera reference differential tests. Use after Web/runtime-facing changes, when reproducing browser game-flow failures, when checking HTML behavior or frontend state, or when an agent must explore an Era game interactively.
+description: Drive rustyera-web through its real Vue UI in Chromium/WASM or its real Tauri WebView through WebdriverIO, including deterministic game flows, debugger checks against eraTW, save/snapshot restore, DOM interaction, trace capture, and Emuera reference differential tests. Use after Web/runtime-facing changes, when reproducing browser or desktop failures, when checking debugger/UI behavior, or when an agent must explore an Era game interactively.
 ---
 
 # Test RustyEra Web
 
-Use `npm run test:game`; do not replace the runner with direct Pinia mutation or a second runtime
-state machine. Read [test-cli.md](references/test-cli.md) before changing a scenario. Read
-[page-api.md](references/page-api.md) before adding DOM or frontend-state actions.
+Use `npm run test:game` for browser/WASM coverage and `npm run test:tauri` for native-client
+coverage. Do not replace either runner with direct Pinia mutation, mocked IPC, a second runtime
+state machine, or screenshot-only evidence. Read [test-cli.md](references/test-cli.md) before
+changing a browser scenario, [page-api.md](references/page-api.md) before adding browser DOM or
+frontend-state actions, and [tauri-e2e.md](references/tauri-e2e.md) before changing a Tauri test.
+
+## Choose the real target
+
+- A browser/WASM claim requires Chromium, the production Vue UI, and the WASM worker through
+  `npm run test:game`.
+- A Tauri claim requires the built Tauri binary, its native Rust commands, the platform WebView,
+  and WebdriverIO's embedded provider through `npm run test:tauri`.
+- Passing browser tests does not establish Tauri behavior. Never substitute Playwright browser
+  mode, mocked `invoke`, AppleScript coordinate clicks, screenshots, or direct store mutation for a
+  Tauri result.
 
 ## Prepare
 
@@ -45,16 +57,31 @@ Choose visible, enabled controls and valid game inputs. Do not call the page tes
 gameplay input. Continue until the goal passes, the first differential failure occurs, or the hard
 step/time budget is exhausted.
 
+## Run native Tauri work
+
+```sh
+npm run test:tauri -- --project ../games/eraTW
+```
+
+`ERATW_PROJECT` may supply another real eraTW checkout. The command builds a test-only Tauri binary
+with the WebdriverIO plugins, launches the platform WebView, opens the project through the real Rust
+filesystem commands, and drives visible controls. Assert `bridgeKind: "tauri"` before making a
+native-client claim. Keep WebdriverIO actions as the source of truth for interaction; the test
+control may observe lifecycle and debugger state but must not perform the feature under test.
+
 ## Report
 
-Report the scenario, command, exit code, effective seed, fixed clock, trace path, checked DOM/state
-assertions, and the first difference or blocked check. A full trace owns all input/output records;
-failure artifacts include a screenshot, HTML, and browser console. Traditional saves can be
-compared with Emuera. VM snapshots are RustyEra-only unless the scenario supplies an equivalent
-reference state.
+For browser runs, report the scenario, command, exit code, effective seed, fixed clock, trace path,
+checked DOM/state assertions, and the first difference or blocked check. For Tauri runs, report the
+real project path, platform/WebView session, visible actions, and exact debugger/runtime outputs.
+Screenshots may supplement a failure but cannot prove behavior. Traditional saves can be compared
+with Emuera. VM snapshots are RustyEra-only unless the scenario supplies an equivalent reference
+state.
 
 ## Validate changes
 
 Run focused Vitest first, then `npm test`, typecheck, ESLint, Prettier check, build, WASM build, and
-relevant Playwright/game scenarios. Use the short reference fixture for CLI changes and eraTW only
-for long-flow coverage. If the reference CLI changes, apply its repository's own validation gates.
+relevant browser/game scenarios. For Tauri-facing changes, also run `npm run test:tauri` against the
+real eraTW checkout. Use the short reference fixture for browser CLI changes and eraTW for native
+debugger and long-flow coverage. If the reference CLI changes, apply its repository's own
+validation gates.

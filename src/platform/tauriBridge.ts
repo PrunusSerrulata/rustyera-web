@@ -13,27 +13,80 @@ import type {
   SessionOptions,
 } from "@/core/types";
 
+const IPC_INTEGER_TAG = "$rustyeraInteger";
+
+function decodeIpcValue<T>(value: unknown): T {
+  if (Array.isArray(value)) return value.map((item) => decodeIpcValue(item)) as T;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (
+      Object.keys(record).length === 1 &&
+      typeof record[IPC_INTEGER_TAG] === "string" &&
+      /^-?\d+$/.test(record[IPC_INTEGER_TAG])
+    ) {
+      return BigInt(record[IPC_INTEGER_TAG]) as T;
+    }
+    return Object.fromEntries(
+      Object.entries(record).map(([key, item]) => [key, decodeIpcValue(item)]),
+    ) as T;
+  }
+  return value as T;
+}
+
+function encodeIpcValue(value: unknown): unknown {
+  if (typeof value === "bigint") return { [IPC_INTEGER_TAG]: value.toString() };
+  if (ArrayBuffer.isView(value)) return value;
+  if (Array.isArray(value)) return value.map(encodeIpcValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, encodeIpcValue(item)]),
+    );
+  }
+  return value;
+}
+
 export class TauriBridge implements FrontendBridge {
   readonly kind = "tauri" as const;
   private projectPath?: string;
 
-  createSession(options: SessionOptions): Promise<PumpBatch> {
-    return invoke("create_session", { options });
+  async createSession(options: SessionOptions): Promise<PumpBatch> {
+    return decodeIpcValue(await invoke("create_session", { options }));
   }
 
-  submitRuntime(message: RuntimeMessage, correlationId?: number): Promise<number> {
-    return invoke("submit_runtime", { message, correlationId });
+  async submitRuntime(
+    message: RuntimeMessage,
+    correlationId?: number | bigint,
+  ): Promise<number | bigint> {
+    return decodeIpcValue(
+      await invoke("submit_runtime", {
+        message: encodeIpcValue(message),
+        correlationId: encodeIpcValue(correlationId),
+      }),
+    );
   }
 
-  submitDebug(message: DebugMessage, correlationId?: number): Promise<number> {
-    return invoke("submit_debug", { message, correlationId });
+  async submitDebug(
+    message: DebugMessage,
+    correlationId?: number | bigint,
+  ): Promise<number | bigint> {
+    return decodeIpcValue(
+      await invoke("submit_debug", {
+        message: encodeIpcValue(message),
+        correlationId: encodeIpcValue(correlationId),
+      }),
+    );
   }
 
-  pump(): Promise<PumpBatch> {
-    return invoke("pump");
+  async pump(): Promise<PumpBatch> {
+    return decodeIpcValue(await invoke("pump"));
   }
 
   async openProject(): Promise<ProjectOpenMetrics | undefined> {
+    const testProject = import.meta.env.VITE_RUSTYERA_TEST_PROJECT;
+    if (import.meta.env.VITE_RUSTYERA_TEST === "1" && testProject) {
+      this.projectPath = testProject;
+      return invoke("open_project", { path: testProject });
+    }
     const path = await open({ directory: true, multiple: false, title: "打开 Era 项目" });
     if (typeof path !== "string") return undefined;
     this.projectPath = path;

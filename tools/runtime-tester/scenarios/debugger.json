@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/debug-project",
+  "mode": "fixed",
+  "seed": 123456,
+  "before_open_actions": [
+    { "type": "click", "locator": { "css": ".menu:nth-child(2) > button" } },
+    { "type": "click", "locator": { "role": "button", "name": "启用调试", "exact": true } }
+  ],
+  "actions": [
+    { "type": "click", "locator": { "css": ".menu:nth-child(2) > button" } },
+    { "type": "click", "locator": { "role": "button", "name": "控制台…", "exact": true } },
+    { "type": "fill", "locator": { "css": ".debug-input" }, "value": "1 + 1" },
+    { "type": "click", "locator": { "role": "button", "name": "求值", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".debug-output" },
+      "fields": ["text"],
+      "expect": { "text": "=> 2" }
+    },
+    { "type": "fill", "locator": { "css": ".debug-input" }, "value": "RESULT = 42" },
+    { "type": "click", "locator": { "role": "button", "name": "安全执行", "exact": true } },
+    { "type": "fill", "locator": { "css": ".debug-input" }, "value": "RESULT" },
+    { "type": "click", "locator": { "role": "button", "name": "求值", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".debug-output" },
+      "fields": ["text"],
+      "expect": { "text": "=> 2\n=> 42" }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "关闭", "exact": true } },
+    { "type": "click", "locator": { "css": ".menu:nth-child(2) > button" } },
+    { "type": "click", "locator": { "role": "button", "name": "变量查看器…", "exact": true } },
+    {
+      "type": "click",
+      "locator": {
+        "css": ".dialog-panel[aria-label='变量查看器'] tbody tr:has(td:text-is('RESULT')) button"
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".dialog-panel[aria-label='变量查看器'] tbody tr:has(td:text-is('RESULT')) .debug-variable-value"
+      },
+      "fields": ["text"],
+      "expect": { "text": "42" }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "关闭", "exact": true } },
+    { "type": "click", "locator": { "css": ".menu:nth-child(2) > button" } },
+    { "type": "click", "locator": { "role": "button", "name": "Fibers / 调用栈…", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".dialog-panel[aria-label='Fibers / 调用栈'] .debug-table:first-child tbody tr"
+      },
+      "fields": ["count"],
+      "expect": { "count": 1 }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".dialog-panel[aria-label='Fibers / 调用栈'] .debug-table:last-child tbody tr"
+      },
+      "fields": ["count"],
+      "expect": { "count": 1 }
+    },
+    {
+      "type": "press",
+      "locator": { "css": ".dialog-panel[aria-label='Fibers / 调用栈']" },
+      "key": "F10"
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "phase": "debug_paused",
+        "debug": { "stop": { "reason": { "type": "step_completed" } } }
+      }
+    }
+  ],
+  "limits": {
+    "max_steps": 40,
+    "timeout_seconds": 60
+  }
+}

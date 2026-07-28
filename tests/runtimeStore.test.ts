@@ -272,7 +272,7 @@ describe("runtime store session lifecycle", () => {
                 ],
               },
             },
-            3,
+            4,
           ),
           debugEvent(
             "response",
@@ -283,7 +283,7 @@ describe("runtime store session lifecycle", () => {
                 fibers: [{ fiber_id: 7, state: "debug_paused", frame_count: 2 }],
               },
             },
-            4,
+            3,
           ),
         ],
       })
@@ -328,6 +328,74 @@ describe("runtime store session lifecycle", () => {
     expect(store.debugVariables.map((variable) => variable.name)).toEqual(["RESULT"]);
     expect(store.debugFibers.map((fiber) => fiber.fiber_id)).toEqual([7]);
     expect(store.debugFrames.map((frame) => frame.function_name)).toEqual(["EVENTFIRST"]);
+  });
+
+  it("steps only runnable fibers and restores the stop when the runtime rejects the step", async () => {
+    const grant = { grant_id: { high: 1, low: 1 }, program_generation: 1 };
+    const stop = {
+      session_epoch: 2,
+      pause_epoch: 3,
+      program_generation: 1,
+      runtime_revision: 4,
+    };
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_changed", { phase: "running", epoch: 2 }),
+          debugEvent("grant", { token: grant }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_changed", { phase: "debug_paused", epoch: 2 }),
+          debugEvent("response", { type: "accepted" }, 2),
+          debugEvent("stopped", { stop, selected_fiber: 7 }, 2),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          debugEvent(
+            "response",
+            {
+              type: "fiber_page",
+              value: {
+                stop,
+                fibers: [{ fiber_id: 7, state: "waiting_host", frame_count: 1 }],
+              },
+            },
+            3,
+          ),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          debugEvent(
+            "error",
+            { code: "invalid_state", message: "only a runnable fiber can be stepped" },
+            4,
+          ),
+        ],
+      });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+    await store.openDebugDialog("console");
+    await vi.advanceTimersByTimeAsync(32);
+
+    expect(store.canStepDebug).toBe(false);
+    store.debugFibers = [{ fiber_id: 7, state: "runnable", frame_count: 1 }];
+    expect(store.canStepDebug).toBe(true);
+
+    const stepping = store.stepDebug();
+    const rejectedStep = expect(stepping).rejects.toThrow("only a runnable fiber can be stepped");
+    await vi.advanceTimersByTimeAsync(16);
+    await rejectedStep;
+    expect(store.debugStop).toEqual(expect.objectContaining({ stop }));
   });
 
   it("uses the newest envelope epoch across presentation snapshots", async () => {

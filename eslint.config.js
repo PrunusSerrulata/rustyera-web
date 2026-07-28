@@ -38,6 +38,19 @@ export default tseslint.config(
     },
   },
   {
+    files: ["tests/tauri/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+        ...globals.node,
+        ...globals.mocha,
+        $: "readonly",
+        $$: "readonly",
+        browser: "readonly",
+      },
+    },
+  },
+  {
     files: ["**/*.vue"],
     languageOptions: {
       parserOptions: { parser: tseslint.parser, extraFileExtensions: [".vue"] },

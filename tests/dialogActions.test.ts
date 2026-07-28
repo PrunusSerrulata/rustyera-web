@@ -14,7 +14,7 @@ const debugStore = reactive({
     selected_fiber: 7,
   },
   debugOutput: [],
-  debugVariables: [],
+  debugVariables: [] as any[],
   debugFibers: [],
   debugFrames: [],
   debugVariableValues: {},
@@ -85,6 +85,26 @@ describe("dialog actions", () => {
       expect.objectContaining({
         type: "console",
         stop: expect.objectContaining({ pause_epoch: 2 }),
+      }),
+    );
+
+    debugStore.debugVariables = [
+      {
+        symbol_key: [1],
+        name: "RESULT",
+        storage: "global",
+        value_kind: "integer",
+        dimensions: [100, 200],
+      },
+    ];
+    await nextTick();
+    document.body
+      .querySelector<HTMLElement>(".debug-table tbody tr")!
+      .dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    expect(debugCommand).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: "read_variable",
+        value: expect.objectContaining({ indices: [0, 0] }),
       }),
     );
 

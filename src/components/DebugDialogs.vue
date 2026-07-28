@@ -32,7 +32,7 @@ function readVariable(variable: any): void {
       frame_id: null,
       generation: stop.program_generation,
       character: null,
-      indices: [],
+      indices: (variable.dimensions ?? []).map(() => 0),
     },
   });
 }
@@ -93,7 +93,7 @@ function readStack(fiber: any): void {
           <th>存储</th>
           <th>类型</th>
           <th>维度</th>
-          <th>值（双击读取）</th>
+          <th>值</th>
         </tr>
       </thead>
       <tbody>
@@ -107,7 +107,14 @@ function readStack(fiber: any): void {
           <td>{{ variable.storage }}</td>
           <td>{{ variable.value_kind }}</td>
           <td>{{ variable.dimensions.join(" × ") }}</td>
-          <td>{{ store.debugVariableValues[debugVariableKey(variable)] ?? "" }}</td>
+          <td>
+            <span class="debug-variable-value">{{
+              store.debugVariableValues[debugVariableKey(variable)] ?? ""
+            }}</span>
+            <button type="button" class="compact-button" @click.stop="readVariable(variable)">
+              读取
+            </button>
+          </td>
         </tr>
       </tbody>
     </table>

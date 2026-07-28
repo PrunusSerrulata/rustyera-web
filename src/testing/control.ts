@@ -32,8 +32,10 @@ export function installWebTestControl(pinia: Pinia): void {
       logs: store.logs.slice(-100),
       debug: {
         enabled: store.debugEnabled,
+        canStep: store.canStepDebug,
         stop: store.debugStop,
         variables: store.debugVariables,
+        variablesLoading: store.debugVariablesLoading,
         values: store.debugVariableValues,
         fibers: store.debugFibers,
         frames: store.debugFrames,
@@ -69,7 +71,7 @@ export function installWebTestControl(pinia: Pinia): void {
         const observable =
           store.canInteract ||
           store.fault != null ||
-          ["stopped", "faulted", "shutting_down"].includes(store.phase);
+          ["running", "debug_paused", "stopped", "faulted", "shutting_down"].includes(store.phase);
         if (observable && current === previous) stableFrames += 1;
         else stableFrames = 0;
         if (stableFrames >= 2) return snapshot();

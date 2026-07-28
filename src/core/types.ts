@@ -53,8 +53,8 @@ export interface ProjectOpenMetrics {
 export interface FrontendBridge {
   readonly kind: "tauri" | "browser";
   createSession(options: SessionOptions): Promise<PumpBatch>;
-  submitRuntime(message: RuntimeMessage, correlationId?: number): Promise<number | bigint>;
-  submitDebug(message: DebugMessage, correlationId?: number): Promise<number | bigint>;
+  submitRuntime(message: RuntimeMessage, correlationId?: number | bigint): Promise<number | bigint>;
+  submitDebug(message: DebugMessage, correlationId?: number | bigint): Promise<number | bigint>;
   pump(): Promise<PumpBatch>;
   openProject(): Promise<ProjectOpenMetrics | undefined>;
   restartProject(): Promise<ProjectOpenMetrics>;

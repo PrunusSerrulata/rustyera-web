@@ -37,3 +37,83 @@ describe("Tauri project restart", () => {
     await expect(new TauriBridge().restartProject()).rejects.toThrow("没有打开的项目");
   });
 });
+
+describe("Tauri lossless integer transport", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("restores unsafe protocol integers from pump responses", async () => {
+    invoke.mockResolvedValue({
+      state: "output_ready",
+      vmInstructions: 0,
+      runtimeTransitions: 1,
+      events: [
+        {
+          channel: "debug",
+          sequence: 1,
+          messageId: 2,
+          message: {
+            type: "grant",
+            value: {
+              token: {
+                grant_id: { high: { $rustyeraInteger: "4919414282687566401" }, low: 1 },
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    const batch = await new TauriBridge().pump();
+
+    expect((batch.events[0].message.value as any).token.grant_id.high).toBe(
+      4_919_414_282_687_566_401n,
+    );
+  });
+
+  it("tags bigint fields before sending debug requests", async () => {
+    invoke.mockResolvedValue({ $rustyeraInteger: "9007199254740993" });
+    const bridge = new TauriBridge();
+
+    const messageId = await bridge.submitDebug(
+      {
+        type: "request",
+        value: {
+          grant: { grant_id: { high: 4_919_414_282_687_566_401n, low: 1 } },
+          command: { type: "pause" },
+        },
+      },
+      9_007_199_254_740_993n,
+    );
+
+    expect(messageId).toBe(9_007_199_254_740_993n);
+    expect(invoke).toHaveBeenCalledWith("submit_debug", {
+      message: {
+        type: "request",
+        value: {
+          grant: {
+            grant_id: { high: { $rustyeraInteger: "4919414282687566401" }, low: 1 },
+          },
+          command: { type: "pause" },
+        },
+      },
+      correlationId: { $rustyeraInteger: "9007199254740993" },
+    });
+  });
+
+  it("keeps binary protocol payloads as typed arrays", async () => {
+    invoke.mockResolvedValue(1);
+    const bytes = Uint8Array.of(1, 2, 3);
+
+    await new TauriBridge().submitRuntime({
+      type: "service_response",
+      value: { payload: bytes },
+    });
+
+    expect(invoke).toHaveBeenCalledWith("submit_runtime", {
+      message: { type: "service_response", value: { payload: bytes } },
+      correlationId: undefined,
+    });
+  });
+});

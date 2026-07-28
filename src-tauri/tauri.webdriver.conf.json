@@ -1,0 +1,22 @@
+{
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": [
+        {
+          "identifier": "webdriver-test",
+          "description": "Capabilities enabled only for the WebdriverIO Tauri test build",
+          "windows": ["main"],
+          "permissions": [
+            "core:default",
+            "core:window:allow-close",
+            "dialog:allow-open",
+            "dialog:allow-save",
+            "wdio:default",
+            "wdio-webdriver:default"
+          ]
+        }
+      ]
+    }
+  }
+}

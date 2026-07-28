@@ -226,6 +226,7 @@ export async function runAction(page, action) {
   }
   const locator = action.locator ? resolveLocator(page, action.locator) : undefined;
   if (action.type === "click") await locator.click();
+  else if (action.type === "dblclick") await locator.dblclick();
   else if (action.type === "fill") await locator.fill(String(action.value ?? ""));
   else if (action.type === "press") await locator.press(String(action.key));
   else if (["query", "assert_dom"].includes(action.type)) {

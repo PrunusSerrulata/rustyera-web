@@ -54,6 +54,9 @@ export interface RuntimeTestConfiguration {
   monotonicStartNs?: number;
 }
 
+const DEBUG_VARIABLE_PAGE_LIMIT = 256;
+const DEBUG_VARIABLE_MAX_PAGES = 16;
+
 export const useRuntimeStore = defineStore("runtime", () => {
   const bridge = platformBridge();
   const presentation = reactive(emptyPresentation());
@@ -81,6 +84,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const debugStop = ref<any>(null);
   const debugOutput = ref<string[]>([]);
   const debugVariables = ref<any[]>([]);
+  const debugVariablesLoading = ref(false);
   const debugFibers = ref<any[]>([]);
   const debugFrames = ref<any[]>([]);
   const debugVariableValues = ref<Record<string, string>>({});
@@ -102,6 +106,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let debugPausePending = false;
   let debugPauseWanted = false;
   let debugGrantRefreshNeeded = false;
+  let debugVariableRefreshId = 0;
   const pendingDebugRequests = new Map<
     string,
     {
@@ -121,9 +126,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const canInteract = computed(
     () => presentation.inputWait != null && phase.value !== "debug_paused" && !fault.value,
   );
-  const canStepDebug = computed(
-    () => debugStopToken(debugStop.value) != null && selectedDebugFiber(debugStop.value) != null,
-  );
+  const canStepDebug = computed(() => {
+    const fiberId = selectedDebugFiber(debugStop.value);
+    return (
+      debugStopToken(debugStop.value) != null &&
+      fiberId != null &&
+      debugFibers.value.some((fiber) => fiber.fiber_id === fiberId && fiber.state === "runnable")
+    );
+  });
 
   async function initialize(): Promise<void> {
     preferences.value = await bridge.loadPreferences();
@@ -935,10 +945,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
       debugPausePending = false;
       debugPauseWanted = false;
       debugStop.value = message.value;
+      debugFibers.value = [];
+      debugFrames.value = [];
       forgetDebugRequest(correlationId);
-      // The stop token is authoritative only after this event. Refresh here so dialog
-      // visibility cannot race a Vue watcher against the pause response.
-      await refreshOpenDebugSurfaces();
+      // The stop token is authoritative only after this event. Start refreshing here so
+      // dialog visibility cannot race a Vue watcher against the pause response. Pagination
+      // must continue asynchronously because its later pages arrive in future pump batches.
+      void refreshOpenDebugSurfaces().catch((error) => log("warning", String(error)));
     } else if (message.type === "response") {
       const request = forgetDebugRequest(correlationId);
       const response = message.value;
@@ -1156,12 +1169,43 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function refreshOpenDebugSurfaces(): Promise<void> {
     const stop = debugStopToken(debugStop.value);
     if (!stop) return;
-    const commands = [];
-    if (variablesOpen.value)
-      commands.push(debugCommand({ type: "list_variables", stop, cursor: null, limit: 256 }));
-    if (stackOpen.value)
-      commands.push(debugCommand({ type: "list_fibers", stop, cursor: null, limit: 256 }));
+    const commands = [debugCommand({ type: "list_fibers", stop, cursor: null, limit: 256 })];
+    if (variablesOpen.value) commands.push(refreshDebugVariables(stop));
     await Promise.all(commands);
+  }
+
+  async function refreshDebugVariables(stop: any): Promise<void> {
+    const refreshId = ++debugVariableRefreshId;
+    debugVariablesLoading.value = true;
+    const variables: any[] = [];
+    const seen = new Set<string>();
+    let cursor: number | bigint | null = null;
+    let pages = 0;
+    try {
+      do {
+        const response = await debugRequest({
+          type: "list_variables",
+          stop,
+          cursor,
+          limit: DEBUG_VARIABLE_PAGE_LIMIT,
+        });
+        pages += 1;
+        for (const variable of response.value?.variables ?? []) {
+          const key = debugVariableKey(variable);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          variables.push(variable);
+        }
+        cursor = response.value?.next_cursor ?? null;
+      } while (
+        cursor != null &&
+        pages < DEBUG_VARIABLE_MAX_PAGES &&
+        refreshId === debugVariableRefreshId
+      );
+      if (refreshId === debugVariableRefreshId) debugVariables.value = variables;
+    } finally {
+      if (refreshId === debugVariableRefreshId) debugVariablesLoading.value = false;
+    }
   }
 
   async function stepDebug(): Promise<void> {
@@ -1171,7 +1215,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     debugPauseWanted = false;
     debugStop.value = null;
     try {
-      await debugCommand(command);
+      await debugRequest(command);
     } catch (error) {
       debugStop.value = previousStop;
       throw error;
@@ -1185,7 +1229,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     debugPauseWanted = false;
     debugStop.value = null;
     try {
-      await debugCommand({ type: "continue", stop });
+      await debugRequest({ type: "continue", stop });
     } catch (error) {
       debugStop.value = previousStop;
       throw error;
@@ -1310,6 +1354,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     debugStop,
     debugOutput,
     debugVariables,
+    debugVariablesLoading,
     debugFibers,
     debugFrames,
     debugVariableValues,

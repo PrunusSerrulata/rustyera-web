@@ -22,8 +22,10 @@ use std::time::Instant;
 use era_debug_protocol::DebugMessage;
 use era_runtime::RuntimeDriveBudget;
 use era_runtime_protocol::{RuntimeMessage, StorageRequest, StorageResponse};
-use era_web_bridge::{PumpBatch, WebSession, WebSessionOptions};
+use era_web_bridge::{WebSession, WebSessionOptions};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Number, Value};
 use tauri::{AppHandle, Manager, State};
 
 use crate::project::ProjectHost;
@@ -40,6 +42,75 @@ struct AppState {
 struct CacheWriter {
     temporary: tempfile::NamedTempFile,
     target: PathBuf,
+}
+
+const MAXIMUM_SAFE_JAVASCRIPT_INTEGER: u64 = 9_007_199_254_740_991;
+const MINIMUM_SAFE_JAVASCRIPT_INTEGER: i64 = -9_007_199_254_740_991;
+const IPC_INTEGER_TAG: &str = "$rustyeraInteger";
+
+fn encode_ipc_value<T: Serialize>(value: &T) -> Result<Value, String> {
+    let mut value = serde_json::to_value(value)
+        .map_err(|error| format!("cannot encode IPC response: {error}"))?;
+    tag_unsafe_integers(&mut value);
+    Ok(value)
+}
+
+fn decode_ipc_value<T: DeserializeOwned>(mut value: Value) -> Result<T, String> {
+    untag_unsafe_integers(&mut value)?;
+    serde_json::from_value(value).map_err(|error| format!("cannot decode IPC request: {error}"))
+}
+
+fn tag_unsafe_integers(value: &mut Value) {
+    match value {
+        Value::Number(number) if is_unsafe_javascript_integer(number) => {
+            let mut tagged = Map::new();
+            tagged.insert(
+                IPC_INTEGER_TAG.to_owned(),
+                Value::String(number.to_string()),
+            );
+            *value = Value::Object(tagged);
+        }
+        Value::Array(items) => items.iter_mut().for_each(tag_unsafe_integers),
+        Value::Object(fields) => fields.values_mut().for_each(tag_unsafe_integers),
+        _ => {}
+    }
+}
+
+fn is_unsafe_javascript_integer(number: &Number) -> bool {
+    number
+        .as_u64()
+        .is_some_and(|value| value > MAXIMUM_SAFE_JAVASCRIPT_INTEGER)
+        || number
+            .as_i64()
+            .is_some_and(|value| value < MINIMUM_SAFE_JAVASCRIPT_INTEGER)
+}
+
+fn untag_unsafe_integers(value: &mut Value) -> Result<(), String> {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                untag_unsafe_integers(item)?;
+            }
+        }
+        Value::Object(fields) if fields.len() == 1 && fields.contains_key(IPC_INTEGER_TAG) => {
+            let encoded = fields
+                .get(IPC_INTEGER_TAG)
+                .and_then(Value::as_str)
+                .ok_or_else(|| "invalid tagged IPC integer".to_owned())?;
+            *value = Value::Number(
+                encoded
+                    .parse::<Number>()
+                    .map_err(|error| format!("invalid tagged IPC integer: {error}"))?,
+            );
+        }
+        Value::Object(fields) => {
+            for field in fields.values_mut() {
+                untag_unsafe_integers(field)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -84,13 +155,13 @@ impl Preferences {
 async fn create_session(
     state: State<'_, AppState>,
     options: WebSessionOptions,
-) -> Result<PumpBatch, String> {
+) -> Result<Value, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut session = WebSession::new(options)?;
         let initial = session.pump(RuntimeDriveBudget::default())?;
         *state.session.lock().map_err(lock_error)? = Some(session);
-        Ok(initial)
+        encode_ipc_value(&initial)
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
@@ -99,14 +170,17 @@ async fn create_session(
 #[tauri::command]
 async fn submit_runtime(
     state: State<'_, AppState>,
-    message: RuntimeMessage,
-    correlation_id: Option<u64>,
-) -> Result<u64, String> {
+    message: Value,
+    correlation_id: Option<Value>,
+) -> Result<Value, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        with_session(&state, |session| {
+        let message = decode_ipc_value::<RuntimeMessage>(message)?;
+        let correlation_id = correlation_id.map(decode_ipc_value).transpose()?;
+        let message_id = with_session(&state, |session| {
             session.submit_runtime(&message, correlation_id)
-        })
+        })?;
+        encode_ipc_value(&message_id)
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
@@ -115,29 +189,33 @@ async fn submit_runtime(
 #[tauri::command]
 async fn submit_debug(
     state: State<'_, AppState>,
-    message: DebugMessage,
-    correlation_id: Option<u64>,
-) -> Result<u64, String> {
+    message: Value,
+    correlation_id: Option<Value>,
+) -> Result<Value, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        with_session(&state, |session| {
+        let message = decode_ipc_value::<DebugMessage>(message)?;
+        let correlation_id = correlation_id.map(decode_ipc_value).transpose()?;
+        let message_id = with_session(&state, |session| {
             session.submit_debug(&message, correlation_id)
-        })
+        })?;
+        encode_ipc_value(&message_id)
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
 }
 
 #[tauri::command]
-async fn pump(state: State<'_, AppState>) -> Result<PumpBatch, String> {
+async fn pump(state: State<'_, AppState>) -> Result<Value, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        with_session(&state, |session| {
+        let batch = with_session(&state, |session| {
             session.pump(RuntimeDriveBudget {
                 maximum_vm_instructions: 100_000,
                 maximum_runtime_transitions: 1024,
             })
-        })
+        })?;
+        encode_ipc_value(&batch)
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
@@ -462,7 +540,12 @@ fn lock_error<T>(error: std::sync::PoisonError<T>) -> String {
 ///
 /// Panics when Tauri cannot initialize or run its application event loop.
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(feature = "webdriver")]
+    let builder = builder
+        .plugin(tauri_plugin_wdio::init())
+        .plugin(tauri_plugin_wdio_webdriver::init());
+    builder
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
@@ -524,5 +607,20 @@ mod tests {
         .normalized();
 
         assert_eq!(normalized.font_size_override_px, Some(12));
+    }
+
+    #[test]
+    fn ipc_transport_round_trips_integers_outside_javascript_safe_range() {
+        let original = serde_json::json!({
+            "positive": 4_919_414_282_687_566_401_u64,
+            "negative": -9_007_199_254_740_992_i64,
+            "safe": MAXIMUM_SAFE_JAVASCRIPT_INTEGER,
+        });
+
+        let encoded = encode_ipc_value(&original).unwrap();
+        assert_eq!(encoded["positive"][IPC_INTEGER_TAG], "4919414282687566401");
+        assert_eq!(encoded["negative"][IPC_INTEGER_TAG], "-9007199254740992");
+        assert_eq!(encoded["safe"], MAXIMUM_SAFE_JAVASCRIPT_INTEGER);
+        assert_eq!(decode_ipc_value::<Value>(encoded).unwrap(), original);
     }
 }
