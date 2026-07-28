@@ -1,0 +1,10 @@
+.DS_Store
+/target
+/node_modules
+/dist
+/public/wasm
+/playwright-report
+/test-results
+/.playwright-browsers
+/src-tauri/gen
+/*.tsbuildinfo

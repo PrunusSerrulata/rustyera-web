@@ -33,8 +33,8 @@ const ANSWERS: &[&str] = &[
     reason = "the end-to-end driver keeps its event loop together"
 )]
 fn eratw_reaches_day_one_through_the_web_bridge() {
-    let project = std::env::var_os("ERATW_PROJECT")
-        .map_or_else(|| PathBuf::from("reference/eraTW"), PathBuf::from);
+    let project =
+        std::env::var_os("ERATW_PROJECT").map_or_else(|| PathBuf::from("../eraTW"), PathBuf::from);
     let use_cache = std::env::var_os("ERA_WEB_USE_CACHE").is_some();
     let stop_after_load = std::env::var_os("ERA_WEB_STOP_AFTER_LOAD").is_some();
     let stop_before_answer = std::env::var("ERA_WEB_STOP_BEFORE_ANSWER")

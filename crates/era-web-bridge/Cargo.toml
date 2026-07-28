@@ -6,11 +6,11 @@ license.workspace = true
 
 [dependencies]
 blake3.workspace = true
-era-debug-protocol = { path = "../era-debug-protocol" }
-era-protocol = { path = "../era-protocol" }
-era-runtime = { path = "../era-runtime" }
-era-runtime-protocol = { path = "../era-runtime-protocol" }
-erabasic-vm = { path = "../erabasic-vm" }
+era-debug-protocol.workspace = true
+era-protocol.workspace = true
+era-runtime.workspace = true
+era-runtime-protocol.workspace = true
+erabasic-vm.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

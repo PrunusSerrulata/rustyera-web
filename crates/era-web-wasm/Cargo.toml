@@ -8,10 +8,10 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-era-debug-protocol = { path = "../../../../crates/era-debug-protocol" }
-era-runtime = { path = "../../../../crates/era-runtime" }
-era-runtime-protocol = { path = "../../../../crates/era-runtime-protocol" }
-era-web-bridge = { path = "../../../../crates/era-web-bridge" }
+era-debug-protocol.workspace = true
+era-runtime.workspace = true
+era-runtime-protocol.workspace = true
+era-web-bridge = { path = "../era-web-bridge" }
 js-sys = "0.3.81"
 serde.workspace = true
 serde-wasm-bindgen = "0.6.5"

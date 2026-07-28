@@ -9,11 +9,11 @@ tauri-build = { version = "2.5.3", features = [] }
 
 [dependencies]
 blake3.workspace = true
-era-protocol = { path = "../../../crates/era-protocol" }
-era-debug-protocol = { path = "../../../crates/era-debug-protocol" }
-era-runtime = { path = "../../../crates/era-runtime" }
-era-runtime-protocol = { path = "../../../crates/era-runtime-protocol" }
-era-web-bridge = { path = "../../../crates/era-web-bridge" }
+era-protocol.workspace = true
+era-debug-protocol.workspace = true
+era-runtime.workspace = true
+era-runtime-protocol.workspace = true
+era-web-bridge = { path = "../crates/era-web-bridge" }
 fontdb = "0.22.0"
 glob = "0.3.3"
 mimalloc = "0.1.52"

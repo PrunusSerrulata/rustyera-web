@@ -11,11 +11,14 @@ configuration I/O plus the runtime transport.
 
 ## Development
 
-Node.js 24 and the Rust workspace toolchain are supported. Install the frontend dependencies and
+Node.js 24 and the Rust workspace toolchain are supported. Runtime and protocol crates are pinned
+to the exact [rustyera-core](https://github.com/PrunusSerrulata/rustyera) commit recorded in
+`rustyera-core.rev`; `npm run check:core-rev` rejects drift. Install the frontend dependencies and
 build the WebAssembly package before browser development:
 
 ```sh
 npm ci
+npm run check:core-rev
 npm run build:wasm
 npm run dev
 ```
@@ -28,12 +31,17 @@ to an isolated `wasm-pack` executable instead of modifying `PATH`.
 The generated `public/wasm` directory is a build artifact and must not be committed. For the native
 application, run `npm run tauri dev`; release packages use `npm run tauri build`.
 
+In the standard sibling checkout, the outer `.cargo/config.toml` patches the pinned Git crates to
+`../rustyera-core` and shares `../target`. A standalone checkout uses the pinned Git revision and its
+own ignored `target`, so neither build mode requires repository-local path dependencies.
+
 ## Testing
 
 Install the E2E Chromium build once, then run the frontend checks:
 
 ```sh
 npm run test:e2e:install
+npm run check:core-rev
 npm test
 npm run typecheck
 npm run lint
