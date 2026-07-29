@@ -18,9 +18,9 @@
       "fields": ["text"],
       "expect": { "text": "=> 2" }
     },
-    { "type": "fill", "locator": { "css": ".debug-input" }, "value": "RESULT = 42" },
+    { "type": "fill", "locator": { "css": ".debug-input" }, "value": "COUNT = 42" },
     { "type": "click", "locator": { "role": "button", "name": "安全执行", "exact": true } },
-    { "type": "fill", "locator": { "css": ".debug-input" }, "value": "RESULT" },
+    { "type": "fill", "locator": { "css": ".debug-input" }, "value": "COUNT" },
     { "type": "click", "locator": { "role": "button", "name": "求值", "exact": true } },
     {
       "type": "assert_dom",
@@ -29,24 +29,17 @@
       "expect": { "text": "=> 2\n=> 42" }
     },
     { "type": "click", "locator": { "role": "button", "name": "关闭", "exact": true } },
-    { "type": "click", "locator": { "css": ".menu:nth-child(2) > button" } },
-    { "type": "click", "locator": { "role": "button", "name": "变量查看器…", "exact": true } },
     {
-      "type": "click",
-      "locator": {
-        "css": ".dialog-panel[aria-label='变量查看器'] tbody tr:has(td:text-is('RESULT')) button"
-      }
+      "type": "assert_state",
+      "expect": { "phase": "running", "debug": { "singleStepEnabled": false, "stop": null } }
     },
+    { "type": "click", "locator": { "css": ".menu:nth-child(2) > button" } },
     {
       "type": "assert_dom",
-      "locator": {
-        "css": ".dialog-panel[aria-label='变量查看器'] tbody tr:has(td:text-is('RESULT')) .debug-variable-value"
-      },
-      "fields": ["text"],
-      "expect": { "text": "42" }
+      "locator": { "role": "button", "name": "继续运行", "exact": true },
+      "fields": ["count"],
+      "expect": { "count": 0 }
     },
-    { "type": "click", "locator": { "role": "button", "name": "关闭", "exact": true } },
-    { "type": "click", "locator": { "css": ".menu:nth-child(2) > button" } },
     {
       "type": "click",
       "locator": { "role": "button", "name": "开启单步运行", "exact": true }
@@ -54,6 +47,27 @@
     {
       "type": "assert_state",
       "expect": { "debug": { "singleStepEnabled": true } }
+    },
+    { "type": "click", "locator": { "css": ".menu:nth-child(2) > button" } },
+    { "type": "click", "locator": { "role": "button", "name": "变量查看器…", "exact": true } },
+    {
+      "type": "click",
+      "locator": {
+        "css": ".dialog-panel[aria-label='变量查看器'] tbody tr:has(td:text-is('COUNT')) button"
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".dialog-panel[aria-label='变量查看器'] tbody tr:has(td:text-is('COUNT')) .debug-variable-value"
+      },
+      "fields": ["text"],
+      "expect": { "text": "42" }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "关闭", "exact": true } },
+    {
+      "type": "assert_state",
+      "expect": { "phase": "debug_paused", "debug": { "singleStepEnabled": true } }
     },
     { "type": "click", "locator": { "css": ".menu:nth-child(2) > button" } },
     {
@@ -93,7 +107,7 @@
     }
   ],
   "limits": {
-    "max_steps": 40,
+    "max_steps": 60,
     "timeout_seconds": 60
   }
 }

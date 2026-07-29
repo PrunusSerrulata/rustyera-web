@@ -17,6 +17,10 @@ test("shared shell exposes menus and draggable preferences", async ({ page }) =>
   await dialog.getByRole("button", { name: "取消" }).click();
   await expect(dialog).toBeHidden();
 
+  await page.getByRole("button", { name: "调试", exact: true }).click();
+  await expect(page.getByRole("button", { name: "继续运行", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "调试", exact: true }).click();
+
   await page.getByRole("button", { name: "帮助", exact: true }).click();
   await expect(page.getByRole("button", { name: "导出诊断信息…" })).toBeDisabled();
   await page.getByRole("button", { name: "关于…" }).click();

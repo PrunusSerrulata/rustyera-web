@@ -53,7 +53,7 @@ function readStack(fiber: any): void {
     :open="store.debugConsoleOpen"
     title="EraBasic 调试控制台"
     wide
-    @close="store.debugConsoleOpen = false"
+    @close="store.closeDebugDialog('console')"
   >
     <pre class="debug-output">{{ store.debugOutput.join("\n") }}</pre>
     <input
@@ -85,7 +85,7 @@ function readStack(fiber: any): void {
     :open="store.variablesOpen"
     title="变量查看器"
     wide
-    @close="store.variablesOpen = false"
+    @close="store.closeDebugDialog('variables')"
   >
     <table class="debug-table">
       <thead>
@@ -130,7 +130,7 @@ function readStack(fiber: any): void {
     :open="store.stackOpen"
     title="Fibers / 调用栈"
     wide
-    @close="store.stackOpen = false"
+    @close="store.closeDebugDialog('stack')"
   >
     <div class="debug-columns">
       <table class="debug-table">

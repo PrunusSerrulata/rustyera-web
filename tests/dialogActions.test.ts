@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultPreferences } from "@/core/types";
 
 const debugCommand = vi.hoisted(() => vi.fn(async () => {}));
+const closeDebugDialog = vi.hoisted(() => vi.fn());
 const debugStore = reactive({
   debugConsoleOpen: true,
   variablesOpen: true,
@@ -20,6 +21,7 @@ const debugStore = reactive({
   debugVariableValues: {},
   gameInteractionsBlocked: false,
   debugCommand,
+  closeDebugDialog,
 });
 
 vi.mock("@/stores/runtime", () => ({ useRuntimeStore: () => debugStore }));
@@ -32,6 +34,11 @@ describe("dialog actions", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    closeDebugDialog.mockImplementation((kind: "console" | "variables" | "stack") => {
+      if (kind === "console") debugStore.debugConsoleOpen = false;
+      else if (kind === "variables") debugStore.variablesOpen = false;
+      else debugStore.stackOpen = false;
+    });
     debugStore.debugConsoleOpen = true;
     debugStore.variablesOpen = true;
     debugStore.stackOpen = true;
@@ -115,6 +122,7 @@ describe("dialog actions", () => {
     expect(debugStore.debugConsoleOpen).toBe(false);
     expect(debugStore.variablesOpen).toBe(false);
     expect(debugStore.stackOpen).toBe(false);
+    expect(closeDebugDialog).toHaveBeenCalledTimes(3);
     wrapper.unmount();
   });
 

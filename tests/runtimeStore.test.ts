@@ -290,6 +290,63 @@ describe("runtime store session lifecycle", () => {
     expect(store.logs).toEqual([]);
   });
 
+  it("continues after the last debugger surface closes without enabling single-step mode", async () => {
+    const grant = { grant_id: { high: 1, low: 1 }, program_generation: 1 };
+    const stop = {
+      session_epoch: 2,
+      pause_epoch: 3,
+      program_generation: 1,
+      runtime_revision: 4,
+    };
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_changed", { phase: "running", epoch: 2 }),
+          debugEvent("grant", { token: grant }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_changed", { phase: "debug_paused", epoch: 2 }),
+          debugEvent("response", { type: "accepted" }, 2),
+          debugEvent(
+            "stopped",
+            { stop, selected_fiber: 7, reason: { type: "pause_requested" } },
+            2,
+          ),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_changed", { phase: "running", epoch: 2 }),
+          debugEvent("response", { type: "accepted" }, 4),
+        ],
+      });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+
+    await store.openDebugDialog("console");
+    expect(store.singleStepEnabled).toBe(false);
+    await vi.advanceTimersByTimeAsync(16);
+
+    const closing = store.closeDebugDialog("console");
+    expect(bridge.submitDebug).toHaveBeenLastCalledWith({
+      type: "request",
+      value: { grant, command: { type: "continue", stop } },
+    });
+    await vi.advanceTimersByTimeAsync(16);
+    await closing;
+
+    expect(store.debugConsoleOpen).toBe(false);
+    expect(store.singleStepEnabled).toBe(false);
+    expect(store.debugStop).toBeNull();
+  });
+
   it("renegotiates when the runtime rejects the current grant", async () => {
     const token = { grant_id: { high: 1, low: 1 }, program_generation: 1 };
     bridge.pump

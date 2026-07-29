@@ -151,12 +151,6 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
           <button :disabled="!store.canStepDebug" @click="action(store.stepDebug)">
             单步执行 (F10)
           </button>
-          <button
-            :disabled="!store.debugStop || store.gameInteractionsBlocked"
-            @click="action(store.continueDebug)"
-          >
-            继续运行
-          </button>
           <hr />
           <button
             @click="
