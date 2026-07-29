@@ -13,11 +13,16 @@ const configuredProject =
   projectIndex >= 0 ? arguments_[projectIndex + 1] : process.env.ERATW_PROJECT;
 const project = path.resolve(repository, configuredProject ?? "../games/eraTW");
 const configuredSpec = specIndex >= 0 ? arguments_[specIndex + 1] : undefined;
+const npmExecPath = process.env.npm_execpath;
+const packageCommand = process.platform === "win32" ? process.execPath : "npm";
+const packageArguments = process.platform === "win32" ? [npmExecPath] : [];
 
 if (projectIndex >= 0 && !arguments_[projectIndex + 1]) {
   throw new Error("--project requires a path");
 }
 if (specIndex >= 0 && !configuredSpec) throw new Error("--spec requires a path");
+if (process.platform === "win32" && !npmExecPath)
+  throw new Error("npm_execpath is required to launch package scripts on Windows");
 await access(project);
 
 const environment = {
@@ -30,8 +35,9 @@ const environment = {
 };
 
 await run(
-  "npm",
+  packageCommand,
   [
+    ...packageArguments,
     "run",
     "tauri",
     "--",
@@ -45,9 +51,12 @@ await run(
   ],
   environment,
 );
-const wdioArguments = ["wdio", "run", "wdio.tauri.conf.mjs"];
+const wdioArguments =
+  process.platform === "win32"
+    ? [...packageArguments, "exec", "--", "wdio", "run", "wdio.tauri.conf.mjs"]
+    : ["wdio", "run", "wdio.tauri.conf.mjs"];
 if (configuredSpec) wdioArguments.push("--spec", path.resolve(repository, configuredSpec));
-await run("npx", wdioArguments, environment);
+await run(process.platform === "win32" ? packageCommand : "npx", wdioArguments, environment);
 
 function run(command, args, env) {
   return new Promise((resolve, reject) => {

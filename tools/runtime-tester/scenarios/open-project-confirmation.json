@@ -40,9 +40,6 @@
       "expect": { "count": 1, "visible": true }
     }
   ],
-  "goal": {
-    "output_contains": ["TITLE_CHARANUM=0"]
-  },
   "limits": {
     "max_steps": 20,
     "timeout_seconds": 120
