@@ -205,9 +205,10 @@ select {
   top: 0;
   width: max-content;
   min-width: 100%;
-  min-height: 1.55em;
+  min-height: 1em;
   margin: 0;
   padding: 0;
+  line-height: 1;
   white-space: pre;
   overflow-wrap: normal;
   contain: layout paint;

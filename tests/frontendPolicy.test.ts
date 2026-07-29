@@ -55,7 +55,9 @@ describe("frontend host and image-line policy", () => {
     expect(stylesheet).toMatch(/\.game-viewport\s*\{[^}]*overflow:\s*auto;/s);
     expect(stylesheet).toMatch(/\.game-viewport\s*\{[^}]*overflow-anchor:\s*none;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*width:\s*max-content;/s);
+    expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*min-height:\s*1em;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*margin:\s*0;/s);
+    expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*line-height:\s*1;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*white-space:\s*pre;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*overflow-wrap:\s*normal;/s);
   });
