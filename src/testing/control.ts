@@ -14,6 +14,18 @@ export interface WebTestControl {
   takeDownload(timeoutMs?: number): Promise<{ name: string; bytes: number[] }>;
 }
 
+export function isStableObservationCandidate(
+  phase: string,
+  canInteract: boolean,
+  fault: unknown,
+): boolean {
+  return (
+    canInteract ||
+    fault != null ||
+    ["debug_paused", "stopped", "faulted", "shutting_down"].includes(phase)
+  );
+}
+
 export function installWebTestControl(pinia: Pinia): void {
   const store = useRuntimeStore(pinia);
   const snapshot = (): Record<string, unknown> =>
@@ -75,10 +87,11 @@ export function installWebTestControl(pinia: Pinia): void {
       let stableFrames = 0;
       while (performance.now() < deadline) {
         const current = JSON.stringify(snapshot());
-        const observable =
-          store.canInteract ||
-          store.fault != null ||
-          ["running", "debug_paused", "stopped", "faulted", "shutting_down"].includes(store.phase);
+        const observable = isStableObservationCandidate(
+          store.phase,
+          store.canInteract,
+          store.fault,
+        );
         if (observable && current === previous) stableFrames += 1;
         else stableFrames = 0;
         if (stableFrames >= 2) return snapshot();

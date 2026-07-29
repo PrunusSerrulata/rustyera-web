@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 #[cfg(not(unix))]
 use std::time::UNIX_EPOCH;
 
+use encoding_rs::{GBK, SHIFT_JIS, UTF_8};
 use era_protocol::ProtocolBytes;
 use era_runtime_protocol::{
     FileCategory, FileChange, FilePayload, ProjectIdentity, ProjectManifest, ReloadProject,
@@ -355,13 +356,18 @@ fn normalized_file_bytes(path: &Path, category: FileCategory) -> Result<Vec<u8>,
     if category == FileCategory::Resource {
         return Ok(bytes);
     }
-    let text = String::from_utf8(bytes)
-        .map_err(|error| format!("{} is not valid UTF-8: {error}", path.display()))?;
-    Ok(text
-        .strip_prefix('\u{feff}')
-        .unwrap_or(&text)
-        .as_bytes()
-        .to_vec())
+    decode_project_text(&bytes)
+        .map(String::into_bytes)
+        .ok_or_else(|| format!("{} is not valid UTF-8, Windows-31J, or GBK", path.display()))
+}
+
+fn decode_project_text(bytes: &[u8]) -> Option<String> {
+    for encoding in [UTF_8, SHIFT_JIS, GBK] {
+        if let Some(text) = encoding.decode_without_bom_handling_and_without_replacement(bytes) {
+            return Some(text.strip_prefix('\u{feff}').unwrap_or(&text).to_owned());
+        }
+    }
+    None
 }
 
 fn metadata_signature(metadata: &fs::Metadata) -> [u64; 5] {
@@ -516,9 +522,8 @@ fn read_file(root: &Path, path: &Path, category: FileCategory) -> Result<Submitt
     let (payload, normalized) = if category == FileCategory::Resource {
         (FilePayload::Bytes(ProtocolBytes::new(bytes.clone())), bytes)
     } else {
-        let text = String::from_utf8(bytes)
-            .map_err(|error| format!("{relative_path} is not valid UTF-8: {error}"))?;
-        let text = text.strip_prefix('\u{feff}').unwrap_or(&text).to_owned();
+        let text = decode_project_text(&bytes)
+            .ok_or_else(|| format!("{relative_path} is not valid UTF-8, Windows-31J, or GBK"))?;
         let normalized = text.as_bytes().to_vec();
         (FilePayload::Utf8(text), normalized)
     };
@@ -553,8 +558,15 @@ mod tests {
     fn quick_scan_identity_matches_materialized_manifest_and_writes_an_index() {
         let directory = tempfile::tempdir().unwrap();
         let erb = directory.path().join("ERB");
+        let csv = directory.path().join("CSV");
         fs::create_dir(&erb).unwrap();
+        fs::create_dir(&csv).unwrap();
         fs::write(erb.join("sample.erb"), "\u{feff}@TEST\nRETURN").unwrap();
+        fs::write(
+            csv.join("_default.config"),
+            b"\x91\xe5\x95\xb6\x8e\x9a:YES\r\n",
+        )
+        .unwrap();
 
         let mut quick = ProjectHost::scan_quick(directory.path(), 7).unwrap();
         let quick_identity = quick.identity();
@@ -564,6 +576,10 @@ mod tests {
             quick_identity,
             era_web_bridge::project_identity(materialized).unwrap()
         );
+        assert!(materialized.files.iter().any(|file| {
+            file.relative_path == "CSV/_default.config"
+                && matches!(&file.payload, FilePayload::Utf8(text) if text == "大文字:YES\r\n")
+        }));
         assert!(
             directory
                 .path()

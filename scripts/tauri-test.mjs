@@ -8,13 +8,16 @@ import { fileURLToPath } from "node:url";
 const repository = fileURLToPath(new URL("..", import.meta.url));
 const arguments_ = process.argv.slice(2);
 const projectIndex = arguments_.indexOf("--project");
+const specIndex = arguments_.indexOf("--spec");
 const configuredProject =
   projectIndex >= 0 ? arguments_[projectIndex + 1] : process.env.ERATW_PROJECT;
 const project = path.resolve(repository, configuredProject ?? "../games/eraTW");
+const configuredSpec = specIndex >= 0 ? arguments_[specIndex + 1] : undefined;
 
 if (projectIndex >= 0 && !arguments_[projectIndex + 1]) {
   throw new Error("--project requires a path");
 }
+if (specIndex >= 0 && !configuredSpec) throw new Error("--spec requires a path");
 await access(project);
 
 const environment = {
@@ -22,6 +25,8 @@ const environment = {
   VITE_RUSTYERA_TEST: "1",
   VITE_RUSTYERA_TAURI_TEST: "1",
   VITE_RUSTYERA_TEST_PROJECT: project,
+  VITE_RUSTYERA_TAURI_PROJECT_SMOKE:
+    configuredSpec && path.basename(configuredSpec) === "project-smoke.spec.mjs" ? "1" : "0",
 };
 
 await run(
@@ -40,7 +45,9 @@ await run(
   ],
   environment,
 );
-await run("npx", ["wdio", "run", "wdio.tauri.conf.mjs"], environment);
+const wdioArguments = ["wdio", "run", "wdio.tauri.conf.mjs"];
+if (configuredSpec) wdioArguments.push("--spec", path.resolve(repository, configuredSpec));
+await run("npx", wdioArguments, environment);
 
 function run(command, args, env) {
   return new Promise((resolve, reject) => {
