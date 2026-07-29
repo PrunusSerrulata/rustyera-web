@@ -206,6 +206,7 @@ select {
   width: max-content;
   min-width: 100%;
   min-height: 1.55em;
+  margin: 0;
   padding: 0;
   white-space: pre;
   overflow-wrap: normal;
