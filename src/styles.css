@@ -273,6 +273,14 @@ select {
   vertical-align: top;
   image-rendering: auto;
 }
+.media-positioned {
+  overflow: visible;
+}
+.media-positioned > .media-visual {
+  position: absolute;
+  left: 0;
+  display: block;
+}
 .media-sprite {
   overflow: hidden;
 }

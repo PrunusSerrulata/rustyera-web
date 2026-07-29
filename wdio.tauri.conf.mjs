@@ -23,6 +23,7 @@ export const config = {
     {
       browserName: "tauri",
       "tauri:options": { application: binary },
+      "wdio:tauriServiceOptions": { driverProvider: "embedded" },
     },
   ],
   logLevel: "warn",

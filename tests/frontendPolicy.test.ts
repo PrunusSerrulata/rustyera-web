@@ -35,6 +35,10 @@ describe("frontend host and image-line policy", () => {
     expect(stylesheet).toMatch(
       /\.game-line:has\(\.media-image, \.canvas-replay\)[\s\S]*?margin:\s*0;[\s\S]*?padding:\s*0;[\s\S]*?line-height:\s*0;/,
     );
+    expect(stylesheet).toMatch(/\.media-positioned\s*\{\s*overflow:\s*visible;/);
+    expect(stylesheet).toMatch(
+      /\.media-positioned > \.media-visual\s*\{[^}]*position:\s*absolute;[^}]*left:\s*0;/s,
+    );
   });
 
   it("styles timestamps and fixed-width log levels like the TUI", () => {

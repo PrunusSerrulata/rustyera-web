@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { compareObservations, isolatedProject, loadScenario } from "../scripts/web-test-lib.mjs";
+import {
+  compareObservations,
+  isolatedProject,
+  loadScenario,
+  runAction,
+} from "../scripts/web-test-lib.mjs";
 
 describe("web game test scenario", () => {
   it("uses an explicit seed and translates compatible TUI inputs", async () => {
@@ -75,5 +80,28 @@ describe("web game test scenario", () => {
     await expect(access(path.join(isolated.project, "game.ERB"))).resolves.toBeUndefined();
     await expect(access(path.join(isolated.project, "sav", "global.sav"))).rejects.toThrow();
     await isolated.close();
+  });
+
+  it("waits for a submitted runtime input to consume the current wait", async () => {
+    let waitId = "4";
+    vi.stubGlobal("window", {
+      __RUSTYERA_TEST__: { snapshot: () => ({ fault: null, wait: { wait_id: waitId } }) },
+    });
+    const input = { fill: vi.fn() };
+    const button = { click: vi.fn(() => (waitId = "5")) };
+    const page = {
+      evaluate: vi.fn((callback) => callback()),
+      locator: vi.fn((selector) => (selector.includes("input") ? input : button)),
+      waitForFunction: vi.fn((callback, argument) => callback(argument)),
+    };
+
+    await expect(runAction(page, { type: "input", value: 100 })).resolves.toEqual({
+      semanticInput: "100",
+    });
+
+    expect(input.fill).toHaveBeenCalledWith("100");
+    expect(button.click).toHaveBeenCalledOnce();
+    expect(page.waitForFunction).toHaveBeenCalledWith(expect.any(Function), "4");
+    vi.unstubAllGlobals();
   });
 });

@@ -12,6 +12,7 @@ const store = useRuntimeStore();
 const source = ref("");
 const failed = ref(false);
 const hovered = ref(false);
+const naturalSize = ref<{ width: number; height: number }>();
 const activeResourceId = computed(() =>
   hovered.value && props.placement.hover_resource_id
     ? props.placement.hover_resource_id
@@ -33,6 +34,7 @@ const canvasReplay = computed(() => {
 
 watchEffect((onCleanup) => {
   const resourceId = frame.value?.resource_id ?? activeResourceId.value;
+  naturalSize.value = undefined;
   if (!resourceId || canvasReplay.value) {
     source.value = "";
     failed.value = false;
@@ -54,12 +56,16 @@ watchEffect((onCleanup) => {
 });
 
 const dimensions = computed(() => {
-  const spriteWidth = positive(sprite.value?.size?.[0]);
-  const spriteHeight = positive(sprite.value?.size?.[1]);
+  const spriteWidth = positive(sprite.value?.size?.[0]) ?? naturalSize.value?.width;
+  const spriteHeight = positive(sprite.value?.size?.[1]) ?? naturalSize.value?.height;
   const requestedWidth = projectLength(props.placement.requested_width);
   const requestedHeight = projectLength(props.placement.requested_height);
-  let width = requestedWidth ?? spriteWidth;
-  let height = requestedHeight ?? spriteHeight;
+  let width = requestedWidth;
+  let height = requestedHeight;
+  if (width == null && height == null) {
+    width = spriteWidth;
+    height = spriteHeight;
+  }
   if (width != null && height == null && spriteWidth && spriteHeight) {
     height = (width * spriteHeight) / spriteWidth;
   } else if (height != null && width == null && spriteWidth && spriteHeight) {
@@ -78,12 +84,24 @@ const opacity = computed(() =>
     : 1,
 );
 const scale = computed(() => store.effectivePreferences.imageScale);
+const positioned = computed(() => props.placement.requested_y != null);
 const directStyle = computed(() => ({
   width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
   height: dimensions.value.height ? `${dimensions.value.height * scale.value}px` : undefined,
   top: verticalOffset(),
   opacity: opacity.value,
   zIndex: props.placement.depth,
+}));
+const positionedSlotStyle = computed(() => ({
+  width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
+  height: `${store.gameTextStyle.fontSizePx}px`,
+  opacity: opacity.value,
+  zIndex: props.placement.depth,
+}));
+const positionedVisualStyle = computed(() => ({
+  width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
+  height: dimensions.value.height ? `${dimensions.value.height * scale.value}px` : undefined,
+  top: verticalOffset(),
 }));
 const spriteStyle = computed(() => ({
   width: `${(dimensions.value.width ?? 0) * scale.value}px`,
@@ -123,8 +141,22 @@ function positive(value: unknown): number | undefined {
 }
 
 function verticalOffset(): string | undefined {
-  const y = projectLength(props.placement.requested_y);
-  return y ? `${y * scale.value}px` : undefined;
+  const value = props.placement.requested_y as PresentationLength | undefined;
+  if (!value) return undefined;
+  const magnitude =
+    value.unit === "pixels"
+      ? Number(value.value)
+      : value.unit === "logical"
+        ? Number(value.value) / 1000
+        : (Number(value.value) * store.gameTextStyle.fontSizePx) / 100;
+  return Number.isFinite(magnitude) ? `${magnitude * scale.value}px` : undefined;
+}
+
+function imageLoaded(event: Event): void {
+  const image = event.currentTarget as HTMLImageElement;
+  if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+    naturalSize.value = { width: image.naturalWidth, height: image.naturalHeight };
+  }
 }
 </script>
 
@@ -135,13 +167,52 @@ function verticalOffset(): string | undefined {
     :scale="store.effectivePreferences.imageScale"
   />
   <span
+    v-else-if="positioned && sprite && frame && source && dimensions.width && dimensions.height"
+    class="media-image media-positioned"
+    :style="positionedSlotStyle"
+    @mouseenter="hovered = true"
+    @mouseleave="hovered = false"
+  >
+    <span class="media-visual media-sprite" :style="positionedVisualStyle">
+      <img
+        :src="source"
+        :alt="alt ?? ''"
+        :style="spriteSourceStyle"
+        draggable="false"
+        @load="imageLoaded"
+      />
+    </span>
+  </span>
+  <span
     v-else-if="sprite && frame && source && dimensions.width && dimensions.height"
     class="media-image media-sprite"
     :style="spriteStyle"
     @mouseenter="hovered = true"
     @mouseleave="hovered = false"
   >
-    <img :src="source" :alt="alt ?? ''" :style="spriteSourceStyle" draggable="false" />
+    <img
+      :src="source"
+      :alt="alt ?? ''"
+      :style="spriteSourceStyle"
+      draggable="false"
+      @load="imageLoaded"
+    />
+  </span>
+  <span
+    v-else-if="positioned && source"
+    class="media-image media-positioned"
+    :style="positionedSlotStyle"
+    @mouseenter="hovered = true"
+    @mouseleave="hovered = false"
+  >
+    <img
+      class="media-visual"
+      :src="source"
+      :alt="alt ?? ''"
+      :style="positionedVisualStyle"
+      draggable="false"
+      @load="imageLoaded"
+    />
   </span>
   <img
     v-else-if="source"
@@ -152,6 +223,7 @@ function verticalOffset(): string | undefined {
     draggable="false"
     @mouseenter="hovered = true"
     @mouseleave="hovered = false"
+    @load="imageLoaded"
   />
   <span v-else-if="failed && alt" class="media-image-fallback">{{ alt }}</span>
 </template>

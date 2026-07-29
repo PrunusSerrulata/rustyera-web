@@ -242,9 +242,17 @@ export function resolveLocator(page, locator = {}) {
 
 export async function runAction(page, action) {
   if (action.type === "input") {
+    const beforeWaitId = await page.evaluate(
+      () => window.__RUSTYERA_TEST__.snapshot().wait?.wait_id,
+    );
     const input = page.locator(".prompt-bar input");
     await input.fill(String(action.value ?? ""));
     await page.locator(".prompt-bar button[type=submit]").click();
+    if (beforeWaitId != null)
+      await page.waitForFunction((waitId) => {
+        const snapshot = window.__RUSTYERA_TEST__.snapshot();
+        return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
+      }, beforeWaitId);
     return { semanticInput: String(action.value ?? "") };
   }
   const locator = action.locator ? resolveLocator(page, action.locator) : undefined;
