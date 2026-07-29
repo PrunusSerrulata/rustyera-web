@@ -1,9 +1,9 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { compareObservations, loadScenario } from "../scripts/web-test-lib.mjs";
+import { compareObservations, isolatedProject, loadScenario } from "../scripts/web-test-lib.mjs";
 
 describe("web game test scenario", () => {
   it("uses an explicit seed and translates compatible TUI inputs", async () => {
@@ -42,5 +42,38 @@ describe("web game test scenario", () => {
     const reference = { output_delta: { added: ["right"] }, wait: { kind: "StrValue" } };
 
     expect(compareObservations(rust, reference).equal).toBe(false);
+  });
+
+  it("copies only an explicitly requested compiled cache from frontend-private state", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "web-scenario-"));
+    const project = path.join(root, "project");
+    const cache = path.join(project, ".rustyera", "cache");
+    await mkdir(cache, { recursive: true });
+    await writeFile(path.join(cache, "compiled-project-v8.bin.zst"), "cache");
+    await writeFile(path.join(cache, "source-index-v1.json"), "index");
+
+    const isolated = await isolatedProject(project, { compiledCache: true });
+
+    await expect(
+      access(path.join(isolated.project, ".rustyera", "cache", "compiled-project-v8.bin.zst")),
+    ).resolves.toBeUndefined();
+    await expect(
+      access(path.join(isolated.project, ".rustyera", "cache", "source-index-v1.json")),
+    ).rejects.toThrow();
+    await isolated.close();
+  });
+
+  it("can isolate a fresh game without existing saves", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "web-scenario-"));
+    const project = path.join(root, "project");
+    await mkdir(path.join(project, "sav"), { recursive: true });
+    await writeFile(path.join(project, "sav", "global.sav"), "legacy save");
+    await writeFile(path.join(project, "game.ERB"), "@EVENTFIRST\nRETURN");
+
+    const isolated = await isolatedProject(project, { cleanSaves: true });
+
+    await expect(access(path.join(isolated.project, "game.ERB"))).resolves.toBeUndefined();
+    await expect(access(path.join(isolated.project, "sav", "global.sav"))).rejects.toThrow();
+    await isolated.close();
   });
 });

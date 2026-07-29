@@ -10,7 +10,7 @@ import type {
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import type { DiagnosisArchiveInput } from "@/core/diagnosis";
 import { createDiagnosisArchiveInWorker } from "@/platform/diagnosis";
-import { BrowserProject } from "@/platform/browserProject";
+import { BrowserProject, cacheIdentityManifest } from "@/platform/browserProject";
 import { database, loadBrowserPreferences, saveBrowserPreferences } from "@/platform/database";
 import { WorkerClient } from "@/platform/workerClient";
 
@@ -56,13 +56,33 @@ export class BrowserBridge implements FrontendBridge {
       await database.handles.put({ key: "last-project", handle });
     this.project = new BrowserProject(handle);
     const started = performance.now();
-    await this.worker.call("loadProject", await this.project.scan());
+    const manifest = await this.project.scan();
+    const sourceReadMs = performance.now() - started;
+    const cacheStarted = performance.now();
+    const cache = await this.project.readCompiledCache();
+    const cacheReadMs = performance.now() - cacheStarted;
+    const submitStarted = performance.now();
+    let cacheImported = false;
+    if (cache) {
+      try {
+        await this.worker.callWithTransfer(
+          "loadProjectWithCompiledCache",
+          [cacheIdentityManifest(manifest), cache],
+          [cache.buffer],
+        );
+        cacheImported = true;
+      } catch {
+        await this.worker.call("loadProject", manifest);
+      }
+    } else {
+      await this.worker.call("loadProject", manifest);
+    }
     return {
       quickScanMs: 0,
-      cacheReadMs: 0,
-      sourceReadMs: performance.now() - started,
-      submitMs: 0,
-      cacheImported: false,
+      cacheReadMs,
+      sourceReadMs,
+      submitMs: performance.now() - submitStarted,
+      cacheImported,
     } satisfies ProjectOpenMetrics;
   }
 

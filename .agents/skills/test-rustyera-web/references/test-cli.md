@@ -11,6 +11,10 @@ Use JSON `schema_version: 1`. The format is a compatible superset of the TUI sce
 - `seed`: Optional non-negative signed 32-bit integer for `new_game`. If absent, the runner creates
   and records a random seed. Restored state owns its RNG and ignores `seed`.
 - `clock`: Optional ISO timestamp; default `2026-01-01T00:00:00Z`.
+- `compiled_cache`: Copy an existing v8 project cache into the isolated browser fixture and verify
+  the browser import path; absent or false forces a cold source load.
+- `clean_saves`: Omit the project's existing `sav/` directory from the isolated browser fixture so
+  a `new_game` smoke test starts with fresh save storage.
 - `inputs`: TUI-compatible semantic input prefix. Each value is submitted through the real form.
 - `actions`: Ordered Web action prefix; it is mutually exclusive with `inputs`.
 - `watches`: Debug expressions such as `RESULT` or `FLAG:0,1`, sampled at stable waits.

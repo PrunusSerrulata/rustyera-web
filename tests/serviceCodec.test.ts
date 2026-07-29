@@ -19,4 +19,19 @@ describe("runtime service CBOR codec", () => {
       ]),
     );
   });
+
+  it("decodes byte payloads projected from WASM as BigInts", () => {
+    const encoded = encodeServicePayload(new Map<number, unknown>([[0, "resources/TITLE.png"]]));
+    const projected = BigUint64Array.from(encoded, BigInt);
+
+    expect(decodeServicePayload(projected)).toEqual(
+      new Map<number, unknown>([[0, "resources/TITLE.png"]]),
+    );
+  });
+
+  it("rejects projected values outside the byte range", () => {
+    expect(() => decodeServicePayload(BigUint64Array.from([256n]))).toThrow(
+      "runtime service payload contains a non-byte value",
+    );
+  });
 });

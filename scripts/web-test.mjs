@@ -51,7 +51,10 @@ async function execute(args) {
   );
   await mkdir(path.dirname(tracePath), { recursive: true });
   const trace = new TraceWriter(tracePath);
-  const webProject = await isolatedProject(scenario.project);
+  const webProject = await isolatedProject(scenario.project, {
+    compiledCache: scenario.compiled_cache === true,
+    cleanSaves: scenario.clean_saves === true,
+  });
   let referenceProject;
   let reference;
   let browser;
@@ -99,6 +102,28 @@ async function execute(args) {
           name: "rustyera-test-wasm",
           configureServer(viteServer) {
             viteServer.middlewares.use((request, response, next) => {
+              if (request.url?.startsWith("/__rustyera_test_file?")) {
+                const relative = new URL(request.url, "http://localhost").searchParams.get("path");
+                const target = path.resolve(webProject.project, relative ?? ".");
+                if (
+                  !relative ||
+                  (target !== webProject.project &&
+                    !target.startsWith(`${webProject.project}${path.sep}`))
+                ) {
+                  response.statusCode = 403;
+                  response.end();
+                  return;
+                }
+                response.setHeader("Content-Type", "application/octet-stream");
+                const stream = createReadStream(target);
+                stream.on("error", (error) => {
+                  if (!response.headersSent)
+                    response.statusCode = error.code === "ENOENT" ? 404 : 500;
+                  response.end();
+                });
+                stream.pipe(response);
+                return;
+              }
               const name = request.url?.match(/^\/__rustyera_test_wasm\/([^?]+)/)?.[1];
               if (!name || !["era_web_wasm.js", "era_web_wasm_bg.wasm"].includes(name))
                 return next();

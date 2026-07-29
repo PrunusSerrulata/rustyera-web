@@ -508,7 +508,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function handleService(request: any, correlationId?: number): Promise<void> {
     try {
-      const query = decodeServicePayload(new Uint8Array(request.payload));
+      const query = decodeServicePayload(request.payload);
       let response: Map<number, unknown>;
       switch (`${request.kind}/${request.operation}`) {
         case "entropy/random_seed": {
@@ -612,7 +612,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           type: "service_response",
           value: {
             request_id: request.request_id,
-            result: { type: "ready", payload: encodeServicePayload(response) },
+            result: { type: "ready", payload: [...encodeServicePayload(response)] },
           },
         },
         correlationId,
@@ -625,7 +625,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
             request_id: request.request_id,
             result: {
               type: "error",
-              error: { code: "frontend.unsupported_service", message: String(error) },
+              error: {
+                code: "frontend.unsupported_service",
+                message: `${request.kind}/${request.operation}: ${String(error)}`,
+              },
             },
           },
         },

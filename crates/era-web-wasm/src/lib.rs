@@ -3,7 +3,7 @@
 use era_debug_protocol::DebugMessage;
 use era_runtime::RuntimeDriveBudget;
 use era_runtime_protocol::{ProjectManifest, RuntimeMessage};
-use era_web_bridge::{WebSession, WebSessionOptions};
+use era_web_bridge::{WebSession, WebSessionOptions, project_identity};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -78,6 +78,27 @@ impl WasmRuntime {
         let manifest: ProjectManifest =
             serde_wasm_bindgen::from_value(manifest).map_err(js_error)?;
         to_js(self.inner.load_project(manifest).map_err(js_error)?)
+    }
+
+    /// Import a compiled project cache after validating its lightweight manifest identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error when the manifest, cache, or runtime transfer is invalid.
+    #[wasm_bindgen(js_name = loadProjectWithCompiledCache)]
+    pub fn load_project_with_compiled_cache(
+        &mut self,
+        manifest: JsValue,
+        cache: &js_sys::Uint8Array,
+    ) -> Result<JsValue, JsValue> {
+        let manifest: ProjectManifest =
+            serde_wasm_bindgen::from_value(manifest).map_err(js_error)?;
+        let identity = project_identity(&manifest).map_err(js_error)?;
+        to_js(
+            self.inner
+                .load_project_with_compiled_cache(identity, &cache.to_vec())
+                .map_err(js_error)?,
+        )
     }
 
     /// Drive one bounded worker slice and return all typed events.

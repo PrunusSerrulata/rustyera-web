@@ -44,12 +44,26 @@ export class BrowserProject {
       if (handle.kind === "directory") topLevel.add(name.toLocaleLowerCase());
     }
     const files: ScannedFile[] = [];
-    await this.walk(this.root, "", topLevel, files);
+    const reads: Array<() => Promise<void>> = [];
+    await this.walk(this.root, "", topLevel, files, reads);
+    await runBounded(reads, 8);
     files.sort((left, right) =>
       left.relative_path.localeCompare(right.relative_path, undefined, { sensitivity: "base" }),
     );
     this.manifestValue = { project_revision: this.revision, files };
     return this.manifestValue;
+  }
+
+  async readCompiledCache(): Promise<Uint8Array | undefined> {
+    try {
+      const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
+      const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
+      const handle = await cacheDirectory.getFileHandle("compiled-project-v8.bin.zst");
+      return new Uint8Array(await (await handle.getFile()).arrayBuffer());
+    } catch (error) {
+      if (errorKind(error) === "not_found") return undefined;
+      throw error;
+    }
   }
 
   async reloadRequest(): Promise<any> {
@@ -110,14 +124,14 @@ export class BrowserProject {
       if (operation.type === "read") {
         const file = await getFile(root, parts);
         const bytes = new Uint8Array(await file.arrayBuffer());
-        result = { type: "read", data: bytes, revision: hex(blake3(bytes)) };
+        result = { type: "read", data: [...bytes], revision: hex(blake3(bytes)) };
       } else if (operation.type === "write") {
         const handle = await getFileHandle(root, parts, true);
         const current = await optionalFile(handle);
         await checkPrecondition(current, operation.precondition);
         const writable = await handle.createWritable({ keepExistingData: false });
-        const bytes = new Uint8Array(operation.data);
-        await writable.write(bytes);
+        const bytes = decodeProtocolBytes(operation.data);
+        await writable.write(bytes as FileSystemWriteChunkType);
         await writable.close();
         result = { type: "written", revision: hex(blake3(bytes)) };
       } else if (operation.type === "delete") {
@@ -143,7 +157,7 @@ export class BrowserProject {
         const data = new Uint8Array(await file.slice(offset, end).arrayBuffer());
         result = {
           type: "read_chunk",
-          data,
+          data: [...data],
           offset: operation.offset,
           complete: end >= file.size,
           change_token: token,
@@ -173,40 +187,40 @@ export class BrowserProject {
     prefix: string,
     topLevel: Set<string>,
     output: ScannedFile[],
+    reads: Array<() => Promise<void>>,
   ): Promise<void> {
     for await (const [name, handle] of directory.entries()) {
       if (name.toLocaleLowerCase() === ".rustyera") continue;
       const relative = `${prefix}${name}`.normalize("NFC");
       if (handle.kind === "directory") {
-        await this.walk(handle, `${relative}/`, topLevel, output);
+        await this.walk(handle, `${relative}/`, topLevel, output, reads);
         continue;
       }
       const category = classify(relative, topLevel);
       if (!category) continue;
       this.files.set(relative.toLocaleLowerCase(), handle);
-      const bytes = new Uint8Array(await (await handle.getFile()).arrayBuffer());
-      if (category === "resource") {
-        output.push({
-          relative_path: relative,
-          category,
-          payload: { type: "bytes", value: bytes },
-          content_hash: blake3(bytes),
-        });
-      } else {
-        let text: string;
-        try {
-          text = new TextDecoder("utf-8", { fatal: true }).decode(bytes).replace(/^\uFEFF/, "");
-        } catch {
-          throw new Error(`${relative} 不是有效的 UTF-8 文件`);
+      reads.push(async () => {
+        const bytes = new Uint8Array(await (await handle.getFile()).arrayBuffer());
+        if (category === "resource") {
+          output.push({
+            relative_path: relative,
+            category,
+            payload: { type: "bytes", value: bytes },
+            content_hash: blake3(bytes),
+          });
+        } else {
+          const decoded = decodeProjectSource(bytes, relative);
+          const text =
+            category === "resource_manifest" ? normalizeResourceManifest(decoded) : decoded;
+          const normalized = new TextEncoder().encode(text);
+          output.push({
+            relative_path: relative,
+            category,
+            payload: { type: "utf8", value: text },
+            content_hash: blake3(normalized),
+          });
         }
-        const normalized = new TextEncoder().encode(text);
-        output.push({
-          relative_path: relative,
-          category,
-          payload: { type: "utf8", value: text },
-          content_hash: blake3(normalized),
-        });
-      }
+      });
     }
   }
 
@@ -214,6 +228,75 @@ export class BrowserProject {
     if (namespace === "resource") return this.root;
     return this.root.getDirectoryHandle(storageDirectoryName(namespace), { create: true });
   }
+}
+
+export function cacheIdentityManifest(manifest: BrowserManifest): BrowserManifest {
+  return {
+    project_revision: manifest.project_revision,
+    files: manifest.files.map((file) => ({
+      ...file,
+      payload:
+        file.category === "resource"
+          ? { type: "bytes", value: new Uint8Array() }
+          : { type: "utf8", value: "" },
+    })),
+  };
+}
+
+export async function runBounded(
+  tasks: Array<() => Promise<void>>,
+  maximumConcurrency: number,
+): Promise<void> {
+  let next = 0;
+  const errors: unknown[] = new Array(tasks.length);
+  const worker = async () => {
+    while (next < tasks.length) {
+      const index = next++;
+      try {
+        await tasks[index]();
+      } catch (error) {
+        errors[index] = error;
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(tasks.length, maximumConcurrency) }, () => worker()),
+  );
+  const firstError = errors.find((error) => error !== undefined);
+  if (firstError !== undefined) throw firstError;
+}
+
+export function decodeProjectSource(bytes: Uint8Array, relativePath: string): string {
+  for (const encoding of ["utf-8", "shift_jis", "gbk"]) {
+    try {
+      return new TextDecoder(encoding, { fatal: true }).decode(bytes).replace(/^\uFEFF/, "");
+    } catch {
+      // Try the next legacy encoding accepted by the other frontend.
+    }
+  }
+  throw new Error(`${relativePath} 不是有效的 UTF-8、Windows-31J 或 GBK 文件`);
+}
+
+export function decodeProtocolBytes(value: ArrayLike<number | bigint>): Uint8Array {
+  return Uint8Array.from(value, (item) => {
+    const byte = Number(item);
+    if (!Number.isInteger(byte) || byte < 0 || byte > 0xff) throw new Error("存储操作包含无效字节");
+    return byte;
+  });
+}
+
+export function normalizeResourceManifest(text: string): string {
+  return text.replace(/([^\r\n]*)(\r\n|\r|\n|$)/g, (line, body: string, ending: string) => {
+    if (!body) return ending;
+    const fields = body.split(",");
+    const value = fields[1];
+    if (value?.trim() && value.trim().toLocaleLowerCase() !== "anime") {
+      const leading = value.slice(0, value.length - value.trimStart().length);
+      const trailing = value.slice(value.trimEnd().length);
+      fields[1] = `${leading}${value.trim().normalize("NFC")}${trailing}`;
+    }
+    return `${fields.join(",")}${ending}`;
+  });
 }
 
 export function storageDirectoryName(namespace: string): string {

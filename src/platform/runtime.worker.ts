@@ -4,6 +4,7 @@ type WasmModule = {
     submitRuntime(message: unknown, correlationId?: bigint): bigint;
     submitDebug(message: unknown, correlationId?: bigint): bigint;
     loadProject(manifest: unknown): bigint;
+    loadProjectWithCompiledCache(manifest: unknown, cache: Uint8Array): bigint;
     pump(instructions: number, transitions: number): unknown;
   };
 };
@@ -34,6 +35,9 @@ self.onmessage = async (event: MessageEvent) => {
           break;
         case "loadProject":
           result = runtime.loadProject(args[0]);
+          break;
+        case "loadProjectWithCompiledCache":
+          result = runtime.loadProjectWithCompiledCache(args[0], args[1] as Uint8Array);
           break;
         case "pump":
           result = runtime.pump(100_000, 1024);

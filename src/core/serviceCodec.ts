@@ -11,8 +11,17 @@ const encoder = new Encoder({
   tagUint8Array: false,
 });
 
-export function decodeServicePayload(payload: Uint8Array): unknown {
-  return decoder.decode(payload);
+export function decodeServicePayload(payload: Uint8Array | ArrayLike<number | bigint>): unknown {
+  const bytes =
+    payload instanceof Uint8Array
+      ? payload
+      : Uint8Array.from(payload, (value) => {
+          const byte = Number(value);
+          if (!Number.isInteger(byte) || byte < 0 || byte > 0xff)
+            throw new Error("runtime service payload contains a non-byte value");
+          return byte;
+        });
+  return decoder.decode(bytes);
 }
 
 export function encodeServicePayload(payload: Map<number, unknown>): Uint8Array {

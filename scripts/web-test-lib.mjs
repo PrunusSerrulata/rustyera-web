@@ -100,12 +100,23 @@ export class TraceWriter {
   }
 }
 
-export async function isolatedProject(source) {
+export async function isolatedProject(source, options = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "rustyera-web-test-"));
   const destination = path.join(root, "project");
   await cp(source, destination, {
     recursive: true,
-    filter: (candidate) => path.basename(candidate) !== ".rustyera",
+    filter: (candidate) => {
+      const relative = path.relative(source, candidate);
+      if (options.cleanSaves && relative.split(path.sep)[0]?.toLocaleLowerCase() === "sav")
+        return false;
+      if (!relative.split(path.sep).includes(".rustyera")) return true;
+      if (!options.compiledCache) return false;
+      return [
+        ".rustyera",
+        path.join(".rustyera", "cache"),
+        path.join(".rustyera", "cache", "compiled-project-v8.bin.zst"),
+      ].includes(relative);
+    },
   });
   return { root, project: destination, close: () => rm(root, { recursive: true, force: true }) };
 }
@@ -126,7 +137,6 @@ export async function installRemoteFileSystem(page, root) {
         kind: entry.isDirectory() ? "directory" : "file",
       }));
     }
-    if (request.op === "read") return [...(await readFile(target))];
     if (request.op === "stat") {
       const stat = await lstat(target);
       return { size: stat.size, lastModified: stat.mtimeMs };
@@ -142,6 +152,17 @@ export async function installRemoteFileSystem(page, root) {
     throw new Error(`unknown filesystem operation ${request.op}`);
   });
   await page.addInitScript(() => {
+    const callFileSystem = async (request) => {
+      try {
+        return await window.__rustyeraFs(request);
+      } catch (error) {
+        const message = String(error);
+        if (message.includes("ENOENT")) throw new DOMException(message, "NotFoundError");
+        if (message.includes("EACCES") || message.includes("EPERM"))
+          throw new DOMException(message, "NotAllowedError");
+        throw error;
+      }
+    };
     class RemoteFileHandle {
       kind = "file";
       constructor(name, relativePath) {
@@ -149,11 +170,14 @@ export async function installRemoteFileSystem(page, root) {
         this.relativePath = relativePath;
       }
       async getFile() {
-        const [data, stat] = await Promise.all([
-          window.__rustyeraFs({ op: "read", path: this.relativePath }),
-          window.__rustyeraFs({ op: "stat", path: this.relativePath }),
-        ]);
-        return new File([new Uint8Array(data)], this.name, { lastModified: stat.lastModified });
+        const stat = await callFileSystem({ op: "stat", path: this.relativePath });
+        const response = await fetch(
+          `/__rustyera_test_file?path=${encodeURIComponent(this.relativePath)}`,
+        );
+        if (response.status === 404)
+          throw new DOMException(`File not found: ${this.relativePath}`, "NotFoundError");
+        if (!response.ok) throw new Error(`cannot read test file: HTTP ${response.status}`);
+        return new File([await response.blob()], this.name, { lastModified: stat.lastModified });
       }
       async createWritable() {
         let data = new Uint8Array();
@@ -161,8 +185,7 @@ export async function installRemoteFileSystem(page, root) {
           write: async (value) => {
             data = value instanceof Uint8Array ? value : new Uint8Array(await value.arrayBuffer());
           },
-          close: () =>
-            window.__rustyeraFs({ op: "write", path: this.relativePath, data: [...data] }),
+          close: () => callFileSystem({ op: "write", path: this.relativePath, data: [...data] }),
         };
       }
       queryPermission = async () => "granted";
@@ -178,7 +201,7 @@ export async function installRemoteFileSystem(page, root) {
         return this.relativePath ? `${this.relativePath}/${name}` : name;
       }
       async *entries() {
-        for (const entry of await window.__rustyeraFs({ op: "entries", path: this.relativePath }))
+        for (const entry of await callFileSystem({ op: "entries", path: this.relativePath }))
           yield [
             entry.name,
             entry.kind === "directory"
@@ -188,16 +211,16 @@ export async function installRemoteFileSystem(page, root) {
       }
       async getDirectoryHandle(name, options = {}) {
         const relative = this.child(name);
-        if (options.create) await window.__rustyeraFs({ op: "mkdir", path: relative });
+        if (options.create) await callFileSystem({ op: "mkdir", path: relative });
         return new RemoteDirectoryHandle(name, relative);
       }
       async getFileHandle(name, options = {}) {
         const relative = this.child(name);
-        if (options.create) await window.__rustyeraFs({ op: "write", path: relative, data: [] });
+        if (options.create) await callFileSystem({ op: "write", path: relative, data: [] });
         return new RemoteFileHandle(name, relative);
       }
       removeEntry(name) {
-        return window.__rustyeraFs({ op: "delete", path: this.child(name) });
+        return callFileSystem({ op: "delete", path: this.child(name) });
       }
       queryPermission = async () => "granted";
       requestPermission = async () => "granted";

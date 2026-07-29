@@ -78,8 +78,9 @@ font list. The user must grant read/write access; the application does not copy 
 IndexedDB. IndexedDB stores only global preferences and the last directory handle.
 
 Other browsers receive a clear unsupported-capability error rather than silently switching storage
-semantics. Tauri remains the portable desktop option. Mobile, video, MIDI, WMA, and legacy source
-encodings are not supported. Project source is decoded as strict UTF-8.
+semantics. Tauri remains the portable desktop option. Mobile, video, MIDI, and WMA are not
+supported. Project source is normalized to UTF-8 at the frontend boundary from strict UTF-8,
+Windows-31J, or GBK input.
 
 ## Rendering and media
 

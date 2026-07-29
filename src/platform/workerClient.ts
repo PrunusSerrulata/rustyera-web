@@ -24,11 +24,19 @@ export class WorkerClient {
   }
 
   call<T>(method: string, ...args: unknown[]): Promise<T> {
+    return this.request(method, args, []);
+  }
+
+  callWithTransfer<T>(method: string, args: unknown[], transfer: Transferable[]): Promise<T> {
+    return this.request(method, args, transfer);
+  }
+
+  private request<T>(method: string, args: unknown[], transfer: Transferable[]): Promise<T> {
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       try {
-        this.worker.postMessage({ id, method, args });
+        this.worker.postMessage({ id, method, args }, transfer);
       } catch (error) {
         this.pending.delete(id);
         reject(new Error(`Worker ${method} 消息不可克隆：${String(error)}`));
