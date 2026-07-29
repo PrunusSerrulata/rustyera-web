@@ -63,6 +63,23 @@ describe("runtime store session lifecycle", () => {
     vi.unstubAllEnvs();
   });
 
+  it("uses the fatal-error diagnosis export for manual diagnosis requests", async () => {
+    const store = useRuntimeStore();
+
+    await store.exportDiagnosis();
+
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      {
+        type: "state_export_request",
+        value: { kind: "vm_snapshot", snapshot_purpose: "diagnosis" },
+      },
+      undefined,
+    );
+    expect(store.testTransferState().export).toEqual(
+      expect.objectContaining({ name: "runtime-diagnosis.snapshot" }),
+    );
+  });
+
   it("starts a test new game with the configured deterministic seed", async () => {
     vi.stubEnv("VITE_RUSTYERA_TEST", "1");
     bridge.openProject.mockResolvedValue({

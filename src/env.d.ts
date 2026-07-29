@@ -4,6 +4,8 @@ interface ImportMetaEnv {
   readonly VITE_RUSTYERA_TEST?: string;
   readonly VITE_RUSTYERA_TAURI_TEST?: string;
   readonly VITE_RUSTYERA_TEST_PROJECT?: string;
+  readonly VITE_RUSTYERA_FRONTEND_VERSION: string;
+  readonly VITE_RUSTYERA_CORE_VERSION: string;
 }
 
 interface Window {
@@ -12,6 +14,7 @@ interface Window {
   showDirectoryPicker?: (options?: {
     mode?: "read" | "readwrite";
   }) => Promise<FileSystemDirectoryHandle>;
+  showSaveFilePicker?: (options?: { suggestedName?: string }) => Promise<FileSystemFileHandle>;
   __RUSTYERA_TEST__?: import("@/testing/control").WebTestControl;
   __RUSTYERA_TEST_DOWNLOADS__?: Array<{ name: string; bytes: Uint8Array }>;
 }

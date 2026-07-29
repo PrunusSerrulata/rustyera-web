@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
 
+import AboutDialog from "@/components/AboutDialog.vue";
 import DebugDialogs from "@/components/DebugDialogs.vue";
 import FaultDialog from "@/components/FaultDialog.vue";
 import GameViewport from "@/components/GameViewport.vue";
@@ -9,7 +10,8 @@ import PreferencesDialog from "@/components/PreferencesDialog.vue";
 import { useRuntimeStore } from "@/stores/runtime";
 
 const store = useRuntimeStore();
-const menu = ref<"file" | "debug" | null>(null);
+const menu = ref<"file" | "debug" | "help" | null>(null);
+const aboutOpen = ref(false);
 
 function action(callback: () => void | Promise<void>): void {
   menu.value = null;
@@ -134,6 +136,29 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
           </button>
         </div>
       </div>
+      <div class="menu">
+        <button
+          :aria-expanded="menu === 'help'"
+          @click.stop="menu = menu === 'help' ? null : 'help'"
+        >
+          帮助
+        </button>
+        <div v-if="menu === 'help'" class="menu-popup">
+          <button :disabled="!store.projectOpen" @click="action(store.exportDiagnosis)">
+            导出诊断信息…
+          </button>
+          <hr />
+          <button
+            @click="
+              action(() => {
+                aboutOpen = true;
+              })
+            "
+          >
+            关于…
+          </button>
+        </div>
+      </div>
       <span class="menu-spacer" />
       <span class="runtime-status" :title="store.status">{{ store.status }}</span>
       <span class="host-badge">{{ store.bridgeKind === "tauri" ? "Tauri" : "WASM" }}</span>
@@ -189,5 +214,6 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
     />
     <DebugDialogs />
     <FaultDialog />
+    <AboutDialog :open="aboutOpen" @close="aboutOpen = false" />
   </div>
 </template>

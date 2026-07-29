@@ -16,4 +16,15 @@ test("shared shell exposes menus and draggable preferences", async ({ page }) =>
   await page.getByRole("button", { name: "偏好设置…" }).click();
   await dialog.getByRole("button", { name: "取消" }).click();
   await expect(dialog).toBeHidden();
+
+  await page.getByRole("button", { name: "帮助", exact: true }).click();
+  await expect(page.getByRole("button", { name: "导出诊断信息…" })).toBeDisabled();
+  await page.getByRole("button", { name: "关于…" }).click();
+  const about = page.getByRole("dialog", { name: "关于 RustyEra" });
+  await expect(about).toBeVisible();
+  await expect(about.getByText("PrunusSerrulata")).toBeVisible();
+  await expect(about.getByText("0.1.0 (75f5db87)")).toBeVisible();
+  await expect(about.getByText("GPL-3.0-only")).toBeVisible();
+  await about.getByRole("button", { name: "确定" }).click();
+  await expect(about).toBeHidden();
 });

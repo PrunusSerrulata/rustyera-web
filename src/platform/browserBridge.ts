@@ -138,6 +138,13 @@ export class BrowserBridge implements FrontendBridge {
       (window.__RUSTYERA_TEST_DOWNLOADS__ ??= []).push({ name, bytes: new Uint8Array(bytes) });
       return;
     }
+    if (window.showSaveFilePicker) {
+      const handle = await window.showSaveFilePicker({ suggestedName: name });
+      const writer = await handle.createWritable();
+      await writer.write(bytes as FileSystemWriteChunkType);
+      await writer.close();
+      return;
+    }
     const url = URL.createObjectURL(
       new Blob([bytes as BlobPart], { type: "application/octet-stream" }),
     );

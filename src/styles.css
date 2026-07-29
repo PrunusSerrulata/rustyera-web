@@ -131,6 +131,20 @@ select {
   font-size: 0.75rem;
 }
 
+.about-details {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.55rem 1.25rem;
+  min-width: 24rem;
+  margin: 0.5rem 0 1rem;
+}
+.about-details dt {
+  color: #aeb3bf;
+}
+.about-details dd {
+  margin: 0;
+}
+
 .welcome {
   grid-row: 2 / 4;
   display: grid;
