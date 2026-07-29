@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 import { decodeImageMetadata } from "@/core/imageMetadata";
+import type { DiagnosisArchiveInput } from "@/core/diagnosis";
+import { createDiagnosisArchiveInWorker } from "@/platform/diagnosis";
 import type {
   DebugMessage,
   FrontendBridge,
@@ -134,15 +136,25 @@ export class TauriBridge implements FrontendBridge {
     return invoke("save_preferences", { preferences });
   }
 
+  projectName(): string | undefined {
+    return this.projectPath?.split(/[\\/]/).filter(Boolean).at(-1);
+  }
+
   async openUpload(): Promise<Uint8Array | undefined> {
     const path = await open({ directory: false, multiple: false, title: "选择 VM 快照" });
     if (typeof path !== "string") return undefined;
     return new Uint8Array(await invoke<number[]>("read_import", { path }));
   }
 
-  async saveDownload(name: string, bytes: Uint8Array): Promise<void> {
+  async saveDownload(name: string, bytes: Uint8Array): Promise<boolean> {
     const path = await save({ defaultPath: name });
-    if (path) await invoke("write_export", { path, bytes: [...bytes] });
+    if (!path) return false;
+    await invoke("write_export", { path, bytes: [...bytes] });
+    return true;
+  }
+
+  createDiagnosisArchive(input: DiagnosisArchiveInput): Promise<Uint8Array> {
+    return createDiagnosisArchiveInWorker(input);
   }
 
   async writeCompiledCacheChunk(

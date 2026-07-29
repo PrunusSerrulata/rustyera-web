@@ -8,6 +8,8 @@ import type {
   SessionOptions,
 } from "@/core/types";
 import { decodeImageMetadata } from "@/core/imageMetadata";
+import type { DiagnosisArchiveInput } from "@/core/diagnosis";
+import { createDiagnosisArchiveInWorker } from "@/platform/diagnosis";
 import { BrowserProject } from "@/platform/browserProject";
 import { database, loadBrowserPreferences, saveBrowserPreferences } from "@/platform/database";
 import { WorkerClient } from "@/platform/workerClient";
@@ -116,6 +118,10 @@ export class BrowserBridge implements FrontendBridge {
     return saveBrowserPreferences(preferences);
   }
 
+  projectName(): string | undefined {
+    return this.project?.root.name;
+  }
+
   openUpload(): Promise<Uint8Array | undefined> {
     return new Promise((resolve, reject) => {
       const input = document.createElement("input");
@@ -133,17 +139,17 @@ export class BrowserBridge implements FrontendBridge {
     });
   }
 
-  async saveDownload(name: string, bytes: Uint8Array): Promise<void> {
+  async saveDownload(name: string, bytes: Uint8Array): Promise<boolean> {
     if (import.meta.env.VITE_RUSTYERA_TEST === "1") {
       (window.__RUSTYERA_TEST_DOWNLOADS__ ??= []).push({ name, bytes: new Uint8Array(bytes) });
-      return;
+      return true;
     }
     if (window.showSaveFilePicker) {
       const handle = await window.showSaveFilePicker({ suggestedName: name });
       const writer = await handle.createWritable();
       await writer.write(bytes as FileSystemWriteChunkType);
       await writer.close();
-      return;
+      return true;
     }
     const url = URL.createObjectURL(
       new Blob([bytes as BlobPart], { type: "application/octet-stream" }),
@@ -153,6 +159,11 @@ export class BrowserBridge implements FrontendBridge {
     anchor.download = name;
     anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 0);
+    return true;
+  }
+
+  createDiagnosisArchive(input: DiagnosisArchiveInput): Promise<Uint8Array> {
+    return createDiagnosisArchiveInWorker(input);
   }
 
   async writeCompiledCacheChunk(

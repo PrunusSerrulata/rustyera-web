@@ -49,29 +49,51 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
           文件
         </button>
         <div v-if="menu === 'file'" class="menu-popup">
-          <button @click="action(store.openProject)">打开项目…</button>
+          <button :disabled="store.gameInteractionsBlocked" @click="action(store.openProject)">
+            打开项目…
+          </button>
           <hr />
-          <button :disabled="!store.projectOpen" @click="action(store.restart)">重新开始</button>
-          <button :disabled="!store.projectOpen" @click="action(store.returnToTitle)">
+          <button
+            :disabled="!store.projectOpen || store.gameInteractionsBlocked"
+            @click="action(store.restart)"
+          >
+            重新开始
+          </button>
+          <button
+            :disabled="!store.projectOpen || store.gameInteractionsBlocked"
+            @click="action(store.returnToTitle)"
+          >
             返回标题
           </button>
-          <button :disabled="!store.projectOpen" @click="action(store.reloadProject)">
+          <button
+            :disabled="!store.projectOpen || store.gameInteractionsBlocked"
+            @click="action(store.reloadProject)"
+          >
             重新加载全部脚本
           </button>
-          <button :disabled="!store.projectOpen" @click="action(store.reloadProject)">
+          <button
+            :disabled="!store.projectOpen || store.gameInteractionsBlocked"
+            @click="action(store.reloadProject)"
+          >
             重新加载文件夹…
           </button>
-          <button :disabled="!store.projectOpen" @click="action(store.reloadProject)">
+          <button
+            :disabled="!store.projectOpen || store.gameInteractionsBlocked"
+            @click="action(store.reloadProject)"
+          >
             重新加载单个脚本…
           </button>
           <hr />
           <button
-            :disabled="!store.projectOpen"
+            :disabled="!store.projectOpen || store.gameInteractionsBlocked"
             @click="action(() => store.exportSnapshot(store.debugEnabled ? 'debug' : 'normal'))"
           >
             导出 VM 快照…
           </button>
-          <button :disabled="!store.projectOpen" @click="action(store.restoreSnapshot)">
+          <button
+            :disabled="!store.projectOpen || store.gameInteractionsBlocked"
+            @click="action(store.restoreSnapshot)"
+          >
             恢复 VM 快照…
           </button>
           <hr />
@@ -85,7 +107,9 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
             偏好设置…
           </button>
           <hr />
-          <button @click="action(store.shutdown)">退出</button>
+          <button :disabled="store.gameInteractionsBlocked" @click="action(store.shutdown)">
+            退出
+          </button>
         </div>
       </div>
       <div class="menu">
@@ -96,32 +120,41 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
           调试
         </button>
         <div v-if="menu === 'debug'" class="menu-popup">
-          <button @click="action(store.enableDebug)">
+          <button :disabled="store.gameInteractionsBlocked" @click="action(store.enableDebug)">
             {{ store.debugEnabled ? "禁用调试" : "启用调试" }}
           </button>
           <hr />
           <button
-            :disabled="!store.debugEnabled"
+            :disabled="!store.debugEnabled || store.gameInteractionsBlocked"
             @click="action(() => store.openDebugDialog('console'))"
           >
             控制台…
           </button>
           <button
-            :disabled="!store.debugEnabled"
+            :disabled="!store.debugEnabled || store.gameInteractionsBlocked"
             @click="action(() => store.openDebugDialog('variables'))"
           >
             变量查看器…
           </button>
           <button
-            :disabled="!store.debugEnabled"
+            :disabled="!store.debugEnabled || store.gameInteractionsBlocked"
             @click="action(() => store.openDebugDialog('stack'))"
           >
             Fibers / 调用栈…
           </button>
-          <button :disabled="!store.canStepDebug" @click="action(store.stepDebug)">
-            单步运行 (F10)
+          <button
+            :disabled="!store.debugEnabled || store.gameInteractionsBlocked"
+            @click="action(store.toggleSingleStep)"
+          >
+            {{ store.singleStepEnabled ? "关闭单步运行" : "开启单步运行" }}
           </button>
-          <button :disabled="!store.debugStop" @click="action(store.continueDebug)">
+          <button :disabled="!store.canStepDebug" @click="action(store.stepDebug)">
+            单步执行 (F10)
+          </button>
+          <button
+            :disabled="!store.debugStop || store.gameInteractionsBlocked"
+            @click="action(store.continueDebug)"
+          >
             继续运行
           </button>
           <hr />
@@ -144,7 +177,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
           帮助
         </button>
         <div v-if="menu === 'help'" class="menu-popup">
-          <button :disabled="!store.projectOpen" @click="action(store.exportDiagnosis)">
+          <button :disabled="!store.canExportDiagnosis" @click="action(store.exportDiagnosis)">
             导出诊断信息…
           </button>
           <hr />
@@ -163,6 +196,15 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
       <span class="runtime-status" :title="store.status">{{ store.status }}</span>
       <span class="host-badge">{{ store.bridgeKind === "tauri" ? "Tauri" : "WASM" }}</span>
     </nav>
+
+    <div
+      v-if="store.diagnosisNotification"
+      class="diagnosis-notification"
+      role="status"
+      aria-live="polite"
+    >
+      {{ store.diagnosisNotification }}
+    </div>
 
     <section v-if="!store.projectOpen" class="welcome">
       <h1>RustyEra</h1>
@@ -183,12 +225,12 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
         <input
           v-model="store.prompt"
           :disabled="!store.canInteract"
-          :placeholder="store.canInteract ? '输入内容；Enter 提交' : '等待 Runtime…'"
+          :placeholder="store.promptPlaceholder"
           autofocus
         />
         <button
           type="button"
-          :disabled="!store.inputUndo?.token"
+          :disabled="!store.inputUndo?.token || store.gameInteractionsBlocked"
           title="撤销上次输入 (Ctrl+Z)"
           @click="store.undo"
         >

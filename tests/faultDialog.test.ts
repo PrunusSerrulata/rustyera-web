@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
 const store = reactive({
   fault: { message: "boom" } as { message: string } | null,
   faultActionBusy: false,
+  canExportDiagnosis: true,
+  gameInteractionsBlocked: false,
   ...mocks,
 });
 
@@ -31,7 +33,7 @@ describe("FaultDialog", () => {
     const wrapper = mount(FaultDialog, { attachTo: document.body });
     const buttons = [...document.body.querySelectorAll<HTMLButtonElement>("button")];
 
-    await clickNamed(buttons, "导出诊断快照");
+    await clickNamed(buttons, "导出诊断信息");
     await clickNamed(buttons, "返回主菜单");
     await clickNamed(buttons, "重启并重新编译");
     await clickNamed(buttons, "退出");

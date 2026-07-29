@@ -12,6 +12,7 @@ describe("Tauri debugger with the real eraTW project", () => {
     const initial = await snapshot();
     assert.equal(initial.bridgeKind, "tauri");
     assert.equal(initial.projectOpen, false);
+    assert.equal(initial.debug.singleStepEnabled, false);
 
     await openDebugMenu();
     await button("启用调试").click();
@@ -100,6 +101,13 @@ describe("Tauri debugger with the real eraTW project", () => {
 
     await closeDialog("变量查看器");
     await openDebugMenu();
+    await button("开启单步运行").click();
+    await browser.waitUntil(async () => (await snapshot())?.debug.singleStepEnabled === true);
+    const promptPlaceholder = await $(".prompt-bar input").getAttribute("placeholder");
+    assert.match(promptPlaceholder, /^单步暂停：.+:\d+（F10 继续）$/);
+
+    await openDebugMenu();
+    assert.equal(await button("关闭单步运行").isDisplayed(), true);
     await button("Fibers / 调用栈…").click();
     const stackDialog = await $(".dialog-panel[aria-label='Fibers / 调用栈']");
     await stackDialog.waitForDisplayed();
@@ -144,6 +152,7 @@ describe("Tauri debugger with the real eraTW project", () => {
         variable: { name: scalar.name, value: scalarValue },
         fiber: fiberText,
         frame: frameText,
+        prompt: promptPlaceholder,
         step: afterStep.debug.stop,
       }),
     );

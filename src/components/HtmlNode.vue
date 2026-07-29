@@ -41,7 +41,8 @@ const imagePlacement = computed(() =>
 
 function activate(): void {
   const interaction = props.node.interaction;
-  if (interaction?.enabled) void store.activate({ epoch: interaction.epoch, id: interaction.id });
+  if (interaction?.enabled && store.canInteract)
+    void store.activate({ epoch: interaction.epoch, id: interaction.id });
 }
 </script>
 
@@ -52,7 +53,7 @@ function activate(): void {
   <component
     :is="tag"
     v-else
-    :disabled="node.interaction && !node.interaction.enabled"
+    :disabled="node.interaction && (!node.interaction.enabled || !store.canInteract)"
     class="html-node"
     @click="activate"
   >

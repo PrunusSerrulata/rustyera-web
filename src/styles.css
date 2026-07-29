@@ -130,6 +130,18 @@ select {
   color: #cbd1dd;
   font-size: 0.75rem;
 }
+.diagnosis-notification {
+  position: fixed;
+  top: 42px;
+  right: 10px;
+  max-width: min(32rem, calc(100vw - 20px));
+  padding: 0.65rem 0.85rem;
+  border: 1px solid #5279eb;
+  border-radius: 6px;
+  background: #202b49;
+  box-shadow: 0 8px 24px #0009;
+  z-index: 900;
+}
 
 .about-details {
   display: grid;

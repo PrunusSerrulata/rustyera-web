@@ -47,6 +47,21 @@
     },
     { "type": "click", "locator": { "role": "button", "name": "关闭", "exact": true } },
     { "type": "click", "locator": { "css": ".menu:nth-child(2) > button" } },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "开启单步运行", "exact": true }
+    },
+    {
+      "type": "assert_state",
+      "expect": { "debug": { "singleStepEnabled": true } }
+    },
+    { "type": "click", "locator": { "css": ".menu:nth-child(2) > button" } },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "button", "name": "关闭单步运行", "exact": true },
+      "fields": ["count", "visible", "enabled"],
+      "expect": { "count": 1, "visible": true, "enabled": true }
+    },
     { "type": "click", "locator": { "role": "button", "name": "Fibers / 调用栈…", "exact": true } },
     {
       "type": "assert_dom",

@@ -18,6 +18,7 @@ const debugStore = reactive({
   debugFibers: [],
   debugFrames: [],
   debugVariableValues: {},
+  gameInteractionsBlocked: false,
   debugCommand,
 });
 

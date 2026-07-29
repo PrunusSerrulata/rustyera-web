@@ -43,7 +43,7 @@ function rgba(color: any): string {
   <button
     v-else-if="run.type === 'button'"
     class="game-button"
-    :disabled="!run.enabled"
+    :disabled="!run.enabled || !store.canInteract"
     :title="run.title"
     @click="store.activate(run.token)"
   >

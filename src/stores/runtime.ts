@@ -3,6 +3,7 @@ import { defineStore } from "pinia";
 import { computed, reactive, ref, shallowReactive, toRaw } from "vue";
 
 import { AudioEngine } from "@/core/audio";
+import { diagnosisArchiveName } from "@/core/diagnosis";
 import {
   debugStopToken,
   debugVariableKey,
@@ -36,10 +37,19 @@ interface LogEntry {
 
 interface ExportState {
   name: string;
-  kind: "download" | "compiled_cache";
+  kind: "download" | "compiled_cache" | "diagnosis_snapshot" | "diagnosis_artifact";
   chunks: Uint8Array[];
   received: number;
   descriptor?: any;
+  requestMessageId?: string;
+}
+
+interface DiagnosisState {
+  name: string;
+  projectName: string;
+  logs: string;
+  exportedAt: Date;
+  snapshot?: Uint8Array;
 }
 
 export type RuntimeStartKind = "new_game" | "traditional_save" | "vm_snapshot";
@@ -80,6 +90,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const variablesOpen = ref(false);
   const stackOpen = ref(false);
   const debugEnabled = ref(false);
+  const singleStepEnabled = ref(false);
   const debugGrant = ref<any>(null);
   const debugStop = ref<any>(null);
   const debugOutput = ref<string[]>([]);
@@ -88,11 +99,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const debugFibers = ref<any[]>([]);
   const debugFrames = ref<any[]>([]);
   const debugVariableValues = ref<Record<string, string>>({});
+  const diagnosisExporting = ref(false);
+  const diagnosisNotification = ref("");
   const heldKeys = new Set<number>();
   const audio = new AudioEngine(bridge, preferences.value);
   let pumpTimer: number | undefined;
   let compiledCacheTimer: number | undefined;
   let exportState: ExportState | undefined;
+  let diagnosisState: DiagnosisState | undefined;
+  let diagnosisNotificationTimer: number | undefined;
   let importBytes: Uint8Array | undefined;
   let importKind: Exclude<RuntimeStartKind, "new_game"> | undefined;
   let pendingStart: RuntimeTestConfiguration["start"] = { type: "new_game" };
@@ -124,15 +139,44 @@ export const useRuntimeStore = defineStore("runtime", () => {
     resolveGameTextStyle(effectivePreferences.value, presentation.lines),
   );
   const canInteract = computed(
-    () => presentation.inputWait != null && phase.value !== "debug_paused" && !fault.value,
+    () =>
+      presentation.inputWait != null &&
+      phase.value !== "debug_paused" &&
+      !fault.value &&
+      !diagnosisExporting.value,
   );
+  const runtimeReady = computed(
+    () =>
+      sessionReady.value &&
+      projectOpen.value &&
+      [
+        "running",
+        "waiting_input",
+        "waiting_external",
+        "debug_paused",
+        "stopped",
+        "faulted",
+      ].includes(phase.value),
+  );
+  const canExportDiagnosis = computed(
+    () => runtimeReady.value && !diagnosisExporting.value && !sessionTransitioning,
+  );
+  const gameInteractionsBlocked = computed(() => diagnosisExporting.value);
   const canStepDebug = computed(() => {
     const fiberId = selectedDebugFiber(debugStop.value);
     return (
+      singleStepEnabled.value &&
       debugStopToken(debugStop.value) != null &&
       fiberId != null &&
       debugFibers.value.some((fiber) => fiber.fiber_id === fiberId && fiber.state === "runnable")
     );
+  });
+  const promptPlaceholder = computed(() => {
+    if (diagnosisExporting.value) return "诊断信息导出中……";
+    const source = singleStepEnabled.value ? debugStop.value?.source : undefined;
+    if (source?.relative_path != null && source?.line != null)
+      return `单步暂停：${source.relative_path}:${Number(source.line) + 1}（F10 继续）`;
+    return canInteract.value ? "输入内容；Enter 提交" : "等待 Runtime…";
   });
 
   async function initialize(): Promise<void> {
@@ -392,10 +436,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
         log(value.level ?? "info", `[${value.code}] ${value.message}`, true);
         if (
           value.code === "runtime.compiled_cache_ready" &&
-          exportState?.kind === "compiled_cache" &&
+          (exportState?.kind === "compiled_cache" || exportState?.kind === "diagnosis_artifact") &&
           !exportState.descriptor
         )
-          await requestCompiledCacheExport();
+          await (exportState.kind === "diagnosis_artifact"
+            ? requestDiagnosisArtifact()
+            : requestCompiledCacheExport());
         break;
       case "log":
         if (!isRecoverableStaleDebugLog(value.message))
@@ -403,6 +449,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "command_rejected":
         log("warning", value.message ?? "Runtime 拒绝了命令", true);
+        if (
+          exportState?.requestMessageId === String(correlationId) &&
+          !String(value.message ?? "").includes("compiled project cache preparation started") &&
+          !String(value.message ?? "").includes("compiled project cache is still being prepared")
+        ) {
+          const message = `状态导出被 Runtime 拒绝：${value.message ?? "未知原因"}`;
+          if (exportState.kind.startsWith("diagnosis_")) finishDiagnosis(false, message);
+          else {
+            exportState = undefined;
+            status.value = message;
+            if (diagnosisExporting.value) void startDiagnosisSnapshot();
+          }
+        }
         break;
       case "exit_requested":
         if (value.reason === "restart") await restart();
@@ -610,6 +669,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function activate(token: InteractionToken): Promise<void> {
+    if (!canInteract.value) return;
     await submitIntent({ type: "activate", value: token }, false);
   }
 
@@ -627,6 +687,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function submitIntent(intent: any, messageSkip: boolean): Promise<void> {
+    if (diagnosisExporting.value) return;
     const wait = presentation.inputWait;
     if (!wait) return;
     if (!messageSkip) resetMessageSkip();
@@ -643,6 +704,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         message_skip: messageSkip,
       },
     });
+    if (singleStepEnabled.value && !debugStopToken(debugStop.value)) await pauseDebug();
   }
 
   async function continueMessageSkip(): Promise<void> {
@@ -655,12 +717,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function undo(): Promise<void> {
-    if (inputUndo.value?.token)
+    if (!diagnosisExporting.value && inputUndo.value?.token)
       await send({ type: "input_undo_request", value: { token: inputUndo.value.token } });
   }
 
   async function restart(): Promise<void> {
-    if (!projectOpen.value || sessionTransitioning) return;
+    if (!projectOpen.value || sessionTransitioning || diagnosisExporting.value) return;
     sessionTransitioning = true;
     if (pumpTimer != null) {
       window.clearTimeout(pumpTimer);
@@ -701,6 +763,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function returnToTitle(): Promise<void> {
+    if (diagnosisExporting.value) return;
     resetMessageSkip();
     await send({ type: "return_to_title", value: {} });
   }
@@ -717,6 +780,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     debugGrantRefreshNeeded = false;
     pendingDebugRequests.clear();
     debugEnabled.value = false;
+    singleStepEnabled.value = false;
     debugGrant.value = null;
     debugStop.value = null;
     debugOutput.value = [];
@@ -726,12 +790,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
     debugVariableValues.value = {};
     prompt.value = "";
     exportState = undefined;
+    diagnosisState = undefined;
+    diagnosisExporting.value = false;
     importBytes = undefined;
     importKind = undefined;
     nextEnvironmentRevision = 1;
   }
 
   async function reloadProject(): Promise<void> {
+    if (diagnosisExporting.value) return;
     status.value = "正在重新加载项目…";
     await bridge.reloadProject();
     schedulePump(0);
@@ -742,7 +809,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function recoverFromFault(action: "title" | "reload"): Promise<void> {
-    if (faultActionBusy.value) return;
+    if (faultActionBusy.value || diagnosisExporting.value) return;
     faultActionBusy.value = true;
     fault.value = null;
     status.value = action === "title" ? "正在返回主菜单…" : "正在重启并重新编译…";
@@ -760,33 +827,57 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function exportDiagnosis(): Promise<void> {
+    if (!canExportDiagnosis.value) return;
+    const projectName = bridge.projectName() || "project";
+    const exportedAt = testClock ?? new Date();
+    diagnosisState = {
+      name: diagnosisArchiveName(projectName, exportedAt),
+      projectName,
+      logs: formatDiagnosisLogs(logs),
+      exportedAt,
+    };
+    diagnosisExporting.value = true;
+    showDiagnosisNotification("诊断信息导出中……", true);
+    if (!exportState) await startDiagnosisSnapshot();
+  }
+
+  async function startDiagnosisSnapshot(): Promise<void> {
+    if (!diagnosisState || !diagnosisExporting.value) return;
+    exportState = {
+      name: diagnosisState.name,
+      kind: "diagnosis_snapshot",
+      chunks: [],
+      received: 0,
+    };
     try {
-      await exportSnapshot("diagnosis");
+      const messageId = await send({
+        type: "state_export_request",
+        value: { kind: "vm_snapshot", snapshot_purpose: "diagnosis" },
+      });
+      if (exportState?.kind === "diagnosis_snapshot")
+        exportState.requestMessageId = String(messageId);
     } catch (error) {
-      const message = `无法导出诊断快照：${String(error)}`;
-      status.value = message;
-      log("error", message);
+      finishDiagnosis(false, `诊断信息导出失败：${String(error)}`);
     }
   }
 
-  async function exportSnapshot(
-    purpose: "normal" | "debug" | "diagnosis" = "normal",
-  ): Promise<void> {
+  async function exportSnapshot(purpose: "normal" | "debug" = "normal"): Promise<void> {
+    if (diagnosisExporting.value) return;
     if (exportState) {
       status.value = "另一项状态导出仍在进行，请稍后重试";
       return;
     }
     exportState = {
-      name:
-        purpose === "diagnosis" ? "runtime-diagnosis.snapshot" : `runtime-${timestamp()}.snapshot`,
+      name: `runtime-${timestamp()}.snapshot`,
       kind: "download",
       chunks: [],
       received: 0,
     };
-    await send({
+    const messageId = await send({
       type: "state_export_request",
       value: { kind: "vm_snapshot", snapshot_purpose: purpose },
     });
+    if (exportState?.kind === "download") exportState.requestMessageId = String(messageId);
   }
 
   function testTransferState(): Record<string, unknown> {
@@ -816,16 +907,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function requestCompiledCacheExport(): Promise<void> {
-    await send({
+    const messageId = await send({
       type: "state_export_request",
       value: { kind: "compiled_project_cache", snapshot_purpose: "normal" },
     });
+    if (exportState?.kind === "compiled_cache") exportState.requestMessageId = String(messageId);
   }
 
   async function handleExportReady(ready: any): Promise<void> {
     if (!exportState) return;
     if (ready.result.type !== "ready") {
-      log("warning", `当前状态不能导出快照：${(ready.result.reasons ?? []).join(", ")}`);
+      const message = `当前状态不能导出快照：${(ready.result.reasons ?? []).join(", ")}`;
+      log("warning", message);
+      if (exportState.kind.startsWith("diagnosis_")) finishDiagnosis(false, message);
       exportState = undefined;
       return;
     }
@@ -856,22 +950,94 @@ export const useRuntimeStore = defineStore("runtime", () => {
       exportState.chunks.push(bytes);
     }
     if (!chunk.complete) await requestExportChunk();
-    else {
-      if (exportState.kind === "download") {
-        const result = new Uint8Array(exportState.received);
-        let offset = 0;
-        for (const part of exportState.chunks) {
-          result.set(part, offset);
-          offset += part.length;
-        }
-        await bridge.saveDownload(exportState.name, result);
+    else await finishExportTransfer();
+  }
+
+  async function finishExportTransfer(): Promise<void> {
+    if (!exportState) return;
+    const completed = exportState;
+    const result =
+      completed.kind === "compiled_cache"
+        ? new Uint8Array()
+        : concatenateChunks(completed.chunks, completed.received);
+    try {
+      if (completed.kind === "download") {
+        const saved = await bridge.saveDownload(completed.name, result);
+        status.value = saved ? `已导出 ${completed.name}` : "已取消导出 VM 快照";
+        exportState = undefined;
+        if (diagnosisExporting.value) await startDiagnosisSnapshot();
+      } else if (completed.kind === "compiled_cache") {
+        status.value = `已导出 ${completed.name}`;
+        exportState = undefined;
+        if (diagnosisExporting.value) await startDiagnosisSnapshot();
+      } else if (completed.kind === "diagnosis_snapshot") {
+        if (!diagnosisState) throw new Error("诊断导出状态缺失");
+        diagnosisState.snapshot = result;
+        exportState = {
+          name: diagnosisState.name,
+          kind: "diagnosis_artifact",
+          chunks: [],
+          received: 0,
+        };
+        await requestDiagnosisArtifact();
+      } else {
+        if (!diagnosisState?.snapshot) throw new Error("诊断快照缺失");
+        const archive = await bridge.createDiagnosisArchive({
+          projectName: diagnosisState.projectName,
+          snapshot: diagnosisState.snapshot,
+          logs: diagnosisState.logs,
+          compiledArtifact: result,
+          exportedAt: diagnosisState.exportedAt,
+        });
+        const saved = await bridge.saveDownload(diagnosisState.name, archive);
+        finishDiagnosis(
+          true,
+          saved ? `诊断信息已导出：${diagnosisState.name}` : "已取消导出诊断信息",
+        );
       }
-      status.value = `已导出 ${exportState.name}`;
-      exportState = undefined;
+    } catch (error) {
+      if (completed.kind.startsWith("diagnosis_"))
+        finishDiagnosis(false, `诊断信息导出失败：${String(error)}`);
+      else {
+        exportState = undefined;
+        const message = `状态导出失败：${String(error)}`;
+        status.value = message;
+        log("error", message);
+      }
     }
   }
 
+  async function requestDiagnosisArtifact(): Promise<void> {
+    const messageId = await send({
+      type: "state_export_request",
+      value: { kind: "compiled_project_cache", snapshot_purpose: "normal" },
+    });
+    if (exportState?.kind === "diagnosis_artifact")
+      exportState.requestMessageId = String(messageId);
+  }
+
+  function finishDiagnosis(success: boolean, message: string): void {
+    exportState = undefined;
+    diagnosisState = undefined;
+    diagnosisExporting.value = false;
+    status.value = message;
+    showDiagnosisNotification(message, false);
+    log(success ? "info" : "error", message);
+  }
+
+  function showDiagnosisNotification(message: string, persistent: boolean): void {
+    if (diagnosisNotificationTimer != null) window.clearTimeout(diagnosisNotificationTimer);
+    diagnosisNotification.value = message;
+    diagnosisNotificationTimer = undefined;
+    if (!persistent)
+      diagnosisNotificationTimer = window.setTimeout(() => {
+        diagnosisNotification.value = "";
+        diagnosisNotificationTimer = undefined;
+      }, 5000);
+  }
+
   async function restoreSnapshot(): Promise<void> {
+    if (diagnosisExporting.value) return;
     const bytes = await bridge.openUpload();
     if (!bytes) return;
     await restoreState("vm_snapshot", bytes);
@@ -910,6 +1076,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function enableDebug(): Promise<void> {
+    if (diagnosisExporting.value) return;
     await ensureSession();
     if (!debugEnabled.value) {
       await requestDebugGrant();
@@ -923,6 +1090,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       debugPauseWanted = false;
       pendingDebugRequests.clear();
       debugEnabled.value = false;
+      singleStepEnabled.value = false;
       debugGrant.value = null;
       debugStop.value = null;
     }
@@ -934,12 +1102,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
       debugGrantRefreshNeeded = false;
       debugGrant.value = message.value;
       debugEnabled.value = true;
+      singleStepEnabled.value = false;
       debugStop.value = null;
     } else if (message.type === "revoke") {
       debugPausePending = false;
       debugPauseWanted = false;
       debugGrant.value = null;
       debugEnabled.value = false;
+      singleStepEnabled.value = false;
       debugStop.value = null;
     } else if (message.type === "stopped") {
       debugPausePending = false;
@@ -952,6 +1122,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
       // dialog visibility cannot race a Vue watcher against the pause response. Pagination
       // must continue asynchronously because its later pages arrive in future pump batches.
       void refreshOpenDebugSurfaces().catch((error) => log("warning", String(error)));
+      if (singleStepEnabled.value && message.value?.reason?.type === "host_wait")
+        void continueDebug(true).catch((error) => log("warning", String(error)));
     } else if (message.type === "response") {
       const request = forgetDebugRequest(correlationId);
       const response = message.value;
@@ -1044,7 +1216,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function debugCommand(command: any): Promise<void> {
-    if (!debugGrant.value) return;
+    if (!debugGrant.value || diagnosisExporting.value) return;
     const grant = debugGrant.value.token;
     const messageId = await bridge.submitDebug(
       transportValue({
@@ -1152,6 +1324,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function openDebugDialog(kind: "console" | "variables" | "stack"): Promise<void> {
+    if (diagnosisExporting.value) return;
     if (kind === "console") debugConsoleOpen.value = true;
     else if (kind === "variables") {
       variablesOpen.value = true;
@@ -1209,6 +1382,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function stepDebug(): Promise<void> {
+    if (!singleStepEnabled.value || diagnosisExporting.value) return;
     const command = sourceLineStepCommand(debugStop.value);
     if (!command) return;
     const previousStop = debugStop.value;
@@ -1222,9 +1396,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
   }
 
-  async function continueDebug(): Promise<void> {
+  async function continueDebug(preserveSingleStep = false): Promise<void> {
+    if (diagnosisExporting.value) return;
     const stop = debugStopToken(debugStop.value);
     if (!stop) return;
+    if (!preserveSingleStep) singleStepEnabled.value = false;
     const previousStop = debugStop.value;
     debugPauseWanted = false;
     debugStop.value = null;
@@ -1233,6 +1409,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } catch (error) {
       debugStop.value = previousStop;
       throw error;
+    }
+  }
+
+  async function toggleSingleStep(): Promise<void> {
+    if (!debugEnabled.value || diagnosisExporting.value) return;
+    singleStepEnabled.value = !singleStepEnabled.value;
+    if (singleStepEnabled.value) {
+      if (!debugStopToken(debugStop.value)) await pauseDebug();
+    } else if (debugStopToken(debugStop.value)) {
+      await continueDebug(true);
     }
   }
 
@@ -1288,13 +1474,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function shutdown(): Promise<void> {
+    if (diagnosisExporting.value) return;
     if (!sessionReady.value) return bridge.close();
     await send({ type: "shutdown_request", value: { graceful: true } });
   }
 
-  async function send(message: RuntimeMessage, correlationId?: number): Promise<void> {
-    await bridge.submitRuntime(transportValue(message), correlationId);
+  async function send(message: RuntimeMessage, correlationId?: number): Promise<number | bigint> {
+    const messageId = await bridge.submitRuntime(transportValue(message), correlationId);
     schedulePump(0);
+    return messageId;
   }
 
   async function waitUntil(
@@ -1319,7 +1507,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
       event.preventDefault();
       void undo();
-    } else if (event.key === "F10" && debugEnabled.value) {
+    } else if (
+      event.key === "F10" &&
+      debugEnabled.value &&
+      singleStepEnabled.value &&
+      !diagnosisExporting.value
+    ) {
       event.preventDefault();
       void stepDebug();
     }
@@ -1351,6 +1544,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     variablesOpen,
     stackOpen,
     debugEnabled,
+    singleStepEnabled,
     debugStop,
     debugOutput,
     debugVariables,
@@ -1358,8 +1552,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
     debugFibers,
     debugFrames,
     debugVariableValues,
+    diagnosisExporting,
+    diagnosisNotification,
+    runtimeReady,
+    canExportDiagnosis,
+    gameInteractionsBlocked,
     canStepDebug,
     canInteract,
+    promptPlaceholder,
     initialize,
     openProject,
     submitText,
@@ -1380,6 +1580,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     inspectWatches,
     openDebugDialog,
     stepDebug,
+    toggleSingleStep,
     continueDebug,
     savePreferences,
     preview,
@@ -1409,6 +1610,28 @@ function mapOf(...entries: [number, unknown][]): Map<number, unknown> {
 
 function safeNumber(value: number | bigint | undefined): number | undefined {
   return value == null ? undefined : Number(value);
+}
+
+function concatenateChunks(chunks: Uint8Array[], total: number): Uint8Array {
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const part of chunks) {
+    result.set(part, offset);
+    offset += part.length;
+  }
+  return result;
+}
+
+function formatDiagnosisLogs(entries: LogEntry[]): string {
+  if (!entries.length) return "";
+  const level = { debug: "DEBUG", info: "INFO ", warning: "WARN ", error: "ERROR" } as const;
+  const time = (value: Date) =>
+    [value.getHours(), value.getMinutes(), value.getSeconds()]
+      .map((part) => String(part).padStart(2, "0"))
+      .join(":");
+  return `${entries
+    .map((entry) => `[${time(entry.timestamp)}] ${level[entry.level]} ${entry.message}`)
+    .join("\n")}\n`;
 }
 
 function transportValue<T>(value: T): T {

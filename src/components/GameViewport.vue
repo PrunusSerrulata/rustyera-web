@@ -54,6 +54,8 @@ onMounted(() => store.projectViewport());
     ref="viewport"
     class="game-viewport"
     tabindex="0"
+    :inert="store.gameInteractionsBlocked"
+    :aria-busy="store.gameInteractionsBlocked"
     @click="click"
     @contextmenu.prevent="store.skip"
   >

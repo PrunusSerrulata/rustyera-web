@@ -32,6 +32,7 @@ export function installWebTestControl(pinia: Pinia): void {
       logs: store.logs.slice(-100),
       debug: {
         enabled: store.debugEnabled,
+        singleStepEnabled: store.singleStepEnabled,
         canStep: store.canStepDebug,
         stop: store.debugStop,
         variables: store.debugVariables,
@@ -41,6 +42,12 @@ export function installWebTestControl(pinia: Pinia): void {
         frames: store.debugFrames,
       },
       transfer: store.testTransferState(),
+      diagnosis: {
+        exporting: store.diagnosisExporting,
+        notification: store.diagnosisNotification,
+        canExport: store.canExportDiagnosis,
+      },
+      lastDownload: downloadSummary(window.__RUSTYERA_TEST_DOWNLOADS__?.at(-1)),
     });
 
   window.__RUSTYERA_TEST__ = {
@@ -80,6 +87,15 @@ export function installWebTestControl(pinia: Pinia): void {
       }
       throw new Error(`等待稳定输入状态超时（${timeoutMs} ms）`);
     },
+  };
+}
+
+function downloadSummary(download?: { name: string; bytes: Uint8Array }): unknown {
+  if (!download) return null;
+  return {
+    name: download.name,
+    size: download.bytes.length,
+    magic: [...download.bytes.slice(0, 4)],
   };
 }
 

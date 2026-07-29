@@ -25,8 +25,10 @@ const bridge = vi.hoisted(() => ({
   listFonts: vi.fn(async () => []),
   loadPreferences: vi.fn(async () => defaultPreferences()),
   savePreferences: vi.fn(),
+  projectName: vi.fn(() => "eraTW"),
   openUpload: vi.fn(),
   saveDownload: vi.fn(),
+  createDiagnosisArchive: vi.fn(),
   writeCompiledCacheChunk: vi.fn(),
   close: vi.fn(),
 }));
@@ -44,6 +46,8 @@ describe("runtime store session lifecycle", () => {
     let nextDebugMessageId = 1;
     bridge.submitDebug.mockImplementation(async () => nextDebugMessageId++);
     bridge.pump.mockResolvedValue(emptyBatch());
+    bridge.saveDownload.mockResolvedValue(true);
+    bridge.createDiagnosisArchive.mockResolvedValue(Uint8Array.of(9, 8, 7));
     bridge.restartProject.mockResolvedValue({
       quickScanMs: 1,
       cacheReadMs: 2,
@@ -63,10 +67,63 @@ describe("runtime store session lifecycle", () => {
     vi.unstubAllEnvs();
   });
 
-  it("uses the fatal-error diagnosis export for manual diagnosis requests", async () => {
+  it("rejects diagnosis export before the runtime is ready", async () => {
     const store = useRuntimeStore();
 
     await store.exportDiagnosis();
+
+    expect(bridge.submitRuntime).not.toHaveBeenCalled();
+    expect(store.canExportDiagnosis).toBe(false);
+  });
+
+  it("exports the TUI-compatible diagnosis archive while locking game interaction", async () => {
+    vi.setSystemTime(new Date(2026, 6, 29, 14, 5, 6));
+    const stopWait = {
+      kind: "integer_value",
+      wait_id: 1,
+      submission_token: { epoch: 2, id: 3 },
+    };
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          runtimeEvent("wait_changed", { type: "opened", value: stopWait }),
+          runtimeEvent("log", { level: "info", message: "diagnostic detail" }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_export_ready", {
+            result: { type: "ready", transfer: { transfer_id: 11 } },
+          }),
+          runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
+          runtimeEvent("state_export_ready", {
+            result: { type: "ready", transfer: { transfer_id: 12 } },
+          }),
+          runtimeEvent("state_export_chunk", { offset: 0, data: [3, 4], complete: true }),
+        ],
+      });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.canInteract).toBe(true);
+    expect(store.canExportDiagnosis).toBe(true);
+
+    await store.exportDiagnosis();
+    expect(store.diagnosisExporting).toBe(true);
+    expect(store.canInteract).toBe(false);
+    expect(store.promptPlaceholder).toBe("诊断信息导出中……");
+    expect(store.diagnosisNotification).toBe("诊断信息导出中……");
+    await store.activate({ epoch: 2, id: 5 });
+    expect(bridge.submitRuntime).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "input" }),
+      undefined,
+    );
+
+    await vi.advanceTimersByTimeAsync(32);
 
     expect(bridge.submitRuntime).toHaveBeenCalledWith(
       {
@@ -75,9 +132,30 @@ describe("runtime store session lifecycle", () => {
       },
       undefined,
     );
-    expect(store.testTransferState().export).toEqual(
-      expect.objectContaining({ name: "runtime-diagnosis.snapshot" }),
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      {
+        type: "state_export_request",
+        value: { kind: "compiled_project_cache", snapshot_purpose: "normal" },
+      },
+      undefined,
     );
+    expect(bridge.createDiagnosisArchive).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectName: "eraTW",
+        snapshot: Uint8Array.of(1, 2),
+        compiledArtifact: Uint8Array.of(3, 4),
+        logs: expect.stringContaining("INFO  diagnostic detail"),
+      }),
+    );
+    expect(bridge.saveDownload).toHaveBeenCalledWith(
+      "eraTW-diagnosis_20260729-140506.tar.zst",
+      Uint8Array.of(9, 8, 7),
+    );
+    expect(store.diagnosisExporting).toBe(false);
+    expect(store.canInteract).toBe(true);
+    expect(store.diagnosisNotification).toContain("诊断信息已导出");
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(store.diagnosisNotification).toBe("");
   });
 
   it("starts a test new game with the configured deterministic seed", async () => {
@@ -195,6 +273,7 @@ describe("runtime store session lifecycle", () => {
 
     expect(bridge.submitDebug).toHaveBeenCalledTimes(1);
     expect(bridge.submitDebug).toHaveBeenLastCalledWith(expect.objectContaining({ type: "hello" }));
+    expect(store.singleStepEnabled).toBe(false);
 
     await store.openDebugDialog("variables");
     expect(bridge.submitDebug).toHaveBeenLastCalledWith({
@@ -266,7 +345,16 @@ describe("runtime store session lifecycle", () => {
         events: [
           runtimeEvent("state_changed", { phase: "debug_paused", epoch: 2 }),
           debugEvent("response", { type: "accepted" }, 2),
-          debugEvent("stopped", { stop, selected_fiber: 7 }, 2),
+          debugEvent(
+            "stopped",
+            {
+              stop,
+              selected_fiber: 7,
+              reason: { type: "pause_requested" },
+              source: { relative_path: "erb/debug.erb", line: 3 },
+            },
+            2,
+          ),
         ],
       })
       .mockResolvedValueOnce({
@@ -368,7 +456,16 @@ describe("runtime store session lifecycle", () => {
         events: [
           runtimeEvent("state_changed", { phase: "debug_paused", epoch: 2 }),
           debugEvent("response", { type: "accepted" }, 2),
-          debugEvent("stopped", { stop, selected_fiber: 7 }, 2),
+          debugEvent(
+            "stopped",
+            {
+              stop,
+              selected_fiber: 7,
+              reason: { type: "pause_requested" },
+              source: { relative_path: "erb/debug.erb", line: 3 },
+            },
+            2,
+          ),
         ],
       })
       .mockResolvedValueOnce({
@@ -405,6 +502,8 @@ describe("runtime store session lifecycle", () => {
     await vi.advanceTimersByTimeAsync(32);
 
     expect(store.canStepDebug).toBe(false);
+    await store.toggleSingleStep();
+    expect(store.promptPlaceholder).toBe("单步暂停：erb/debug.erb:4（F10 继续）");
     store.debugFibers = [{ fiber_id: 7, state: "runnable", frame_count: 1 }];
     expect(store.canStepDebug).toBe(true);
 

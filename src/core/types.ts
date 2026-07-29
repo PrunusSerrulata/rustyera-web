@@ -71,8 +71,12 @@ export interface FrontendBridge {
   listFonts(): Promise<string[]>;
   loadPreferences(): Promise<Preferences>;
   savePreferences(preferences: Preferences): Promise<Preferences>;
+  projectName(): string | undefined;
   openUpload(): Promise<Uint8Array | undefined>;
-  saveDownload(name: string, bytes: Uint8Array): Promise<void>;
+  saveDownload(name: string, bytes: Uint8Array): Promise<boolean>;
+  createDiagnosisArchive(
+    input: import("@/core/diagnosis").DiagnosisArchiveInput,
+  ): Promise<Uint8Array>;
   writeCompiledCacheChunk(bytes: Uint8Array, reset: boolean, complete: boolean): Promise<void>;
   close(): Promise<void>;
 }

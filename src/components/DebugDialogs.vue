@@ -59,6 +59,7 @@ function readStack(fiber: any): void {
     <input
       v-model="source"
       class="debug-input"
+      :disabled="store.gameInteractionsBlocked"
       placeholder="输入表达式或安全语句"
       @keyup.enter="consoleCommand(false)"
     />
@@ -66,13 +67,13 @@ function readStack(fiber: any): void {
       <span class="spacer" /><button
         type="button"
         class="primary"
-        :disabled="!source || !debugStopToken(store.debugStop)"
+        :disabled="store.gameInteractionsBlocked || !source || !debugStopToken(store.debugStop)"
         @click="consoleCommand(false)"
       >
         求值</button
       ><button
         type="button"
-        :disabled="!source || !debugStopToken(store.debugStop)"
+        :disabled="store.gameInteractionsBlocked || !source || !debugStopToken(store.debugStop)"
         @click="consoleCommand(true)"
       >
         安全执行
@@ -111,7 +112,12 @@ function readStack(fiber: any): void {
             <span class="debug-variable-value">{{
               store.debugVariableValues[debugVariableKey(variable)] ?? ""
             }}</span>
-            <button type="button" class="compact-button" @click.stop="readVariable(variable)">
+            <button
+              type="button"
+              class="compact-button"
+              :disabled="store.gameInteractionsBlocked"
+              @click.stop="readVariable(variable)"
+            >
               读取
             </button>
           </td>
