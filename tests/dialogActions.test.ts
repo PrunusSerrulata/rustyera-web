@@ -28,6 +28,7 @@ vi.mock("@/stores/runtime", () => ({ useRuntimeStore: () => debugStore }));
 
 import DebugDialogs from "@/components/DebugDialogs.vue";
 import LogDialog from "@/components/LogDialog.vue";
+import OpenProjectDialog from "@/components/OpenProjectDialog.vue";
 import PreferencesDialog from "@/components/PreferencesDialog.vue";
 
 describe("dialog actions", () => {
@@ -64,6 +65,21 @@ describe("dialog actions", () => {
 
     await clickButton("取消");
     expect(wrapper.emitted("close")).toHaveLength(2);
+    wrapper.unmount();
+  });
+
+  it("warns before opening another project and exposes both choices", async () => {
+    const wrapper = mount(OpenProjectDialog, {
+      attachTo: document.body,
+      props: { open: true },
+    });
+
+    expect(document.body.textContent).toContain("会丢失当前游戏中尚未保存的进度");
+    await clickButton("取消");
+    await clickButton("打开新项目");
+
+    expect(wrapper.emitted("cancel")).toHaveLength(1);
+    expect(wrapper.emitted("confirm")).toHaveLength(1);
     wrapper.unmount();
   });
 

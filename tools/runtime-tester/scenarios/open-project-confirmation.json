@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "project": "../../../../emuera.em/emuera-reference-cli/tests/fixture",
+  "mode": "fixed",
+  "seed": 123456,
+  "actions": [
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "打开项目…", "exact": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "dialog", "name": "打开新项目", "exact": true },
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "打开新项目会丢失当前游戏中尚未保存的进度。", "exact": true },
+      "expect": { "count": 1, "visible": true }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "dialog", "name": "打开新项目", "exact": true },
+      "expect": { "count": 0 }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "打开项目…", "exact": true }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "打开新项目", "exact": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-viewport" },
+      "expect": { "count": 1, "visible": true }
+    }
+  ],
+  "goal": {
+    "output_contains": ["TITLE_CHARANUM=0"]
+  },
+  "limits": {
+    "max_steps": 20,
+    "timeout_seconds": 120
+  }
+}

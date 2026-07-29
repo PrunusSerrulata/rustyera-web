@@ -77,6 +77,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const runtimeEpoch = ref<number | bigint>(0);
   const status = ref("请选择 Era 项目文件夹");
   const projectOpen = ref(false);
+  const projectLoading = ref(false);
+  const openProjectConfirmationOpen = ref(false);
   const sessionReady = ref(false);
   const pumping = ref(false);
   const prompt = ref("");
@@ -164,6 +166,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     () => runtimeReady.value && !diagnosisExporting.value && !sessionTransitioning,
   );
   const gameInteractionsBlocked = computed(() => diagnosisExporting.value);
+  const canOpenProject = computed(() => !projectLoading.value && !diagnosisExporting.value);
   const canStepDebug = computed(() => {
     const fiberId = selectedDebugFiber(debugStop.value);
     return (
@@ -237,12 +240,37 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function openProject(): Promise<void> {
+    if (!canOpenProject.value) return;
+    if (projectOpen.value) {
+      openProjectConfirmationOpen.value = true;
+      return;
+    }
+    await loadProject(false);
+  }
+
+  function cancelOpenProject(): void {
+    openProjectConfirmationOpen.value = false;
+  }
+
+  async function confirmOpenProject(): Promise<void> {
+    if (!openProjectConfirmationOpen.value || !canOpenProject.value) return;
+    openProjectConfirmationOpen.value = false;
+    await loadProject(true);
+  }
+
+  async function loadProject(replaceCurrent: boolean): Promise<void> {
+    projectLoading.value = true;
     try {
-      await audio.unlock();
-      await ensureSession();
+      if (replaceCurrent) await recreateSessionForProjectSelection();
+      else {
+        await audio.unlock();
+        await ensureSession();
+      }
       status.value = "正在读取项目…";
       const metrics = await bridge.openProject();
       if (!metrics) {
+        if (replaceCurrent) projectOpen.value = false;
+        projectLoading.value = false;
         status.value = "已取消打开项目";
         return;
       }
@@ -256,8 +284,45 @@ export const useRuntimeStore = defineStore("runtime", () => {
       status.value = "正在编译项目…";
       schedulePump(0);
     } catch (error) {
+      if (replaceCurrent) projectOpen.value = false;
+      projectLoading.value = false;
       status.value = String(error);
       log("error", status.value);
+    } finally {
+      if (replaceCurrent) {
+        sessionTransitioning = false;
+        schedulePump(0);
+      }
+    }
+  }
+
+  async function recreateSessionForProjectSelection(): Promise<void> {
+    sessionTransitioning = true;
+    clearSessionTimers();
+    resetMessageSkip();
+    resetSessionState();
+    status.value = "正在创建新的 Runtime session…";
+    await audio.unlock();
+    await audio
+      .synchronize([])
+      .catch((error) => log("warning", `更换项目时停止音频失败：${String(error)}`));
+    while (pumping.value)
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    // A pump already in flight may have projected stale events after the immediate clear.
+    resetSessionState();
+    const batch = await bridge.createSession(sessionOptions());
+    sessionReady.value = true;
+    await handleBatch(batch);
+  }
+
+  function clearSessionTimers(): void {
+    if (pumpTimer != null) {
+      window.clearTimeout(pumpTimer);
+      pumpTimer = undefined;
+    }
+    if (compiledCacheTimer != null) {
+      window.clearTimeout(compiledCacheTimer);
+      compiledCacheTimer = undefined;
     }
   }
 
@@ -277,6 +342,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       await handleBatch(batch);
       schedulePump(batch.state === "more_work" || batch.state === "output_ready" ? 0 : 16);
     } catch (error) {
+      projectLoading.value = false;
       fault.value = { code: "frontend", message: String(error) };
       log("error", String(error));
     } finally {
@@ -348,6 +414,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           log(diagnostic.level ?? "info", formatDiagnostic(diagnostic), true);
         }
         if (value.success) {
+          projectLoading.value = false;
           status.value = "项目编译完成";
           if (pendingStart.type === "new_game") {
             await send({
@@ -372,6 +439,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           await bridge.submitProjectSource();
           schedulePump(0);
         } else {
+          projectLoading.value = false;
           status.value = "项目加载失败，请查看日志";
         }
         break;
@@ -727,16 +795,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function restart(): Promise<void> {
-    if (!projectOpen.value || sessionTransitioning || diagnosisExporting.value) return;
+    if (
+      !projectOpen.value ||
+      projectLoading.value ||
+      sessionTransitioning ||
+      diagnosisExporting.value
+    )
+      return;
+    projectLoading.value = true;
     sessionTransitioning = true;
-    if (pumpTimer != null) {
-      window.clearTimeout(pumpTimer);
-      pumpTimer = undefined;
-    }
-    if (compiledCacheTimer != null) {
-      window.clearTimeout(compiledCacheTimer);
-      compiledCacheTimer = undefined;
-    }
+    clearSessionTimers();
     while (pumping.value)
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     status.value = "正在创建新的 Runtime session…";
@@ -758,6 +826,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       );
       status.value = "正在编译项目…";
     } catch (error) {
+      projectLoading.value = false;
       const message = `重新开始失败：${String(error)}`;
       status.value = message;
       log("error", message);
@@ -805,10 +874,18 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function reloadProject(): Promise<void> {
-    if (diagnosisExporting.value) return;
+    if (projectLoading.value || sessionTransitioning || diagnosisExporting.value) return;
+    projectLoading.value = true;
     status.value = "正在重新加载项目…";
-    await bridge.reloadProject();
-    schedulePump(0);
+    try {
+      await bridge.reloadProject();
+      schedulePump(0);
+    } catch (error) {
+      projectLoading.value = false;
+      const message = `重新加载项目失败：${String(error)}`;
+      status.value = message;
+      log("error", message);
+    }
   }
 
   function dismissFault(): void {
@@ -1570,6 +1647,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimeEpoch,
     status,
     projectOpen,
+    projectLoading,
+    openProjectConfirmationOpen,
     prompt,
     inputUndo,
     fault,
@@ -1594,11 +1673,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimeReady,
     canExportDiagnosis,
     gameInteractionsBlocked,
+    canOpenProject,
     canStepDebug,
     canInteract,
     promptPlaceholder,
     initialize,
     openProject,
+    cancelOpenProject,
+    confirmOpenProject,
     submitText,
     activate,
     skip,

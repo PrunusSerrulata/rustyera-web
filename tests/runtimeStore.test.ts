@@ -236,6 +236,66 @@ describe("runtime store session lifecycle", () => {
     );
   });
 
+  it("confirms project replacement, clears the viewport, and blocks opening through compilation", async () => {
+    vi.stubGlobal(
+      "AudioContext",
+      class {
+        state = "running";
+        destination = {};
+        resume = vi.fn(async () => {});
+        createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn() }));
+      },
+    );
+    bridge.openProject.mockResolvedValue({
+      quickScanMs: 1,
+      cacheReadMs: 2,
+      sourceReadMs: 3,
+      submitMs: 4,
+      cacheImported: true,
+    });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    store.presentation.lines.push({ id: "old-line", runs: [] } as any);
+
+    await store.openProject();
+
+    expect(store.openProjectConfirmationOpen).toBe(true);
+    expect(bridge.openProject).not.toHaveBeenCalled();
+
+    store.cancelOpenProject();
+    expect(store.openProjectConfirmationOpen).toBe(false);
+    expect(store.presentation.lines).toHaveLength(1);
+    expect(store.projectOpen).toBe(true);
+
+    await store.openProject();
+
+    const replacement = store.confirmOpenProject();
+    expect(store.openProjectConfirmationOpen).toBe(false);
+    expect(store.presentation.lines).toHaveLength(0);
+    expect(store.projectLoading).toBe(true);
+    expect(store.canOpenProject).toBe(false);
+    await replacement;
+
+    expect(bridge.createSession).toHaveBeenCalledOnce();
+    expect(bridge.openProject).toHaveBeenCalledOnce();
+    expect(store.projectOpen).toBe(true);
+    expect(store.projectLoading).toBe(true);
+    expect(store.canOpenProject).toBe(false);
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("project_load_report", { success: true, diagnostics: [] })],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.projectLoading).toBe(false);
+    expect(store.canOpenProject).toBe(true);
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      { type: "start", value: { mode: { type: "new_game", seed: null } } },
+      undefined,
+    );
+  });
+
   it("attaches without pausing and retries a requested pause with a renewed grant", async () => {
     const oldToken = { grant_id: { high: 1, low: 1 }, program_generation: 1 };
     const newToken = { grant_id: { high: 1, low: 2 }, program_generation: 2 };

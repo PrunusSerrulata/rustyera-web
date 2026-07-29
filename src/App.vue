@@ -6,6 +6,7 @@ import DebugDialogs from "@/components/DebugDialogs.vue";
 import FaultDialog from "@/components/FaultDialog.vue";
 import GameViewport from "@/components/GameViewport.vue";
 import LogDialog from "@/components/LogDialog.vue";
+import OpenProjectDialog from "@/components/OpenProjectDialog.vue";
 import PreferencesDialog from "@/components/PreferencesDialog.vue";
 import { useRuntimeStore } from "@/stores/runtime";
 
@@ -49,7 +50,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
           文件
         </button>
         <div v-if="menu === 'file'" class="menu-popup">
-          <button :disabled="store.gameInteractionsBlocked" @click="action(store.openProject)">
+          <button :disabled="!store.canOpenProject" @click="action(store.openProject)">
             打开项目…
           </button>
           <hr />
@@ -203,7 +204,9 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
     <section v-if="!store.projectOpen" class="welcome">
       <h1>RustyEra</h1>
       <p>以同一套 Vue 界面运行于桌面和浏览器。</p>
-      <button class="primary large" @click="store.openProject">打开 Era 项目…</button>
+      <button class="primary large" :disabled="!store.canOpenProject" @click="store.openProject">
+        打开 Era 项目…
+      </button>
       <p v-if="store.bridgeKind === 'browser'" class="hint">
         浏览器完整模式需要桌面 Chromium、HTTPS/localhost，以及目录读写和本地字体权限。
       </p>
@@ -241,6 +244,11 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
       @close="store.preferencesOpen = false"
       @preview="store.preview"
       @save="store.savePreferences"
+    />
+    <OpenProjectDialog
+      :open="store.openProjectConfirmationOpen"
+      @cancel="store.cancelOpenProject"
+      @confirm="store.confirmOpenProject"
     />
     <LogDialog
       :open="store.logsOpen"
