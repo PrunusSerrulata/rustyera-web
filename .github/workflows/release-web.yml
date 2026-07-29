@@ -124,6 +124,20 @@ jobs:
           target_commitish: ${{ github.sha }}
           prerelease: ${{ inputs.publish_type == 'prerelease' }}
           generate_release_notes: true
+          body: |
+            ## 使用说明
+
+            ### 桌面版（推荐）
+
+            - Windows：下载 `windows-x86_64-portable.zip`，完整解压后运行其中的 `era-web-tauri.exe`。
+            - macOS：按处理器下载对应的 `.dmg`（Apple 芯片选 `arm64`，Intel 选 `x86_64`），打开后将应用安装到“应用程序”。如果系统提示应用来自身份不明的开发者，请确认文件下载自本发布页，然后在终端执行 `xattr -dr com.apple.quarantine /Applications/RustyEra.app` 解除隔离。
+            - Linux：按 CPU 架构下载 `.AppImage`、`.deb` 或 `.rpm`；AppImage 首次运行前需要添加可执行权限。
+
+            启动后点击“打开 Era 项目…”，选择包含 `CSV/` 和 `ERB/` 的游戏目录。
+
+            ### 浏览器版
+
+            下载 `rustyera-web-browser.zip` 并解压，将内容部署到 HTTPS 网站或通过 localhost 静态服务器访问，再使用桌面版 Chromium 打开。浏览器版不能直接双击 `index.html` 运行，并需要授权所选游戏目录的读写权限。
           files: |
             packages/**/*.zip
             packages/**/*.dmg
