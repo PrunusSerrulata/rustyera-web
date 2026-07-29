@@ -8,7 +8,7 @@ if (!/^[0-9a-f]{40}$/.test(expected)) {
 }
 
 const manifest = readFileSync(resolve(root, "Cargo.toml"), "utf8");
-const revisions = [...manifest.matchAll(/rustyera\.git", rev = "([^"]+)"/g)].map(
+const revisions = [...manifest.matchAll(/rustyera-core\.git", rev = "([^"]+)"/g)].map(
   (match) => match[1],
 );
 if (revisions.length !== 5 || revisions.some((revision) => revision !== expected)) {
