@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "era-web-bridge"
-version = "0.1.0"
+version = "0.0.1-alpha.1"
 dependencies = [
  "blake3",
  "era-debug-protocol",
@@ -954,7 +954,7 @@ dependencies = [
 
 [[package]]
 name = "era-web-tauri"
-version = "0.1.0"
+version = "0.0.1-alpha.1-tauri"
 dependencies = [
  "blake3",
  "encoding_rs",
@@ -982,7 +982,7 @@ dependencies = [
 
 [[package]]
 name = "era-web-wasm"
-version = "0.1.0"
+version = "0.0.1-alpha.1-wasm"
 dependencies = [
  "era-debug-protocol",
  "era-runtime",
