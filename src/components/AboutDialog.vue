@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import DraggableDialog from "@/components/DraggableDialog.vue";
+import { platformFrontendVersion } from "@/platform";
 
 defineProps<{ open: boolean }>();
 defineEmits<{ close: [] }>();
-const frontendVersion = import.meta.env.VITE_RUSTYERA_FRONTEND_VERSION;
+const frontendVersion = platformFrontendVersion();
 const coreVersion = import.meta.env.VITE_RUSTYERA_CORE_VERSION;
 </script>
 

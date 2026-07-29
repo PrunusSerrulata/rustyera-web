@@ -22,4 +22,17 @@ describe("AboutDialog", () => {
     expect(wrapper.emitted("close")).toHaveLength(1);
     wrapper.unmount();
   });
+
+  it("shows the Tauri release suffix in the desktop host", () => {
+    window.__TAURI_INTERNALS__ = {};
+    const wrapper = mount(AboutDialog, {
+      attachTo: document.body,
+      props: { open: true },
+    });
+
+    expect(document.body.textContent).toContain("0.0.1-alpha.1-tauri");
+
+    wrapper.unmount();
+    delete window.__TAURI_INTERNALS__;
+  });
 });
