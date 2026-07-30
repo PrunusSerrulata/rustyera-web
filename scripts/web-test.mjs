@@ -208,7 +208,7 @@ async function execute(args) {
       });
     }
 
-    async function observe() {
+    async function observe(automaticEnter = true) {
       for (
         let automaticEnters = 0;
         automaticEnters <= scenario.limits.max_steps;
@@ -241,7 +241,8 @@ async function execute(args) {
         if (
           event.goal.satisfied ||
           event.comparison?.equal === false ||
-          rust.wait?.kind !== "enter_key"
+          rust.wait?.kind !== "enter_key" ||
+          !automaticEnter
         )
           return event;
         trace.emit({
@@ -264,7 +265,16 @@ async function execute(args) {
         throw new Error(`${action.type} that advances a compared game must declare semantic_input`);
       if (reference && result.semanticInput != null)
         referenceObservation = await reference.step(String(result.semanticInput), scenario.watches);
-      if (["input", "click", "dblclick", "press", "drain_void_waits"].includes(action.type))
+      if (
+        [
+          "input",
+          "click",
+          "dblclick",
+          "press",
+          "drain_void_waits",
+          "advance_enter_waits_until",
+        ].includes(action.type)
+      )
         steps += 1;
       return result;
     }
@@ -335,8 +345,17 @@ async function execute(args) {
         continue;
       const result = await act(action, "fixed");
       if (result.query || result.state) trace.emit({ type: "query", step: steps, ...result });
-      if (["input", "click", "dblclick", "press", "drain_void_waits"].includes(action.type)) {
-        current = await observe();
+      if (
+        [
+          "input",
+          "click",
+          "dblclick",
+          "press",
+          "drain_void_waits",
+          "advance_enter_waits_until",
+        ].includes(action.type)
+      ) {
+        current = await observe(action.auto_enter !== false);
         if (current.rust.fault) return fail("runtime_fault", 1, { fault: current.rust.fault });
         if (current.comparison && !current.comparison.equal) return fail("difference", 1);
         if (current.goal.satisfied) return (emitResult("passed"), 0);
@@ -380,8 +399,17 @@ async function execute(args) {
         throw new Error(`unknown agent operation ${command.op}`);
       const result = await act(action, "agent");
       if (result.query || result.state) trace.emit({ type: "query", ...result });
-      if (["input", "click", "dblclick", "press", "drain_void_waits"].includes(action.type)) {
-        current = await observe();
+      if (
+        [
+          "input",
+          "click",
+          "dblclick",
+          "press",
+          "drain_void_waits",
+          "advance_enter_waits_until",
+        ].includes(action.type)
+      ) {
+        current = await observe(action.auto_enter !== false);
         if (current.rust.fault) return fail("runtime_fault", 1, { fault: current.rust.fault });
         if (current.comparison && !current.comparison.equal) return fail("difference", 1);
         if (current.goal.satisfied) return (emitResult("passed"), 0);

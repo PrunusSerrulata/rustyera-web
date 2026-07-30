@@ -42,6 +42,10 @@ const environment = {
     configuredSpec && path.basename(configuredSpec) === "tooltip.spec.mjs" ? "1" : "0",
   VITE_RUSTYERA_TAURI_AKUMA_MAID_IMAGES:
     configuredSpec && path.basename(configuredSpec) === "akuma-maid-images.spec.mjs" ? "1" : "0",
+  VITE_RUSTYERA_TAURI_RORONA_IMAGES:
+    configuredSpec && path.basename(configuredSpec) === "rorona-images.spec.mjs" ? "1" : "0",
+  VITE_RUSTYERA_TAURI_ERATW_CLOCK:
+    configuredSpec && path.basename(configuredSpec) === "eratw-clock.spec.mjs" ? "1" : "0",
 };
 
 await run(

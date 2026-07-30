@@ -117,6 +117,30 @@ akumaMaidImages("Tauri eraAkumaMaid image rendering", () => {
       assert.ok(portrait.positionedLayerCount >= portrait.count - 1);
       assert.ok(portrait.leftSpread < 1, "portrait layers must share one horizontal origin");
       assert.ok(portrait.topSpread < 1, "portrait layers must share one vertical origin");
+
+      stage = "submit the character name and skip to the room";
+      await browser.waitUntil(async () => (await snapshot()).wait?.kind === "string_value", {
+        timeout: STEP_TIMEOUT,
+        timeoutMsg: "character customization did not reach its string prompt",
+      });
+      await submitString("0");
+      await advanceOpeningToRoom(480);
+
+      stage = "verify room image composition";
+      await browser.waitUntil(async () => (await roomMetrics()).nontransparentPixels >= 100, {
+        timeout: PORTRAIT_TIMEOUT,
+        timeoutMsg: "generated portrait canvas did not finish rendering",
+      });
+      const room = await roomMetrics();
+      console.log(JSON.stringify({ stage, room }));
+      assert.equal(room.canvasCount, 1);
+      assert.ok(room.nontransparentPixels >= 100, "generated portrait canvas must contain pixels");
+      assert.equal(room.sexSymbolCount, 2);
+      assert.equal(room.clothingLayerCount, 6);
+      assert.ok(room.clothingLeftSpread < 1, "clothing layers must share one horizontal origin");
+      assert.ok(room.clothingTopSpread < 1, "clothing layers must share one vertical origin");
+      assert.ok(room.portraitGap >= 0, "generated portrait must not cover character commands");
+      assert.ok(room.clothingGap >= 0, "clothing layers must not cover character commands");
     } catch (error) {
       const state = await snapshot().catch(() => null);
       const portrait = await portraitMetrics().catch(() => null);
@@ -164,6 +188,44 @@ async function submit(value, nextWaitKind) {
       timeoutMsg: `input ${value} did not reach the next ${nextWaitKind} prompt`,
     },
   );
+}
+
+async function submitString(value) {
+  const initial = await snapshot();
+  assert.equal(initial.wait?.kind, "string_value");
+  const before = initial.wait.wait_id;
+  const input = await $(".prompt-bar input");
+  await input.setValue(String(value));
+  await $(".prompt-bar button[type=submit]").click();
+  await browser.waitUntil(
+    async () => {
+      const current = await snapshot();
+      return current.wait?.wait_id !== before && current.wait?.kind === "enter_key";
+    },
+    { timeout: STEP_TIMEOUT, timeoutMsg: "character name did not reach the opening message" },
+  );
+}
+
+async function advanceOpeningToRoom(maximum) {
+  for (let attempt = 0; attempt <= maximum; attempt += 1) {
+    const state = await snapshot();
+    const roomReached =
+      state.output.some((line) => line.includes("你的房間")) &&
+      (await $(".canvas-replay").isDisplayed());
+    if (roomReached) return;
+    assert.ok(
+      ["enter_key", "void"].includes(state.wait?.kind),
+      `opening flow reached unexpected ${state.wait?.kind ?? "missing"} prompt`,
+    );
+    if (attempt === maximum)
+      throw new Error(`maid room was not visible after ${maximum} Enter waits`);
+    const waitId = state.wait.wait_id;
+    await $(".prompt-bar button[type=submit]").click();
+    await browser.waitUntil(async () => (await snapshot()).wait?.wait_id !== waitId, {
+      timeout: STEP_TIMEOUT,
+      timeoutMsg: "opening Enter wait did not advance",
+    });
+  }
 }
 
 async function reportProgress(stage) {
@@ -241,6 +303,50 @@ async function portraitMetrics() {
       positionedLayerCount: layers.filter((layer) => layer.closest(".html-node-positioned")).length,
       leftSpread: lefts.length ? Math.max(...lefts) - Math.min(...lefts) : Number.POSITIVE_INFINITY,
       topSpread: tops.length ? Math.max(...tops) - Math.min(...tops) : Number.POSITIVE_INFINITY,
+    };
+  });
+}
+
+async function roomMetrics() {
+  return browser.execute(() => {
+    const canvas = document.querySelector(".canvas-replay");
+    const context = canvas?.getContext("2d", { willReadFrequently: true });
+    const pixels = context?.getImageData(0, 0, canvas.width, canvas.height).data ?? [];
+    let nontransparentPixels = 0;
+    for (let index = 3; index < pixels.length; index += 4)
+      if (pixels[index] !== 0) nontransparentPixels += 1;
+
+    const portrait = canvas?.closest(".media-visual")?.getBoundingClientRect();
+    const clothing = [
+      ...document.querySelectorAll(
+        ".game-line:has(.html-node-positioned:nth-child(6)) .media-visual.media-sprite",
+      ),
+    ];
+    const clothingBounds = clothing.map((layer) => layer.getBoundingClientRect());
+    const target = [...document.querySelectorAll(".game-button")].find((button) =>
+      button.textContent?.startsWith("[1]弗理希艾尔"),
+    );
+    const targetBounds = target?.getBoundingClientRect();
+    const lefts = clothingBounds.map((bounds) => bounds.left);
+    const tops = clothingBounds.map((bounds) => bounds.top);
+    return {
+      canvasCount: canvas ? 1 : 0,
+      nontransparentPixels,
+      sexSymbolCount: document.querySelectorAll(
+        ".game-line:has(> .game-button) > .media-positioned > .media-visual.media-sprite",
+      ).length,
+      clothingLayerCount: clothing.length,
+      clothingLeftSpread: lefts.length
+        ? Math.max(...lefts) - Math.min(...lefts)
+        : Number.POSITIVE_INFINITY,
+      clothingTopSpread: tops.length
+        ? Math.max(...tops) - Math.min(...tops)
+        : Number.POSITIVE_INFINITY,
+      portraitGap: portrait && targetBounds ? targetBounds.top - portrait.bottom : -Infinity,
+      clothingGap:
+        clothingBounds.length && targetBounds
+          ? targetBounds.top - Math.max(...clothingBounds.map((bounds) => bounds.bottom))
+          : -Infinity,
     };
   });
 }

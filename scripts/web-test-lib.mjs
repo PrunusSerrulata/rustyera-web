@@ -239,16 +239,54 @@ export async function installRemoteFileSystem(page, root) {
 }
 
 export function resolveLocator(page, locator = {}) {
+  let resolved;
   if (locator.role)
-    return page.getByRole(locator.role, { name: locator.name, exact: locator.exact });
-  if (locator.label) return page.getByLabel(locator.label, { exact: locator.exact });
-  if (locator.text) return page.getByText(locator.text, { exact: locator.exact });
-  if (locator.test_id) return page.getByTestId(locator.test_id);
-  if (locator.css) return page.locator(locator.css);
-  throw new Error("locator requires role, label, text, test_id, or css");
+    resolved = page.getByRole(locator.role, { name: locator.name, exact: locator.exact });
+  else if (locator.label) resolved = page.getByLabel(locator.label, { exact: locator.exact });
+  else if (locator.text) resolved = page.getByText(locator.text, { exact: locator.exact });
+  else if (locator.test_id) resolved = page.getByTestId(locator.test_id);
+  else if (locator.css) resolved = page.locator(locator.css);
+  else throw new Error("locator requires role, label, text, test_id, or css");
+  return locator.nth == null ? resolved : resolved.nth(Number(locator.nth));
 }
 
 export async function runAction(page, action) {
+  if (action.type === "advance_enter_waits_until") {
+    const maximum = Number(action.maximum ?? 100);
+    const tailLines = Math.max(1, Number(action.until?.tail_lines ?? 30));
+    const expectedText = String(action.until?.output_tail_contains ?? "");
+    const expectedLocator = action.until?.locator
+      ? resolveLocator(page, action.until.locator)
+      : undefined;
+    if (!expectedText && !expectedLocator)
+      throw new Error(
+        "advance_enter_waits_until requires until.output_tail_contains or until.locator",
+      );
+    for (let attempt = 0; attempt <= maximum; attempt += 1) {
+      const snapshot = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+      const textReached =
+        !expectedText || snapshot.output.slice(-tailLines).join("\n").includes(expectedText);
+      const locatorReached =
+        !expectedLocator ||
+        ((await expectedLocator.count()) > 0 && (await expectedLocator.first().isVisible()));
+      if (textReached && locatorReached) return { semanticInput: "", attempts: attempt };
+      if (attempt === maximum)
+        throw new Error(
+          `Enter wait budget exhausted before target screen ${JSON.stringify(action.until)}`,
+        );
+      if (snapshot.wait?.kind !== "enter_key")
+        throw new Error(
+          `advance_enter_waits_until reached unexpected ${snapshot.wait?.kind ?? "missing"} prompt`,
+        );
+      const waitId = snapshot.wait.wait_id;
+      await page.locator(".prompt-bar button[type=submit]").click();
+      await page.waitForFunction((previousWaitId) => {
+        const current = window.__RUSTYERA_TEST__.snapshot();
+        return current.fault != null || current.wait?.wait_id !== previousWaitId;
+      }, waitId);
+      await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+    }
+  }
   if (action.type === "drain_void_waits") {
     const maximum = Number(action.maximum ?? 100);
     for (let attempt = 0; attempt < maximum; attempt += 1) {
@@ -292,12 +330,179 @@ export async function runAction(page, action) {
     const actual = await queryLocator(locator, action.fields);
     if (action.type === "assert_dom") assertSubset(actual, action.expect ?? {});
     return { query: actual, semanticInput: action.semantic_input };
+  } else if (action.type === "assert_layout") {
+    const relative = action.relative_to ? resolveLocator(page, action.relative_to) : undefined;
+    const actual = await queryLayout(locator, relative);
+    assertLayout(actual, action.expect ?? {});
+    return { query: { layout: actual }, semanticInput: action.semantic_input };
+  } else if (action.type === "assert_canvas_pixels") {
+    const actual = await queryCanvasPixels(locator);
+    const expected = { ...(action.expect ?? {}) };
+    if (expected.nontransparent_at_least != null) {
+      const minimum = Number(expected.nontransparent_at_least);
+      if (actual.nontransparent < minimum)
+        throw new Error(
+          `assertion failed at canvas_pixels.nontransparent: expected at least ${minimum}, got ${actual.nontransparent}`,
+        );
+      delete expected.nontransparent_at_least;
+    }
+    assertSubset(actual, expected);
+    return { query: { canvas_pixels: actual }, semanticInput: action.semantic_input };
+  } else if (action.type === "query_media_replay") {
+    const actual = await page.evaluate(
+      (resourceName) => window.__RUSTYERA_TEST__.mediaReplay(resourceName),
+      String(action.resource_name),
+    );
+    return { query: { media_replay: actual }, semanticInput: action.semantic_input };
   } else if (action.type === "assert_state") {
     const state = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
     assertSubset(state, action.expect ?? {});
     return { state };
   } else throw new Error(`unknown action type ${action.type}`);
   return { semanticInput: action.semantic_input };
+}
+
+async function queryCanvasPixels(locator) {
+  const count = await locator.count();
+  if (!count) return { count, nontransparent: 0 };
+  return locator.first().evaluate((element, elementCount) => {
+    if (element?.tagName !== "CANVAS") throw new Error("locator is not a canvas");
+    const context = element.getContext("2d", { willReadFrequently: true });
+    if (!context) throw new Error("canvas has no 2D context");
+    const pixels = context.getImageData(0, 0, element.width, element.height).data;
+    let nontransparent = 0;
+    for (let index = 3; index < pixels.length; index += 4)
+      if (pixels[index] !== 0) nontransparent += 1;
+    return {
+      count: elementCount,
+      width: element.width,
+      height: element.height,
+      nontransparent,
+    };
+  }, count);
+}
+
+async function queryLayout(locator, relative) {
+  const subject = await layoutBoxes(locator);
+  const reference = relative ? await layoutBoxes(relative) : undefined;
+  return {
+    count: subject.length,
+    visible: subject.some((item) => item.width > 0 && item.height > 0),
+    boxes: subject,
+    reference_count: reference?.length,
+    reference_boxes: reference,
+  };
+}
+
+async function layoutBoxes(locator) {
+  return locator.evaluateAll((elements) =>
+    elements.map((element) => {
+      const box = element.getBoundingClientRect();
+      return {
+        left: box.left,
+        top: box.top,
+        right: box.right,
+        bottom: box.bottom,
+        width: box.width,
+        height: box.height,
+      };
+    }),
+  );
+}
+
+function assertLayout(actual, expected) {
+  if (expected.count != null && actual.count !== expected.count)
+    throw new Error(
+      `assertion failed at layout.count: expected ${expected.count}, got ${actual.count}`,
+    );
+  if (expected.visible != null && actual.visible !== expected.visible)
+    throw new Error(
+      `assertion failed at layout.visible: expected ${expected.visible}, got ${actual.visible}`,
+    );
+  if (!actual.boxes.length) return;
+
+  const first = actual.boxes[0];
+  if (expected.same_left_within != null)
+    assertSpread(
+      "left",
+      actual.boxes.map((item) => item.left),
+      expected.same_left_within,
+    );
+  if (expected.same_top_within != null)
+    assertSpread(
+      "top",
+      actual.boxes.map((item) => item.top),
+      expected.same_top_within,
+    );
+
+  const reference = actual.reference_boxes?.[0];
+  if (!reference) {
+    if (
+      expected.above ||
+      expected.below ||
+      expected.no_overlap ||
+      expected.inside ||
+      expected.right_aligned_within != null ||
+      expected.top_aligned_within != null
+    )
+      throw new Error(
+        "assertion failed at layout.relative_to: relationship requires a matching element",
+      );
+    return;
+  }
+
+  if (expected.above) assertGap("above", reference.top - first.bottom, expected.above);
+  if (expected.below) assertGap("below", first.top - reference.bottom, expected.below);
+  if (expected.no_overlap) {
+    const overlaps =
+      first.left < reference.right &&
+      first.right > reference.left &&
+      first.top < reference.bottom &&
+      first.bottom > reference.top;
+    if (overlaps)
+      throw new Error("assertion failed at layout.no_overlap: subject intersects relative_to");
+  }
+  if (expected.inside) {
+    const tolerance = Number(expected.inside.tolerance ?? 0);
+    if (
+      first.left < reference.left - tolerance ||
+      first.top < reference.top - tolerance ||
+      first.right > reference.right + tolerance ||
+      first.bottom > reference.bottom + tolerance
+    )
+      throw new Error(
+        `assertion failed at layout.inside: subject exceeds relative_to by more than ${tolerance}px`,
+      );
+  }
+  if (expected.right_aligned_within != null)
+    assertDistance("right_aligned", first.right, reference.right, expected.right_aligned_within);
+  if (expected.top_aligned_within != null)
+    assertDistance("top_aligned", first.top, reference.top, expected.top_aligned_within);
+}
+
+function assertSpread(label, values, tolerance) {
+  const spread = Math.max(...values) - Math.min(...values);
+  if (spread > Number(tolerance))
+    throw new Error(
+      `assertion failed at layout.same_${label}: spread ${spread}px exceeds ${tolerance}px`,
+    );
+}
+
+function assertGap(label, gap, expected) {
+  const minimum = Number(expected.min ?? 0);
+  const maximum = expected.max == null ? Number.POSITIVE_INFINITY : Number(expected.max);
+  if (gap < minimum || gap > maximum)
+    throw new Error(
+      `assertion failed at layout.${label}: gap ${gap}px is outside [${minimum}, ${maximum}]`,
+    );
+}
+
+function assertDistance(label, actual, expected, tolerance) {
+  const distance = Math.abs(actual - expected);
+  if (distance > Number(tolerance))
+    throw new Error(
+      `assertion failed at layout.${label}: distance ${distance}px exceeds ${tolerance}px`,
+    );
 }
 
 async function queryLocator(locator, fields = ["count", "text", "visible", "enabled"]) {

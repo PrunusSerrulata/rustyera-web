@@ -65,11 +65,27 @@ An action has `type`:
 - `query`: `locator`, optional `fields` from `count`, `text`, `html`, `value`, `visible`,
   `enabled`, `attributes`.
 - `assert_dom`: same query fields plus an `expect` subset.
+- `assert_layout`: `locator`, optional `relative_to`, and `expect`. It measures production DOM
+  boxes and accepts `count`, `visible`, `same_left_within`, `same_top_within`, `no_overlap`,
+  `above`/`below` gap ranges (`min`/`max`), `inside.tolerance`, `right_aligned_within`, and
+  `top_aligned_within`. Prefer these relative checks over hard-coded viewport coordinates.
+- `assert_canvas_pixels`: `locator` plus an `expect` subset such as `count`, `width`, `height`, or
+  `nontransparent_at_least`. Use it to prove that a generated canvas contains rendered pixels, not
+  merely that an empty canvas element has layout dimensions.
+- `query_media_replay`: `resource_name`. Returns the test-only, read-only sprite and canvas replay
+  graph for diagnosing a generated image without mutating Pinia or runtime state.
+- `advance_enter_waits_until`: advances visible Enter waits until
+  `until.output_tail_contains` appears in the latest `until.tail_lines` (default 30) and/or
+  `until.locator` is visible. When both are present, both must match; use that form to avoid stopping
+  on an intermediate fade frame whose canonical text is already present. Set `auto_enter: false` on
+  the preceding action and this action when layout must be inspected at the matched screen instead
+  of after the runner's normal automatic Enter handling.
 - `assert_state`: an `expect` subset of the serialized frontend snapshot.
 
 Locators accept exactly one of `role` (plus optional `name`/`exact`), `label`, `text`, `test_id`, or
-`css`. Prefer accessible role/name locators. A compared click/press that advances the runtime must
-declare `semantic_input`; missing it is a scenario error rather than an implicit reference step.
+`css`, plus optional zero-based `nth` (`-1` selects the last match). Prefer accessible role/name
+locators. A compared click/press that advances the runtime must declare `semantic_input`; missing
+it is a scenario error rather than an implicit reference step.
 
 ## NDJSON and exit codes
 

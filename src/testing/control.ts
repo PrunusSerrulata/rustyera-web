@@ -9,6 +9,7 @@ export interface WebTestControl {
   openProject(): Promise<void>;
   waitForStableObservation(timeoutMs?: number): Promise<Record<string, unknown>>;
   snapshot(): Record<string, unknown>;
+  mediaReplay(resourceName: string): Record<string, unknown>;
   inspect(watches: string[]): Promise<Record<string, unknown>>;
   exportSnapshot(): Promise<void>;
   exportTraditionalSave(): Promise<void>;
@@ -75,6 +76,7 @@ export function installWebTestControl(pinia: Pinia): void {
     configure: (configuration) => store.configureTestRun(configuration),
     openProject: () => store.openProject(),
     snapshot,
+    mediaReplay: (resourceName) => mediaReplay(store.presentation.resources, resourceName),
     inspect: (watches) => store.inspectWatches(watches),
     exportSnapshot: () => store.exportSnapshot("normal"),
     exportTraditionalSave: () => store.exportTraditionalSaveForTest(),
@@ -112,6 +114,38 @@ export function installWebTestControl(pinia: Pinia): void {
       throw new Error(`等待稳定输入状态超时（${timeoutMs} ms）`);
     },
   };
+}
+
+function mediaReplay(resources: any, resourceName: string): Record<string, unknown> {
+  const sprites = resources.sprites ?? [];
+  const canvases = resources.canvases ?? [];
+  const sprite = sprites.find(
+    (item: any) => String(item.name).toUpperCase() === resourceName.toUpperCase(),
+  );
+  const canvasIds = new Set<number>();
+  const spriteNames = new Set<string>(sprite ? [String(sprite.name)] : []);
+  if (sprite?.canvas_id != null) canvasIds.add(Number(sprite.canvas_id));
+  for (const frame of sprite?.frames ?? [])
+    if (frame.canvas_id != null) canvasIds.add(Number(frame.canvas_id));
+  for (const canvasId of canvasIds) {
+    const canvas = canvases.find((item: any) => Number(item.canvas_id) === canvasId);
+    for (const command of canvas?.commands ?? []) {
+      if (command.type === "draw_sprite") spriteNames.add(String(command.name));
+      if (command.type === "draw_canvas") {
+        canvasIds.add(Number(command.source_canvas_id));
+        if (command.mask_canvas_id != null) canvasIds.add(Number(command.mask_canvas_id));
+      }
+    }
+  }
+  return serialize({
+    sprite,
+    referencedSprites: sprites.filter((item: any) =>
+      [...spriteNames].some(
+        (name) => String(item.name).toUpperCase() === String(name).toUpperCase(),
+      ),
+    ),
+    canvases: canvases.filter((item: any) => canvasIds.has(Number(item.canvas_id))),
+  });
 }
 
 function downloadSummary(download?: { name: string; bytes: Uint8Array }): unknown {

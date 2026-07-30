@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/erarorona",
+  "mode": "fixed",
+  "compiled_cache": true,
+  "clean_saves": true,
+  "seed": 1126218542,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [
+    { "type": "drain_void_waits", "maximum": 300 },
+    { "type": "input", "value": 0 },
+    { "type": "drain_void_waits", "maximum": 300 },
+    { "type": "input", "value": 0 },
+    { "type": "input", "value": 999 },
+    { "type": "input", "value": 9 },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite" },
+      "relative_to": { "text": "era萝乐娜", "exact": true },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "above": { "min": 0 },
+        "no_overlap": true
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite" },
+      "relative_to": { "css": ".game-viewport" },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "inside": { "tolerance": 0 }
+      }
+    },
+    { "type": "input", "value": 0, "auto_enter": false },
+    {
+      "type": "advance_enter_waits_until",
+      "maximum": 1100,
+      "auto_enter": false,
+      "until": {
+        "output_tail_contains": "亚斯特丽德的工房",
+        "tail_lines": 40,
+        "locator": { "css": ".media-visual.media-sprite" }
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite" },
+      "relative_to": { "text": "第1年  1月  8日", "exact": false, "nth": -1 },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "below": { "min": 0 },
+        "no_overlap": true
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite" },
+      "relative_to": { "text": "萝乐娜", "exact": false },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "above": { "min": 0 },
+        "no_overlap": true
+      }
+    }
+  ],
+  "limits": {
+    "max_steps": 700,
+    "timeout_seconds": 900
+  }
+}

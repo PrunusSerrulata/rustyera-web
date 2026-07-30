@@ -31,6 +31,29 @@
       "fields": ["count", "visible"],
       "expect": { "count": 1, "visible": true }
     },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-positioned .media-visual.media-sprite" },
+      "relative_to": { "css": ".game-viewport" },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "inside": { "tolerance": 0 }
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-positioned .media-visual.media-sprite" },
+      "relative_to": {
+        "css": ".game-line:has(.media-visual.media-sprite) ~ .game-line .separator"
+      },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "above": { "min": 0 },
+        "no_overlap": true
+      }
+    },
     { "type": "input", "value": 0 },
     { "type": "input", "value": 0 },
     { "type": "input", "value": 0 },
@@ -53,10 +76,54 @@
       "expect": { "count": 10, "visible": true }
     },
     {
+      "type": "assert_state",
+      "expect": { "wait": { "kind": "string_value" } }
+    },
+    { "type": "input", "value": "0", "message_skip": true },
+    { "type": "drain_void_waits", "maximum": 480 },
+    {
       "type": "assert_dom",
-      "locator": { "css": ".html-node-positioned" },
+      "locator": { "text": "你的房間", "exact": false },
       "fields": ["count", "visible"],
-      "expect": { "visible": true }
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_layout",
+      "locator": {
+        "css": ".game-line:has(> .game-button) > .media-positioned > .media-visual.media-sprite"
+      },
+      "expect": { "count": 2, "visible": true }
+    },
+    {
+      "type": "assert_canvas_pixels",
+      "locator": { "css": ".canvas-replay" },
+      "expect": { "count": 1, "nontransparent_at_least": 100 }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".game-line:has(.canvas-replay) .media-visual" },
+      "relative_to": { "role": "button", "name": "[1]弗理希艾尔", "exact": false },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "above": { "min": 0 },
+        "no_overlap": true
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": {
+        "css": ".game-line:has(.html-node-positioned:nth-child(6)) .media-visual.media-sprite"
+      },
+      "relative_to": { "role": "button", "name": "[1]弗理希艾尔", "exact": false },
+      "expect": {
+        "count": 6,
+        "visible": true,
+        "same_left_within": 0.1,
+        "same_top_within": 0.1,
+        "above": { "min": 0 },
+        "no_overlap": true
+      }
     }
   ],
   "limits": {

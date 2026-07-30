@@ -26,7 +26,9 @@ const imagePlacement = computed(() =>
         hover_resource_id: props.node.semantic.hover_source,
         mask_resource_id: props.node.semantic.mask_source,
         width: 0,
-        height: 0,
+        // Era HTML images still occupy one configured console row. Their requested
+        // height controls the overflowing visual, not the row reserved in history.
+        height: Number(store.presentation.settings?.line_height ?? 0),
         x: 0,
         y: 0,
         depth: 0,
@@ -81,10 +83,29 @@ function projectLength(value: { unit?: string; value?: unknown } | undefined): n
       : (raw * store.gameTextStyle.fontSizePx) / 100;
   return Number.isFinite(result) ? result : undefined;
 }
+
+function textSegments(value: unknown): Array<{ text: string; space: boolean; width?: string }> {
+  return String(value ?? "")
+    .split(/( +)/)
+    .filter(Boolean)
+    .map((text) => ({
+      text,
+      space: text[0] === " ",
+      width:
+        text[0] === " " ? `${(text.length * store.gameTextStyle.fontSizePx) / 2}px` : undefined,
+    }));
+}
 </script>
 
 <template>
-  <template v-if="node.type === 'text'">{{ node.text }}</template>
+  <template v-if="node.type === 'text'">
+    <template v-for="(segment, index) in textSegments(node.text)" :key="index">
+      <span v-if="segment.space" class="html-ascii-space" :style="{ width: segment.width }">{{
+        segment.text
+      }}</span>
+      <template v-else>{{ segment.text }}</template>
+    </template>
+  </template>
   <br v-else-if="node.kind === 'break'" />
   <span
     v-else-if="spaceShapeStyle"

@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eraTW",
+  "mode": "fixed",
+  "compiled_cache": true,
+  "clean_saves": true,
+  "seed": 1,
+  "actions": [
+    { "type": "input", "value": 0 },
+    { "type": "input", "value": 1 },
+    { "type": "input", "value": 1 },
+    { "type": "input", "value": 1 },
+    { "type": "input", "value": 1 },
+    { "type": "input", "value": 1 },
+    { "type": "input", "value": 1 },
+    { "type": "input", "value": 1 },
+    { "type": "input", "value": 1 },
+    { "type": "input", "value": 1 },
+    { "type": "input", "value": 1 },
+    { "type": "input", "value": 1 },
+    { "type": "input", "value": 1 },
+    { "type": "input", "value": 0 },
+    { "type": "input", "value": 9999 },
+    { "type": "input", "value": 0 },
+    { "type": "input", "value": 2 },
+    { "type": "input", "value": 1999 },
+    { "type": "input", "value": 0 },
+    { "type": "input", "value": 100 },
+    { "type": "input", "value": 1 },
+    { "type": "input", "value": 100 },
+    { "type": "drain_void_waits", "maximum": 300 },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "你的倉庫", "exact": false },
+      "fields": ["count", "visible"],
+      "expect": { "visible": true }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite" },
+      "relative_to": {
+        "css": ".game-line:has(.media-visual.media-sprite) + .game-line .separator"
+      },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "top_aligned_within": 1
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite" },
+      "relative_to": { "css": ".game-viewport" },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "inside": { "tolerance": 0 },
+        "right_aligned_within": 16
+      }
+    }
+  ],
+  "limits": {
+    "max_steps": 160,
+    "timeout_seconds": 900
+  }
+}

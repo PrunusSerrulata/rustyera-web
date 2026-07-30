@@ -180,6 +180,7 @@ watch(
         v-for="background in store.presentation.backgrounds"
         :key="`${background.resource_id}:${background.revision}`"
         :placement="background"
+        :line-slot="false"
       />
     </div>
     <div

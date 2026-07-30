@@ -7,6 +7,7 @@ import {
   compareObservations,
   isolatedProject,
   loadScenario,
+  resolveLocator,
   runAction,
 } from "../scripts/web-test-lib.mjs";
 
@@ -118,5 +119,159 @@ describe("web game test scenario", () => {
 
     expect(page.getByText).toHaveBeenCalledWith("hover target", { exact: true });
     expect(locator.hover).toHaveBeenCalledOnce();
+  });
+
+  it("can select the latest match for a repeated screen label", () => {
+    const latest = {};
+    const matches = { nth: vi.fn(() => latest) };
+    const page = { getByText: vi.fn(() => matches) };
+
+    expect(resolveLocator(page, { text: "第1年", exact: false, nth: -1 })).toBe(latest);
+    expect(matches.nth).toHaveBeenCalledWith(-1);
+  });
+
+  it("asserts reference-relative layout without hard-coding viewport coordinates", async () => {
+    const box = (left, top, width, height) => ({
+      getBoundingClientRect: () => ({
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+        width,
+        height,
+      }),
+    });
+    const subject = {
+      evaluateAll: vi.fn((callback) => callback([box(88, 10, 24, 24), box(88.4, 10.3, 24, 24)])),
+    };
+    const reference = {
+      evaluateAll: vi.fn((callback) => callback([box(0, 40, 200, 20)])),
+    };
+    const page = {
+      locator: vi.fn((selector) => (selector === ".layers" ? subject : reference)),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "assert_layout",
+        locator: { css: ".layers" },
+        relative_to: { css: ".text" },
+        expect: {
+          count: 2,
+          visible: true,
+          same_left_within: 1,
+          same_top_within: 1,
+          above: { min: 5, max: 10 },
+          no_overlap: true,
+        },
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        query: expect.objectContaining({ layout: expect.objectContaining({ count: 2 }) }),
+      }),
+    );
+  });
+
+  it("stops explicit Enter advancement when the current output tail reaches a screen", async () => {
+    const snapshots = [
+      { output: ["opening"], wait: { kind: "enter_key", wait_id: "1" } },
+      {
+        output: ["old history", "第1年  1月  8日 周一", "亚斯特丽德的工房"],
+        wait: { kind: "enter_key", wait_id: "2" },
+      },
+    ];
+    let snapshotIndex = 0;
+    const click = vi.fn();
+    const page = {
+      evaluate: vi.fn((callback) => {
+        if (String(callback).includes("waitForStableObservation")) {
+          snapshotIndex += 1;
+          return snapshots[snapshotIndex];
+        }
+        return snapshots[snapshotIndex];
+      }),
+      locator: vi.fn(() => ({ click })),
+      waitForFunction: vi.fn(),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "advance_enter_waits_until",
+        maximum: 5,
+        until: { output_tail_contains: "第1年  1月  8日", tail_lines: 3 },
+      }),
+    ).resolves.toMatchObject({ attempts: 1 });
+    expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("waits past a text-matched fade frame until the screen locator is visible", async () => {
+    const snapshots = [
+      { output: ["目标场景"], wait: { kind: "enter_key", wait_id: "1" } },
+      { output: ["目标场景"], wait: { kind: "enter_key", wait_id: "2" } },
+    ];
+    let snapshotIndex = 0;
+    const click = vi.fn();
+    const target = {
+      count: vi.fn(() => (snapshotIndex ? 1 : 0)),
+      first: vi.fn(() => ({ isVisible: vi.fn().mockResolvedValue(true) })),
+    };
+    const page = {
+      evaluate: vi.fn((callback) => {
+        if (String(callback).includes("waitForStableObservation")) {
+          snapshotIndex += 1;
+          return snapshots[snapshotIndex];
+        }
+        return snapshots[snapshotIndex];
+      }),
+      locator: vi.fn((selector) => (selector === ".target" ? target : { click })),
+      waitForFunction: vi.fn(),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "advance_enter_waits_until",
+        maximum: 5,
+        until: {
+          output_tail_contains: "目标场景",
+          locator: { css: ".target" },
+        },
+      }),
+    ).resolves.toMatchObject({ attempts: 1 });
+    expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("asserts that a generated canvas contains rendered pixels", async () => {
+    const pixels = new Uint8ClampedArray(4 * 4 * 4);
+    pixels[3] = 255;
+    pixels[11] = 128;
+    const canvas = {
+      tagName: "CANVAS",
+      width: 4,
+      height: 4,
+      getContext: () => ({ getImageData: () => ({ data: pixels }) }),
+    };
+    const locator = {
+      count: vi.fn().mockResolvedValue(1),
+      first: vi.fn(() => ({
+        evaluate: vi.fn((callback, count) => {
+          const OriginalCanvas = globalThis.HTMLCanvasElement;
+          Object.setPrototypeOf(canvas, OriginalCanvas.prototype);
+          return callback(canvas, count);
+        }),
+      })),
+    };
+    const page = { locator: vi.fn(() => locator) };
+
+    await expect(
+      runAction(page, {
+        type: "assert_canvas_pixels",
+        locator: { css: ".canvas-replay" },
+        expect: { count: 1, width: 4, height: 4, nontransparent_at_least: 2 },
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        query: { canvas_pixels: { count: 1, width: 4, height: 4, nontransparent: 2 } },
+      }),
+    );
   });
 });

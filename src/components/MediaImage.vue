@@ -7,7 +7,9 @@ import type { PresentationLength } from "@/core/types";
 import { platformBridge } from "@/platform";
 import { useRuntimeStore } from "@/stores/runtime";
 
-const props = defineProps<{ placement: any; alt?: string }>();
+const props = withDefaults(defineProps<{ placement: any; alt?: string; lineSlot?: boolean }>(), {
+  lineSlot: true,
+});
 const store = useRuntimeStore();
 const source = ref("");
 const failed = ref(false);
@@ -61,8 +63,10 @@ const dimensions = computed(() => {
   const spriteHeight = positive(sprite.value?.size?.[1]) ?? naturalSize.value?.height;
   const requestedWidth = projectLength(props.placement.requested_width);
   const requestedHeight = projectLength(props.placement.requested_height);
-  let width = requestedWidth;
-  let height = requestedHeight;
+  const placementWidth = logicalPixels(props.placement.width);
+  const placementHeight = logicalPixels(props.placement.height);
+  let width = requestedWidth ?? placementWidth;
+  let height = requestedHeight ?? placementHeight;
   if (width == null && height == null) {
     width = spriteWidth;
     height = spriteHeight;
@@ -71,10 +75,6 @@ const dimensions = computed(() => {
     height = (width * spriteHeight) / spriteWidth;
   } else if (height != null && width == null && spriteWidth && spriteHeight) {
     width = (height * spriteWidth) / spriteHeight;
-  }
-  if (!sprite.value) {
-    width ??= logicalPixels(props.placement.width);
-    height ??= logicalPixels(props.placement.height);
   }
   return { width, height };
 });
@@ -85,7 +85,6 @@ const opacity = computed(() =>
     : 1,
 );
 const scale = computed(() => store.effectivePreferences.imageScale);
-const positioned = computed(() => props.placement.requested_y != null);
 const directStyle = computed(() => ({
   width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
   height: dimensions.value.height ? `${dimensions.value.height * scale.value}px` : undefined,
@@ -95,14 +94,14 @@ const directStyle = computed(() => ({
 }));
 const positionedSlotStyle = computed(() => ({
   width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
-  height: `${store.gameTextStyle.fontSizePx}px`,
+  height: `${(logicalPixels(props.placement.height) ?? store.gameTextStyle.fontSizePx) * scale.value}px`,
   opacity: opacity.value,
   zIndex: props.placement.depth,
 }));
 const positionedVisualStyle = computed(() => ({
   width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
   height: dimensions.value.height ? `${dimensions.value.height * scale.value}px` : undefined,
-  top: verticalOffset(),
+  top: verticalOffset() ?? "0px",
 }));
 const spriteStyle = computed(() => ({
   width: `${(dimensions.value.width ?? 0) * scale.value}px`,
@@ -170,13 +169,21 @@ function stopHover(): void {
 </script>
 
 <template>
-  <CanvasReplay
-    v-if="canvasReplay"
-    :replay="canvasReplay"
-    :scale="store.effectivePreferences.imageScale"
-  />
   <span
-    v-else-if="positioned && sprite && frame && source && dimensions.width && dimensions.height"
+    v-if="lineSlot && canvasReplay"
+    class="media-image media-positioned"
+    :style="positionedSlotStyle"
+  >
+    <span class="media-visual" :style="positionedVisualStyle">
+      <CanvasReplay
+        :replay="canvasReplay"
+        :display-width="dimensions.width ? dimensions.width * scale : undefined"
+        :display-height="dimensions.height ? dimensions.height * scale : undefined"
+      />
+    </span>
+  </span>
+  <span
+    v-else-if="lineSlot && sprite && frame && source && dimensions.width && dimensions.height"
     class="media-image media-positioned"
     :style="positionedSlotStyle"
   >
@@ -198,22 +205,7 @@ function stopHover(): void {
     </span>
   </span>
   <span
-    v-else-if="sprite && frame && source && dimensions.width && dimensions.height"
-    class="media-image media-sprite"
-    :style="spriteStyle"
-    @mouseenter="startHover"
-    @mouseleave="stopHover"
-  >
-    <img
-      :src="source"
-      :alt="alt ?? ''"
-      :style="spriteSourceStyle"
-      draggable="false"
-      @load="imageLoaded"
-    />
-  </span>
-  <span
-    v-else-if="positioned && source"
+    v-else-if="lineSlot && source"
     class="media-image media-positioned"
     :style="positionedSlotStyle"
   >
@@ -227,6 +219,26 @@ function stopHover(): void {
       @mouseenter="startHover"
       @mousemove="startHover"
       @mouseleave="stopHover"
+      @load="imageLoaded"
+    />
+  </span>
+  <CanvasReplay
+    v-else-if="canvasReplay"
+    :replay="canvasReplay"
+    :scale="store.effectivePreferences.imageScale"
+  />
+  <span
+    v-else-if="sprite && frame && source && dimensions.width && dimensions.height"
+    class="media-image media-sprite"
+    :style="spriteStyle"
+    @mouseenter="startHover"
+    @mouseleave="stopHover"
+  >
+    <img
+      :src="source"
+      :alt="alt ?? ''"
+      :style="spriteSourceStyle"
+      draggable="false"
       @load="imageLoaded"
     />
   </span>

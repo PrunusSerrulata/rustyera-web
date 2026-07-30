@@ -264,10 +264,10 @@ select {
 }
 .game-line:has(.media-image, .canvas-replay),
 .game-line .html-node:is(p):has(.media-image, .canvas-replay) {
-  min-height: 0;
+  min-height: 1em;
   margin: 0;
   padding: 0;
-  line-height: 0;
+  line-height: 1;
 }
 .game-line:has(.media-positioned) {
   /* ypos visuals intentionally draw outside their one-row layout slot. */
@@ -344,9 +344,23 @@ select {
   display: inline-block;
   vertical-align: top;
 }
-.html-node-positioned {
-  position: absolute;
-  top: 0;
+.html-ascii-space {
+  display: inline-block;
+  overflow: hidden;
+  font-size: 0;
+  vertical-align: baseline;
+}
+.html-node.html-node-positioned {
+  display: inline-block;
+  position: relative;
+  width: 0;
+  vertical-align: top;
+}
+.html-node.html-node-positioned:has(> br:last-child) {
+  /* A trailing HTML break reserves a row in Emuera. Browsers otherwise collapse
+     the empty line after the final <br>, including its font descent, shortening
+     image documents by one row. */
+  padding-bottom: calc(1em + 3px);
 }
 .media-image,
 .canvas-replay {

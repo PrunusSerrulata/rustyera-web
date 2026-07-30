@@ -53,7 +53,7 @@ describe("frontend host and image-line policy", () => {
     const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
     expect(stylesheet).toMatch(/\.game-line \.html-node:is\(p\)\s*\{\s*margin:\s*0;/);
     expect(stylesheet).toMatch(
-      /\.game-line:has\(\.media-image, \.canvas-replay\)[\s\S]*?margin:\s*0;[\s\S]*?padding:\s*0;[\s\S]*?line-height:\s*0;/,
+      /\.game-line:has\(\.media-image, \.canvas-replay\)[\s\S]*?margin:\s*0;[\s\S]*?padding:\s*0;[\s\S]*?line-height:\s*1;/,
     );
     expect(stylesheet).toMatch(/\.media-positioned\s*\{\s*overflow:\s*visible;/);
     expect(stylesheet).toMatch(
@@ -110,8 +110,23 @@ describe("frontend host and image-line policy", () => {
     expect(positioned.attributes("style")).toContain("left: 30px");
     const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
     expect(stylesheet).toMatch(
-      /\.html-node-positioned\s*\{[^}]*position:\s*absolute;[^}]*top:\s*0;/s,
+      /\.html-node\.html-node-positioned\s*\{[^}]*display:\s*inline-block;[^}]*position:\s*relative;[^}]*width:\s*0;/s,
     );
+    expect(stylesheet).toMatch(
+      /\.html-node\.html-node-positioned:has\(> br:last-child\)\s*\{[^}]*padding-bottom:\s*calc\(1em \+ 3px\);/s,
+    );
+    expect(stylesheet).not.toMatch(/\.html-node-positioned\s*\{[^}]*position:\s*absolute;/s);
+  });
+
+  it("projects HTML ASCII spaces onto Emuera half-width font cells", () => {
+    const wrapper = mount(HtmlNode, {
+      props: { node: { type: "text", text: "  image" } },
+    });
+
+    const space = wrapper.get<HTMLElement>(".html-ascii-space");
+    expect(space.element.textContent).toBe("  ");
+    expect(space.attributes("style")).toContain("width: 12px");
+    expect(wrapper.element.textContent).toBe("  image");
   });
 
   it("styles timestamps and fixed-width log levels like the TUI", () => {
