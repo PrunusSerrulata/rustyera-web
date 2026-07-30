@@ -49,6 +49,14 @@ const spaceShapeStyle = computed(() => {
         height: `${store.gameTextStyle.fontSizePx}px`,
       };
 });
+const lockedPositionStyle = computed(() => {
+  const semantic = props.node.semantic;
+  if (!["button", "non_button"].includes(semantic?.type) || semantic.position == null) return null;
+  const position = Number(semantic.position);
+  return Number.isFinite(position)
+    ? { left: `${(position * store.gameTextStyle.fontSizePx) / 100}px` }
+    : null;
+});
 const tooltipTitle = computed(() => {
   const semantic = props.node.semantic;
   return semantic?.type === "button" || semantic?.type === "non_button"
@@ -90,6 +98,8 @@ function projectLength(value: { unit?: string; value?: unknown } | undefined): n
     :disabled="node.interaction && (!node.interaction.enabled || !store.canInteract)"
     :aria-description="tooltipTitle"
     class="html-node"
+    :class="{ 'html-node-positioned': lockedPositionStyle }"
+    :style="lockedPositionStyle"
     :data-era-tooltip="tooltipTitle"
     @click="activate"
   >

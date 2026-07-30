@@ -344,6 +344,10 @@ select {
   display: inline-block;
   vertical-align: top;
 }
+.html-node-positioned {
+  position: absolute;
+  top: 0;
+}
 .media-image,
 .canvas-replay {
   display: inline-block;

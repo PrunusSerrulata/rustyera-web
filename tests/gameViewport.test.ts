@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const scrollToIndex = vi.hoisted(() => vi.fn());
 const virtualOptions = vi.hoisted(() => ({ value: undefined as any }));
+const virtualState = vi.hoisted(() => ({ items: [] as any[], totalSize: 0 }));
 const continueFromViewport = vi.hoisted(() => vi.fn());
 const projectViewport = vi.hoisted(() => vi.fn());
 const store = reactive({
@@ -11,7 +12,7 @@ const store = reactive({
   presentation: {
     revision: 1,
     historyRevision: 1,
-    lines: [{ line_id: 1, alignment: "left", runs: [] }],
+    lines: [{ line_id: 1, alignment: "left", runs: [] as any[] }],
     backgrounds: [],
     resources: { sprites: [], canvases: [] },
     htmlIsland: [],
@@ -19,15 +20,16 @@ const store = reactive({
   continueFromViewport,
   projectViewport,
   skip: vi.fn(),
-  gameTextStyle: { fontFamily: "sans-serif", fontSize: "12px" },
+  effectivePreferences: { imageScale: 1 },
+  gameTextStyle: { fontFamily: "sans-serif", fontSize: "12px", fontSizePx: 12 },
 });
 
 vi.mock("@tanstack/vue-virtual", () => ({
   useVirtualizer: (options: any) => {
     virtualOptions.value = options;
     return ref({
-      getVirtualItems: () => [],
-      getTotalSize: () => 0,
+      getVirtualItems: () => virtualState.items,
+      getTotalSize: () => virtualState.totalSize,
       measureElement: vi.fn(),
       scrollToIndex,
     });
@@ -43,6 +45,9 @@ describe("game viewport", () => {
     store.runtimeEpoch = 1;
     store.presentation.revision = 1;
     store.presentation.historyRevision = 1;
+    store.presentation.lines = [{ line_id: 1, alignment: "left", runs: [] }];
+    virtualState.items = [];
+    virtualState.totalSize = 0;
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
       callback(0);
       return 1;
@@ -104,6 +109,74 @@ describe("game viewport", () => {
     store.runtimeEpoch = 2;
     await nextTick();
     expect(virtualOptions.value.value.getItemKey(0)).toBe("2:1");
+    wrapper.unmount();
+  });
+
+  it("bottom-aligns short history while retaining virtual row coordinates", async () => {
+    const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get() {
+        return this.classList.contains("game-viewport") ? 720 : 0;
+      },
+    });
+    virtualState.items = [{ index: 0, key: "line-1", start: 0 }];
+    virtualState.totalSize = 260;
+
+    try {
+      const wrapper = shallowMount(GameViewport);
+      await nextTick();
+      const history = wrapper.get<HTMLElement>(".virtual-history");
+      expect(history.classes()).toContain("history-bottom-aligned");
+      expect(history.attributes("style")).toContain("height: 720px");
+      expect(wrapper.get<HTMLElement>(".game-line").attributes("style")).toContain(
+        "translateY(460px)",
+      );
+      wrapper.unmount();
+    } finally {
+      if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+      else delete (HTMLElement.prototype as any).clientHeight;
+    }
+  });
+
+  it("reserves the visible lower edge of a space-positioned negative-y HTML image", async () => {
+    virtualState.items = [{ index: 0, key: "line-1", start: 0 }];
+    virtualState.totalSize = 12;
+    store.presentation.lines = [
+      {
+        line_id: 1,
+        alignment: "left",
+        runs: [
+          {
+            type: "html_document",
+            document: {
+              nodes: [
+                {
+                  semantic: {
+                    type: "shape",
+                    kind: "space",
+                    parameters: [{ unit: "font_height_hundredths", value: 3600 }],
+                  },
+                },
+                {
+                  semantic: {
+                    type: "image",
+                    height: { unit: "font_height_hundredths", value: 3600 },
+                    y: { unit: "font_height_hundredths", value: -3300 },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ];
+
+    const wrapper = shallowMount(GameViewport);
+    await nextTick();
+    expect(wrapper.get<HTMLElement>(".game-line").attributes("style")).toContain(
+      "min-height: 36px",
+    );
     wrapper.unmount();
   });
 });

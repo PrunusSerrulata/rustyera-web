@@ -25,6 +25,12 @@
       "fields": ["count", "visible"],
       "expect": { "count": 1, "visible": true }
     },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".virtual-history.history-bottom-aligned" },
+      "fields": ["count", "visible"],
+      "expect": { "count": 1, "visible": true }
+    },
     { "type": "input", "value": 0 },
     { "type": "input", "value": 0 },
     { "type": "input", "value": 0 },
@@ -43,6 +49,12 @@
     {
       "type": "assert_dom",
       "locator": { "css": ".html-node .media-positioned .media-sprite img" },
+      "fields": ["count", "visible"],
+      "expect": { "count": 10, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".html-node-positioned" },
       "fields": ["count", "visible"],
       "expect": { "visible": true }
     }

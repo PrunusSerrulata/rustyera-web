@@ -13,6 +13,7 @@ const store = useRuntimeStore();
 const viewport = ref<HTMLElement>();
 const history = ref<HTMLElement>();
 const viewportColumns = ref(100);
+const viewportHeight = ref(0);
 let viewportObserver: ResizeObserver | undefined;
 let viewportFrame: number | undefined;
 let projectedWidth = -1;
@@ -30,6 +31,15 @@ const virtualizer = useVirtualizer(
   }),
 );
 const items = computed(() => virtualizer.value.getVirtualItems());
+const measuredHistoryHeight = computed(() => {
+  // Reading the virtual items keeps this projection in step with row measurements.
+  void items.value;
+  return virtualizer.value.getTotalSize();
+});
+const historyHeight = computed(() => Math.max(viewportHeight.value, measuredHistoryHeight.value));
+const historyBottomInset = computed(() =>
+  Math.max(0, viewportHeight.value - measuredHistoryHeight.value),
+);
 
 watch(
   () => store.presentation.historyRevision,
@@ -57,6 +67,48 @@ function nextAnimationFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
+function lineMinimumHeight(line: any): string | undefined {
+  let hasSpaceShape = false;
+  let negativeImageBottom = 0;
+  const visit = (node: any): void => {
+    const semantic = node?.semantic;
+    if (semantic?.type === "shape" && semantic.kind?.toLowerCase() === "space") {
+      hasSpaceShape = true;
+    } else if (semantic?.type === "image") {
+      const y = projectHtmlLength(semantic.y);
+      const height = projectHtmlLength(semantic.height, true);
+      if (y != null && y < 0 && height != null) {
+        negativeImageBottom = Math.max(
+          negativeImageBottom,
+          (y + height) * store.effectivePreferences.imageScale,
+        );
+      }
+    }
+    for (const child of node?.children ?? []) visit(child);
+  };
+  for (const run of line?.runs ?? []) {
+    if (run.type === "html_document") {
+      for (const node of run.document?.nodes ?? []) visit(node);
+    }
+  }
+  return hasSpaceShape && negativeImageBottom > store.gameTextStyle.fontSizePx
+    ? `${negativeImageBottom}px`
+    : undefined;
+}
+
+function projectHtmlLength(value: any, absolute = false): number | undefined {
+  if (!value) return undefined;
+  const raw = Number(value.value);
+  const projected =
+    value.unit === "pixels"
+      ? raw
+      : value.unit === "logical"
+        ? raw / 1000
+        : (raw * store.gameTextStyle.fontSizePx) / 100;
+  if (!Number.isFinite(projected)) return undefined;
+  return absolute ? Math.abs(projected) : projected;
+}
+
 function click(event: MouseEvent): void {
   if (viewport.value && isViewportContinuationClick(event, viewport.value)) {
     void store.continueFromViewport();
@@ -81,6 +133,7 @@ function measureViewportColumns(): void {
 function synchronizeViewport(): void {
   viewportFrame = undefined;
   if (!viewport.value) return;
+  viewportHeight.value = viewport.value.clientHeight;
   measureViewportColumns();
   if (viewport.value.clientWidth === projectedWidth) return;
   projectedWidth = viewport.value.clientWidth;
@@ -132,7 +185,8 @@ watch(
     <div
       ref="history"
       class="virtual-history"
-      :style="{ height: `${virtualizer.getTotalSize()}px` }"
+      :class="{ 'history-bottom-aligned': historyBottomInset > 0 }"
+      :style="{ height: `${historyHeight}px` }"
     >
       <div
         v-for="item in items"
@@ -141,7 +195,10 @@ watch(
         class="game-line"
         :class="`align-${store.presentation.lines[item.index].alignment}`"
         :data-index="item.index"
-        :style="{ transform: `translateY(${item.start}px)` }"
+        :style="{
+          transform: `translateY(${item.start + historyBottomInset}px)`,
+          minHeight: lineMinimumHeight(store.presentation.lines[item.index]),
+        }"
       >
         <DisplayLine
           :line="store.presentation.lines[item.index]"

@@ -93,6 +93,27 @@ describe("frontend host and image-line policy", () => {
     expect(wrapper.get(".html-shape-space").attributes("style")).toContain("height: 12px");
   });
 
+  it("locks positioned HTML buttons to Emuera font-relative horizontal coordinates", () => {
+    const wrapper = mount(HtmlNode, {
+      props: {
+        node: {
+          type: "element",
+          kind: "non_button",
+          children: [{ type: "text", text: "layer" }],
+          semantic: { type: "non_button", position: 250 },
+        },
+      },
+    });
+
+    const positioned = wrapper.get(".html-node-positioned");
+    expect(positioned.text()).toBe("layer");
+    expect(positioned.attributes("style")).toContain("left: 30px");
+    const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
+    expect(stylesheet).toMatch(
+      /\.html-node-positioned\s*\{[^}]*position:\s*absolute;[^}]*top:\s*0;/s,
+    );
+  });
+
   it("styles timestamps and fixed-width log levels like the TUI", () => {
     const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
     expect(stylesheet).toMatch(

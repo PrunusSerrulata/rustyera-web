@@ -39,6 +39,17 @@ akumaMaidImages("Tauri eraAkumaMaid image rendering", () => {
       assert.equal(title.spacerWidth, 432);
       assert.equal(title.imageHeight, 432);
       assert.equal(title.imageTop, -396);
+      assert.ok(title.bottomAligned, "short title history must be bottom-aligned");
+      assert.ok(
+        title.imageViewportTop >= -0.5,
+        "title image must not be clipped above the viewport",
+      );
+      assert.ok(
+        title.imageViewportBottom <= title.viewportHeight + 0.5,
+        "title image must not be clipped below the viewport",
+      );
+      assert.ok(title.dividerGap >= -0.5, "title image must not overlap the following divider");
+      assert.ok(title.textGap >= -0.5, "title image must not overlap the following title text");
       await reportProgress(stage);
 
       const inputs = [0, 0, 0, 100, 100, 100, 100, 0];
@@ -100,9 +111,12 @@ akumaMaidImages("Tauri eraAkumaMaid image rendering", () => {
       );
       assert.equal(state.bridgeKind, "tauri");
       assert.equal(state.fault, null);
-      assert.ok(portrait.count > 0);
+      assert.equal(portrait.count, 10);
       assert.equal(portrait.loaded, portrait.count);
       assert.ok(portrait.width > 0 && portrait.height > portrait.slotHeight);
+      assert.ok(portrait.positionedLayerCount >= portrait.count - 1);
+      assert.ok(portrait.leftSpread < 1, "portrait layers must share one horizontal origin");
+      assert.ok(portrait.topSpread < 1, "portrait layers must share one vertical origin");
     } catch (error) {
       const state = await snapshot().catch(() => null);
       const portrait = await portraitMetrics().catch(() => null);
@@ -169,10 +183,41 @@ async function titleMetrics() {
   return browser.execute(() => {
     const spacer = document.querySelector(".html-shape-space");
     const image = document.querySelector(".media-positioned .media-sprite");
+    const viewport = document.querySelector(".game-viewport");
+    const history = document.querySelector(".virtual-history");
+    const imageBounds = image?.getBoundingClientRect();
+    const viewportBounds = viewport?.getBoundingClientRect();
+    const imageLineIndex = Number(image?.closest(".game-line")?.getAttribute("data-index"));
+    const laterLines = [...document.querySelectorAll(".game-line")].filter(
+      (line) => Number(line.getAttribute("data-index")) > imageLineIndex,
+    );
+    const dividerBounds = laterLines
+      .map((line) => line.querySelector(".separator")?.getBoundingClientRect())
+      .find(Boolean);
+    const textBounds = laterLines
+      .filter((line) => !line.querySelector(".separator"))
+      .find((line) => line.textContent?.trim())
+      ?.getBoundingClientRect();
     return {
       spacerWidth: spacer?.getBoundingClientRect().width ?? 0,
       imageHeight: image?.getBoundingClientRect().height ?? 0,
       imageTop: Number.parseFloat(getComputedStyle(image).top) || 0,
+      bottomAligned: history?.classList.contains("history-bottom-aligned") ?? false,
+      viewportHeight: viewportBounds?.height ?? 0,
+      imageViewportTop:
+        imageBounds && viewportBounds
+          ? imageBounds.top - viewportBounds.top
+          : Number.NEGATIVE_INFINITY,
+      imageViewportBottom:
+        imageBounds && viewportBounds
+          ? imageBounds.bottom - viewportBounds.top
+          : Number.POSITIVE_INFINITY,
+      dividerGap:
+        imageBounds && dividerBounds
+          ? dividerBounds.top - imageBounds.bottom
+          : Number.NEGATIVE_INFINITY,
+      textGap:
+        imageBounds && textBounds ? textBounds.top - imageBounds.bottom : Number.NEGATIVE_INFINITY,
     };
   });
 }
@@ -183,6 +228,9 @@ async function portraitMetrics() {
     const image = layers[0];
     const visual = image?.parentElement;
     const slot = visual?.parentElement;
+    const bounds = layers.map((layer) => layer.parentElement?.getBoundingClientRect());
+    const lefts = bounds.flatMap((item) => (item ? [item.left] : []));
+    const tops = bounds.flatMap((item) => (item ? [item.top] : []));
     return {
       count: layers.length,
       loaded: layers.filter((layer) => layer.complete && layer.naturalWidth > 0).length,
@@ -190,6 +238,9 @@ async function portraitMetrics() {
       height: visual?.getBoundingClientRect().height ?? 0,
       slotHeight: slot?.getBoundingClientRect().height ?? 0,
       top: visual ? Number.parseFloat(getComputedStyle(visual).top) || 0 : 0,
+      positionedLayerCount: layers.filter((layer) => layer.closest(".html-node-positioned")).length,
+      leftSpread: lefts.length ? Math.max(...lefts) - Math.min(...lefts) : Number.POSITIVE_INFINITY,
+      topSpread: tops.length ? Math.max(...tops) - Math.min(...tops) : Number.POSITIVE_INFINITY,
     };
   });
 }
