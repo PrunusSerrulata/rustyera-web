@@ -70,6 +70,7 @@ const DEBUG_VARIABLE_PAGE_LIMIT = 256;
 const DEBUG_VARIABLE_MAX_PAGES = 16;
 
 const PROJECT_PROGRESS_LABELS: Record<ProjectProgress["stage"], string> = {
+  importing: "正在复制项目文件",
   scanning: "正在读取项目文件",
   normalizing: "正在整理项目文件",
   loading_data: "正在加载项目数据",
@@ -82,7 +83,7 @@ const PROJECT_PROGRESS_LABELS: Record<ProjectProgress["stage"], string> = {
 function formatProjectProgress(progress: ProjectProgress): string {
   const label = PROJECT_PROGRESS_LABELS[progress.stage] ?? "正在处理项目";
   if (progress.stage === "scanning" && progress.total <= 0) return "正在枚举项目文件…";
-  if (progress.total <= 0) return `${label}：0/0`;
+  if (progress.total <= 0) return `${label}…`;
   const completed = Math.min(progress.completed, progress.total);
   const percent = Math.min(100, Math.round((completed * 100) / progress.total));
   return `${label}：${completed}/${progress.total}（${percent}%）`;
@@ -338,7 +339,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         "info",
         `项目读取：快速扫描 ${metrics.quickScanMs.toFixed(0)} ms，缓存读取 ${metrics.cacheReadMs.toFixed(0)} ms，源码读取 ${metrics.sourceReadMs.toFixed(0)} ms，提交 ${metrics.submitMs.toFixed(0)} ms${metrics.cacheImported ? "（已导入编译缓存）" : "（冷编译）"}`,
       );
-      status.value = "正在编译项目…";
+      continueProjectBuildProgress();
       schedulePump(0);
     } catch (error) {
       if (replaceCurrent) projectOpen.value = false;
@@ -491,10 +492,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
               });
             }, 1000);
         } else if (value.payload_required) {
-          status.value = "编译缓存未命中，正在读取项目源码…";
+          showProjectLoadTransition("编译缓存未命中，正在读取项目源码…");
           projectUsedCompiledCache = false;
           projectRuntimeStartedAt = performance.now();
           await bridge.submitProjectSource();
+          continueProjectBuildProgress();
           schedulePump(0);
         } else {
           finishProjectLoad();
@@ -882,7 +884,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         "info",
         `项目重新读取：快速扫描 ${metrics.quickScanMs.toFixed(0)} ms，缓存读取 ${metrics.cacheReadMs.toFixed(0)} ms，源码读取 ${metrics.sourceReadMs.toFixed(0)} ms，提交 ${metrics.submitMs.toFixed(0)} ms${metrics.cacheImported ? "（已导入编译缓存）" : "（冷编译）"}`,
       );
-      status.value = "正在编译项目…";
+      continueProjectBuildProgress();
     } catch (error) {
       finishProjectLoad();
       const message = `重新开始失败：${String(error)}`;
@@ -943,6 +945,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     beginProjectLoad("正在重新加载项目…");
     try {
       await bridge.reloadProject();
+      continueProjectBuildProgress();
       schedulePump(0);
     } catch (error) {
       finishProjectLoad();
@@ -1814,6 +1817,24 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   function beginProjectLoad(message: string): void {
     acceptingProjectProgress = true;
+    projectLoading.value = true;
+    projectProgress.value = undefined;
+    status.value = message;
+  }
+
+  function continueProjectBuildProgress(): void {
+    projectLoading.value = true;
+    if (
+      projectProgress.value &&
+      projectProgress.value.stage !== "importing" &&
+      projectProgress.value.stage !== "scanning"
+    )
+      return;
+    projectProgress.value = undefined;
+    status.value = "项目文件读取完成，正在准备编译与校验…";
+  }
+
+  function showProjectLoadTransition(message: string): void {
     projectLoading.value = true;
     projectProgress.value = undefined;
     status.value = message;

@@ -104,6 +104,7 @@ export class TauriBridge implements FrontendBridge {
     }
     const path = await open({ directory: true, multiple: false, title: "打开 Era 项目" });
     if (typeof path !== "string") return undefined;
+    this.projectProgressListener?.({ stage: "scanning", completed: 0, total: 0 });
     if (this.progressUnlisten) await this.progressUnlisten;
     this.projectPath = path;
     return invoke("open_project", { path });

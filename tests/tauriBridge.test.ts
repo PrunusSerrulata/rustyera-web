@@ -14,6 +14,7 @@ import { TauriBridge } from "@/platform/tauriBridge";
 describe("Tauri project restart", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    listen.mockResolvedValue(vi.fn());
   });
 
   it("reopens the selected project path after runtime session recreation", async () => {
@@ -53,6 +54,25 @@ describe("Tauri project restart", () => {
     receive?.({ payload: { stage: "compiling", completed: 9, total: 10 } });
 
     expect(progress).toHaveBeenCalledWith({ stage: "compiling", completed: 9, total: 10 });
+  });
+
+  it("starts progress after the directory picker returns and before native scanning", async () => {
+    open.mockResolvedValue("/game/eraTW");
+    invoke.mockResolvedValue({
+      quickScanMs: 1,
+      cacheReadMs: 2,
+      sourceReadMs: 3,
+      submitMs: 4,
+      cacheImported: false,
+    });
+    const progress = vi.fn();
+    const bridge = new TauriBridge();
+    bridge.setProjectProgressListener(progress);
+
+    await bridge.openProject();
+
+    expect(progress).toHaveBeenCalledWith({ stage: "scanning", completed: 0, total: 0 });
+    expect(progress.mock.invocationCallOrder[0]).toBeLessThan(invoke.mock.invocationCallOrder[0]);
   });
 });
 

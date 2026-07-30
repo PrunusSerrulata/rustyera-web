@@ -73,7 +73,9 @@ export class BrowserBridge implements FrontendBridge {
   }
 
   async openProject(): Promise<ProjectOpenMetrics | undefined> {
-    const picked = await pickBrowserDirectory();
+    const picked = await pickBrowserDirectory((stage, completed, total) =>
+      this.projectProgressListener?.({ stage, completed, total }),
+    );
     if (!picked) return undefined;
     const handle = picked.handle;
     const permission = await handle.requestPermission?.({ mode: "readwrite" });

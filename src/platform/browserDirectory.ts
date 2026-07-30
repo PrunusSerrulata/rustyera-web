@@ -6,14 +6,24 @@ export interface PickedBrowserDirectory {
   projectName?: string;
 }
 
+export type BrowserDirectoryProgress = (
+  stage: "importing" | "scanning",
+  completed: number,
+  total: number,
+) => void;
+
 const IMPORT_ROOT = ".rustyera-imports";
 const SOURCE_MANIFEST = "imported-sources.json";
 
-export async function pickBrowserDirectory(): Promise<PickedBrowserDirectory | undefined> {
+export async function pickBrowserDirectory(
+  progress?: BrowserDirectoryProgress,
+): Promise<PickedBrowserDirectory | undefined> {
   if (window.showDirectoryPicker) {
     try {
+      const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+      progress?.("scanning", 0, 0);
       return {
-        handle: await window.showDirectoryPicker({ mode: "readwrite" }),
+        handle,
         persistHandle: true,
       };
     } catch (error) {
@@ -27,8 +37,9 @@ export async function pickBrowserDirectory(): Promise<PickedBrowserDirectory | u
 
   const files = await pickDirectoryFiles();
   if (!files) return undefined;
+  progress?.("importing", 0, 0);
   const storageRoot = await navigator.storage.getDirectory();
-  return importBrowserDirectory(files, storageRoot);
+  return importBrowserDirectory(files, storageRoot, progress);
 }
 
 export async function pickBrowserFile(accept?: string): Promise<File | undefined> {
@@ -38,7 +49,9 @@ export async function pickBrowserFile(accept?: string): Promise<File | undefined
 export async function importBrowserDirectory(
   selectedFiles: Iterable<File>,
   storageRoot: FileSystemDirectoryHandle,
+  progress?: BrowserDirectoryProgress,
 ): Promise<PickedBrowserDirectory> {
+  progress?.("importing", 0, 0);
   const { projectName, files } = selectedProjectFiles(selectedFiles);
   const imports = await storageRoot.getDirectoryHandle(IMPORT_ROOT, { create: true });
   const projectKey = hex(
@@ -51,19 +64,22 @@ export async function importBrowserDirectory(
     .filter(({ path }) => !isRuntimeStoragePath(path))
     .map(({ path }) => path);
   const nextSourceSet = new Set(nextSources);
+  progress?.("importing", 0, files.length);
 
   for (const path of previousSources) {
     if (!nextSourceSet.has(path)) await removeFile(project, path);
   }
-  for (const { path, file } of files) {
-    if (isRuntimeStoragePath(path) && (await fileExists(project, path))) continue;
-    await writeFile(project, path, new Uint8Array(await file.arrayBuffer()));
+  for (const [index, { path, file }] of files.entries()) {
+    if (!(isRuntimeStoragePath(path) && (await fileExists(project, path))))
+      await writeFile(project, path, new Uint8Array(await file.arrayBuffer()));
+    if (index + 1 < files.length) progress?.("importing", index + 1, files.length);
   }
   await writeFile(
     privateDirectory,
     SOURCE_MANIFEST,
     new TextEncoder().encode(JSON.stringify(nextSources)),
   );
+  progress?.("importing", files.length, files.length);
   return { handle: project, persistHandle: false, projectName };
 }
 

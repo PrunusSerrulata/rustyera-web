@@ -51,6 +51,7 @@ export interface ProjectOpenMetrics {
 }
 
 export type ProjectProgressStage =
+  | "importing"
   | "scanning"
   | "normalizing"
   | "loading_data"

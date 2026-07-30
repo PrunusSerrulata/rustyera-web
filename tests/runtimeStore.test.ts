@@ -395,12 +395,16 @@ describe("runtime store session lifecycle", () => {
     expect(store.projectOpen).toBe(true);
     expect(store.projectLoading).toBe(true);
     expect(store.canOpenProject).toBe(false);
-    expect(store.projectLoadProgressLabel).toBe("正在读取项目文件：3/4（75%）");
-    expect(store.projectLoadProgressValue).toBe(75);
+    expect(store.projectLoadProgressLabel).toBe("项目文件读取完成，正在准备编译与校验…");
+    expect(store.projectLoadProgressValue).toBeUndefined();
 
     bridge.projectProgressListener?.({ stage: "compiling", completed: 7, total: 10 });
     expect(store.projectLoadProgressLabel).toBe("正在编译脚本函数：7/10（70%）");
     expect(store.projectLoadProgressValue).toBe(70);
+
+    bridge.projectProgressListener?.({ stage: "validating", completed: 1, total: 2 });
+    expect(store.projectLoadProgressLabel).toBe("正在验证编译结果：1/2（50%）");
+    expect(store.projectLoadProgressValue).toBe(50);
 
     bridge.pump.mockResolvedValueOnce({
       ...emptyBatch(),
@@ -415,6 +419,58 @@ describe("runtime store session lifecycle", () => {
       { type: "start", value: { mode: { type: "new_game", seed: null } } },
       undefined,
     );
+  });
+
+  it("keeps Firefox and Safari directory copying visible through the build handoff", async () => {
+    bridge.kind = "browser";
+    vi.stubGlobal(
+      "AudioContext",
+      class {
+        state = "running";
+        destination = {};
+        resume = vi.fn(async () => {});
+        createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn() }));
+      },
+    );
+    let resolveOpenProject!: (metrics: {
+      quickScanMs: number;
+      cacheReadMs: number;
+      sourceReadMs: number;
+      submitMs: number;
+      cacheImported: boolean;
+    }) => void;
+    bridge.openProject.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveOpenProject = resolve;
+        }),
+    );
+    const store = useRuntimeStore();
+
+    const opening = store.openProject();
+    await vi.waitFor(() => expect(bridge.openProject).toHaveBeenCalledOnce());
+    expect(store.projectLoading).toBe(false);
+
+    bridge.projectProgressListener?.({ stage: "importing", completed: 12, total: 40 });
+    expect(store.projectLoading).toBe(true);
+    expect(store.projectLoadProgressLabel).toBe("正在复制项目文件：12/40（30%）");
+    expect(store.projectLoadProgressValue).toBe(30);
+
+    bridge.projectProgressListener?.({ stage: "scanning", completed: 40, total: 40 });
+    expect(store.projectLoadProgressLabel).toBe("正在读取项目文件：40/40（100%）");
+
+    resolveOpenProject({
+      quickScanMs: 1,
+      cacheReadMs: 2,
+      sourceReadMs: 3,
+      submitMs: 4,
+      cacheImported: false,
+    });
+    await opening;
+
+    expect(store.projectLoading).toBe(true);
+    expect(store.projectLoadProgressLabel).toBe("项目文件读取完成，正在准备编译与校验…");
+    expect(store.projectLoadProgressValue).toBeUndefined();
   });
 
   it("attaches without pausing and retries a requested pause with a renewed grant", async () => {

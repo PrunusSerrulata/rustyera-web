@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global document, getComputedStyle, HTMLInputElement, HTMLElement, navigator, window */
+/* global document, getComputedStyle, HTMLInputElement, HTMLElement, MutationObserver, navigator, window */
 
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
@@ -122,6 +122,31 @@ try {
   );
   if (!setup.ok) throw new Error(`browser project import failed: ${setup.error}`);
 
+  await browser.execute(() => {
+    const progress = { active: false, gaps: 0, labels: [] };
+    const capture = () => {
+      const element = document.querySelector(".project-load-progress");
+      if (element) {
+        progress.active = true;
+        const label = element.querySelector("span")?.textContent?.trim();
+        if (label && progress.labels.at(-1) !== label) progress.labels.push(label);
+        return;
+      }
+      if (!progress.active) return;
+      const state = window.__RUSTYERA_TEST__?.snapshot();
+      if (!state?.canInteract && state?.status !== "项目编译完成") progress.gaps += 1;
+    };
+    const observer = new MutationObserver(capture);
+    observer.observe(document.body, {
+      attributes: true,
+      characterData: true,
+      childList: true,
+      subtree: true,
+    });
+    window.__RUSTYERA_COMPAT_PROGRESS__ = { capture, observer, progress };
+    capture();
+  });
+
   const open = await browser.$("button.primary.large");
   await open.waitForClickable({ timeout: 30_000 });
   await open.click();
@@ -139,6 +164,35 @@ try {
       timeoutMsg: "WASM project did not reach a stable input wait",
     },
   );
+  const projectProgress = await browser.execute(() => {
+    const observed = window.__RUSTYERA_COMPAT_PROGRESS__;
+    observed?.capture();
+    observed?.observer.disconnect();
+    const state = window.__RUSTYERA_TEST__?.snapshot();
+    return {
+      ...observed?.progress,
+      cacheHit: state?.logs.some((entry) =>
+        String(entry.message).includes("runtime.compiled_cache_hit"),
+      ),
+    };
+  });
+  const copied = projectProgress.labels.some((label) =>
+    /^正在复制项目文件：\d+\/\d+（\d+%）$/.test(label),
+  );
+  const scanned = projectProgress.labels.some(
+    (label) => label === "正在枚举项目文件…" || label.startsWith("正在读取项目文件："),
+  );
+  const compiled = projectProgress.labels.some((label) => label.startsWith("正在编译脚本函数"));
+  const validated = projectProgress.labels.some((label) => label.startsWith("正在验证编译结果"));
+  const cacheHandoff = projectProgress.labels.includes("项目文件读取完成，正在准备编译与校验…");
+  if (
+    !copied ||
+    !scanned ||
+    projectProgress.gaps !== 0 ||
+    (projectProgress.cacheHit ? !cacheHandoff : !compiled || !validated)
+  ) {
+    throw new Error(`project progress was incomplete: ${JSON.stringify(projectProgress)}`);
+  }
   const clickButton = async (label) => {
     const button = await browser.$(`//button[normalize-space(.)=${JSON.stringify(label)}]`);
     await button.waitForClickable({ timeout: 30_000 });
@@ -299,6 +353,7 @@ try {
       minimized,
       projectName: setup.projectName,
       opfs: setup.opfs,
+      projectProgress,
       saveTransfer,
       tooltip,
       ...observed,

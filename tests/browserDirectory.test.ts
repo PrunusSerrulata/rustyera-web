@@ -92,7 +92,8 @@ describe("portable browser directory selection", () => {
     const storage = new MemoryDirectoryHandle("root");
     vi.stubGlobal("showDirectoryPicker", undefined);
     vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
-    const selection = pickBrowserDirectory();
+    const progress = vi.fn();
+    const selection = pickBrowserDirectory(progress);
     const input = document.querySelector<HTMLInputElement>('input[type="file"]');
     expect(input?.webkitdirectory).toBe(true);
     const settled = vi.fn();
@@ -102,11 +103,31 @@ describe("portable browser directory selection", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(settled).not.toHaveBeenCalled();
+    expect(progress).not.toHaveBeenCalled();
     expect(input?.isConnected).toBe(true);
     Object.defineProperty(input, "files", { value: [projectFile("game/ERB/main.erb")] });
     input!.dispatchEvent(new Event("change"));
 
     await expect(selection).resolves.toMatchObject({ projectName: "game", persistHandle: false });
+    expect(progress.mock.calls[0]).toEqual(["importing", 0, 0]);
+    expect(progress.mock.calls.at(-1)).toEqual(["importing", 1, 1]);
+  });
+
+  it("starts progress only after a native directory handle is provided", async () => {
+    const handle = new MemoryDirectoryHandle("game");
+    const progress = vi.fn();
+    vi.stubGlobal(
+      "showDirectoryPicker",
+      vi.fn(async () => handle),
+    );
+
+    await expect(pickBrowserDirectory(progress)).resolves.toMatchObject({
+      handle,
+      persistHandle: true,
+    });
+
+    expect(progress).toHaveBeenCalledOnce();
+    expect(progress).toHaveBeenCalledWith("scanning", 0, 0);
   });
 
   it("returns no directory when either browser picker is cancelled", async () => {
@@ -185,5 +206,23 @@ describe("portable browser directory selection", () => {
       await (await scripts.getFileHandle("new.erb")).getFile().then((file) => file.text()),
     ).toBe("new");
     expect(await save.getFile().then((file) => file.text())).toBe("browser");
+  });
+
+  it("reports each imported file before browser project scanning begins", async () => {
+    const storage = new MemoryDirectoryHandle("root");
+    const progress = vi.fn();
+
+    await importBrowserDirectory(
+      [projectFile("game/ERB/main.erb"), projectFile("game/CSV/GAMEBASE.csv")],
+      storage as unknown as FileSystemDirectoryHandle,
+      progress,
+    );
+
+    expect(progress.mock.calls).toEqual([
+      ["importing", 0, 0],
+      ["importing", 0, 2],
+      ["importing", 1, 2],
+      ["importing", 2, 2],
+    ]);
   });
 });
