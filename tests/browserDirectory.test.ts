@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { importBrowserDirectory, selectedProjectFiles } from "@/platform/browserDirectory";
+import {
+  importBrowserDirectory,
+  pickBrowserDirectory,
+  pickBrowserFile,
+  selectedProjectFiles,
+} from "@/platform/browserDirectory";
 
 class MemoryFileHandle {
   readonly kind = "file";
@@ -76,6 +81,61 @@ function projectFile(path: string, contents = ""): File {
 }
 
 describe("portable browser directory selection", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    document.body.replaceChildren();
+    vi.unstubAllGlobals();
+  });
+
+  it("waits for a delayed directory confirmation after the window regains focus", async () => {
+    vi.useFakeTimers();
+    const storage = new MemoryDirectoryHandle("root");
+    vi.stubGlobal("showDirectoryPicker", undefined);
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    const selection = pickBrowserDirectory();
+    const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(input?.webkitdirectory).toBe(true);
+    const settled = vi.fn();
+    void selection.then(settled, settled);
+
+    window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(settled).not.toHaveBeenCalled();
+    expect(input?.isConnected).toBe(true);
+    Object.defineProperty(input, "files", { value: [projectFile("game/ERB/main.erb")] });
+    input!.dispatchEvent(new Event("change"));
+
+    await expect(selection).resolves.toMatchObject({ projectName: "game", persistHandle: false });
+  });
+
+  it("returns no directory when either browser picker is cancelled", async () => {
+    vi.stubGlobal("showDirectoryPicker", async () => {
+      throw new DOMException("cancelled", "AbortError");
+    });
+    await expect(pickBrowserDirectory()).resolves.toBeUndefined();
+
+    const storage = new MemoryDirectoryHandle("root");
+    vi.stubGlobal("showDirectoryPicker", undefined);
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    const selection = pickBrowserDirectory();
+    document
+      .querySelector<HTMLInputElement>('input[type="file"]')!
+      .dispatchEvent(new Event("cancel"));
+
+    await expect(selection).resolves.toBeUndefined();
+  });
+
+  it("settles a cancelled snapshot file selection", async () => {
+    const selection = pickBrowserFile(".snapshot");
+    const input = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+    expect(input.accept).toBe(".snapshot");
+
+    input.dispatchEvent(new Event("cancel"));
+
+    await expect(selection).resolves.toBeUndefined();
+  });
+
   it("strips the shared directory name while retaining nested project paths", () => {
     const result = selectedProjectFiles([
       projectFile("eraTW/CSV/GAMEBASE.csv"),

@@ -9,18 +9,30 @@ export interface PickedBrowserDirectory {
 const IMPORT_ROOT = ".rustyera-imports";
 const SOURCE_MANIFEST = "imported-sources.json";
 
-export async function pickBrowserDirectory(): Promise<PickedBrowserDirectory> {
+export async function pickBrowserDirectory(): Promise<PickedBrowserDirectory | undefined> {
   if (window.showDirectoryPicker) {
-    return { handle: await window.showDirectoryPicker({ mode: "readwrite" }), persistHandle: true };
+    try {
+      return {
+        handle: await window.showDirectoryPicker({ mode: "readwrite" }),
+        persistHandle: true,
+      };
+    } catch (error) {
+      if (isPickerCancellation(error)) return undefined;
+      throw error;
+    }
   }
   if (!navigator.storage.getDirectory) {
     throw new Error("此浏览器无法创建项目存储空间，请更新 Firefox 或 Safari 后重试。");
   }
 
   const files = await pickDirectoryFiles();
-  if (!files) throw new DOMException("用户取消了目录选择", "AbortError");
+  if (!files) return undefined;
   const storageRoot = await navigator.storage.getDirectory();
   return importBrowserDirectory(files, storageRoot);
+}
+
+export async function pickBrowserFile(accept?: string): Promise<File | undefined> {
+  return (await pickFiles({ accept }))?.[0];
 }
 
 export async function importBrowserDirectory(
@@ -75,30 +87,45 @@ export function selectedProjectFiles(selectedFiles: Iterable<File>): {
 }
 
 async function pickDirectoryFiles(): Promise<File[] | undefined> {
-  return new Promise((resolve) => {
+  return pickFiles({ directory: true, multiple: true });
+}
+
+function pickFiles(options: {
+  accept?: string;
+  directory?: boolean;
+  multiple?: boolean;
+}): Promise<File[] | undefined> {
+  return new Promise((resolve, reject) => {
     const input = document.createElement("input");
     input.type = "file";
-    input.multiple = true;
-    input.webkitdirectory = true;
+    input.multiple = options.multiple ?? false;
+    input.webkitdirectory = options.directory ?? false;
+    if (options.accept) input.accept = options.accept;
     input.hidden = true;
     let settled = false;
     const finish = (files?: File[]) => {
       if (settled) return;
       settled = true;
-      window.removeEventListener("focus", focused);
       input.remove();
       resolve(files);
     };
-    const focused = () =>
-      setTimeout(() => finish(input.files?.length ? [...input.files] : undefined), 0);
     input.addEventListener("change", () =>
       finish(input.files?.length ? [...input.files] : undefined),
     );
     input.addEventListener("cancel", () => finish());
-    window.addEventListener("focus", focused, { once: true });
     document.body.append(input);
-    input.click();
+    try {
+      input.click();
+    } catch (error) {
+      settled = true;
+      input.remove();
+      reject(error);
+    }
   });
+}
+
+function isPickerCancellation(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
 async function readSourceManifest(directory: FileSystemDirectoryHandle): Promise<string[]> {

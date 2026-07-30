@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global document, getComputedStyle, HTMLElement, navigator, window */
+/* global document, getComputedStyle, HTMLInputElement, HTMLElement, navigator, window */
 
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
@@ -66,7 +66,6 @@ try {
   const setup = await browser.executeAsync(
     async (payload, done) => {
       try {
-        const module = await import("/src/platform/browserDirectory.ts");
         const selected = payload.files.map((entry) => {
           const raw = atob(entry.base64);
           const bytes = Uint8Array.from(raw, (character) => character.charCodeAt(0));
@@ -76,14 +75,34 @@ try {
           });
           return file;
         });
-        const picked = await module.importBrowserDirectory(
-          selected,
-          await navigator.storage.getDirectory(),
-        );
-        window.showDirectoryPicker = async () => picked.handle;
+        const nativeInputClick = HTMLInputElement.prototype.click;
+        const picker = {
+          fallback: false,
+          focusBeforeChange: false,
+          confirmationDelayMs: 50,
+        };
+        Object.defineProperty(window, "showDirectoryPicker", {
+          configurable: true,
+          value: undefined,
+        });
+        HTMLInputElement.prototype.click = function () {
+          if (this.type !== "file" || !this.webkitdirectory) {
+            nativeInputClick.call(this);
+            return;
+          }
+          picker.fallback = true;
+          window.dispatchEvent(new Event("focus"));
+          picker.focusBeforeChange = true;
+          window.setTimeout(() => {
+            Object.defineProperty(this, "files", { configurable: true, value: selected });
+            this.dispatchEvent(new Event("change", { bubbles: true }));
+            HTMLInputElement.prototype.click = nativeInputClick;
+          }, picker.confirmationDelayMs);
+        };
+        window.__RUSTYERA_COMPAT_PICKER__ = picker;
         done({
           ok: true,
-          projectName: picked.projectName,
+          projectName: payload.projectName,
           opfs: typeof navigator.storage.getDirectory === "function",
         });
       } catch (error) {
@@ -144,7 +163,13 @@ try {
     userAgent: navigator.userAgent,
     status: document.querySelector(".runtime-status")?.textContent,
     output: document.querySelector(".game-viewport")?.textContent,
+    picker: window.__RUSTYERA_COMPAT_PICKER__,
   }));
+  if (!observed.picker?.fallback || !observed.picker.focusBeforeChange) {
+    throw new Error(
+      `portable directory picker was not exercised: ${JSON.stringify(observed.picker)}`,
+    );
+  }
   console.log(
     JSON.stringify({
       browser: browserName,

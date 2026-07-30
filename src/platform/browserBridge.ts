@@ -9,7 +9,7 @@ import type {
 } from "@/core/types";
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import type { DiagnosisArchiveInput } from "@/core/diagnosis";
-import { pickBrowserDirectory } from "@/platform/browserDirectory";
+import { pickBrowserDirectory, pickBrowserFile } from "@/platform/browserDirectory";
 import { createDiagnosisArchiveInWorker } from "@/platform/diagnosis";
 import { BrowserProject, cacheIdentityManifest } from "@/platform/browserProject";
 import { database, loadBrowserPreferences, saveBrowserPreferences } from "@/platform/database";
@@ -47,6 +47,7 @@ export class BrowserBridge implements FrontendBridge {
 
   async openProject(): Promise<ProjectOpenMetrics | undefined> {
     const picked = await pickBrowserDirectory();
+    if (!picked) return undefined;
     const handle = picked.handle;
     const permission = await handle.requestPermission?.({ mode: "readwrite" });
     if (permission && permission !== "granted")
@@ -143,21 +144,9 @@ export class BrowserBridge implements FrontendBridge {
     return this.project?.name;
   }
 
-  openUpload(): Promise<Uint8Array | undefined> {
-    return new Promise((resolve, reject) => {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = ".snapshot,application/octet-stream";
-      input.onchange = async () => {
-        try {
-          const file = input.files?.[0];
-          resolve(file ? new Uint8Array(await file.arrayBuffer()) : undefined);
-        } catch (error) {
-          reject(error);
-        }
-      };
-      input.click();
-    });
+  async openUpload(): Promise<Uint8Array | undefined> {
+    const file = await pickBrowserFile(".snapshot,application/octet-stream");
+    return file ? new Uint8Array(await file.arrayBuffer()) : undefined;
   }
 
   async saveDownload(name: string, bytes: Uint8Array): Promise<boolean> {
