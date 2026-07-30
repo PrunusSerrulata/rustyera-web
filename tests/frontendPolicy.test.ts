@@ -37,7 +37,7 @@ describe("frontend host and image-line policy", () => {
     );
     expect(stylesheet).toMatch(/\.media-positioned\s*\{\s*overflow:\s*visible;/);
     expect(stylesheet).toMatch(
-      /\.game-line:has\(\.media-positioned\)\s*\{[^}]*contain:\s*layout;[^}]*overflow:\s*visible;/s,
+      /\.game-line:has\(\.media-positioned\)\s*\{[^}]*contain:\s*layout;[^}]*overflow:\s*visible;[^}]*z-index:\s*1;/s,
     );
     expect(stylesheet).toMatch(
       /\.media-positioned > \.media-visual\s*\{[^}]*position:\s*absolute;[^}]*left:\s*0;/s,
@@ -64,8 +64,16 @@ describe("frontend host and image-line policy", () => {
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*width:\s*max-content;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*min-height:\s*1em;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*margin:\s*0;/s);
+    expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*padding:\s*0 0 1px;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*line-height:\s*1;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*white-space:\s*pre;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*overflow-wrap:\s*normal;/s);
+    expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*pointer-events:\s*none;/s);
+    expect(stylesheet).toMatch(
+      /\.game-line:has\(\.media-image, \.canvas-replay\)[^}]*padding:\s*0;/s,
+    );
+    expect(stylesheet).toMatch(
+      /\.media-image,[\s\S]*?\.canvas-replay\s*\{[^}]*pointer-events:\s*auto;/s,
+    );
   });
 });

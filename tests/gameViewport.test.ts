@@ -19,6 +19,7 @@ const store = reactive({
   continueFromViewport,
   projectViewport,
   skip: vi.fn(),
+  gameTextStyle: { fontFamily: "sans-serif", fontSize: "12px" },
 });
 
 vi.mock("@tanstack/vue-virtual", () => ({

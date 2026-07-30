@@ -57,7 +57,7 @@ function rgba(color: any): string {
   <span
     v-else-if="run.type === 'column_cell'"
     class="column-cell"
-    :style="{ minWidth: `${run.preferred_columns}ch`, textAlign: run.alignment }"
+    :style="{ textAlign: run.alignment }"
   >
     <RunRenderer v-for="(child, index) in run.content" :key="index" :run="child" />
   </span>

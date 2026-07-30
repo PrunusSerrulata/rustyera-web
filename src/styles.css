@@ -207,11 +207,14 @@ select {
   min-width: 100%;
   min-height: 1em;
   margin: 0;
-  padding: 0;
+  padding: 0 0 1px;
   line-height: 1;
   white-space: pre;
   overflow-wrap: normal;
   contain: layout paint;
+  /* Interactive descendants opt back in, so later transparent virtual rows do not
+     steal pointer hits from positioned images extending out of an earlier row. */
+  pointer-events: none;
 }
 .game-line .html-node:is(p) {
   margin: 0;
@@ -227,6 +230,8 @@ select {
   /* ypos visuals intentionally draw outside their one-row layout slot. */
   contain: layout;
   overflow: visible;
+  /* Keep the overflowing visual and its hit target above later virtual rows. */
+  z-index: 1;
 }
 .align-center {
   text-align: center;
@@ -243,12 +248,20 @@ select {
   color: inherit;
   text-decoration: underline;
   text-decoration-style: dotted;
+  pointer-events: auto;
 }
 .game-button:hover:not(:disabled) {
   background: #ffffff18;
 }
+.column-group {
+  display: inline-grid;
+  max-width: 100%;
+  vertical-align: top;
+}
 .column-cell {
   display: inline-block;
+  width: 100%;
+  min-width: 0;
 }
 .separator {
   display: block;
@@ -277,6 +290,13 @@ select {
   border: 0;
   vertical-align: top;
   image-rendering: auto;
+  pointer-events: auto;
+}
+.column-width-probe {
+  position: absolute;
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
 }
 .media-positioned {
   overflow: visible;

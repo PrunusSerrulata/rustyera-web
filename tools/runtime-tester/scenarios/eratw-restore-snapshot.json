@@ -16,6 +16,11 @@
       "type": "assert_dom",
       "locator": { "css": ".game-viewport" },
       "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".column-group .column-cell" },
+      "expect": { "visible": true }
     }
   ],
   "goal": {

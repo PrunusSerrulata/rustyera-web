@@ -1,15 +1,20 @@
 <script setup lang="ts">
 import { useVirtualizer } from "@tanstack/vue-virtual";
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
+import DisplayLine from "@/components/DisplayLine.vue";
 import HtmlNode from "@/components/HtmlNode.vue";
 import MediaImage from "@/components/MediaImage.vue";
-import RunRenderer from "@/components/RunRenderer.vue";
 import { isViewportContinuationClick } from "@/core/viewportInteraction";
 import { useRuntimeStore } from "@/stores/runtime";
 
 const store = useRuntimeStore();
 const viewport = ref<HTMLElement>();
+const history = ref<HTMLElement>();
+const viewportColumns = ref(100);
+let viewportObserver: ResizeObserver | undefined;
+let viewportFrame: number | undefined;
+let projectedWidth = -1;
 const virtualizer = useVirtualizer(
   computed(() => {
     return {
@@ -57,7 +62,53 @@ function click(event: MouseEvent): void {
   }
 }
 
-onMounted(() => store.projectViewport());
+function measureViewportColumns(): void {
+  if (!viewport.value) return;
+  const probe = document.createElement("span");
+  const sample = "0000000000";
+  probe.className = "column-width-probe";
+  probe.textContent = sample;
+  viewport.value.append(probe);
+  const columnWidth = probe.getBoundingClientRect().width / sample.length;
+  probe.remove();
+  const availableWidth = history.value?.clientWidth || viewport.value.clientWidth;
+  if (columnWidth > 0 && availableWidth > 0) {
+    viewportColumns.value = Math.max(1, Math.floor(availableWidth / columnWidth));
+  }
+}
+
+function synchronizeViewport(): void {
+  viewportFrame = undefined;
+  if (!viewport.value) return;
+  measureViewportColumns();
+  if (viewport.value.clientWidth === projectedWidth) return;
+  projectedWidth = viewport.value.clientWidth;
+  void store.projectViewport();
+}
+
+function scheduleViewportSynchronization(): void {
+  if (viewportFrame != null) cancelAnimationFrame(viewportFrame);
+  viewportFrame = requestAnimationFrame(synchronizeViewport);
+}
+
+onMounted(() => {
+  synchronizeViewport();
+  if (typeof ResizeObserver !== "undefined" && viewport.value) {
+    viewportObserver = new ResizeObserver(scheduleViewportSynchronization);
+    viewportObserver.observe(viewport.value);
+  }
+});
+onBeforeUnmount(() => {
+  viewportObserver?.disconnect();
+  if (viewportFrame != null) cancelAnimationFrame(viewportFrame);
+});
+watch(
+  () => [store.gameTextStyle?.fontFamily, store.gameTextStyle?.fontSize],
+  async () => {
+    await nextTick();
+    measureViewportColumns();
+  },
+);
 </script>
 
 <template>
@@ -77,7 +128,11 @@ onMounted(() => store.projectViewport());
         :placement="background"
       />
     </div>
-    <div class="virtual-history" :style="{ height: `${virtualizer.getTotalSize()}px` }">
+    <div
+      ref="history"
+      class="virtual-history"
+      :style="{ height: `${virtualizer.getTotalSize()}px` }"
+    >
       <div
         v-for="item in items"
         :key="String(item.key)"
@@ -87,10 +142,9 @@ onMounted(() => store.projectViewport());
         :data-index="item.index"
         :style="{ transform: `translateY(${item.start}px)` }"
       >
-        <RunRenderer
-          v-for="(run, index) in store.presentation.lines[item.index].runs"
-          :key="index"
-          :run="run"
+        <DisplayLine
+          :line="store.presentation.lines[item.index]"
+          :viewport-columns="viewportColumns"
         />
       </div>
     </div>
