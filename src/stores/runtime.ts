@@ -22,6 +22,7 @@ import {
   defaultPreferences,
   type InteractionToken,
   type Preferences,
+  type ProjectProgress,
   type PumpBatch,
   type RuntimeMessage,
   type SessionOptions,
@@ -68,6 +69,25 @@ export interface RuntimeTestConfiguration {
 const DEBUG_VARIABLE_PAGE_LIMIT = 256;
 const DEBUG_VARIABLE_MAX_PAGES = 16;
 
+const PROJECT_PROGRESS_LABELS: Record<ProjectProgress["stage"], string> = {
+  scanning: "正在读取项目文件",
+  normalizing: "正在整理项目文件",
+  loading_data: "正在加载项目数据",
+  parsing: "正在解析脚本文件",
+  analyzing: "正在分析脚本函数",
+  compiling: "正在编译脚本函数",
+  validating: "正在验证编译结果",
+};
+
+function formatProjectProgress(progress: ProjectProgress): string {
+  const label = PROJECT_PROGRESS_LABELS[progress.stage] ?? "正在处理项目";
+  if (progress.stage === "scanning" && progress.total <= 0) return "正在枚举项目文件…";
+  if (progress.total <= 0) return `${label}：0/0`;
+  const completed = Math.min(progress.completed, progress.total);
+  const percent = Math.min(100, Math.round((completed * 100) / progress.total));
+  return `${label}：${completed}/${progress.total}（${percent}%）`;
+}
+
 export const useRuntimeStore = defineStore("runtime", () => {
   const bridge = platformBridge();
   const presentation = reactive(emptyPresentation());
@@ -79,7 +99,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const status = ref("请选择 Era 项目文件夹");
   const projectOpen = ref(false);
   const projectLoading = ref(false);
-  const projectLoadElapsedMs = ref(0);
+  const projectSelecting = ref(false);
+  const projectProgress = ref<ProjectProgress>();
   const openProjectConfirmationOpen = ref(false);
   const sessionReady = ref(false);
   const pumping = ref(false);
@@ -113,9 +134,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const traditionalSaveOverwriteSlot = ref<number | null>(null);
   const heldKeys = new Set<number>();
   const audio = new AudioEngine(bridge, preferences.value);
+  bridge.setProjectProgressListener(handleProjectProgress);
   let pumpTimer: number | undefined;
-  let projectLoadTimer: number | undefined;
-  let projectLoadStartedAt: number | undefined;
   let compiledCacheTimer: number | undefined;
   let exportState: ExportState | undefined;
   let diagnosisState: DiagnosisState | undefined;
@@ -130,6 +150,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let nextEnvironmentRevision = 1;
   let projectRuntimeStartedAt: number | undefined;
   let projectUsedCompiledCache = false;
+  let acceptingProjectProgress = false;
   let batchMediaDirty = false;
   let debugPausePending = false;
   let debugPauseWanted = false;
@@ -187,12 +208,21 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const gameInteractionsBlocked = computed(
     () => diagnosisExporting.value || traditionalSaveDialogMode.value != null,
   );
-  const canOpenProject = computed(() => !projectLoading.value && !diagnosisExporting.value);
+  const canOpenProject = computed(
+    () => !projectSelecting.value && !projectLoading.value && !diagnosisExporting.value,
+  );
   const projectLoadProgressLabel = computed(() =>
     projectLoading.value
-      ? `${status.value} · 已用 ${(projectLoadElapsedMs.value / 1000).toFixed(1)} 秒`
+      ? projectProgress.value
+        ? formatProjectProgress(projectProgress.value)
+        : status.value
       : "",
   );
+  const projectLoadProgressValue = computed(() => {
+    const progress = projectProgress.value;
+    if (!projectLoading.value || !progress || progress.total <= 0) return undefined;
+    return Math.min(100, Math.round((progress.completed * 100) / progress.total));
+  });
   const canStepDebug = computed(() => {
     const fiberId = selectedDebugFiber(debugStop.value);
     return (
@@ -285,7 +315,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function loadProject(replaceCurrent: boolean): Promise<void> {
-    beginProjectLoad("正在准备打开项目…");
+    projectSelecting.value = true;
+    acceptingProjectProgress = true;
     try {
       if (replaceCurrent) await recreateSessionForProjectSelection();
       else {
@@ -315,6 +346,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       status.value = String(error);
       log("error", status.value);
     } finally {
+      projectSelecting.value = false;
       if (replaceCurrent) {
         sessionTransitioning = false;
         schedulePump(0);
@@ -564,7 +596,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
         else await shutdown();
         break;
       case "shutdown_ready":
-        await bridge.close();
+        if (bridge.kind === "browser") requestBrowserTabClose();
+        else await bridge.close();
         break;
     }
   }
@@ -1748,6 +1781,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function shutdown(): Promise<void> {
     if (diagnosisExporting.value) return;
+    if (bridge.kind === "browser") {
+      requestBrowserTabClose();
+      return;
+    }
     if (!sessionReady.value) return bridge.close();
     await send({ type: "shutdown_request", value: { graceful: true } });
   }
@@ -1776,27 +1813,45 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function beginProjectLoad(message: string): void {
-    if (!projectLoading.value) {
-      projectLoadStartedAt = performance.now();
-      projectLoadElapsedMs.value = 0;
-      projectLoadTimer = window.setInterval(() => {
-        if (projectLoadStartedAt != null)
-          projectLoadElapsedMs.value = performance.now() - projectLoadStartedAt;
-      }, 100);
-    }
+    acceptingProjectProgress = true;
     projectLoading.value = true;
+    projectProgress.value = undefined;
     status.value = message;
   }
 
   function finishProjectLoad(): void {
-    if (projectLoadStartedAt != null)
-      projectLoadElapsedMs.value = performance.now() - projectLoadStartedAt;
-    projectLoadStartedAt = undefined;
-    if (projectLoadTimer != null) {
-      window.clearInterval(projectLoadTimer);
-      projectLoadTimer = undefined;
-    }
+    acceptingProjectProgress = false;
     projectLoading.value = false;
+    projectProgress.value = undefined;
+  }
+
+  function handleProjectProgress(value: ProjectProgress): void {
+    if (!acceptingProjectProgress) return;
+    const progress = {
+      stage: value.stage,
+      completed: Number(value.completed),
+      total: Number(value.total),
+    } satisfies ProjectProgress;
+    if (
+      !Number.isSafeInteger(progress.completed) ||
+      !Number.isSafeInteger(progress.total) ||
+      progress.completed < 0 ||
+      progress.total < 0
+    )
+      return;
+    projectLoading.value = true;
+    projectProgress.value = progress;
+    status.value = formatProjectProgress(progress);
+  }
+
+  function requestBrowserTabClose(): void {
+    window.close();
+    window.setTimeout(() => {
+      if (window.closed) return;
+      const message = "浏览器阻止了关闭当前标签页，请手动关闭此标签页。";
+      status.value = message;
+      log("warning", message);
+    }, 0);
   }
 
   function onKeyDown(event: KeyboardEvent): void {
@@ -1832,6 +1887,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     projectOpen,
     projectLoading,
     projectLoadProgressLabel,
+    projectLoadProgressValue,
     openProjectConfirmationOpen,
     prompt,
     inputUndo,

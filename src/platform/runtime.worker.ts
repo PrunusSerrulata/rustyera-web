@@ -1,6 +1,9 @@
 type WasmModule = {
   default: () => Promise<void>;
-  WasmRuntime: new (options: unknown) => {
+  WasmRuntime: new (
+    options: unknown,
+    progress?: (value: unknown) => void,
+  ) => {
     submitRuntime(message: unknown, correlationId?: bigint): bigint;
     submitDebug(message: unknown, correlationId?: bigint): bigint;
     loadProject(manifest: unknown): bigint;
@@ -23,7 +26,9 @@ self.onmessage = async (event: MessageEvent) => {
         : `${import.meta.env.BASE_URL}wasm/era_web_wasm.js`;
       const module = (await import(/* @vite-ignore */ wasmModuleUrl)) as WasmModule;
       await module.default();
-      runtime = new module.WasmRuntime(args[0]);
+      runtime = new module.WasmRuntime(args[0], (value) => {
+        self.postMessage({ type: "project_progress", value });
+      });
       result = runtime.pump(100_000, 1024);
     } else {
       if (!runtime) throw new Error("WASM runtime 尚未创建");

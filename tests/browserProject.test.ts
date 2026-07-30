@@ -125,6 +125,20 @@ describe("browser project reads", () => {
     await expect(runBounded(tasks, 3)).rejects.toThrow("failed-5");
     expect(maximum).toBe(3);
   });
+
+  it("reports completed task counts from the bounded file reader", async () => {
+    const observed: Array<[number, number]> = [];
+    const tasks = Array.from({ length: 4 }, () => async () => Promise.resolve());
+
+    await runBounded(tasks, 2, (completed, total) => observed.push([completed, total]));
+
+    expect(observed).toEqual([
+      [1, 4],
+      [2, 4],
+      [3, 4],
+      [4, 4],
+    ]);
+  });
 });
 
 describe("browser compiled cache identity", () => {

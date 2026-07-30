@@ -1,5 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 import { decodeImageMetadata } from "@/core/imageMetadata";
@@ -9,6 +10,7 @@ import type {
   DebugMessage,
   FrontendBridge,
   Preferences,
+  ProjectProgress,
   ProjectOpenMetrics,
   PumpBatch,
   RuntimeMessage,
@@ -50,6 +52,17 @@ function encodeIpcValue(value: unknown): unknown {
 export class TauriBridge implements FrontendBridge {
   readonly kind = "tauri" as const;
   private projectPath?: string;
+  private projectProgressListener?: (progress: ProjectProgress) => void;
+  private progressUnlisten?: Promise<UnlistenFn>;
+
+  setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void {
+    this.projectProgressListener = listener;
+    if (listener && !this.progressUnlisten) {
+      this.progressUnlisten = listen<ProjectProgress>("project-progress", (event) => {
+        this.projectProgressListener?.(event.payload);
+      });
+    }
+  }
 
   async createSession(options: SessionOptions): Promise<PumpBatch> {
     return decodeIpcValue(await invoke("create_session", { options }));
@@ -91,20 +104,24 @@ export class TauriBridge implements FrontendBridge {
     }
     const path = await open({ directory: true, multiple: false, title: "打开 Era 项目" });
     if (typeof path !== "string") return undefined;
+    if (this.progressUnlisten) await this.progressUnlisten;
     this.projectPath = path;
     return invoke("open_project", { path });
   }
 
-  restartProject(): Promise<ProjectOpenMetrics> {
+  async restartProject(): Promise<ProjectOpenMetrics> {
     if (!this.projectPath) return Promise.reject(new Error("没有打开的项目"));
+    if (this.progressUnlisten) await this.progressUnlisten;
     return invoke("open_project", { path: this.projectPath });
   }
 
   async reloadProject(): Promise<void> {
+    if (this.progressUnlisten) await this.progressUnlisten;
     await invoke("reload_project");
   }
 
   async submitProjectSource(): Promise<void> {
+    if (this.progressUnlisten) await this.progressUnlisten;
     await invoke("submit_project_source");
   }
 
@@ -166,6 +183,7 @@ export class TauriBridge implements FrontendBridge {
   }
 
   async close(): Promise<void> {
+    if (this.progressUnlisten) (await this.progressUnlisten)();
     await getCurrentWindow().close();
   }
 }

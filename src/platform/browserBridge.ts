@@ -2,6 +2,7 @@ import type {
   DebugMessage,
   FrontendBridge,
   Preferences,
+  ProjectProgress,
   ProjectOpenMetrics,
   PumpBatch,
   RuntimeMessage,
@@ -40,6 +41,12 @@ export class BrowserBridge implements FrontendBridge {
   private readonly worker = new WorkerClient();
   private project?: BrowserProject;
   private cacheWriter?: FileSystemWritableFileStream;
+  private projectProgressListener?: (progress: ProjectProgress) => void;
+
+  setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void {
+    this.worker.setProjectProgressListener(listener);
+    this.projectProgressListener = listener;
+  }
 
   createSession(options: SessionOptions): Promise<PumpBatch> {
     return this.worker.call("create", options);
@@ -78,7 +85,9 @@ export class BrowserBridge implements FrontendBridge {
       await database.handles.put({ key: "last-project", handle });
     this.project = new BrowserProject(handle, 1, picked.projectName);
     const started = performance.now();
-    const manifest = await this.project.scan();
+    const manifest = await this.project.scan((completed, total) =>
+      this.projectProgressListener?.({ stage: "scanning", completed, total }),
+    );
     const sourceReadMs = performance.now() - started;
     const cacheStarted = performance.now();
     const cache = await this.project.readCompiledCache();
@@ -111,7 +120,12 @@ export class BrowserBridge implements FrontendBridge {
   async restartProject(): Promise<ProjectOpenMetrics> {
     if (!this.project) throw new Error("没有打开的项目");
     const started = performance.now();
-    await this.worker.call("loadProject", await this.project.scan());
+    await this.worker.call(
+      "loadProject",
+      await this.project.scan((completed, total) =>
+        this.projectProgressListener?.({ stage: "scanning", completed, total }),
+      ),
+    );
     return {
       quickScanMs: 0,
       cacheReadMs: 0,
@@ -123,12 +137,22 @@ export class BrowserBridge implements FrontendBridge {
 
   async reloadProject(): Promise<void> {
     if (!this.project) throw new Error("没有打开的项目");
-    await this.submitRuntime({ type: "reload_project", value: await this.project.reloadRequest() });
+    await this.submitRuntime({
+      type: "reload_project",
+      value: await this.project.reloadRequest((completed, total) =>
+        this.projectProgressListener?.({ stage: "scanning", completed, total }),
+      ),
+    });
   }
 
   async submitProjectSource(): Promise<void> {
     if (!this.project) throw new Error("没有打开的项目");
-    await this.worker.call("loadProject", await this.project.scan());
+    await this.worker.call(
+      "loadProject",
+      await this.project.scan((completed, total) =>
+        this.projectProgressListener?.({ stage: "scanning", completed, total }),
+      ),
+    );
   }
 
   readResource(relativePath: string): Promise<Uint8Array> {

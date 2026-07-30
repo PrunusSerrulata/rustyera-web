@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { defaultPreferences } from "@/core/types";
+import { defaultPreferences, type ProjectProgress } from "@/core/types";
 
 const emptyBatch = () => ({
   state: "idle" as const,
@@ -10,11 +10,17 @@ const emptyBatch = () => ({
   events: [],
 });
 const bridge = vi.hoisted(() => ({
-  kind: "tauri" as const,
+  kind: "tauri" as "tauri" | "browser",
   createSession: vi.fn(),
   submitRuntime: vi.fn(async () => 1),
   submitDebug: vi.fn(async () => 1),
   pump: vi.fn(),
+  projectProgressListener: undefined as ((progress: ProjectProgress) => void) | undefined,
+  setProjectProgressListener: vi.fn(
+    (listener: ((progress: ProjectProgress) => void) | undefined) => {
+      bridge.projectProgressListener = listener;
+    },
+  ),
   openProject: vi.fn(),
   restartProject: vi.fn(),
   submitProjectSource: vi.fn(),
@@ -49,6 +55,7 @@ describe("runtime store session lifecycle", () => {
     setActivePinia(createPinia());
     vi.useFakeTimers();
     vi.clearAllMocks();
+    bridge.kind = "tauri";
     bridge.createSession.mockResolvedValue(emptyBatch());
     let nextDebugMessageId = 1;
     bridge.submitDebug.mockImplementation(async () => nextDebugMessageId++);
@@ -89,6 +96,19 @@ describe("runtime store session lifecycle", () => {
 
     expect(bridge.submitRuntime).not.toHaveBeenCalled();
     expect(store.canExportDiagnosis).toBe(false);
+  });
+
+  it("uses the browser close gesture for the WASM exit action", async () => {
+    bridge.kind = "browser";
+    const close = vi.spyOn(window, "close").mockImplementation(() => undefined);
+    const store = useRuntimeStore();
+
+    await store.shutdown();
+
+    expect(close).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.status).toContain("请手动关闭此标签页");
   });
 
   it("uses the TUI snapshot filename format in local time", async () => {
@@ -337,12 +357,15 @@ describe("runtime store session lifecycle", () => {
         createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn() }));
       },
     );
-    bridge.openProject.mockResolvedValue({
-      quickScanMs: 1,
-      cacheReadMs: 2,
-      sourceReadMs: 3,
-      submitMs: 4,
-      cacheImported: true,
+    bridge.openProject.mockImplementation(async () => {
+      bridge.projectProgressListener?.({ stage: "scanning", completed: 3, total: 4 });
+      return {
+        quickScanMs: 1,
+        cacheReadMs: 2,
+        sourceReadMs: 3,
+        submitMs: 4,
+        cacheImported: true,
+      };
     });
     const store = useRuntimeStore();
     store.projectOpen = true;
@@ -363,7 +386,7 @@ describe("runtime store session lifecycle", () => {
     const replacement = store.confirmOpenProject();
     expect(store.openProjectConfirmationOpen).toBe(false);
     expect(store.presentation.lines).toHaveLength(0);
-    expect(store.projectLoading).toBe(true);
+    expect(store.projectLoading).toBe(false);
     expect(store.canOpenProject).toBe(false);
     await replacement;
 
@@ -372,8 +395,12 @@ describe("runtime store session lifecycle", () => {
     expect(store.projectOpen).toBe(true);
     expect(store.projectLoading).toBe(true);
     expect(store.canOpenProject).toBe(false);
-    await vi.advanceTimersByTimeAsync(1200);
-    expect(store.projectLoadProgressLabel).toBe("正在编译项目… · 已用 1.2 秒");
+    expect(store.projectLoadProgressLabel).toBe("正在读取项目文件：3/4（75%）");
+    expect(store.projectLoadProgressValue).toBe(75);
+
+    bridge.projectProgressListener?.({ stage: "compiling", completed: 7, total: 10 });
+    expect(store.projectLoadProgressLabel).toBe("正在编译脚本函数：7/10（70%）");
+    expect(store.projectLoadProgressValue).toBe(70);
 
     bridge.pump.mockResolvedValueOnce({
       ...emptyBatch(),

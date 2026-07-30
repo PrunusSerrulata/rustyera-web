@@ -7,7 +7,8 @@ const store = vi.hoisted(() => ({
   gameTextStyle: { fontFamily: "sans-serif", fontSize: "16px" },
   status: "正在编译项目…",
   projectLoading: true,
-  projectLoadProgressLabel: "正在编译项目… · 已用 2.4 秒",
+  projectLoadProgressLabel: "正在编译脚本函数：64/100（64%）",
+  projectLoadProgressValue: 64,
   projectOpen: true,
   canOpenProject: false,
   runtimeReady: false,
@@ -135,13 +136,24 @@ describe("application menus", () => {
     store.bridgeKind = "browser";
   });
 
-  it("shows the active project stage and elapsed time", () => {
+  it("shows the active internal project workload", () => {
     const wrapper = shallowMount(App);
     const progress = wrapper.get("[aria-label='项目加载进度']");
 
     expect(wrapper.get(".app-shell").attributes("aria-busy")).toBe("true");
-    expect(progress.text()).toBe("正在编译项目… · 已用 2.4 秒");
+    expect(progress.text()).toBe("正在编译脚本函数：64/100（64%）");
     expect(progress.find("progress").exists()).toBe(true);
+    expect(progress.find("progress").attributes("value")).toBe("64");
+
+    wrapper.unmount();
+  });
+
+  it("labels the WASM exit action as closing the current tab", async () => {
+    const wrapper = shallowMount(App);
+    const states = await menuStates(wrapper);
+
+    expect(states.has("关闭当前标签页")).toBe(true);
+    expect(states.has("退出")).toBe(false);
 
     wrapper.unmount();
   });

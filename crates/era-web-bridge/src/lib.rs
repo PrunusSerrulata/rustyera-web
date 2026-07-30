@@ -8,7 +8,9 @@ use era_debug_protocol::{DEBUG_PROTOCOL_VERSION, DebugMessage, DebugScope};
 use era_protocol::{
     Channel, SessionEpoch, SessionId, VersionRange, WireLimits, decode_envelope, encode_envelope,
 };
-use era_runtime::{RuntimeDriveBudget, RuntimeDriveState, RuntimeOptions, RuntimeSession};
+use era_runtime::{
+    ProjectProgressReporter, RuntimeDriveBudget, RuntimeDriveState, RuntimeOptions, RuntimeSession,
+};
 use era_runtime_protocol::{
     ClientCapabilities, ClientHello, InputModality, ProjectIdentity, ProjectLoadRequest,
     ProjectManifest, RUNTIME_PROTOCOL_VERSION, RuntimeFeature, RuntimeLimits, RuntimeMessage,
@@ -149,6 +151,11 @@ impl WebSession {
             None,
         )?;
         Ok(session)
+    }
+
+    /// Install or clear the host's read-only project workload observer.
+    pub fn set_project_progress_reporter(&mut self, reporter: Option<ProjectProgressReporter>) {
+        self.runtime.set_project_progress_reporter(reporter);
     }
 
     /// Submit any public runtime message through a checked envelope.

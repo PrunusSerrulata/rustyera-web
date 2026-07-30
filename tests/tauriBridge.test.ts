@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const invoke = vi.hoisted(() => vi.fn());
 const open = vi.hoisted(() => vi.fn());
+const listen = vi.hoisted(() => vi.fn());
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ close: vi.fn() }) }));
+vi.mock("@tauri-apps/api/event", () => ({ listen }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open, save: vi.fn() }));
 
 import { TauriBridge } from "@/platform/tauriBridge";
@@ -35,6 +37,22 @@ describe("Tauri project restart", () => {
 
   it("rejects restart before a project has been selected", async () => {
     await expect(new TauriBridge().restartProject()).rejects.toThrow("没有打开的项目");
+  });
+
+  it("forwards native project progress events", async () => {
+    let receive: ((event: { payload: unknown }) => void) | undefined;
+    listen.mockImplementation(async (_name, callback) => {
+      receive = callback;
+      return vi.fn();
+    });
+    const progress = vi.fn();
+    const bridge = new TauriBridge();
+
+    bridge.setProjectProgressListener(progress);
+    await Promise.resolve();
+    receive?.({ payload: { stage: "compiling", completed: 9, total: 10 } });
+
+    expect(progress).toHaveBeenCalledWith({ stage: "compiling", completed: 9, total: 10 });
   });
 });
 

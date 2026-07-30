@@ -1,3 +1,5 @@
+import type { ProjectProgress } from "@/core/types";
+
 export class WorkerClient {
   private readonly worker = new Worker(new URL("./runtime.worker.ts", import.meta.url), {
     type: "module",
@@ -7,10 +9,15 @@ export class WorkerClient {
     number,
     { resolve: (value: any) => void; reject: (reason: Error) => void }
   >();
+  private projectProgressListener?: (progress: ProjectProgress) => void;
 
   constructor() {
     this.worker.onmessage = (event) => {
-      const { id, result, error } = event.data;
+      const { id, result, error, type, value } = event.data;
+      if (type === "project_progress") {
+        this.projectProgressListener?.(value as ProjectProgress);
+        return;
+      }
       const pending = this.pending.get(id);
       if (!pending) return;
       this.pending.delete(id);
@@ -21,6 +28,10 @@ export class WorkerClient {
       for (const pending of this.pending.values()) pending.reject(new Error(event.message));
       this.pending.clear();
     };
+  }
+
+  setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void {
+    this.projectProgressListener = listener;
   }
 
   call<T>(method: string, ...args: unknown[]): Promise<T> {

@@ -33,6 +33,8 @@ export interface BrowserManifest {
   files: ScannedFile[];
 }
 
+export type FileScanProgress = (completed: number, total: number) => void;
+
 export class BrowserProject {
   private readonly files = new Map<string, FileSystemFileHandle>();
   private manifestValue?: BrowserManifest;
@@ -43,8 +45,9 @@ export class BrowserProject {
     readonly name = root.name,
   ) {}
 
-  async scan(): Promise<BrowserManifest> {
+  async scan(progress?: FileScanProgress): Promise<BrowserManifest> {
     this.files.clear();
+    progress?.(0, 0);
     const topLevel = new Set<string>();
     for await (const [name, handle] of this.root.entries()) {
       if (handle.kind === "directory") topLevel.add(name.toLocaleLowerCase());
@@ -52,7 +55,8 @@ export class BrowserProject {
     const files: ScannedFile[] = [];
     const reads: Array<() => Promise<void>> = [];
     await this.walk(this.root, "", topLevel, files, reads);
-    await runBounded(reads, 8);
+    progress?.(0, reads.length);
+    await runBounded(reads, 8, progress);
     files.sort((left, right) =>
       left.relative_path.localeCompare(right.relative_path, undefined, { sensitivity: "base" }),
     );
@@ -72,10 +76,10 @@ export class BrowserProject {
     }
   }
 
-  async reloadRequest(): Promise<any> {
-    const previous = this.manifestValue ?? (await this.scan());
+  async reloadRequest(progress?: FileScanProgress): Promise<any> {
+    const previous = this.manifestValue ?? (await this.scan(progress));
     this.revision += 1;
-    const current = await this.scan();
+    const current = await this.scan(progress);
     const oldByPath = new Map(previous.files.map((file) => [file.relative_path, file]));
     const newByPath = new Map(current.files.map((file) => [file.relative_path, file]));
     const paths = [...new Set([...oldByPath.keys(), ...newByPath.keys()])].sort();
@@ -294,8 +298,10 @@ export function cacheIdentityManifest(manifest: BrowserManifest): BrowserManifes
 export async function runBounded(
   tasks: Array<() => Promise<void>>,
   maximumConcurrency: number,
+  progress?: FileScanProgress,
 ): Promise<void> {
   let next = 0;
+  let completed = 0;
   const errors: unknown[] = new Array(tasks.length);
   const worker = async () => {
     while (next < tasks.length) {
@@ -304,6 +310,14 @@ export async function runBounded(
         await tasks[index]();
       } catch (error) {
         errors[index] = error;
+      } finally {
+        completed += 1;
+        if (
+          completed === tasks.length ||
+          Math.floor((completed * 100) / tasks.length) >
+            Math.floor(((completed - 1) * 100) / tasks.length)
+        )
+          progress?.(completed, tasks.length);
       }
     }
   };

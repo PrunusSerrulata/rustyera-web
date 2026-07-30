@@ -50,6 +50,21 @@ export interface ProjectOpenMetrics {
   cacheImported: boolean;
 }
 
+export type ProjectProgressStage =
+  | "scanning"
+  | "normalizing"
+  | "loading_data"
+  | "parsing"
+  | "analyzing"
+  | "compiling"
+  | "validating";
+
+export interface ProjectProgress {
+  stage: ProjectProgressStage;
+  completed: number;
+  total: number;
+}
+
 export interface TraditionalSaveSlot {
   slot: number;
   occupied: boolean;
@@ -74,6 +89,7 @@ export interface FrontendBridge {
   submitRuntime(message: RuntimeMessage, correlationId?: number | bigint): Promise<number | bigint>;
   submitDebug(message: DebugMessage, correlationId?: number | bigint): Promise<number | bigint>;
   pump(): Promise<PumpBatch>;
+  setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void;
   openProject(): Promise<ProjectOpenMetrics | undefined>;
   restartProject(): Promise<ProjectOpenMetrics>;
   submitProjectSource(): Promise<void>;

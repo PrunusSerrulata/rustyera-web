@@ -126,7 +126,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
           </button>
           <hr />
           <button :disabled="store.gameInteractionsBlocked" @click="action(store.shutdown)">
-            退出
+            {{ store.bridgeKind === "browser" ? "关闭当前标签页" : "退出" }}
           </button>
         </div>
       </div>
@@ -222,7 +222,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
       aria-live="polite"
       aria-label="项目加载进度"
     >
-      <progress aria-hidden="true" />
+      <progress aria-hidden="true" max="100" :value="store.projectLoadProgressValue ?? undefined" />
       <span>{{ store.projectLoadProgressLabel }}</span>
     </div>
 

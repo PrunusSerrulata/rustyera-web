@@ -51,7 +51,14 @@ pub struct ProjectHost {
 }
 
 impl ProjectHost {
-    pub fn scan(root: &Path, revision: u64) -> Result<Self, String> {
+    pub fn scan_with_progress(
+        root: &Path,
+        revision: u64,
+        progress: Option<&dyn Fn(usize, usize)>,
+    ) -> Result<Self, String> {
+        if let Some(progress) = progress {
+            progress(0, 0);
+        }
         let root = root
             .canonicalize()
             .map_err(|error| format!("cannot open project directory: {error}"))?;
@@ -65,21 +72,14 @@ impl ProjectHost {
             .map(|entry| entry.file_name().to_string_lossy().to_lowercase())
             .filter(|name| name == "csv" || name == "erb")
             .collect::<BTreeSet<_>>();
-        let mut files = Vec::new();
-        for entry in WalkDir::new(&root)
-            .follow_links(true)
-            .sort_by_file_name()
-            .into_iter()
-            .filter_entry(include_entry)
-        {
-            let entry = entry.map_err(|error| format!("cannot scan project: {error}"))?;
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let Some(category) = classify(&root, entry.path(), &canonical_roots)? else {
-                continue;
-            };
-            files.push(read_file(&root, entry.path(), category)?);
+        let entries = project_entries(&root, &canonical_roots)?;
+        if let Some(progress) = progress {
+            progress(0, entries.len());
+        }
+        let mut files = Vec::with_capacity(entries.len());
+        for (index, (path, category)) in entries.iter().enumerate() {
+            files.push(read_file(&root, path, *category)?);
+            report_scan_progress(progress, index + 1, entries.len());
         }
         files.sort_by(|left, right| {
             left.relative_path
@@ -101,7 +101,19 @@ impl ProjectHost {
         })
     }
 
+    #[cfg(test)]
     pub fn scan_quick(root: &Path, revision: u64) -> Result<Self, String> {
+        Self::scan_quick_with_progress(root, revision, None)
+    }
+
+    pub fn scan_quick_with_progress(
+        root: &Path,
+        revision: u64,
+        progress: Option<&dyn Fn(usize, usize)>,
+    ) -> Result<Self, String> {
+        if let Some(progress) = progress {
+            progress(0, 0);
+        }
         let root = root
             .canonicalize()
             .map_err(|error| format!("cannot open project directory: {error}"))?;
@@ -118,32 +130,23 @@ impl ProjectHost {
         let canonical_roots = canonical_source_roots(&root)?;
         let mut indexed_files = Vec::new();
         let mut next_index = BTreeMap::new();
-        for entry in WalkDir::new(&root)
-            .follow_links(true)
-            .sort_by_file_name()
-            .into_iter()
-            .filter_entry(include_entry)
-        {
-            let entry = entry.map_err(|error| format!("cannot scan project: {error}"))?;
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let Some(category) = classify(&root, entry.path(), &canonical_roots)? else {
-                continue;
-            };
-            let relative_path = relative_path(&root, entry.path())?;
-            let metadata = entry
-                .metadata()
+        let entries = project_entries(&root, &canonical_roots)?;
+        if let Some(progress) = progress {
+            progress(0, entries.len());
+        }
+        for (index, (path, category)) in entries.iter().enumerate() {
+            let relative_path = relative_path(&root, path)?;
+            let metadata = fs::metadata(path)
                 .map_err(|error| format!("cannot stat {relative_path}: {error}"))?;
             let signature = metadata_signature(&metadata);
             let prior = previous
                 .get(&relative_path)
-                .filter(|prior| prior.signature == signature && prior.category == category as u8)
+                .filter(|prior| prior.signature == signature && prior.category == *category as u8)
                 .and_then(|prior| decode_hash(&prior.hash).ok().map(|hash| (hash, prior.size)));
             let (content_hash, size) = if let Some((hash, size)) = prior {
                 (hash, size)
             } else {
-                let normalized = normalized_file_bytes(entry.path(), category)?;
+                let normalized = normalized_file_bytes(path, *category)?;
                 (
                     *blake3::hash(&normalized).as_bytes(),
                     u64::try_from(normalized.len())
@@ -153,7 +156,7 @@ impl ProjectHost {
             next_index.insert(
                 relative_path.clone(),
                 SourceIndexEntry {
-                    category: category as u8,
+                    category: *category as u8,
                     signature,
                     hash: encode_hash(&content_hash),
                     size,
@@ -161,9 +164,10 @@ impl ProjectHost {
             );
             indexed_files.push(IndexedFile {
                 relative_path,
-                category,
+                category: *category,
                 content_hash,
             });
+            report_scan_progress(progress, index + 1, entries.len());
         }
         indexed_files.sort_by(|left, right| {
             left.relative_path
@@ -205,9 +209,17 @@ impl ProjectHost {
         }
     }
 
+    #[cfg(test)]
     pub fn materialize(&mut self) -> Result<&ProjectManifest, String> {
+        self.materialize_with_progress(None)
+    }
+
+    pub fn materialize_with_progress(
+        &mut self,
+        progress: Option<&dyn Fn(usize, usize)>,
+    ) -> Result<&ProjectManifest, String> {
         if self.manifest.is_none() {
-            let materialized = Self::scan(&self.root, self.revision)?;
+            let materialized = Self::scan_with_progress(&self.root, self.revision, progress)?;
             if materialized.identity() != self.identity() {
                 return Err("project changed while its source files were being loaded".into());
             }
@@ -219,8 +231,11 @@ impl ProjectHost {
             .ok_or_else(|| "project manifest was not materialized".to_owned())
     }
 
-    pub fn take_manifest(&mut self) -> Result<ProjectManifest, String> {
-        self.materialize()?;
+    pub fn take_manifest_with_progress(
+        &mut self,
+        progress: Option<&dyn Fn(usize, usize)>,
+    ) -> Result<ProjectManifest, String> {
+        self.materialize_with_progress(progress)?;
         self.manifest
             .take()
             .ok_or_else(|| "project manifest was not materialized".to_owned())
@@ -235,9 +250,13 @@ impl ProjectHost {
         }
     }
 
-    pub fn reload(&mut self) -> Result<ReloadProject, String> {
-        self.materialize()?;
-        let candidate = Self::scan(&self.root, self.revision.saturating_add(1))?;
+    pub fn reload_with_progress(
+        &mut self,
+        progress: Option<&dyn Fn(usize, usize)>,
+    ) -> Result<ReloadProject, String> {
+        self.materialize_with_progress(progress)?;
+        let candidate =
+            Self::scan_with_progress(&self.root, self.revision.saturating_add(1), progress)?;
         let old_manifest = self
             .manifest
             .as_ref()
@@ -311,6 +330,41 @@ impl ProjectHost {
             return Err("resource path escapes the project root".into());
         }
         Ok(canonical)
+    }
+}
+
+fn project_entries(
+    root: &Path,
+    canonical_roots: &BTreeSet<String>,
+) -> Result<Vec<(PathBuf, FileCategory)>, String> {
+    let mut entries = Vec::new();
+    for entry in WalkDir::new(root)
+        .follow_links(true)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_entry(include_entry)
+    {
+        let entry = entry.map_err(|error| format!("cannot scan project: {error}"))?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if let Some(category) = classify(root, entry.path(), canonical_roots)? {
+            entries.push((entry.into_path(), category));
+        }
+    }
+    Ok(entries)
+}
+
+fn report_scan_progress(progress: Option<&dyn Fn(usize, usize)>, completed: usize, total: usize) {
+    let percent = completed.saturating_mul(100).checked_div(total);
+    let previous_percent = completed
+        .saturating_sub(1)
+        .saturating_mul(100)
+        .checked_div(total);
+    if (total == 0 || completed == total || percent > previous_percent)
+        && let Some(progress) = progress
+    {
+        progress(completed, total);
     }
 }
 
@@ -539,6 +593,8 @@ fn read_file(root: &Path, path: &Path, category: FileCategory) -> Result<Submitt
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use super::*;
 
     #[test]
@@ -586,5 +642,20 @@ mod tests {
                 .join(".rustyera/cache/source-index-v1.json")
                 .is_file()
         );
+    }
+
+    #[test]
+    fn native_scan_reports_discovery_and_completed_file_counts() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("main.erb"), "@SYSTEM_TITLE\nRETURN\n").unwrap();
+        fs::write(directory.path().join("variables.csv"), "FLAG,1\n").unwrap();
+        let observed = RefCell::new(Vec::new());
+        let progress = |completed, total| observed.borrow_mut().push((completed, total));
+
+        ProjectHost::scan_quick_with_progress(directory.path(), 1, Some(&progress)).unwrap();
+
+        let observed = observed.into_inner();
+        assert_eq!(observed[..2], [(0, 0), (0, 2)]);
+        assert_eq!(observed.last(), Some(&(2, 2)));
     }
 }

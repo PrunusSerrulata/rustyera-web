@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 const store = reactive({
+  bridgeKind: "browser",
   fault: { message: "boom" } as { message: string } | null,
   faultActionBusy: false,
   canExportDiagnosis: true,
@@ -36,7 +37,7 @@ describe("FaultDialog", () => {
     await clickNamed(buttons, "导出诊断信息");
     await clickNamed(buttons, "返回主菜单");
     await clickNamed(buttons, "重启并重新编译");
-    await clickNamed(buttons, "退出");
+    await clickNamed(buttons, "关闭当前标签页");
     await clickNamed(buttons, "关闭", true);
 
     expect(mocks.exportDiagnosis).toHaveBeenCalledOnce();

@@ -40,7 +40,7 @@ const store = useRuntimeStore();
         :disabled="store.faultActionBusy || store.gameInteractionsBlocked"
         @click="store.shutdown"
       >
-        退出
+        {{ store.bridgeKind === "browser" ? "关闭当前标签页" : "退出" }}
       </button>
     </footer>
   </DraggableDialog>

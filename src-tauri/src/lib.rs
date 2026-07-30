@@ -20,13 +20,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use era_debug_protocol::DebugMessage;
-use era_runtime::RuntimeDriveBudget;
+use era_runtime::{
+    ProjectProgress, ProjectProgressReporter, ProjectProgressStage, RuntimeDriveBudget,
+};
 use era_runtime_protocol::{RuntimeMessage, StorageRequest, StorageResponse};
 use era_web_bridge::{WebSession, WebSessionOptions};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::project::ProjectHost;
 use crate::storage::StorageHost;
@@ -153,12 +155,19 @@ impl Preferences {
 
 #[tauri::command]
 async fn create_session(
+    app: AppHandle,
     state: State<'_, AppState>,
     options: WebSessionOptions,
 ) -> Result<Value, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut session = WebSession::new(options)?;
+        let progress_app = app.clone();
+        session.set_project_progress_reporter(Some(ProjectProgressReporter::new(
+            move |progress| {
+                let _ = progress_app.emit("project-progress", progress);
+            },
+        )));
         let initial = session.pump(RuntimeDriveBudget::default())?;
         *state.session.lock().map_err(lock_error)? = Some(session);
         encode_ipc_value(&initial)
@@ -223,13 +232,24 @@ async fn pump(state: State<'_, AppState>) -> Result<Value, String> {
 
 #[tauri::command]
 async fn open_project(
+    app: AppHandle,
     state: State<'_, AppState>,
     path: PathBuf,
 ) -> Result<ProjectOpenMetrics, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let scan_progress = |completed, total| {
+            let _ = app.emit(
+                "project-progress",
+                ProjectProgress {
+                    stage: ProjectProgressStage::Scanning,
+                    completed: u64::try_from(completed).unwrap_or(u64::MAX),
+                    total: u64::try_from(total).unwrap_or(u64::MAX),
+                },
+            );
+        };
         let started = Instant::now();
-        let mut host = ProjectHost::scan_quick(&path, 1)?;
+        let mut host = ProjectHost::scan_quick_with_progress(&path, 1, Some(&scan_progress))?;
         let quick_scan_ms = started.elapsed().as_secs_f64() * 1000.0;
         let identity = host.identity();
         let cache_started = Instant::now();
@@ -246,14 +266,14 @@ async fn open_project(
                 true
             } else {
                 let source_started = Instant::now();
-                let manifest = host.take_manifest()?;
+                let manifest = host.take_manifest_with_progress(Some(&scan_progress))?;
                 source_read_ms = source_started.elapsed().as_secs_f64() * 1000.0;
                 with_session(&state, |session| session.load_project(manifest))?;
                 false
             }
         } else {
             let source_started = Instant::now();
-            let manifest = host.take_manifest()?;
+            let manifest = host.take_manifest_with_progress(Some(&scan_progress))?;
             source_read_ms = source_started.elapsed().as_secs_f64() * 1000.0;
             with_session(&state, |session| session.load_project(manifest))?;
             false
@@ -274,16 +294,26 @@ async fn open_project(
 }
 
 #[tauri::command]
-async fn submit_project_source(state: State<'_, AppState>) -> Result<u64, String> {
+async fn submit_project_source(app: AppHandle, state: State<'_, AppState>) -> Result<u64, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let scan_progress = |completed, total| {
+            let _ = app.emit(
+                "project-progress",
+                ProjectProgress {
+                    stage: ProjectProgressStage::Scanning,
+                    completed: u64::try_from(completed).unwrap_or(u64::MAX),
+                    total: u64::try_from(total).unwrap_or(u64::MAX),
+                },
+            );
+        };
         let manifest = state
             .project
             .lock()
             .map_err(lock_error)?
             .as_mut()
             .ok_or_else(|| "no project is open".to_owned())?
-            .take_manifest()?;
+            .take_manifest_with_progress(Some(&scan_progress))?;
         with_session(&state, |session| session.load_project(manifest))
     })
     .await
@@ -291,16 +321,26 @@ async fn submit_project_source(state: State<'_, AppState>) -> Result<u64, String
 }
 
 #[tauri::command]
-async fn reload_project(state: State<'_, AppState>) -> Result<u64, String> {
+async fn reload_project(app: AppHandle, state: State<'_, AppState>) -> Result<u64, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let scan_progress = |completed, total| {
+            let _ = app.emit(
+                "project-progress",
+                ProjectProgress {
+                    stage: ProjectProgressStage::Scanning,
+                    completed: u64::try_from(completed).unwrap_or(u64::MAX),
+                    total: u64::try_from(total).unwrap_or(u64::MAX),
+                },
+            );
+        };
         let request = state
             .project
             .lock()
             .map_err(lock_error)?
             .as_mut()
             .ok_or_else(|| "no project is open".to_owned())?
-            .reload()?;
+            .reload_with_progress(Some(&scan_progress))?;
         with_session(&state, |session| {
             session.submit_runtime(&RuntimeMessage::ReloadProject(request), None)
         })

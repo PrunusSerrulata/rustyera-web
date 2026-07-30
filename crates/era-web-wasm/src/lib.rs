@@ -1,10 +1,18 @@
 //! WebAssembly bindings for the shared `RustyEra` web session bridge.
 
 use era_debug_protocol::DebugMessage;
-use era_runtime::RuntimeDriveBudget;
+use era_runtime::{ProjectProgressReporter, RuntimeDriveBudget};
 use era_runtime_protocol::{ProjectManifest, RuntimeMessage};
 use era_web_bridge::{WebSession, WebSessionOptions, project_identity};
 use wasm_bindgen::prelude::*;
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WasmProjectProgress {
+    stage: era_runtime::ProjectProgressStage,
+    completed: u32,
+    total: u32,
+}
 
 #[wasm_bindgen]
 pub struct WasmRuntime {
@@ -19,15 +27,30 @@ impl WasmRuntime {
     ///
     /// Returns a JavaScript error when the options cannot be decoded or the runtime cannot start.
     #[wasm_bindgen(constructor)]
-    pub fn new(options: JsValue) -> Result<WasmRuntime, JsValue> {
+    pub fn new(
+        options: JsValue,
+        progress_callback: Option<js_sys::Function>,
+    ) -> Result<WasmRuntime, JsValue> {
         let options = if options.is_null() || options.is_undefined() {
             WebSessionOptions::default()
         } else {
             serde_wasm_bindgen::from_value(options).map_err(js_error)?
         };
-        Ok(Self {
-            inner: WebSession::new(options).map_err(js_error)?,
-        })
+        let mut inner = WebSession::new(options).map_err(js_error)?;
+        if let Some(progress_callback) = progress_callback {
+            inner.set_project_progress_reporter(Some(ProjectProgressReporter::new(
+                move |progress| {
+                    if let Ok(value) = to_js(WasmProjectProgress {
+                        stage: progress.stage,
+                        completed: u32::try_from(progress.completed).unwrap_or(u32::MAX),
+                        total: u32::try_from(progress.total).unwrap_or(u32::MAX),
+                    }) {
+                        let _ = progress_callback.call1(&JsValue::UNDEFINED, &value);
+                    }
+                },
+            )));
+        }
+        Ok(Self { inner })
     }
 
     /// Submit one serde-projected runtime message.
