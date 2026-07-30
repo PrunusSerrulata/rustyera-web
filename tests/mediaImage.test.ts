@@ -1,8 +1,10 @@
 import { flushPromises, mount } from "@vue/test-utils";
-import { reactive } from "vue";
+import { nextTick, reactive } from "vue";
 import { describe, expect, it, vi } from "vitest";
 
-const resourceUrl = vi.hoisted(() => vi.fn(async () => "blob:era-image"));
+type ResourceUrl = (bridge: unknown, resourceId: string, revision?: number) => Promise<string>;
+
+const resourceUrl = vi.hoisted(() => vi.fn<ResourceUrl>(async () => "blob:era-image"));
 const store = reactive({
   presentation: {
     resources: {
@@ -110,5 +112,63 @@ describe("Era sprite images", () => {
     await flushPromises();
 
     expect(wrapper.get<HTMLElement>(".media-visual").attributes("style")).toContain("top: -4px");
+  });
+
+  it("keeps the full positioned visual mounted while loading its hover image", async () => {
+    store.presentation.resources.sprites = [
+      {
+        name: "portrait",
+        size: [100, 100],
+        frames: [{ resource_id: "base.webp", source_rectangle: [0, 0, 100, 100] }],
+      },
+      {
+        name: "portrait_hover",
+        size: [100, 100],
+        frames: [{ resource_id: "hover.webp", source_rectangle: [0, 0, 100, 100] }],
+      },
+    ];
+    let resolveHover!: (value: string) => void;
+    resourceUrl.mockImplementation(async (...parameters: Parameters<ResourceUrl>) => {
+      const resourceId = parameters[1];
+      if (resourceId === "hover.webp") {
+        return new Promise<string>((resolve) => {
+          resolveHover = resolve;
+        });
+      }
+      return `blob:${resourceId}`;
+    });
+    const wrapper = mount(MediaImage, {
+      props: {
+        placement: {
+          resource_id: "portrait",
+          hover_resource_id: "portrait_hover",
+          width: 0,
+          height: 100_000,
+          depth: 0,
+          opacity: { numerator: 1, denominator: 1 },
+          revision: 6,
+          requested_height: { unit: "pixels", value: 100 },
+          requested_y: { unit: "pixels", value: 12 },
+        },
+      },
+    });
+    await flushPromises();
+
+    await wrapper.get(".media-visual").trigger("mouseenter");
+    await nextTick();
+
+    expect(resourceUrl).toHaveBeenLastCalledWith({}, "hover.webp", 6);
+    expect(wrapper.find(".media-visual").exists()).toBe(true);
+    expect(wrapper.get(".media-visual").classes()).toContain("media-hovered");
+    expect(wrapper.get("img").attributes("src")).toBe("blob:base.webp");
+
+    resolveHover("blob:hover.webp");
+    await flushPromises();
+    expect(wrapper.get("img").attributes("src")).toBe("blob:hover.webp");
+
+    await wrapper.get(".media-visual").trigger("mouseleave");
+    await flushPromises();
+    expect(wrapper.get(".media-visual").classes()).not.toContain("media-hovered");
+    expect(wrapper.get("img").attributes("src")).toBe("blob:base.webp");
   });
 });

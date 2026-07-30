@@ -41,7 +41,8 @@ watchEffect((onCleanup) => {
     return;
   }
   let active = true;
-  source.value = "";
+  // Keep the current visual mounted while a hover replacement loads. Otherwise
+  // the pointer leaves a positioned image as soon as its one-row slot is exposed.
   failed.value = false;
   void resourceUrl(platformBridge(), resourceId, props.placement.revision)
     .then((value) => {
@@ -158,6 +159,14 @@ function imageLoaded(event: Event): void {
     naturalSize.value = { width: image.naturalWidth, height: image.naturalHeight };
   }
 }
+
+function startHover(): void {
+  hovered.value = true;
+}
+
+function stopHover(): void {
+  hovered.value = false;
+}
 </script>
 
 <template>
@@ -170,10 +179,15 @@ function imageLoaded(event: Event): void {
     v-else-if="positioned && sprite && frame && source && dimensions.width && dimensions.height"
     class="media-image media-positioned"
     :style="positionedSlotStyle"
-    @mouseenter="hovered = true"
-    @mouseleave="hovered = false"
   >
-    <span class="media-visual media-sprite" :style="positionedVisualStyle">
+    <span
+      class="media-visual media-sprite"
+      :class="{ 'media-hovered': hovered }"
+      :style="positionedVisualStyle"
+      @mouseenter="startHover"
+      @mousemove="startHover"
+      @mouseleave="stopHover"
+    >
       <img
         :src="source"
         :alt="alt ?? ''"
@@ -187,8 +201,8 @@ function imageLoaded(event: Event): void {
     v-else-if="sprite && frame && source && dimensions.width && dimensions.height"
     class="media-image media-sprite"
     :style="spriteStyle"
-    @mouseenter="hovered = true"
-    @mouseleave="hovered = false"
+    @mouseenter="startHover"
+    @mouseleave="stopHover"
   >
     <img
       :src="source"
@@ -202,15 +216,17 @@ function imageLoaded(event: Event): void {
     v-else-if="positioned && source"
     class="media-image media-positioned"
     :style="positionedSlotStyle"
-    @mouseenter="hovered = true"
-    @mouseleave="hovered = false"
   >
     <img
       class="media-visual"
+      :class="{ 'media-hovered': hovered }"
       :src="source"
       :alt="alt ?? ''"
       :style="positionedVisualStyle"
       draggable="false"
+      @mouseenter="startHover"
+      @mousemove="startHover"
+      @mouseleave="stopHover"
       @load="imageLoaded"
     />
   </span>
@@ -221,8 +237,8 @@ function imageLoaded(event: Event): void {
     :alt="alt ?? ''"
     :style="directStyle"
     draggable="false"
-    @mouseenter="hovered = true"
-    @mouseleave="hovered = false"
+    @mouseenter="startHover"
+    @mouseleave="stopHover"
     @load="imageLoaded"
   />
   <span v-else-if="failed && alt" class="media-image-fallback">{{ alt }}</span>

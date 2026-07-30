@@ -250,7 +250,13 @@ select {
   text-decoration-style: dotted;
   pointer-events: auto;
 }
-.game-button:hover:not(:disabled) {
+:is(.game-button, .html-node:is(button)):hover:not(:disabled) {
+  background: #ffffff18;
+}
+:is(.game-button, .html-node:is(button)):hover:not(:disabled) .media-positioned > .media-visual,
+:is(.game-button, .html-node:is(button)):not(:disabled)
+  .media-positioned
+  > .media-visual.media-hovered {
   background: #ffffff18;
 }
 .column-group {

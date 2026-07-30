@@ -42,6 +42,9 @@ describe("frontend host and image-line policy", () => {
     expect(stylesheet).toMatch(
       /\.media-positioned > \.media-visual\s*\{[^}]*position:\s*absolute;[^}]*left:\s*0;/s,
     );
+    expect(stylesheet).toMatch(
+      /:is\(\.game-button, \.html-node:is\(button\)\):hover:not\(:disabled\)[\s\S]*?\.media-positioned\s*> \.media-visual,[\s\S]*?:is\(\.game-button, \.html-node:is\(button\)\):not\(:disabled\)[\s\S]*?\.media-positioned\s*> \.media-visual\.media-hovered\s*\{\s*background:\s*#ffffff18;/,
+    );
   });
 
   it("styles timestamps and fixed-width log levels like the TUI", () => {

@@ -35,6 +35,7 @@ snapshotRendering("Tauri runtime snapshot rendering", () => {
       },
     );
 
+    const hover = await hoverClickableImage();
     const state = await snapshot();
     const metrics = await positionedImageMetrics();
     const columns = await commandColumnMetrics();
@@ -46,6 +47,7 @@ snapshotRendering("Tauri runtime snapshot rendering", () => {
         phase: state.phase,
         wait: state.wait,
         outputTail: state.output.slice(-12),
+        hover,
         metrics,
         columns,
       }),
@@ -69,6 +71,19 @@ snapshotRendering("Tauri runtime snapshot rendering", () => {
       ),
       "expected a positioned image to remain clickable below its one-row button box",
     );
+    assert.ok(
+      hover.after.visualHoverClass,
+      "expected pointer movement over the full positioned visual to activate its hover state",
+    );
+    assert.ok(
+      hover.after.visualHeight > hover.after.buttonHeight,
+      "expected the highlighted visual to extend below the one-row button box",
+    );
+    assert.notEqual(
+      hover.after.visualBackground,
+      hover.before.visualBackground,
+      "expected the full positioned visual to receive the button hover background",
+    );
     assert.ok(columns, "expected the [400] movement command in a responsive column group");
     assert.ok(columns.cellCount > columns.columns, "expected the command group to wrap into rows");
     assert.ok(
@@ -81,6 +96,68 @@ snapshotRendering("Tauri runtime snapshot rendering", () => {
 
 async function snapshot() {
   return browser.execute(() => window.__RUSTYERA_TEST__?.snapshot());
+}
+
+async function hoverClickableImage() {
+  const visual = await $("button .media-positioned .media-visual");
+  const before = await clickableImageHoverState();
+  await visual.moveTo();
+  let last = before;
+  try {
+    await browser.waitUntil(
+      async () => {
+        last = await clickableImageHoverState();
+        return last.visualHoverClass && last.visualBackground !== before.visualBackground;
+      },
+      {
+        timeout: 20_000,
+        timeoutMsg: "positioned image did not extend its hover highlight over the visual",
+      },
+    );
+  } catch (error) {
+    console.log(JSON.stringify({ hoverDiagnostic: { before, last } }));
+    throw error;
+  }
+  return { before, after: await clickableImageHoverState() };
+}
+
+async function clickableImageHoverState() {
+  return browser.execute(() => {
+    const visual = document.querySelector("button .media-positioned .media-visual");
+    const button = visual?.closest("button");
+    const image = visual?.matches("img") ? visual : visual?.querySelector("img");
+    const source = image instanceof HTMLImageElement ? image.currentSrc || image.src : "";
+    const style = image?.getAttribute("style") ?? "";
+    const visualRect = visual?.getBoundingClientRect();
+    const hit = visualRect
+      ? document.elementFromPoint(
+          visualRect.left + visualRect.width / 2,
+          visualRect.top + visualRect.height / 2,
+        )
+      : null;
+    return {
+      buttonHeight: button?.getBoundingClientRect().height ?? 0,
+      visualHeight: visual?.getBoundingClientRect().height ?? 0,
+      buttonClass: button?.className ?? "",
+      buttonDisabled: button instanceof HTMLButtonElement ? button.disabled : null,
+      buttonHovered: button?.matches(":hover") ?? false,
+      visualHovered: visual?.matches(":hover") ?? false,
+      visualHoverClass: visual?.classList.contains("media-hovered") ?? false,
+      buttonHighlightSelector:
+        button?.matches(":is(.game-button, .html-node:is(button)):hover:not(:disabled)") ?? false,
+      visualHighlightSelector: visual?.matches(".media-positioned > .media-visual") ?? false,
+      buttonBackground: button ? getComputedStyle(button).backgroundColor : "",
+      visualBackground: visual ? getComputedStyle(visual).backgroundColor : "",
+      centerHit: hit
+        ? {
+            tag: hit.tagName,
+            className: hit.className,
+            withinButton: button?.contains(hit) ?? false,
+          }
+        : null,
+      signature: `${source}|${style}`,
+    };
+  });
 }
 
 async function positionedImageMetrics() {
