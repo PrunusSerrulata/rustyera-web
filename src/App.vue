@@ -55,44 +55,44 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
           </button>
           <hr />
           <button
-            :disabled="!store.projectOpen || store.gameInteractionsBlocked"
+            :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
             @click="action(store.restart)"
           >
             重新开始
           </button>
           <button
-            :disabled="!store.projectOpen || store.gameInteractionsBlocked"
+            :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
             @click="action(store.returnToTitle)"
           >
             返回标题
           </button>
           <button
-            :disabled="!store.projectOpen || store.gameInteractionsBlocked"
+            :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
             @click="action(store.reloadProject)"
           >
             重新加载全部脚本
           </button>
           <button
-            :disabled="!store.projectOpen || store.gameInteractionsBlocked"
+            :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
             @click="action(store.reloadProject)"
           >
             重新加载文件夹…
           </button>
           <button
-            :disabled="!store.projectOpen || store.gameInteractionsBlocked"
+            :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
             @click="action(store.reloadProject)"
           >
             重新加载单个脚本…
           </button>
           <hr />
           <button
-            :disabled="!store.projectOpen || store.gameInteractionsBlocked"
+            :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
             @click="action(() => store.exportSnapshot(store.debugEnabled ? 'debug' : 'normal'))"
           >
             导出 VM 快照…
           </button>
           <button
-            :disabled="!store.projectOpen || store.gameInteractionsBlocked"
+            :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
             @click="action(store.restoreSnapshot)"
           >
             恢复 VM 快照…
@@ -121,35 +121,41 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
           调试
         </button>
         <div v-if="menu === 'debug'" class="menu-popup">
-          <button :disabled="store.gameInteractionsBlocked" @click="action(store.enableDebug)">
+          <button
+            :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
+            @click="action(store.enableDebug)"
+          >
             {{ store.debugEnabled ? "禁用调试" : "启用调试" }}
           </button>
           <hr />
           <button
-            :disabled="!store.debugEnabled || store.gameInteractionsBlocked"
+            :disabled="!store.runtimeReady || !store.debugEnabled || store.gameInteractionsBlocked"
             @click="action(() => store.openDebugDialog('console'))"
           >
             控制台…
           </button>
           <button
-            :disabled="!store.debugEnabled || store.gameInteractionsBlocked"
+            :disabled="!store.runtimeReady || !store.debugEnabled || store.gameInteractionsBlocked"
             @click="action(() => store.openDebugDialog('variables'))"
           >
             变量查看器…
           </button>
           <button
-            :disabled="!store.debugEnabled || store.gameInteractionsBlocked"
+            :disabled="!store.runtimeReady || !store.debugEnabled || store.gameInteractionsBlocked"
             @click="action(() => store.openDebugDialog('stack'))"
           >
             Fibers / 调用栈…
           </button>
           <button
-            :disabled="!store.debugEnabled || store.gameInteractionsBlocked"
+            :disabled="!store.runtimeReady || !store.debugEnabled || store.gameInteractionsBlocked"
             @click="action(store.toggleSingleStep)"
           >
             {{ store.singleStepEnabled ? "关闭单步运行" : "开启单步运行" }}
           </button>
-          <button :disabled="!store.canStepDebug" @click="action(store.stepDebug)">
+          <button
+            :disabled="!store.runtimeReady || !store.canStepDebug"
+            @click="action(store.stepDebug)"
+          >
             单步执行 (F10)
           </button>
           <hr />
