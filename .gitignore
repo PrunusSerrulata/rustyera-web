@@ -6,6 +6,7 @@
 /playwright-report
 /test-results
 /.rustyera/test-runs
+/.rustyera/cargo-local
 /.playwright-browsers
 /src-tauri/gen
 /*.tsbuildinfo

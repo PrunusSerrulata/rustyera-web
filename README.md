@@ -33,7 +33,11 @@ application, run `npm run tauri dev`; release packages use `npm run tauri build`
 
 In the standard sibling checkout, the outer `.cargo/config.toml` patches the pinned Git crates to
 `../rustyera-core` and shares `../target`. A standalone checkout uses the pinned Git revision and its
-own ignored `target`, so neither build mode requires repository-local path dependencies.
+own ignored `target`, so neither build mode requires repository-local path dependencies. Run local
+Rust commands through `npm run cargo:local -- <command>` (or `just web-cargo <command>` from the
+outer workspace). The wrapper preserves the committed Git-based `Cargo.lock` while Cargo resolves
+the sibling checkout through the local path patch; CI continues to validate the Git lockfile with
+`--locked`.
 
 ## Testing
 
