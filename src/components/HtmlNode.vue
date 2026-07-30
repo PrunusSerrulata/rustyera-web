@@ -38,6 +38,12 @@ const imagePlacement = computed(() =>
       }
     : null,
 );
+const tooltipTitle = computed(() => {
+  const semantic = props.node.semantic;
+  return semantic?.type === "button" || semantic?.type === "non_button"
+    ? semantic.title || undefined
+    : undefined;
+});
 
 function activate(): void {
   const interaction = props.node.interaction;
@@ -54,7 +60,9 @@ function activate(): void {
     :is="tag"
     v-else
     :disabled="node.interaction && (!node.interaction.enabled || !store.canInteract)"
+    :aria-description="tooltipTitle"
     class="html-node"
+    :data-era-tooltip="tooltipTitle"
     @click="activate"
   >
     <HtmlNode v-for="(child, index) in node.children ?? []" :key="index" :node="child" />

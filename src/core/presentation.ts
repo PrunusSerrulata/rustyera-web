@@ -1,4 +1,4 @@
-import type { DisplayLine } from "@/core/types";
+import type { DisplayLine, TooltipSettings } from "@/core/types";
 
 export interface PresentationState {
   revision: number;
@@ -9,7 +9,7 @@ export interface PresentationState {
   audio: any[];
   inputWait: any | null;
   settings: any;
-  tooltip: any;
+  tooltip: TooltipSettings;
   resources: any;
   htmlIsland: any[];
   redraw: any;
@@ -26,7 +26,7 @@ export function emptyPresentation(): PresentationState {
     audio: [],
     inputWait: null,
     settings: {},
-    tooltip: {},
+    tooltip: defaultTooltipSettings(),
     resources: { sprites: [], canvases: [], animation_timer_ms: 0 },
     htmlIsland: [],
     redraw: { enabled: true },
@@ -52,10 +52,24 @@ export function applySnapshot(state: PresentationState, snapshot: any): void {
   state.audio = snapshot.audio ?? [];
   state.inputWait = snapshot.input_wait ?? null;
   state.settings = snapshot.settings ?? {};
-  state.tooltip = snapshot.tooltip ?? {};
+  state.tooltip = snapshot.tooltip ?? defaultTooltipSettings();
   state.resources = snapshot.resources ?? { sprites: [], canvases: [], animation_timer_ms: 0 };
   state.htmlIsland = snapshot.html_island ?? [];
   state.redraw = snapshot.redraw ?? { enabled: true };
+}
+
+export function defaultTooltipSettings(): TooltipSettings {
+  return {
+    foreground: { red: 0, green: 0, blue: 0, alpha: 255 },
+    background: { red: 255, green: 255, blue: 225, alpha: 255 },
+    delay_ms: 500,
+    duration_ms: 5_000,
+    font_millipoints: 9_000,
+    custom: false,
+    format: 0,
+    images: false,
+    normalized_format: { flags: [], unknown_bits: 0 },
+  };
 }
 
 export function applyDelta(state: PresentationState, delta: any): void {

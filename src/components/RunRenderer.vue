@@ -44,7 +44,8 @@ function rgba(color: any): string {
     v-else-if="run.type === 'button'"
     class="game-button"
     :disabled="!run.enabled || !store.canInteract"
-    :title="run.title"
+    :aria-description="run.title || undefined"
+    :data-era-tooltip="run.title || undefined"
     @click="store.activate(run.token)"
   >
     <RunRenderer v-for="(child, index) in run.runs" :key="index" :run="child" />

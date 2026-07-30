@@ -104,4 +104,19 @@ describe("web game test scenario", () => {
     expect(page.waitForFunction).toHaveBeenCalledWith(expect.any(Function), "4");
     vi.unstubAllGlobals();
   });
+
+  it("drives hover through the production DOM locator", async () => {
+    const locator = { hover: vi.fn() };
+    const page = { getByText: vi.fn(() => locator) };
+
+    await expect(
+      runAction(page, {
+        type: "hover",
+        locator: { text: "hover target", exact: true },
+      }),
+    ).resolves.toEqual({ semanticInput: undefined });
+
+    expect(page.getByText).toHaveBeenCalledWith("hover target", { exact: true });
+    expect(locator.hover).toHaveBeenCalledOnce();
+  });
 });

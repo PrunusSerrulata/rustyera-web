@@ -7,6 +7,7 @@
 /test-results
 /.rustyera/test-runs
 /.rustyera/cargo-local
+/tests/fixtures/**/.rustyera
 /.playwright-browsers
 /src-tauri/gen
 /*.tsbuildinfo

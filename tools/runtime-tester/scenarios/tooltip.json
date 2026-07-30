@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/tooltip-project",
+  "mode": "fixed",
+  "seed": 123456,
+  "actions": [
+    {
+      "type": "hover",
+      "locator": { "role": "button", "name": "hover target", "exact": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-tooltip" },
+      "expect": { "count": 1, "text": "button tip\nsecond line", "visible": true }
+    },
+    {
+      "type": "hover",
+      "locator": { "text": "plain target", "exact": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-tooltip" },
+      "expect": { "count": 1, "text": "plain tip", "visible": true }
+    }
+  ],
+  "goal": {
+    "output_contains": ["TOOLTIP_READY"]
+  },
+  "limits": {
+    "max_steps": 10,
+    "timeout_seconds": 60
+  }
+}

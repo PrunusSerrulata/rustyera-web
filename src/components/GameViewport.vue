@@ -3,6 +3,7 @@ import { useVirtualizer } from "@tanstack/vue-virtual";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import DisplayLine from "@/components/DisplayLine.vue";
+import GameTooltip from "@/components/GameTooltip.vue";
 import HtmlNode from "@/components/HtmlNode.vue";
 import MediaImage from "@/components/MediaImage.vue";
 import { isViewportContinuationClick } from "@/core/viewportInteraction";
@@ -157,4 +158,5 @@ watch(
       </template>
     </div>
   </main>
+  <GameTooltip :scope="viewport" :settings="store.presentation.tooltip" />
 </template>

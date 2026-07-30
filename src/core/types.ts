@@ -99,6 +99,48 @@ export interface TextStyle {
   font_millipoints: number;
 }
 
+export type TooltipFormatFlag =
+  | "horizontal_center"
+  | "right"
+  | "vertical_center"
+  | "bottom"
+  | "word_break"
+  | "single_line"
+  | "expand_tabs"
+  | "no_clipping"
+  | "external_leading"
+  | "no_prefix"
+  | "internal"
+  | "text_box_control"
+  | "path_ellipsis"
+  | "end_ellipsis"
+  | "modify_string"
+  | "right_to_left"
+  | "word_ellipsis"
+  | "no_full_width_character_break"
+  | "hide_prefix"
+  | "prefix_only"
+  | "preserve_graphics_clipping"
+  | "preserve_graphics_translate_transform"
+  | "no_padding"
+  | "left_and_right_padding";
+
+export interface TooltipSettings {
+  foreground: Color;
+  background: Color;
+  delay_ms: number;
+  duration_ms: number;
+  font_family?: string;
+  font_millipoints: number;
+  custom: boolean;
+  format: number;
+  images: boolean;
+  normalized_format: {
+    flags: TooltipFormatFlag[];
+    unknown_bits: number | bigint;
+  };
+}
+
 export type DisplayRun =
   | { type: "text"; text: string; style: TextStyle }
   | {

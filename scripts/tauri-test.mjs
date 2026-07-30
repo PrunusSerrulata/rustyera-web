@@ -38,6 +38,8 @@ const environment = {
   VITE_RUSTYERA_TEST_STATE: state ?? "",
   VITE_RUSTYERA_TAURI_PROJECT_SMOKE:
     configuredSpec && path.basename(configuredSpec) === "project-smoke.spec.mjs" ? "1" : "0",
+  VITE_RUSTYERA_TAURI_TOOLTIP:
+    configuredSpec && path.basename(configuredSpec) === "tooltip.spec.mjs" ? "1" : "0",
 };
 
 await run(

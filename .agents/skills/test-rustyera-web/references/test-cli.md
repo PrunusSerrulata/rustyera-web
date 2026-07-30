@@ -53,6 +53,7 @@ An action has `type`:
 - `input`: `value`; fills `.prompt-bar input` and clicks the submit button.
 - `click`: `locator`; set `advances_game: true` and `semantic_input` when it advances a compared
   game.
+- `hover`: `locator`; moves the pointer over an element without advancing the game.
 - `fill`: `locator`, `value`.
 - `press`: `locator`, `key`; set `advances_game: true` and add `semantic_input` if it advances a
   compared game.

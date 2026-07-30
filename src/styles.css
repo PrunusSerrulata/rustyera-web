@@ -193,6 +193,20 @@ select {
   contain: strict;
   overflow-anchor: none;
 }
+.game-tooltip {
+  position: fixed;
+  z-index: 1100;
+  max-width: min(42rem, calc(100vw - 16px));
+  border: 1px solid #0008;
+  border-radius: 3px;
+  padding: 3px 5px;
+  box-shadow: 0 2px 8px #0008;
+  line-height: 1.2;
+  pointer-events: none;
+}
+[data-era-tooltip] {
+  pointer-events: auto;
+}
 .virtual-history {
   position: relative;
   width: calc(100% - 0.5ch);

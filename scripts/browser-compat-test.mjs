@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global document, navigator, window */
+/* global document, getComputedStyle, HTMLElement, navigator, window */
 
 import { createReadStream } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
@@ -14,7 +14,17 @@ const browserName = process.argv[process.argv.indexOf("--browser") + 1];
 if (!browserName || !["firefox", "safari"].includes(browserName)) {
   throw new Error("usage: browser-compat-test --browser <firefox|safari>");
 }
-const project = path.resolve(repository, "../emuera.em/emuera-reference-cli/tests/fixture");
+const projectIndex = process.argv.indexOf("--project");
+if (projectIndex >= 0 && !process.argv[projectIndex + 1]) {
+  throw new Error("--project requires a path");
+}
+const project = path.resolve(
+  repository,
+  projectIndex >= 0
+    ? process.argv[projectIndex + 1]
+    : "../emuera.em/emuera-reference-cli/tests/fixture",
+);
+const checkTooltip = process.argv.includes("--check-tooltip");
 const files = await collectFiles(project);
 let server;
 let browser;
@@ -108,15 +118,48 @@ try {
   await open.waitForClickable({ timeout: 30_000 });
   await open.click();
   await browser.waitUntil(
-    async () =>
-      (await browser.$(".game-viewport").isExisting()) &&
-      (await browser.$("body").getText()).includes("TITLE_CHARANUM=0"),
+    async () => {
+      if (!(await browser.$(".game-viewport").isExisting())) return false;
+      return browser.execute(() => {
+        const state = window.__RUSTYERA_TEST__?.snapshot();
+        return state?.phase === "waiting_input" && state.canInteract;
+      });
+    },
     {
       timeout: 120_000,
       interval: 250,
-      timeoutMsg: "WASM project did not reach the reference fixture input wait",
+      timeoutMsg: "WASM project did not reach a stable input wait",
     },
   );
+  let tooltip;
+  if (checkTooltip) {
+    const target = await browser.$("button[data-era-tooltip]");
+    await target.waitForDisplayed({ timeout: 20_000 });
+    await target.moveTo();
+    const floating = await browser.$(".game-tooltip");
+    await floating.waitForDisplayed({ timeout: 20_000 });
+    tooltip = await browser.execute(() => {
+      const element = document.querySelector(".game-tooltip");
+      if (!(element instanceof HTMLElement)) return null;
+      const style = getComputedStyle(element);
+      return {
+        text: element.textContent?.trim(),
+        role: element.getAttribute("role"),
+        color: style.color,
+        backgroundColor: style.backgroundColor,
+        fontFamily: style.fontFamily,
+        fontSize: style.fontSize,
+        visible: element.getClientRects().length > 0,
+      };
+    });
+    if (
+      !tooltip?.visible ||
+      tooltip.text !== "button tip\nsecond line" ||
+      tooltip.role !== "tooltip"
+    ) {
+      throw new Error(`tooltip rendering mismatch: ${JSON.stringify(tooltip)}`);
+    }
+  }
   const observed = await browser.execute(() => ({
     userAgent: navigator.userAgent,
     status: document.querySelector(".runtime-status")?.textContent,
@@ -129,6 +172,7 @@ try {
       minimized,
       projectName: setup.projectName,
       opfs: setup.opfs,
+      tooltip,
       ...observed,
     }),
   );
