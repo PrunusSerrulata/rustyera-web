@@ -241,8 +241,12 @@ select {
 }
 .game-button,
 .html-node:is(button) {
+  --game-interaction-hover-background: #ffffff18;
+  --game-interaction-border-radius: 5px;
+
   display: inline;
   border: 0;
+  border-radius: var(--game-interaction-border-radius);
   padding: 0;
   background: transparent;
   color: inherit;
@@ -251,13 +255,19 @@ select {
   pointer-events: auto;
 }
 :is(.game-button, .html-node:is(button)):hover:not(:disabled) {
-  background: #ffffff18;
+  background: var(--game-interaction-hover-background);
 }
-:is(.game-button, .html-node:is(button)):hover:not(:disabled) .media-positioned > .media-visual,
-:is(.game-button, .html-node:is(button)):not(:disabled)
+:is(.game-button, .html-node:is(button)):has(.media-positioned):hover:not(:disabled) {
+  background: transparent;
+}
+:is(.game-button, .html-node:is(button)):has(.media-positioned):hover:not(:disabled)
+  .media-positioned
+  > .media-visual,
+:is(.game-button, .html-node:is(button)):has(.media-positioned):not(:disabled)
   .media-positioned
   > .media-visual.media-hovered {
-  background: #ffffff18;
+  border-radius: var(--game-interaction-border-radius);
+  background: var(--game-interaction-hover-background);
 }
 .column-group {
   display: inline-grid;

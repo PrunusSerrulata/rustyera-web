@@ -10,6 +10,10 @@ snapshotRendering("Tauri runtime snapshot rendering", () => {
       timeoutMsg: "test control was not installed in the Tauri WebView",
     });
     assert.equal((await snapshot()).bridgeKind, "tauri");
+    const testWindowVisible = await browser.execute(async () =>
+      window.__TAURI__.window.getCurrentWindow().isVisible(),
+    );
+    assert.equal(testWindowVisible, false, "Tauri end-to-end window should start hidden");
 
     await $(".welcome .primary").click();
     await browser.waitUntil(
@@ -43,6 +47,7 @@ snapshotRendering("Tauri runtime snapshot rendering", () => {
       JSON.stringify({
         project: process.env.VITE_RUSTYERA_TEST_PROJECT,
         state: process.env.VITE_RUSTYERA_TEST_STATE,
+        testWindowVisible,
         bridgeKind: state.bridgeKind,
         phase: state.phase,
         wait: state.wait,
@@ -82,7 +87,17 @@ snapshotRendering("Tauri runtime snapshot rendering", () => {
     assert.notEqual(
       hover.after.visualBackground,
       hover.before.visualBackground,
-      "expected the full positioned visual to receive the button hover background",
+      "expected the original button hover background to cover the full positioned visual",
+    );
+    assert.equal(
+      hover.after.visualBorderRadius,
+      hover.after.buttonBorderRadius,
+      "expected the full positioned visual to retain the original button corner radius",
+    );
+    assert.equal(
+      hover.after.buttonBackground,
+      hover.before.buttonBackground,
+      "expected the one-row button box not to paint a second hover background",
     );
     assert.ok(columns, "expected the [400] movement command in a responsive column group");
     assert.ok(columns.cellCount > columns.columns, "expected the command group to wrap into rows");
@@ -147,7 +162,9 @@ async function clickableImageHoverState() {
         button?.matches(":is(.game-button, .html-node:is(button)):hover:not(:disabled)") ?? false,
       visualHighlightSelector: visual?.matches(".media-positioned > .media-visual") ?? false,
       buttonBackground: button ? getComputedStyle(button).backgroundColor : "",
+      buttonBorderRadius: button ? getComputedStyle(button).borderRadius : "",
       visualBackground: visual ? getComputedStyle(visual).backgroundColor : "",
+      visualBorderRadius: visual ? getComputedStyle(visual).borderRadius : "",
       centerHit: hit
         ? {
             tag: hit.tagName,

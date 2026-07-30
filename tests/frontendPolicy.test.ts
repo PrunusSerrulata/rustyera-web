@@ -18,6 +18,15 @@ describe("frontend host and image-line policy", () => {
     expect(capability.permissions).toContain("core:window:allow-close");
   });
 
+  it("keeps the Tauri end-to-end window hidden by default", () => {
+    const webdriverConfig = JSON.parse(
+      readFileSync(resolve("src-tauri/tauri.webdriver.conf.json"), "utf8"),
+    );
+    expect(webdriverConfig.app.windows).toContainEqual(
+      expect.objectContaining({ label: "main", visible: false }),
+    );
+  });
+
   it("renders HTML image paragraphs with the margin-reset selector", () => {
     const wrapper = mount(HtmlNode, {
       props: {
@@ -43,7 +52,13 @@ describe("frontend host and image-line policy", () => {
       /\.media-positioned > \.media-visual\s*\{[^}]*position:\s*absolute;[^}]*left:\s*0;/s,
     );
     expect(stylesheet).toMatch(
-      /:is\(\.game-button, \.html-node:is\(button\)\):hover:not\(:disabled\)[\s\S]*?\.media-positioned\s*> \.media-visual,[\s\S]*?:is\(\.game-button, \.html-node:is\(button\)\):not\(:disabled\)[\s\S]*?\.media-positioned\s*> \.media-visual\.media-hovered\s*\{\s*background:\s*#ffffff18;/,
+      /\.game-button,[\s\S]*?--game-interaction-hover-background:\s*#ffffff18;[\s\S]*?--game-interaction-border-radius:\s*5px;/,
+    );
+    expect(stylesheet).toMatch(
+      /:is\(\.game-button, \.html-node:is\(button\)\):has\(\.media-positioned\):hover:not\(:disabled\)\s*\{\s*background:\s*transparent;/,
+    );
+    expect(stylesheet).toMatch(
+      /:is\(\.game-button, \.html-node:is\(button\)\):has\(\.media-positioned\):not\(:disabled\)[\s\S]*?> \.media-visual\.media-hovered\s*\{[^}]*border-radius:\s*var\(--game-interaction-border-radius\);[^}]*background:\s*var\(--game-interaction-hover-background\);/s,
     );
   });
 
