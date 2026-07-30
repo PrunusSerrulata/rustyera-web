@@ -135,14 +135,7 @@ async function execute(args) {
                 stream.pipe(response);
                 return;
               }
-              const name = request.url?.match(/^\/__rustyera_test_wasm\/([^?]+)/)?.[1];
-              if (!name || !["era_web_wasm.js", "era_web_wasm_bg.wasm"].includes(name))
-                return next();
-              response.setHeader(
-                "Content-Type",
-                name.endsWith(".wasm") ? "application/wasm" : "text/javascript",
-              );
-              createReadStream(path.join(repository, "public/wasm", name)).pipe(response);
+              next();
             });
           },
         },

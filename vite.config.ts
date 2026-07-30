@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import vue from "@vitejs/plugin-vue";
 import { configDefaults, defineConfig } from "vitest/config";
 
+import { rustyeraWasmDevServer } from "./scripts/vite-wasm-plugin";
+
 const packageJson = JSON.parse(
   readFileSync(fileURLToPath(new URL("./package.json", import.meta.url)), "utf8"),
 );
@@ -12,9 +14,10 @@ const coreRevision = readFileSync(
 ).trim();
 const coreLock = readFileSync(fileURLToPath(new URL("./Cargo.lock", import.meta.url)), "utf8");
 const coreVersion = coreLock.match(/name = "era-runtime"\nversion = "([^"]+)"/)?.[1] ?? "unknown";
+const wasmDirectory = fileURLToPath(new URL("./public/wasm", import.meta.url));
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue(), rustyeraWasmDevServer(wasmDirectory)],
   define: {
     "import.meta.env.VITE_RUSTYERA_FRONTEND_VERSION": JSON.stringify(packageJson.version),
     "import.meta.env.VITE_RUSTYERA_CORE_VERSION": JSON.stringify(

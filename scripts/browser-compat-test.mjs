@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /* global document, getComputedStyle, HTMLElement, navigator, window */
 
-import { createReadStream } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,25 +33,6 @@ try {
     root: repository,
     mode: "test",
     define: { "import.meta.env.VITE_RUSTYERA_TEST": JSON.stringify("1") },
-    plugins: [
-      {
-        name: "rustyera-browser-compat-wasm",
-        configureServer(viteServer) {
-          viteServer.middlewares.use((request, response, next) => {
-            const name = request.url?.match(/^\/__rustyera_test_wasm\/([^?]+)/)?.[1];
-            if (!name || !["era_web_wasm.js", "era_web_wasm_bg.wasm"].includes(name)) {
-              next();
-              return;
-            }
-            response.setHeader(
-              "Content-Type",
-              name.endsWith(".wasm") ? "application/wasm" : "text/javascript",
-            );
-            createReadStream(path.join(repository, "public/wasm", name)).pipe(response);
-          });
-        },
-      },
-    ],
     server: { host: "127.0.0.1", port: 0, strictPort: false },
   });
   await server.listen();
