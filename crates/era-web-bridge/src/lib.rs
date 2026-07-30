@@ -78,6 +78,12 @@ pub struct PumpBatch {
     pub events: Vec<WebEvent>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebTraditionalSaveInspection {
+    pub description: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WebDriveState {
@@ -214,6 +220,35 @@ impl WebSession {
     pub fn load_project(&mut self, manifest: ProjectManifest) -> Result<u64, String> {
         let identity = project_identity(&manifest)?;
         self.load_project_request(identity, Some(manifest), None)
+    }
+
+    /// Return the active project's traditional-save slot count.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error until a project has compiled successfully.
+    pub fn traditional_save_slot_count(&self) -> Result<u32, String> {
+        self.runtime
+            .traditional_save_slot_count()
+            .ok_or_else(|| "no compiled project is available".to_owned())
+    }
+
+    /// Validate a traditional save against the active project without changing runtime state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the save is malformed or incompatible with the active project.
+    pub fn inspect_traditional_save(
+        &self,
+        bytes: &[u8],
+    ) -> Result<WebTraditionalSaveInspection, String> {
+        let inspection = self
+            .runtime
+            .inspect_traditional_save(bytes)
+            .map_err(|error| error.to_string())?;
+        Ok(WebTraditionalSaveInspection {
+            description: inspection.description,
+        })
     }
 
     /// Import a compiled cache without copying the opaque payload through JavaScript.

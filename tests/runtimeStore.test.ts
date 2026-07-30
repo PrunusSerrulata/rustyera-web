@@ -28,6 +28,13 @@ const bridge = vi.hoisted(() => ({
   projectName: vi.fn(() => "eraTW"),
   openUpload: vi.fn(),
   saveDownload: vi.fn(),
+  traditionalSaves: {
+    listSlots: vi.fn(),
+    exportSlot: vi.fn(),
+    pickImport: vi.fn(),
+    inspect: vi.fn(),
+    writeSlot: vi.fn(),
+  },
   createDiagnosisArchive: vi.fn(),
   writeCompiledCacheChunk: vi.fn(),
   close: vi.fn(),
@@ -47,6 +54,14 @@ describe("runtime store session lifecycle", () => {
     bridge.submitDebug.mockImplementation(async () => nextDebugMessageId++);
     bridge.pump.mockResolvedValue(emptyBatch());
     bridge.saveDownload.mockResolvedValue(true);
+    bridge.traditionalSaves.listSlots.mockResolvedValue([
+      { slot: 0, occupied: false },
+      { slot: 1, occupied: true },
+    ]);
+    bridge.traditionalSaves.exportSlot.mockResolvedValue(undefined);
+    bridge.traditionalSaves.pickImport.mockResolvedValue(undefined);
+    bridge.traditionalSaves.inspect.mockResolvedValue({ description: "valid" });
+    bridge.traditionalSaves.writeSlot.mockResolvedValue(undefined);
     bridge.createDiagnosisArchive.mockResolvedValue(Uint8Array.of(9, 8, 7));
     bridge.restartProject.mockResolvedValue({
       quickScanMs: 1,
@@ -238,6 +253,64 @@ describe("runtime store session lifecycle", () => {
       { type: "start", value: { mode: { type: "traditional_save", transfer_id: 9 } } },
       undefined,
     );
+  });
+
+  it("exports only an occupied browser save slot", async () => {
+    const store = await runningBrowserStore();
+
+    await store.openTraditionalSaveDialog("export");
+    expect(store.traditionalSaveSlots).toEqual([
+      { slot: 0, occupied: false },
+      { slot: 1, occupied: true },
+    ]);
+
+    await store.confirmTraditionalSaveTransfer(0);
+    expect(bridge.traditionalSaves.exportSlot).not.toHaveBeenCalled();
+
+    await store.confirmTraditionalSaveTransfer(1);
+    expect(bridge.traditionalSaves.exportSlot).toHaveBeenCalledWith(1);
+    expect(store.status).toBe("已导出 save01.sav");
+    expect(store.traditionalSaveDialogMode).toBeNull();
+  });
+
+  it("validates an imported save before asking to overwrite an occupied slot", async () => {
+    const bytes = Uint8Array.of(1, 2, 3);
+    bridge.traditionalSaves.pickImport.mockResolvedValue({ name: "incoming.sav", bytes });
+    bridge.traditionalSaves.listSlots
+      .mockResolvedValueOnce([{ slot: 0, occupied: true }])
+      .mockResolvedValueOnce([{ slot: 0, occupied: true }]);
+    const store = await runningBrowserStore();
+
+    await store.openTraditionalSaveDialog("import");
+    await store.pickTraditionalSaveImport();
+    await store.confirmTraditionalSaveTransfer(0);
+
+    expect(bridge.traditionalSaves.inspect).toHaveBeenCalledWith(bytes);
+    expect(bridge.traditionalSaves.writeSlot).not.toHaveBeenCalled();
+    expect(store.traditionalSaveOverwriteSlot).toBe(0);
+
+    await store.confirmTraditionalSaveOverwrite();
+
+    expect(bridge.traditionalSaves.writeSlot).toHaveBeenCalledWith(0, bytes);
+    expect(store.status).toBe("已导入 save00.sav");
+    expect(store.traditionalSaveDialogMode).toBeNull();
+  });
+
+  it("keeps the import dialog open when runtime validation rejects a save", async () => {
+    bridge.traditionalSaves.pickImport.mockResolvedValue({
+      name: "broken.sav",
+      bytes: Uint8Array.of(9),
+    });
+    bridge.traditionalSaves.inspect.mockRejectedValue(new Error("traditional save is invalid"));
+    const store = await runningBrowserStore();
+
+    await store.openTraditionalSaveDialog("import");
+    await store.pickTraditionalSaveImport();
+    await store.confirmTraditionalSaveTransfer(0);
+
+    expect(bridge.traditionalSaves.writeSlot).not.toHaveBeenCalled();
+    expect(store.traditionalSaveTransferError).toContain("traditional save is invalid");
+    expect(store.traditionalSaveDialogMode).toBe("import");
   });
 
   it("recreates the runtime and reopens the same project for Restart", async () => {
@@ -682,6 +755,19 @@ describe("runtime store session lifecycle", () => {
     expect(store.runtimeEpoch).toBe(9);
   });
 });
+
+async function runningBrowserStore() {
+  bridge.pump.mockResolvedValueOnce({
+    ...emptyBatch(),
+    events: [runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 })],
+  });
+  const store = useRuntimeStore();
+  store.projectOpen = true;
+  await store.enableDebug();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.canManageTraditionalSaves).toBe(true);
+  return store;
+}
 
 function runtimeEvent(type: string, value: unknown, correlationId?: number, epoch?: number) {
   return {

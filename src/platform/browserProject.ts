@@ -23,6 +23,11 @@ interface ScannedFile {
   content_hash: Uint8Array;
 }
 
+export interface BrowserTraditionalSaveSlot {
+  slot: number;
+  occupied: boolean;
+}
+
 export interface BrowserManifest {
   project_revision: number;
   files: ScannedFile[];
@@ -114,6 +119,34 @@ export class BrowserProject {
     if (!handle) throw new Error(`未知资源：${relativePath}`);
     const file = await handle.getFile();
     return new Uint8Array(await file.slice(0, maximumBytes).arrayBuffer());
+  }
+
+  async listTraditionalSaveSlots(slotCount: number): Promise<BrowserTraditionalSaveSlot[]> {
+    const count = checkedSaveSlotCount(slotCount);
+    const directory = await this.root.getDirectoryHandle("sav", { create: true });
+    const occupied = new Set<number>();
+    for await (const [name, handle] of directory.entries()) {
+      if (handle.kind !== "file") continue;
+      const match = /^save(\d{2})\.sav$/i.exec(name);
+      if (!match) continue;
+      const slot = Number.parseInt(match[1], 10);
+      if (slot < count) occupied.add(slot);
+    }
+    return Array.from({ length: count }, (_, slot) => ({ slot, occupied: occupied.has(slot) }));
+  }
+
+  async readTraditionalSave(slot: number): Promise<Uint8Array> {
+    const directory = await this.root.getDirectoryHandle("sav");
+    const handle = await directory.getFileHandle(saveSlotName(slot));
+    return new Uint8Array(await (await handle.getFile()).arrayBuffer());
+  }
+
+  async writeTraditionalSave(slot: number, bytes: Uint8Array): Promise<void> {
+    const directory = await this.root.getDirectoryHandle("sav", { create: true });
+    const handle = await directory.getFileHandle(saveSlotName(slot), { create: true });
+    const writable = await handle.createWritable({ keepExistingData: false });
+    await writable.write(bytes as FileSystemWriteChunkType);
+    await writable.close();
   }
 
   async storage(request: any): Promise<any> {
@@ -229,6 +262,17 @@ export class BrowserProject {
     if (namespace === "resource") return this.root;
     return this.root.getDirectoryHandle(storageDirectoryName(namespace), { create: true });
   }
+}
+
+export function saveSlotName(slot: number): string {
+  if (!Number.isInteger(slot) || slot < 0 || slot > 99)
+    throw new Error("存档槽位必须介于 00 和 99");
+  return `save${slot.toString().padStart(2, "0")}.sav`;
+}
+
+function checkedSaveSlotCount(value: number): number {
+  if (!Number.isInteger(value) || value < 1 || value > 100) throw new Error("存档槽位数量无效");
+  return value;
 }
 
 export function cacheIdentityManifest(manifest: BrowserManifest): BrowserManifest {

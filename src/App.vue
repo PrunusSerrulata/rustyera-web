@@ -8,6 +8,7 @@ import GameViewport from "@/components/GameViewport.vue";
 import LogDialog from "@/components/LogDialog.vue";
 import OpenProjectDialog from "@/components/OpenProjectDialog.vue";
 import PreferencesDialog from "@/components/PreferencesDialog.vue";
+import TraditionalSaveDialog from "@/components/TraditionalSaveDialog.vue";
 import { useRuntimeStore } from "@/stores/runtime";
 
 const store = useRuntimeStore();
@@ -97,6 +98,21 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
           >
             恢复 VM 快照…
           </button>
+          <template v-if="store.bridgeKind === 'browser'">
+            <hr />
+            <button
+              :disabled="!store.canManageTraditionalSaves"
+              @click="action(() => store.openTraditionalSaveDialog('export'))"
+            >
+              导出存档…
+            </button>
+            <button
+              :disabled="!store.canManageTraditionalSaves"
+              @click="action(() => store.openTraditionalSaveDialog('import'))"
+            >
+              导入存档…
+            </button>
+          </template>
           <hr />
           <button
             @click="
@@ -255,6 +271,20 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
       :open="store.openProjectConfirmationOpen"
       @cancel="store.cancelOpenProject"
       @confirm="store.confirmOpenProject"
+    />
+    <TraditionalSaveDialog
+      :open="store.traditionalSaveDialogMode != null"
+      :mode="store.traditionalSaveDialogMode"
+      :slots="store.traditionalSaveSlots"
+      :import-name="store.traditionalSaveImportName"
+      :busy="store.traditionalSaveTransferBusy"
+      :error="store.traditionalSaveTransferError"
+      :overwrite-slot="store.traditionalSaveOverwriteSlot"
+      @close="store.closeTraditionalSaveDialog"
+      @pick="store.pickTraditionalSaveImport"
+      @confirm="store.confirmTraditionalSaveTransfer"
+      @cancel-overwrite="store.cancelTraditionalSaveOverwrite"
+      @confirm-overwrite="store.confirmTraditionalSaveOverwrite"
     />
     <LogDialog
       :open="store.logsOpen"

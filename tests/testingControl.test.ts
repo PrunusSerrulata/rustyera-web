@@ -13,5 +13,6 @@ describe("Web test observation boundaries", () => {
     expect(isStableObservationCandidate("debug_paused", false, null)).toBe(true);
     expect(isStableObservationCandidate("stopped", false, null)).toBe(true);
     expect(isStableObservationCandidate("running", false, { message: "fault" })).toBe(true);
+    expect(isStableObservationCandidate("waiting_input", false, null, true)).toBe(true);
   });
 });

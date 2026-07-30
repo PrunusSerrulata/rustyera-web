@@ -440,6 +440,38 @@ select {
   display: grid;
   gap: 14px;
 }
+.traditional-save-form {
+  display: grid;
+  gap: 14px;
+}
+.traditional-save-form > p {
+  margin: 0;
+}
+.save-file-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.save-file-picker span {
+  overflow: hidden;
+  color: #cbd1dd;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.save-slot-field {
+  display: grid;
+  grid-template-columns: 7em 1fr;
+  align-items: center;
+  gap: 10px;
+}
+.form-hint {
+  color: #aeb3bf;
+}
+.form-error {
+  color: #ff9da5;
+  white-space: pre-wrap;
+}
 .preferences-form > label {
   display: grid;
   grid-template-columns: 9em 1fr;

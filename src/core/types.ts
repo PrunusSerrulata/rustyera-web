@@ -50,8 +50,26 @@ export interface ProjectOpenMetrics {
   cacheImported: boolean;
 }
 
+export interface TraditionalSaveSlot {
+  slot: number;
+  occupied: boolean;
+}
+
+export interface TraditionalSaveInspection {
+  description: string;
+}
+
+export interface TraditionalSaveAccess {
+  listSlots(): Promise<TraditionalSaveSlot[]>;
+  exportSlot(slot: number): Promise<void>;
+  pickImport(): Promise<{ name: string; bytes: Uint8Array } | undefined>;
+  inspect(bytes: Uint8Array): Promise<TraditionalSaveInspection>;
+  writeSlot(slot: number, bytes: Uint8Array): Promise<void>;
+}
+
 export interface FrontendBridge {
   readonly kind: "tauri" | "browser";
+  readonly traditionalSaves?: TraditionalSaveAccess;
   createSession(options: SessionOptions): Promise<PumpBatch>;
   submitRuntime(message: RuntimeMessage, correlationId?: number | bigint): Promise<number | bigint>;
   submitDebug(message: DebugMessage, correlationId?: number | bigint): Promise<number | bigint>;

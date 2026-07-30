@@ -25,6 +25,7 @@ import {
   type PumpBatch,
   type RuntimeMessage,
   type SessionOptions,
+  type TraditionalSaveSlot,
 } from "@/core/types";
 import { platformBridge } from "@/platform";
 
@@ -103,6 +104,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const debugVariableValues = ref<Record<string, string>>({});
   const diagnosisExporting = ref(false);
   const diagnosisNotification = ref("");
+  const traditionalSaveDialogMode = ref<"export" | "import" | null>(null);
+  const traditionalSaveSlots = ref<TraditionalSaveSlot[]>([]);
+  const traditionalSaveImportName = ref("");
+  const traditionalSaveTransferBusy = ref(false);
+  const traditionalSaveTransferError = ref("");
+  const traditionalSaveOverwriteSlot = ref<number | null>(null);
   const heldKeys = new Set<number>();
   const audio = new AudioEngine(bridge, preferences.value);
   let pumpTimer: number | undefined;
@@ -112,6 +119,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let diagnosisNotificationTimer: number | undefined;
   let importBytes: Uint8Array | undefined;
   let importKind: Exclude<RuntimeStartKind, "new_game"> | undefined;
+  let traditionalSaveImportBytes: Uint8Array | undefined;
   let pendingStart: RuntimeTestConfiguration["start"] = { type: "new_game" };
   let testClock: Date | undefined;
   let testEntropyState: bigint | undefined;
@@ -147,7 +155,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
       presentation.inputWait != null &&
       phase.value !== "debug_paused" &&
       !fault.value &&
-      !diagnosisExporting.value,
+      !diagnosisExporting.value &&
+      traditionalSaveDialogMode.value == null,
   );
   const runtimeReady = computed(
     () =>
@@ -165,7 +174,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const canExportDiagnosis = computed(
     () => runtimeReady.value && !diagnosisExporting.value && !sessionTransitioning,
   );
-  const gameInteractionsBlocked = computed(() => diagnosisExporting.value);
+  const canManageTraditionalSaves = computed(
+    () =>
+      bridge.traditionalSaves != null &&
+      runtimeReady.value &&
+      !diagnosisExporting.value &&
+      traditionalSaveDialogMode.value == null,
+  );
+  const gameInteractionsBlocked = computed(
+    () => diagnosisExporting.value || traditionalSaveDialogMode.value != null,
+  );
   const canOpenProject = computed(() => !projectLoading.value && !diagnosisExporting.value);
   const canStepDebug = computed(() => {
     const fiberId = selectedDebugFiber(debugStop.value);
@@ -868,6 +886,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
     exportState = undefined;
     diagnosisState = undefined;
     diagnosisExporting.value = false;
+    traditionalSaveDialogMode.value = null;
+    traditionalSaveSlots.value = [];
+    traditionalSaveImportName.value = "";
+    traditionalSaveImportBytes = undefined;
+    traditionalSaveTransferBusy.value = false;
+    traditionalSaveTransferError.value = "";
+    traditionalSaveOverwriteSlot.value = null;
     importBytes = undefined;
     importKind = undefined;
     nextEnvironmentRevision = 1;
@@ -964,6 +989,23 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (exportState?.kind === "download") exportState.requestMessageId = String(messageId);
   }
 
+  async function exportTraditionalSaveForTest(): Promise<void> {
+    if (import.meta.env.VITE_RUSTYERA_TEST !== "1")
+      throw new Error("传统存档测试导出只能在 VITE_RUSTYERA_TEST 中使用");
+    if (exportState) throw new Error("另一项状态导出仍在进行");
+    exportState = {
+      name: "save00.sav",
+      kind: "download",
+      chunks: [],
+      received: 0,
+    };
+    const messageId = await send({
+      type: "state_export_request",
+      value: { kind: "traditional_save", snapshot_purpose: "normal" },
+    });
+    if (exportState?.kind === "download") exportState.requestMessageId = String(messageId);
+  }
+
   function testTransferState(): Record<string, unknown> {
     return {
       export: exportState
@@ -976,6 +1018,117 @@ export const useRuntimeStore = defineStore("runtime", () => {
       importKind,
       importBytes: importBytes?.length ?? 0,
     };
+  }
+
+  async function openTraditionalSaveDialog(mode: "export" | "import"): Promise<void> {
+    const access = bridge.traditionalSaves;
+    if (!access || !canManageTraditionalSaves.value) return;
+    traditionalSaveDialogMode.value = mode;
+    traditionalSaveSlots.value = [];
+    traditionalSaveImportName.value = "";
+    traditionalSaveImportBytes = undefined;
+    traditionalSaveTransferError.value = "";
+    traditionalSaveOverwriteSlot.value = null;
+    traditionalSaveTransferBusy.value = true;
+    try {
+      traditionalSaveSlots.value = await access.listSlots();
+    } catch (error) {
+      traditionalSaveTransferError.value = `无法读取存档槽位：${String(error)}`;
+    } finally {
+      traditionalSaveTransferBusy.value = false;
+    }
+  }
+
+  function closeTraditionalSaveDialog(): void {
+    if (traditionalSaveTransferBusy.value) return;
+    traditionalSaveDialogMode.value = null;
+    traditionalSaveSlots.value = [];
+    traditionalSaveImportName.value = "";
+    traditionalSaveImportBytes = undefined;
+    traditionalSaveTransferError.value = "";
+    traditionalSaveOverwriteSlot.value = null;
+  }
+
+  async function pickTraditionalSaveImport(): Promise<void> {
+    const access = bridge.traditionalSaves;
+    if (
+      !access ||
+      traditionalSaveDialogMode.value !== "import" ||
+      traditionalSaveTransferBusy.value
+    )
+      return;
+    traditionalSaveTransferError.value = "";
+    traditionalSaveTransferBusy.value = true;
+    try {
+      const selected = await access.pickImport();
+      if (!selected) return;
+      traditionalSaveImportName.value = selected.name;
+      traditionalSaveImportBytes = selected.bytes;
+      traditionalSaveOverwriteSlot.value = null;
+    } catch (error) {
+      traditionalSaveTransferError.value = `选择存档失败：${String(error)}`;
+    } finally {
+      traditionalSaveTransferBusy.value = false;
+    }
+  }
+
+  async function confirmTraditionalSaveTransfer(slot: number): Promise<void> {
+    const access = bridge.traditionalSaves;
+    const selected = traditionalSaveSlots.value.find((entry) => entry.slot === slot);
+    if (!access || !selected || traditionalSaveTransferBusy.value) return;
+    traditionalSaveTransferError.value = "";
+    traditionalSaveTransferBusy.value = true;
+    try {
+      if (traditionalSaveDialogMode.value === "export") {
+        if (!selected.occupied) throw new Error("所选存档槽位为空");
+        await access.exportSlot(slot);
+        status.value = `已导出 ${saveSlotFileName(slot)}`;
+        traditionalSaveTransferBusy.value = false;
+        closeTraditionalSaveDialog();
+        return;
+      }
+      if (traditionalSaveDialogMode.value !== "import") return;
+      if (!traditionalSaveImportBytes) throw new Error("请先选择要导入的 .sav 存档文件");
+      if (!/\.sav$/i.test(traditionalSaveImportName.value)) throw new Error("请选择 .sav 存档文件");
+      await access.inspect(traditionalSaveImportBytes);
+      traditionalSaveSlots.value = await access.listSlots();
+      if (traditionalSaveSlots.value.find((entry) => entry.slot === slot)?.occupied) {
+        traditionalSaveOverwriteSlot.value = slot;
+        return;
+      }
+      await writeTraditionalSaveImport(slot);
+    } catch (error) {
+      traditionalSaveTransferError.value = `导入存档失败：${String(error)}`;
+    } finally {
+      traditionalSaveTransferBusy.value = false;
+    }
+  }
+
+  function cancelTraditionalSaveOverwrite(): void {
+    traditionalSaveOverwriteSlot.value = null;
+  }
+
+  async function confirmTraditionalSaveOverwrite(): Promise<void> {
+    const slot = traditionalSaveOverwriteSlot.value;
+    if (slot == null || traditionalSaveTransferBusy.value) return;
+    traditionalSaveTransferBusy.value = true;
+    traditionalSaveTransferError.value = "";
+    try {
+      await writeTraditionalSaveImport(slot);
+    } catch (error) {
+      traditionalSaveTransferError.value = `导入存档失败：${String(error)}`;
+    } finally {
+      traditionalSaveTransferBusy.value = false;
+    }
+  }
+
+  async function writeTraditionalSaveImport(slot: number): Promise<void> {
+    const access = bridge.traditionalSaves;
+    if (!access || !traditionalSaveImportBytes) throw new Error("没有可导入的存档文件");
+    await access.writeSlot(slot, traditionalSaveImportBytes);
+    status.value = `已导入 ${saveSlotFileName(slot)}`;
+    traditionalSaveTransferBusy.value = false;
+    closeTraditionalSaveDialog();
   }
 
   async function beginCompiledCacheExport(): Promise<void> {
@@ -1670,8 +1823,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
     debugVariableValues,
     diagnosisExporting,
     diagnosisNotification,
+    traditionalSaveDialogMode,
+    traditionalSaveSlots,
+    traditionalSaveImportName,
+    traditionalSaveTransferBusy,
+    traditionalSaveTransferError,
+    traditionalSaveOverwriteSlot,
     runtimeReady,
     canExportDiagnosis,
+    canManageTraditionalSaves,
     gameInteractionsBlocked,
     canOpenProject,
     canStepDebug,
@@ -1693,7 +1853,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
     recoverFromFault,
     exportDiagnosis,
     exportSnapshot,
+    exportTraditionalSaveForTest,
     restoreSnapshot,
+    openTraditionalSaveDialog,
+    closeTraditionalSaveDialog,
+    pickTraditionalSaveImport,
+    confirmTraditionalSaveTransfer,
+    cancelTraditionalSaveOverwrite,
+    confirmTraditionalSaveOverwrite,
     enableDebug,
     debugCommand,
     inspectWatches,
@@ -1740,6 +1907,10 @@ function concatenateChunks(chunks: Uint8Array[], total: number): Uint8Array {
     offset += part.length;
   }
   return result;
+}
+
+function saveSlotFileName(slot: number): string {
+  return `save${slot.toString().padStart(2, "0")}.sav`;
 }
 
 function formatDiagnosisLogs(entries: LogEntry[]): string {

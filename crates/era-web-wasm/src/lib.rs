@@ -80,6 +80,30 @@ impl WasmRuntime {
         to_js(self.inner.load_project(manifest).map_err(js_error)?)
     }
 
+    /// Return the active project's selectable traditional-save slot count.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error until a project has compiled successfully.
+    #[wasm_bindgen(js_name = traditionalSaveSlotCount)]
+    pub fn traditional_save_slot_count(&self) -> Result<u32, JsValue> {
+        self.inner.traditional_save_slot_count().map_err(js_error)
+    }
+
+    /// Validate a traditional save against the active project without changing game state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error when the save is malformed or incompatible.
+    #[wasm_bindgen(js_name = inspectTraditionalSave)]
+    pub fn inspect_traditional_save(&self, bytes: &js_sys::Uint8Array) -> Result<JsValue, JsValue> {
+        to_js(
+            self.inner
+                .inspect_traditional_save(&bytes.to_vec())
+                .map_err(js_error)?,
+        )
+    }
+
     /// Import a compiled project cache after validating its lightweight manifest identity.
     ///
     /// # Errors

@@ -11,6 +11,7 @@ export interface WebTestControl {
   snapshot(): Record<string, unknown>;
   inspect(watches: string[]): Promise<Record<string, unknown>>;
   exportSnapshot(): Promise<void>;
+  exportTraditionalSave(): Promise<void>;
   takeDownload(timeoutMs?: number): Promise<{ name: string; bytes: number[] }>;
 }
 
@@ -18,9 +19,11 @@ export function isStableObservationCandidate(
   phase: string,
   canInteract: boolean,
   fault: unknown,
+  modalReady = false,
 ): boolean {
   return (
     canInteract ||
+    modalReady ||
     fault != null ||
     ["debug_paused", "stopped", "faulted", "shutting_down"].includes(phase)
   );
@@ -59,6 +62,12 @@ export function installWebTestControl(pinia: Pinia): void {
         notification: store.diagnosisNotification,
         canExport: store.canExportDiagnosis,
       },
+      saveTransfer: {
+        mode: store.traditionalSaveDialogMode,
+        busy: store.traditionalSaveTransferBusy,
+        error: store.traditionalSaveTransferError,
+        overwriteSlot: store.traditionalSaveOverwriteSlot,
+      },
       lastDownload: downloadSummary(window.__RUSTYERA_TEST_DOWNLOADS__?.at(-1)),
     });
 
@@ -68,6 +77,7 @@ export function installWebTestControl(pinia: Pinia): void {
     snapshot,
     inspect: (watches) => store.inspectWatches(watches),
     exportSnapshot: () => store.exportSnapshot("normal"),
+    exportTraditionalSave: () => store.exportTraditionalSaveForTest(),
     async takeDownload(timeoutMs = 30_000) {
       const deadline = performance.now() + timeoutMs;
       while (performance.now() < deadline) {
@@ -91,6 +101,7 @@ export function installWebTestControl(pinia: Pinia): void {
           store.phase,
           store.canInteract,
           store.fault,
+          store.traditionalSaveDialogMode != null && !store.traditionalSaveTransferBusy,
         );
         if (observable && current === previous) stableFrames += 1;
         else stableFrames = 0;

@@ -14,6 +14,7 @@ const store = vi.hoisted(() => ({
   singleStepEnabled: true,
   canStepDebug: true,
   canExportDiagnosis: false,
+  canManageTraditionalSaves: false,
   diagnosisNotification: "",
   prompt: "",
   canInteract: false,
@@ -32,6 +33,18 @@ const store = vi.hoisted(() => ({
   reloadProject: vi.fn(),
   exportSnapshot: vi.fn(),
   restoreSnapshot: vi.fn(),
+  openTraditionalSaveDialog: vi.fn(),
+  closeTraditionalSaveDialog: vi.fn(),
+  pickTraditionalSaveImport: vi.fn(),
+  confirmTraditionalSaveTransfer: vi.fn(),
+  cancelTraditionalSaveOverwrite: vi.fn(),
+  confirmTraditionalSaveOverwrite: vi.fn(),
+  traditionalSaveDialogMode: null,
+  traditionalSaveSlots: [],
+  traditionalSaveImportName: "",
+  traditionalSaveTransferBusy: false,
+  traditionalSaveTransferError: "",
+  traditionalSaveOverwriteSlot: null,
   shutdown: vi.fn(),
   enableDebug: vi.fn(),
   openDebugDialog: vi.fn(),
@@ -58,6 +71,8 @@ const controlledLabels = [
   "重新加载单个脚本…",
   "导出 VM 快照…",
   "恢复 VM 快照…",
+  "导出存档…",
+  "导入存档…",
   "禁用调试",
   "控制台…",
   "变量查看器…",
@@ -83,6 +98,7 @@ describe("application menus", () => {
   afterEach(() => {
     store.runtimeReady = false;
     store.canExportDiagnosis = false;
+    store.canManageTraditionalSaves = false;
   });
 
   it("disables project and debug actions until the game is running", async () => {
@@ -96,11 +112,24 @@ describe("application menus", () => {
 
     store.runtimeReady = true;
     store.canExportDiagnosis = true;
+    store.canManageTraditionalSaves = true;
     const running = shallowMount(App);
     states = await menuStates(running);
     for (const label of controlledLabels) {
       expect(states.get(label), label).toBe(false);
     }
     running.unmount();
+  });
+
+  it("shows portable save transfer actions only in the WASM host", async () => {
+    store.bridgeKind = "tauri";
+    const wrapper = shallowMount(App);
+    const states = await menuStates(wrapper);
+
+    expect(states.has("导出存档…")).toBe(false);
+    expect(states.has("导入存档…")).toBe(false);
+
+    wrapper.unmount();
+    store.bridgeKind = "browser";
   });
 });

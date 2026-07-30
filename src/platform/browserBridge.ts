@@ -6,17 +6,37 @@ import type {
   PumpBatch,
   RuntimeMessage,
   SessionOptions,
+  TraditionalSaveAccess,
 } from "@/core/types";
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import type { DiagnosisArchiveInput } from "@/core/diagnosis";
 import { pickBrowserDirectory, pickBrowserFile } from "@/platform/browserDirectory";
 import { createDiagnosisArchiveInWorker } from "@/platform/diagnosis";
-import { BrowserProject, cacheIdentityManifest } from "@/platform/browserProject";
+import { BrowserProject, cacheIdentityManifest, saveSlotName } from "@/platform/browserProject";
 import { database, loadBrowserPreferences, saveBrowserPreferences } from "@/platform/database";
 import { WorkerClient } from "@/platform/workerClient";
 
 export class BrowserBridge implements FrontendBridge {
   readonly kind = "browser" as const;
+  readonly traditionalSaves: TraditionalSaveAccess = {
+    listSlots: async () => {
+      const project = this.requireProject();
+      const count = await this.worker.call<number>("traditionalSaveSlotCount");
+      return project.listTraditionalSaveSlots(count);
+    },
+    exportSlot: async (slot) => {
+      const bytes = await this.requireProject().readTraditionalSave(slot);
+      downloadBrowserFile(saveSlotName(slot), bytes);
+    },
+    pickImport: async () => {
+      const file = await pickBrowserFile(".sav,application/octet-stream");
+      return file
+        ? { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) }
+        : undefined;
+    },
+    inspect: (bytes) => this.worker.call("inspectTraditionalSave", bytes),
+    writeSlot: (slot, bytes) => this.requireProject().writeTraditionalSave(slot, bytes),
+  };
   private readonly worker = new WorkerClient();
   private project?: BrowserProject;
   private cacheWriter?: FileSystemWritableFileStream;
@@ -172,6 +192,11 @@ export class BrowserBridge implements FrontendBridge {
     return true;
   }
 
+  private requireProject(): BrowserProject {
+    if (!this.project) throw new Error("没有打开的项目");
+    return this.project;
+  }
+
   createDiagnosisArchive(input: DiagnosisArchiveInput): Promise<Uint8Array> {
     return createDiagnosisArchiveInWorker(input);
   }
@@ -203,4 +228,19 @@ export class BrowserBridge implements FrontendBridge {
   async close(): Promise<void> {
     this.worker.close();
   }
+}
+
+function downloadBrowserFile(name: string, bytes: Uint8Array): void {
+  if (import.meta.env.VITE_RUSTYERA_TEST === "1") {
+    (window.__RUSTYERA_TEST_DOWNLOADS__ ??= []).push({ name, bytes: new Uint8Array(bytes) });
+    return;
+  }
+  const url = URL.createObjectURL(
+    new Blob([bytes as BlobPart], { type: "application/octet-stream" }),
+  );
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }

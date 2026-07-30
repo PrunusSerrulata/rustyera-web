@@ -33,6 +33,9 @@ Use JSON `schema_version: 1`. The format is a compatible superset of the TUI sce
   the browser import path; absent or false forces a cold source load.
 - `clean_saves`: Omit the project's existing `sav/` directory from the isolated browser fixture so
   a `new_game` smoke test starts with fresh save storage.
+- `prepare_traditional_save`: Export a valid traditional save from the stable test runtime and
+  provide it as `generated.sav` to the next visible `.sav` file-picker action. This is test setup;
+  the scenario must still exercise import/export through the production UI.
 - `inputs`: TUI-compatible semantic input prefix. Each value is submitted through the real form.
 - `actions`: Ordered Web action prefix; it is mutually exclusive with `inputs`.
 - `watches`: Debug expressions such as `RESULT` or `FLAG:0,1`, sampled at stable waits.

@@ -130,6 +130,71 @@ try {
       timeoutMsg: "WASM project did not reach a stable input wait",
     },
   );
+  const generatedSave = await browser.executeAsync(async (done) => {
+    try {
+      await window.__RUSTYERA_TEST__.exportTraditionalSave();
+      done({ ok: true, download: await window.__RUSTYERA_TEST__.takeDownload(30_000) });
+    } catch (error) {
+      done({ ok: false, error: `${error?.name ?? "Error"}: ${error?.message ?? String(error)}` });
+    }
+  });
+  if (!generatedSave.ok) throw new Error(`traditional save setup failed: ${generatedSave.error}`);
+  await browser.execute((bytes) => {
+    const nativeInputClick = HTMLInputElement.prototype.click;
+    HTMLInputElement.prototype.click = function () {
+      if (this.type !== "file" || this.webkitdirectory || !this.accept.includes(".sav")) {
+        nativeInputClick.call(this);
+        return;
+      }
+      const file = new File([Uint8Array.from(bytes)], "generated.sav", {
+        type: "application/octet-stream",
+      });
+      Object.defineProperty(this, "files", { configurable: true, value: [file] });
+      this.dispatchEvent(new Event("change", { bubbles: true }));
+      HTMLInputElement.prototype.click = nativeInputClick;
+    };
+  }, generatedSave.download.bytes);
+  const clickButton = async (label) => {
+    const button = await browser.$(`//button[normalize-space(.)=${JSON.stringify(label)}]`);
+    await button.waitForClickable({ timeout: 30_000 });
+    await button.click();
+  };
+  await clickButton("文件");
+  await clickButton("导入存档…");
+  await (await browser.$("section[aria-label='导入存档']")).waitForDisplayed({ timeout: 30_000 });
+  await clickButton("选择 .sav 文件…");
+  await browser.waitUntil(
+    async () =>
+      (await browser.$("section[aria-label='导入存档']").getText()).includes("generated.sav"),
+    { timeout: 30_000, interval: 100, timeoutMsg: "traditional save file was not selected" },
+  );
+  await clickButton("导入");
+  await browser.waitUntil(
+    async () => (await browser.$(".runtime-status").getText()) === "已导入 save00.sav",
+    { timeout: 30_000, interval: 100, timeoutMsg: "traditional save was not imported" },
+  );
+  await clickButton("文件");
+  await clickButton("导出存档…");
+  await (await browser.$("section[aria-label='导出存档']")).waitForDisplayed({ timeout: 30_000 });
+  await clickButton("导出");
+  const exportedSave = await browser.executeAsync(async (done) => {
+    try {
+      done({ ok: true, download: await window.__RUSTYERA_TEST__.takeDownload(30_000) });
+    } catch (error) {
+      done({ ok: false, error: `${error?.name ?? "Error"}: ${error?.message ?? String(error)}` });
+    }
+  });
+  if (!exportedSave.ok) throw new Error(`traditional save export failed: ${exportedSave.error}`);
+  const saveTransfer = {
+    imported: true,
+    exportedName: exportedSave.download.name,
+    roundTrip:
+      JSON.stringify(exportedSave.download.bytes) === JSON.stringify(generatedSave.download.bytes),
+    byteLength: exportedSave.download.bytes.length,
+  };
+  if (saveTransfer.exportedName !== "save00.sav" || !saveTransfer.roundTrip) {
+    throw new Error(`traditional save round trip mismatch: ${JSON.stringify(saveTransfer)}`);
+  }
   let tooltip;
   if (checkTooltip) {
     const target = await browser.$("button[data-era-tooltip]");
@@ -177,6 +242,7 @@ try {
       minimized,
       projectName: setup.projectName,
       opfs: setup.opfs,
+      saveTransfer,
       tooltip,
       ...observed,
     }),

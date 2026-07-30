@@ -294,6 +294,33 @@ async function execute(args) {
     if (current.rust.fault) return fail("runtime_fault", 1, { fault: current.rust.fault });
     if (current.comparison && !current.comparison.equal) return fail("difference", 1);
     if (scenario.checkpoint) await saveCheckpoint(scenario.checkpoint.path);
+    if (scenario.prepare_traditional_save) {
+      const generated = await page.evaluate(async () => {
+        await window.__RUSTYERA_TEST__.exportTraditionalSave();
+        return window.__RUSTYERA_TEST__.takeDownload(30_000);
+      });
+      await page.evaluate((bytes) => {
+        const nativeClick = globalThis.HTMLInputElement.prototype.click;
+        globalThis.HTMLInputElement.prototype.click = function () {
+          if (this.type !== "file" || this.webkitdirectory || !this.accept.includes(".sav")) {
+            nativeClick.call(this);
+            return;
+          }
+          const file = new globalThis.File([Uint8Array.from(bytes)], "generated.sav", {
+            type: "application/octet-stream",
+          });
+          Object.defineProperty(this, "files", { configurable: true, value: [file] });
+          this.dispatchEvent(new globalThis.Event("change", { bubbles: true }));
+          globalThis.HTMLInputElement.prototype.click = nativeClick;
+        };
+      }, generated.bytes);
+      trace.emit({
+        type: "fixture",
+        kind: "traditional_save",
+        name: generated.name,
+        size: generated.bytes.length,
+      });
+    }
     for (const action of scenario.actions) {
       if (
         action.when?.output_contains &&

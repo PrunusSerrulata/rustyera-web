@@ -5,6 +5,8 @@ type WasmModule = {
     submitDebug(message: unknown, correlationId?: bigint): bigint;
     loadProject(manifest: unknown): bigint;
     loadProjectWithCompiledCache(manifest: unknown, cache: Uint8Array): bigint;
+    traditionalSaveSlotCount(): number;
+    inspectTraditionalSave(bytes: Uint8Array): unknown;
     pump(instructions: number, transitions: number): unknown;
   };
 };
@@ -37,6 +39,12 @@ self.onmessage = async (event: MessageEvent) => {
           break;
         case "loadProjectWithCompiledCache":
           result = runtime.loadProjectWithCompiledCache(args[0], args[1] as Uint8Array);
+          break;
+        case "traditionalSaveSlotCount":
+          result = runtime.traditionalSaveSlotCount();
+          break;
+        case "inspectTraditionalSave":
+          result = runtime.inspectTraditionalSave(args[0] as Uint8Array);
           break;
         case "pump":
           result = runtime.pump(100_000, 1024);

@@ -1,12 +1,68 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  BrowserProject,
   cacheIdentityManifest,
   decodeProtocolBytes,
   decodeProjectSource,
   normalizeResourceManifest,
   runBounded,
+  saveSlotName,
 } from "../src/platform/browserProject";
+
+class SaveFileHandle {
+  readonly kind = "file";
+
+  constructor(
+    readonly name: string,
+    private bytes = new Uint8Array(),
+  ) {}
+
+  async getFile(): Promise<File> {
+    const bytes = new Uint8Array(this.bytes);
+    const file = new File([], this.name);
+    Object.defineProperty(file, "arrayBuffer", { value: async () => bytes.buffer.slice(0) });
+    return file;
+  }
+
+  async createWritable() {
+    return {
+      write: async (bytes: Uint8Array) => {
+        this.bytes = new Uint8Array(bytes);
+      },
+      close: async () => {},
+    };
+  }
+}
+
+class SaveDirectoryHandle {
+  readonly kind = "directory";
+  private readonly children = new Map<string, SaveDirectoryHandle | SaveFileHandle>();
+
+  constructor(readonly name: string) {}
+
+  async getDirectoryHandle(name: string, options?: { create?: boolean }) {
+    const existing = this.children.get(name);
+    if (existing instanceof SaveDirectoryHandle) return existing;
+    if (!options?.create) throw new DOMException("missing", "NotFoundError");
+    const directory = new SaveDirectoryHandle(name);
+    this.children.set(name, directory);
+    return directory;
+  }
+
+  async getFileHandle(name: string, options?: { create?: boolean }) {
+    const existing = this.children.get(name);
+    if (existing instanceof SaveFileHandle) return existing;
+    if (!options?.create) throw new DOMException("missing", "NotFoundError");
+    const file = new SaveFileHandle(name);
+    this.children.set(name, file);
+    return file;
+  }
+
+  async *entries() {
+    yield* this.children.entries();
+  }
+}
 
 describe("browser project source decoding", () => {
   it("decodes UTF-8 and removes its byte order mark", () => {
@@ -97,5 +153,29 @@ describe("browser compiled cache identity", () => {
         },
       ],
     });
+  });
+});
+
+describe("browser traditional saves", () => {
+  it("lists, writes, and reads numbered slots in the project sav directory", async () => {
+    const root = new SaveDirectoryHandle("project");
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+
+    expect(await project.listTraditionalSaveSlots(3)).toEqual([
+      { slot: 0, occupied: false },
+      { slot: 1, occupied: false },
+      { slot: 2, occupied: false },
+    ]);
+
+    await project.writeTraditionalSave(1, Uint8Array.of(4, 5, 6));
+
+    expect(await project.listTraditionalSaveSlots(3)).toEqual([
+      { slot: 0, occupied: false },
+      { slot: 1, occupied: true },
+      { slot: 2, occupied: false },
+    ]);
+    expect(await project.readTraditionalSave(1)).toEqual(Uint8Array.of(4, 5, 6));
+    expect(saveSlotName(1)).toBe("save01.sav");
+    expect(() => saveSlotName(100)).toThrow("存档槽位必须介于 00 和 99");
   });
 });
