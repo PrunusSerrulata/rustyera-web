@@ -1,4 +1,4 @@
-import { shallowMount } from "@vue/test-utils";
+import { flushPromises, shallowMount } from "@vue/test-utils";
 import { nextTick, reactive, ref } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -58,9 +58,23 @@ describe("game viewport", () => {
 
     store.presentation.historyRevision += 1;
     await nextTick();
-    await nextTick();
+    await flushPromises();
 
-    expect(scrollToIndex).toHaveBeenCalledWith(0, { align: "end" });
+    expect(scrollToIndex).toHaveBeenCalledTimes(2);
+    expect(scrollToIndex).toHaveBeenLastCalledWith(0, { align: "end" });
+    wrapper.unmount();
+  });
+
+  it("clamps to the measured DOM bottom after virtual rows settle", async () => {
+    const wrapper = shallowMount(GameViewport);
+    const viewport = wrapper.get<HTMLElement>("main").element;
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 640 });
+
+    store.presentation.historyRevision += 1;
+    await nextTick();
+    await flushPromises();
+
+    expect(viewport.scrollTop).toBe(640);
     wrapper.unmount();
   });
 

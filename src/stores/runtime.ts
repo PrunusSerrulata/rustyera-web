@@ -952,7 +952,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       return;
     }
     exportState = {
-      name: `runtime-${timestamp()}.snapshot`,
+      name: snapshotFileName(),
       kind: "download",
       chunks: [],
       received: 0,
@@ -1780,9 +1780,9 @@ function formatDiagnostic(value: any): string {
     : `[${value.code}] ${value.message}`;
 }
 
-function timestamp(): string {
-  return new Date()
-    .toISOString()
-    .replaceAll(/[-:]/g, "")
-    .replace(/\.\d{3}Z$/, "");
+function snapshotFileName(now = new Date()): string {
+  const part = (value: number) => String(value).padStart(2, "0");
+  const date = `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}`;
+  const time = `${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`;
+  return `runtime_${date}-${time}.snapshot`;
 }

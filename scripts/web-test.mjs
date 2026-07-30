@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* global window */
 
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -102,6 +102,17 @@ async function execute(args) {
           name: "rustyera-test-wasm",
           configureServer(viteServer) {
             viteServer.middlewares.use((request, response, next) => {
+              if (request.url === "/__rustyera_test_state" && scenario.start.path) {
+                response.setHeader("Content-Type", "application/octet-stream");
+                const stream = createReadStream(scenario.start.path);
+                stream.on("error", (error) => {
+                  if (!response.headersSent)
+                    response.statusCode = error.code === "ENOENT" ? 404 : 500;
+                  response.end();
+                });
+                stream.pipe(response);
+                return;
+              }
               if (request.url?.startsWith("/__rustyera_test_file?")) {
                 const relative = new URL(request.url, "http://localhost").searchParams.get("path");
                 const target = path.resolve(webProject.project, relative ?? ".");
@@ -159,18 +170,27 @@ async function execute(args) {
     await installRemoteFileSystem(page, webProject.project);
     await page.goto(`http://127.0.0.1:${port}`);
     await page.waitForFunction(() => window.__RUSTYERA_TEST__ != null);
-    const stateBytes = scenario.start.path ? [...(await readFile(scenario.start.path))] : undefined;
     await page.evaluate(
-      ({ start, seed, clock, stateBytes }) =>
+      async ({ start, seed, clock, stateUrl }) => {
+        const response = stateUrl ? await fetch(stateUrl) : undefined;
+        if (response && !response.ok)
+          throw new Error(`test state fetch failed with HTTP ${response.status}`);
+        const stateBytes = response ? new Uint8Array(await response.arrayBuffer()) : undefined;
         window.__RUSTYERA_TEST__.configure({
           start: {
             type: start.type,
             seed,
-            bytes: stateBytes ? new Uint8Array(stateBytes) : undefined,
+            bytes: stateBytes,
           },
           clock,
-        }),
-      { start: scenario.start, seed: scenario.seed, clock: scenario.clock, stateBytes },
+        });
+      },
+      {
+        start: scenario.start,
+        seed: scenario.seed,
+        clock: scenario.clock,
+        stateUrl: scenario.start.path ? "/__rustyera_test_state" : undefined,
+      },
     );
     for (const action of scenario.before_open_actions ?? []) await runAction(page, action);
     await page.getByRole("button", { name: "打开 Era 项目…", exact: true }).click();
@@ -256,8 +276,13 @@ async function execute(args) {
           ? path.resolve(path.dirname(scenario.path), configuredPath)
           : path.join(path.dirname(tracePath), "checkpoint.snapshot"),
       );
+      await page.waitForFunction(
+        () => window.__RUSTYERA_TEST__.snapshot().transfer?.export == null,
+        undefined,
+        { timeout: Math.max(1, deadline - Date.now()) },
+      );
       await page.evaluate(() => window.__RUSTYERA_TEST__.exportSnapshot());
-      const download = await page.evaluate(() => window.__RUSTYERA_TEST__.takeDownload(10_000));
+      const download = await page.evaluate(() => window.__RUSTYERA_TEST__.takeDownload(30_000));
       await writeFile(target, new Uint8Array(download.bytes));
       trace.emit({ type: "checkpoint", path: target });
     }

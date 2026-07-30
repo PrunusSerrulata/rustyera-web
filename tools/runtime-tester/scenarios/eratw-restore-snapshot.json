@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eraTW",
+  "mode": "fixed",
+  "start": {
+    "type": "vm_snapshot"
+  },
+  "checkpoint": {},
+  "actions": [
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".media-positioned > .media-visual" },
+      "expect": { "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-viewport" },
+      "expect": { "count": 1, "visible": true }
+    }
+  ],
+  "goal": {
+    "output_contains": ["[Look]"]
+  },
+  "limits": {
+    "max_steps": 100,
+    "timeout_seconds": 900
+  }
+}

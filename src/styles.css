@@ -223,6 +223,11 @@ select {
   padding: 0;
   line-height: 0;
 }
+.game-line:has(.media-positioned) {
+  /* ypos visuals intentionally draw outside their one-row layout slot. */
+  contain: layout;
+  overflow: visible;
+}
 .align-center {
   text-align: center;
 }

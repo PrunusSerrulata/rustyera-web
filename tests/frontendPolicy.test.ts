@@ -37,6 +37,9 @@ describe("frontend host and image-line policy", () => {
     );
     expect(stylesheet).toMatch(/\.media-positioned\s*\{\s*overflow:\s*visible;/);
     expect(stylesheet).toMatch(
+      /\.game-line:has\(\.media-positioned\)\s*\{[^}]*contain:\s*layout;[^}]*overflow:\s*visible;/s,
+    );
+    expect(stylesheet).toMatch(
       /\.media-positioned > \.media-visual\s*\{[^}]*position:\s*absolute;[^}]*left:\s*0;/s,
     );
   });

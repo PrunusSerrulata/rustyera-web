@@ -30,6 +30,13 @@ watch(
   async () => {
     await nextTick();
     goBottom();
+    // Dynamic rows are measured only after the first scroll makes the tail
+    // visible. Follow the corrected size on the next frame, then clamp to the
+    // actual DOM bottom after Vue Virtual has applied that measurement.
+    await nextAnimationFrame();
+    goBottom();
+    await nextAnimationFrame();
+    if (viewport.value) viewport.value.scrollTop = viewport.value.scrollHeight;
   },
 );
 
@@ -38,6 +45,10 @@ function goBottom(): void {
   virtualizer.value.scrollToIndex(Math.max(0, store.presentation.lines.length - 1), {
     align: "end",
   });
+}
+
+function nextAnimationFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
 function click(event: MouseEvent): void {

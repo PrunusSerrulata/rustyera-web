@@ -76,6 +76,24 @@ describe("runtime store session lifecycle", () => {
     expect(store.canExportDiagnosis).toBe(false);
   });
 
+  it("uses the TUI snapshot filename format in local time", async () => {
+    vi.setSystemTime(new Date(2026, 6, 30, 0, 30, 7));
+    const store = useRuntimeStore();
+
+    await store.exportSnapshot();
+
+    expect(store.testTransferState()).toMatchObject({
+      export: { name: "runtime_20260730-003007.snapshot" },
+    });
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      {
+        type: "state_export_request",
+        value: { kind: "vm_snapshot", snapshot_purpose: "normal" },
+      },
+      undefined,
+    );
+  });
+
   it("exports the TUI-compatible diagnosis archive while locking game interaction", async () => {
     vi.setSystemTime(new Date(2026, 6, 29, 14, 5, 6));
     const stopWait = {
