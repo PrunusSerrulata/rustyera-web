@@ -9,6 +9,7 @@ import type {
 } from "@/core/types";
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import type { DiagnosisArchiveInput } from "@/core/diagnosis";
+import { pickBrowserDirectory } from "@/platform/browserDirectory";
 import { createDiagnosisArchiveInWorker } from "@/platform/diagnosis";
 import { BrowserProject, cacheIdentityManifest } from "@/platform/browserProject";
 import { database, loadBrowserPreferences, saveBrowserPreferences } from "@/platform/database";
@@ -45,16 +46,16 @@ export class BrowserBridge implements FrontendBridge {
   }
 
   async openProject(): Promise<ProjectOpenMetrics | undefined> {
-    if (!window.showDirectoryPicker)
-      throw new Error("此浏览器不支持直接打开目录，请使用桌面 Chromium。");
-    const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+    const picked = await pickBrowserDirectory();
+    const handle = picked.handle;
     const permission = await handle.requestPermission?.({ mode: "readwrite" });
-    if (permission !== "granted") throw new Error("运行完整游戏需要项目目录的读写权限。");
+    if (permission && permission !== "granted")
+      throw new Error("运行完整游戏需要项目目录的读写权限。");
     // Playwright supplies an RPC-backed FileSystemDirectoryHandle which intentionally cannot be
     // structured-cloned into IndexedDB. Production handles continue to be persisted normally.
-    if (import.meta.env.VITE_RUSTYERA_TEST !== "1")
+    if (picked.persistHandle && import.meta.env.VITE_RUSTYERA_TEST !== "1")
       await database.handles.put({ key: "last-project", handle });
-    this.project = new BrowserProject(handle);
+    this.project = new BrowserProject(handle, 1, picked.projectName);
     const started = performance.now();
     const manifest = await this.project.scan();
     const sourceReadMs = performance.now() - started;
@@ -139,7 +140,7 @@ export class BrowserBridge implements FrontendBridge {
   }
 
   projectName(): string | undefined {
-    return this.project?.root.name;
+    return this.project?.name;
   }
 
   openUpload(): Promise<Uint8Array | undefined> {

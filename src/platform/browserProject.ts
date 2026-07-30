@@ -35,6 +35,7 @@ export class BrowserProject {
   constructor(
     readonly root: FileSystemDirectoryHandle,
     private revision = 1,
+    readonly name = root.name,
   ) {}
 
   async scan(): Promise<BrowserManifest> {

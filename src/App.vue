@@ -214,7 +214,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
         打开 Era 项目…
       </button>
       <p v-if="store.bridgeKind === 'browser'" class="hint">
-        浏览器完整模式需要桌面 Chromium、HTTPS/localhost，以及目录读写和本地字体权限。
+        Chromium 可直接读写项目目录；Firefox 和 Safari 会将所选项目导入浏览器存储。
       </p>
     </section>
     <template v-else>

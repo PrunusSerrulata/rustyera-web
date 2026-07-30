@@ -12,6 +12,7 @@
     "typecheck": "vue-tsc -b",
     "test": "vitest run",
     "test:e2e": "node scripts/playwright.mjs test",
+    "test:browser-compat": "node scripts/browser-compat-test.mjs",
     "test:tauri": "node scripts/tauri-test.mjs",
     "test:game": "node scripts/web-test.mjs",
     "test:e2e:install": "node scripts/playwright.mjs install chromium",

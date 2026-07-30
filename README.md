@@ -3,7 +3,8 @@
 `era-web` is one Vue 3 application with two runtime hosts:
 
 - Tauri 2 runs `era-runtime` natively on Windows, macOS, and Linux.
-- Desktop Chromium runs the same Rust bridge as WebAssembly in a dedicated Web Worker.
+- Desktop Chromium, Firefox, and Safari run the same Rust bridge as WebAssembly in a dedicated Web
+  Worker.
 
 The Vue components, Pinia state, presentation renderer, media engines, dialogs, debugger,
 storage request handling, and preferences UI are shared. Platform code is limited to project and
@@ -76,15 +77,15 @@ Playwright upgrade requests a newer browser revision.
 
 ## Browser requirements
 
-The complete browser experience targets current desktop Chromium over HTTPS or localhost. It uses
-File System Access for direct project-directory I/O and Local Font Access for the session-fixed
-font list. The user must grant read/write access; the application does not copy a game into
-IndexedDB. IndexedDB stores only global preferences and the last directory handle.
+Current desktop Chromium uses File System Access for direct project-directory I/O and Local Font
+Access for the session-fixed font list. Current Firefox and Safari use their directory upload picker
+and import the selected project into origin-private browser storage, where saves and compiled caches
+remain available to later imports of the same project directory name. Chromium directory handles
+survive reloads only after user permission and are persisted in IndexedDB. IndexedDB otherwise
+stores only global preferences and the last Chromium directory handle.
 
-Other browsers receive a clear unsupported-capability error rather than silently switching storage
-semantics. Tauri remains the portable desktop option. Mobile, video, MIDI, and WMA are not
-supported. Project source is normalized to UTF-8 at the frontend boundary from strict UTF-8,
-Windows-31J, or GBK input.
+Tauri remains the portable desktop option. Mobile, video, MIDI, and WMA are not supported. Project
+source is normalized to UTF-8 at the frontend boundary from strict UTF-8, Windows-31J, or GBK input.
 
 ## Rendering and media
 
