@@ -6,6 +6,8 @@ const store = vi.hoisted(() => ({
   presentation: { settings: {}, inputWait: null },
   gameTextStyle: { fontFamily: "sans-serif", fontSize: "16px" },
   status: "正在编译项目…",
+  projectLoading: true,
+  projectLoadProgressLabel: "正在编译项目… · 已用 2.4 秒",
   projectOpen: true,
   canOpenProject: false,
   runtimeReady: false,
@@ -131,5 +133,16 @@ describe("application menus", () => {
 
     wrapper.unmount();
     store.bridgeKind = "browser";
+  });
+
+  it("shows the active project stage and elapsed time", () => {
+    const wrapper = shallowMount(App);
+    const progress = wrapper.get("[aria-label='项目加载进度']");
+
+    expect(wrapper.get(".app-shell").attributes("aria-busy")).toBe("true");
+    expect(progress.text()).toBe("正在编译项目… · 已用 2.4 秒");
+    expect(progress.find("progress").exists()).toBe(true);
+
+    wrapper.unmount();
   });
 });

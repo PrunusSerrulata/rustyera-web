@@ -79,6 +79,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const status = ref("请选择 Era 项目文件夹");
   const projectOpen = ref(false);
   const projectLoading = ref(false);
+  const projectLoadElapsedMs = ref(0);
   const openProjectConfirmationOpen = ref(false);
   const sessionReady = ref(false);
   const pumping = ref(false);
@@ -113,6 +114,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const heldKeys = new Set<number>();
   const audio = new AudioEngine(bridge, preferences.value);
   let pumpTimer: number | undefined;
+  let projectLoadTimer: number | undefined;
+  let projectLoadStartedAt: number | undefined;
   let compiledCacheTimer: number | undefined;
   let exportState: ExportState | undefined;
   let diagnosisState: DiagnosisState | undefined;
@@ -185,6 +188,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
     () => diagnosisExporting.value || traditionalSaveDialogMode.value != null,
   );
   const canOpenProject = computed(() => !projectLoading.value && !diagnosisExporting.value);
+  const projectLoadProgressLabel = computed(() =>
+    projectLoading.value
+      ? `${status.value} · 已用 ${(projectLoadElapsedMs.value / 1000).toFixed(1)} 秒`
+      : "",
+  );
   const canStepDebug = computed(() => {
     const fiberId = selectedDebugFiber(debugStop.value);
     return (
@@ -277,7 +285,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function loadProject(replaceCurrent: boolean): Promise<void> {
-    projectLoading.value = true;
+    beginProjectLoad("正在准备打开项目…");
     try {
       if (replaceCurrent) await recreateSessionForProjectSelection();
       else {
@@ -288,7 +296,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       const metrics = await bridge.openProject();
       if (!metrics) {
         if (replaceCurrent) projectOpen.value = false;
-        projectLoading.value = false;
+        finishProjectLoad();
         status.value = "已取消打开项目";
         return;
       }
@@ -303,7 +311,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       schedulePump(0);
     } catch (error) {
       if (replaceCurrent) projectOpen.value = false;
-      projectLoading.value = false;
+      finishProjectLoad();
       status.value = String(error);
       log("error", status.value);
     } finally {
@@ -360,7 +368,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       await handleBatch(batch);
       schedulePump(batch.state === "more_work" || batch.state === "output_ready" ? 0 : 16);
     } catch (error) {
-      projectLoading.value = false;
+      finishProjectLoad();
       fault.value = { code: "frontend", message: String(error) };
       log("error", String(error));
     } finally {
@@ -432,7 +440,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           log(diagnostic.level ?? "info", formatDiagnostic(diagnostic), true);
         }
         if (value.success) {
-          projectLoading.value = false;
+          finishProjectLoad();
           status.value = "项目编译完成";
           if (pendingStart.type === "new_game") {
             await send({
@@ -457,7 +465,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           await bridge.submitProjectSource();
           schedulePump(0);
         } else {
-          projectLoading.value = false;
+          finishProjectLoad();
           status.value = "项目加载失败，请查看日志";
         }
         break;
@@ -820,12 +828,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
       diagnosisExporting.value
     )
       return;
-    projectLoading.value = true;
+    beginProjectLoad("正在创建新的 Runtime session…");
     sessionTransitioning = true;
     clearSessionTimers();
     while (pumping.value)
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    status.value = "正在创建新的 Runtime session…";
     resetMessageSkip();
     await audio
       .synchronize([])
@@ -844,7 +851,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       );
       status.value = "正在编译项目…";
     } catch (error) {
-      projectLoading.value = false;
+      finishProjectLoad();
       const message = `重新开始失败：${String(error)}`;
       status.value = message;
       log("error", message);
@@ -900,13 +907,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function reloadProject(): Promise<void> {
     if (projectLoading.value || sessionTransitioning || diagnosisExporting.value) return;
-    projectLoading.value = true;
-    status.value = "正在重新加载项目…";
+    beginProjectLoad("正在重新加载项目…");
     try {
       await bridge.reloadProject();
       schedulePump(0);
     } catch (error) {
-      projectLoading.value = false;
+      finishProjectLoad();
       const message = `重新加载项目失败：${String(error)}`;
       status.value = message;
       log("error", message);
@@ -1769,6 +1775,30 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (logs.length > 10_000) logs.splice(0, logs.length - 10_000);
   }
 
+  function beginProjectLoad(message: string): void {
+    if (!projectLoading.value) {
+      projectLoadStartedAt = performance.now();
+      projectLoadElapsedMs.value = 0;
+      projectLoadTimer = window.setInterval(() => {
+        if (projectLoadStartedAt != null)
+          projectLoadElapsedMs.value = performance.now() - projectLoadStartedAt;
+      }, 100);
+    }
+    projectLoading.value = true;
+    status.value = message;
+  }
+
+  function finishProjectLoad(): void {
+    if (projectLoadStartedAt != null)
+      projectLoadElapsedMs.value = performance.now() - projectLoadStartedAt;
+    projectLoadStartedAt = undefined;
+    if (projectLoadTimer != null) {
+      window.clearInterval(projectLoadTimer);
+      projectLoadTimer = undefined;
+    }
+    projectLoading.value = false;
+  }
+
   function onKeyDown(event: KeyboardEvent): void {
     heldKeys.add(event.keyCode);
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
@@ -1801,6 +1831,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     status,
     projectOpen,
     projectLoading,
+    projectLoadProgressLabel,
     openProjectConfirmationOpen,
     prompt,
     inputUndo,

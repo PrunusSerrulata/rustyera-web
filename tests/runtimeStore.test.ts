@@ -372,14 +372,17 @@ describe("runtime store session lifecycle", () => {
     expect(store.projectOpen).toBe(true);
     expect(store.projectLoading).toBe(true);
     expect(store.canOpenProject).toBe(false);
+    await vi.advanceTimersByTimeAsync(1200);
+    expect(store.projectLoadProgressLabel).toBe("正在编译项目… · 已用 1.2 秒");
 
     bridge.pump.mockResolvedValueOnce({
       ...emptyBatch(),
       events: [runtimeEvent("project_load_report", { success: true, diagnostics: [] })],
     });
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(16);
 
     expect(store.projectLoading).toBe(false);
+    expect(store.projectLoadProgressLabel).toBe("");
     expect(store.canOpenProject).toBe(true);
     expect(bridge.submitRuntime).toHaveBeenCalledWith(
       { type: "start", value: { mode: { type: "new_game", seed: null } } },

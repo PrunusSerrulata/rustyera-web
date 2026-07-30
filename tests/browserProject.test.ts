@@ -157,6 +157,28 @@ describe("browser compiled cache identity", () => {
 });
 
 describe("browser traditional saves", () => {
+  it("creates a missing save only after its write precondition passes", async () => {
+    const root = new SaveDirectoryHandle("project");
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+
+    const response = await project.storage({
+      request_id: 7n,
+      namespace: "save",
+      relative_path: "save00.sav",
+      operation: {
+        type: "write",
+        data: BigUint64Array.from([0xefn, 0xbbn, 0xbfn, 0x34n, 0x32n]),
+        atomic_replace: true,
+        precondition: { type: "missing" },
+      },
+    });
+
+    expect(response.result.type).toBe("written");
+    expect(await project.readTraditionalSave(0)).toEqual(
+      Uint8Array.of(0xef, 0xbb, 0xbf, 0x34, 0x32),
+    );
+  });
+
   it("lists, writes, and reads numbered slots in the project sav directory", async () => {
     const root = new SaveDirectoryHandle("project");
     const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);

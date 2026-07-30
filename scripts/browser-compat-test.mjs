@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { remote } from "webdriverio";
 
+import { injectInGameSaveFlow } from "./web-test-lib.mjs";
+
 const repository = fileURLToPath(new URL("..", import.meta.url));
 const browserName = process.argv[process.argv.indexOf("--browser") + 1];
 if (!browserName || !["firefox", "safari"].includes(browserName)) {
@@ -25,6 +27,13 @@ const project = path.resolve(
 );
 const checkTooltip = process.argv.includes("--check-tooltip");
 const files = await collectFiles(project);
+if (projectIndex < 0) {
+  const oracle = files.find((entry) => entry.path.toLowerCase() === "erb/oracle.erb");
+  if (!oracle) throw new Error("browser compatibility fixture lacks erb/oracle.erb");
+  oracle.base64 = Buffer.from(
+    injectInGameSaveFlow(Buffer.from(oracle.base64, "base64").toString("utf8")),
+  ).toString("base64");
+}
 let server;
 let browser;
 
@@ -130,15 +139,43 @@ try {
       timeoutMsg: "WASM project did not reach a stable input wait",
     },
   );
-  const generatedSave = await browser.executeAsync(async (done) => {
+  const clickButton = async (label) => {
+    const button = await browser.$(`//button[normalize-space(.)=${JSON.stringify(label)}]`);
+    await button.waitForClickable({ timeout: 30_000 });
+    await button.click();
+  };
+  await clickButton("[ 0] ----");
+  await browser.waitUntil(
+    () =>
+      browser.execute(() => {
+        const state = window.__RUSTYERA_TEST__?.snapshot();
+        return (
+          state?.phase === "waiting_input" &&
+          state.canInteract &&
+          !state.logs.some((entry) => String(entry.message).includes("text save lacks unique code"))
+        );
+      }),
+    { timeout: 30_000, interval: 100, timeoutMsg: "in-game save did not complete" },
+  );
+  await clickButton("文件");
+  await clickButton("导出存档…");
+  await (await browser.$("section[aria-label='导出存档']")).waitForDisplayed({ timeout: 30_000 });
+  await clickButton("导出");
+  const gameSave = await browser.executeAsync(async (done) => {
     try {
-      await window.__RUSTYERA_TEST__.exportTraditionalSave();
       done({ ok: true, download: await window.__RUSTYERA_TEST__.takeDownload(30_000) });
     } catch (error) {
       done({ ok: false, error: `${error?.name ?? "Error"}: ${error?.message ?? String(error)}` });
     }
   });
-  if (!generatedSave.ok) throw new Error(`traditional save setup failed: ${generatedSave.error}`);
+  if (!gameSave.ok) throw new Error(`in-game save export failed: ${gameSave.error}`);
+  if (
+    gameSave.download.name !== "save00.sav" ||
+    gameSave.download.bytes.length === 0 ||
+    JSON.stringify(gameSave.download.bytes.slice(0, 4)) !== JSON.stringify([0xef, 0xbb, 0xbf, 0x34])
+  ) {
+    throw new Error(`in-game save is empty or malformed: ${JSON.stringify(gameSave.download)}`);
+  }
   await browser.execute((bytes) => {
     const nativeInputClick = HTMLInputElement.prototype.click;
     HTMLInputElement.prototype.click = function () {
@@ -153,12 +190,7 @@ try {
       this.dispatchEvent(new Event("change", { bubbles: true }));
       HTMLInputElement.prototype.click = nativeInputClick;
     };
-  }, generatedSave.download.bytes);
-  const clickButton = async (label) => {
-    const button = await browser.$(`//button[normalize-space(.)=${JSON.stringify(label)}]`);
-    await button.waitForClickable({ timeout: 30_000 });
-    await button.click();
-  };
+  }, gameSave.download.bytes);
   await clickButton("文件");
   await clickButton("导入存档…");
   await (await browser.$("section[aria-label='导入存档']")).waitForDisplayed({ timeout: 30_000 });
@@ -168,14 +200,38 @@ try {
       (await browser.$("section[aria-label='导入存档']").getText()).includes("generated.sav"),
     { timeout: 30_000, interval: 100, timeoutMsg: "traditional save file was not selected" },
   );
+  const importSlot = await browser.$("section[aria-label='导入存档'] select");
+  await importSlot.selectByVisibleText("槽位 01（空）");
   await clickButton("导入");
-  await browser.waitUntil(
-    async () => (await browser.$(".runtime-status").getText()) === "已导入 save00.sav",
-    { timeout: 30_000, interval: 100, timeoutMsg: "traditional save was not imported" },
-  );
+  const imported = await browser
+    .waitUntil(
+      () =>
+        browser.execute(() => {
+          const transfer = window.__RUSTYERA_TEST__?.snapshot().saveTransfer;
+          return transfer?.mode == null && !transfer.busy && !transfer.error;
+        }),
+      {
+        timeout: 30_000,
+        interval: 100,
+        timeoutMsg: "traditional save was not imported",
+      },
+    )
+    .then(() => true)
+    .catch(() => false);
+  if (!imported) {
+    const diagnosis = await browser.execute(() => ({
+      status: document.querySelector(".runtime-status")?.textContent,
+      dialog: document.querySelector("section[aria-label='导入存档']")?.textContent,
+      selectedSlot: document.querySelector("section[aria-label='导入存档'] select")?.value,
+      state: window.__RUSTYERA_TEST__?.snapshot(),
+    }));
+    throw new Error(`traditional save was not imported: ${JSON.stringify(diagnosis)}`);
+  }
   await clickButton("文件");
   await clickButton("导出存档…");
   await (await browser.$("section[aria-label='导出存档']")).waitForDisplayed({ timeout: 30_000 });
+  const exportSlot = await browser.$("section[aria-label='导出存档'] select");
+  await exportSlot.selectByVisibleText("槽位 01（已有存档）");
   await clickButton("导出");
   const exportedSave = await browser.executeAsync(async (done) => {
     try {
@@ -186,13 +242,14 @@ try {
   });
   if (!exportedSave.ok) throw new Error(`traditional save export failed: ${exportedSave.error}`);
   const saveTransfer = {
+    inGameSave: true,
     imported: true,
     exportedName: exportedSave.download.name,
     roundTrip:
-      JSON.stringify(exportedSave.download.bytes) === JSON.stringify(generatedSave.download.bytes),
+      JSON.stringify(exportedSave.download.bytes) === JSON.stringify(gameSave.download.bytes),
     byteLength: exportedSave.download.bytes.length,
   };
-  if (saveTransfer.exportedName !== "save00.sav" || !saveTransfer.roundTrip) {
+  if (saveTransfer.exportedName !== "save01.sav" || !saveTransfer.roundTrip) {
     throw new Error(`traditional save round trip mismatch: ${JSON.stringify(saveTransfer)}`);
   }
   let tooltip;

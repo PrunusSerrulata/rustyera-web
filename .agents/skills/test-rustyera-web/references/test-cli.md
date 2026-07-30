@@ -36,6 +36,8 @@ Use JSON `schema_version: 1`. The format is a compatible superset of the TUI sce
 - `prepare_traditional_save`: Export a valid traditional save from the stable test runtime and
   provide it as `generated.sav` to the next visible `.sav` file-picker action. This is test setup;
   the scenario must still exercise import/export through the production UI.
+- `prepare_in_game_save`: In the isolated short reference fixture only, make `SYSTEM_TITLE` invoke
+  `SAVEGAME` and provide `SAVEINFO`, so visible slot actions exercise production storage writes.
 - `inputs`: TUI-compatible semantic input prefix. Each value is submitted through the real form.
 - `actions`: Ordered Web action prefix; it is mutually exclusive with `inputs`.
 - `watches`: Debug expressions such as `RESULT` or `FLAG:0,1`, sampled at stable waits.

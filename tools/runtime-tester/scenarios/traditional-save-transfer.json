@@ -3,33 +3,14 @@
   "project": "../../../../emuera.em/emuera-reference-cli/tests/fixture",
   "mode": "fixed",
   "seed": 123456,
-  "prepare_traditional_save": true,
+  "clean_saves": true,
+  "prepare_in_game_save": true,
   "actions": [
-    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
     {
       "type": "click",
-      "locator": { "role": "button", "name": "导入存档…", "exact": true }
-    },
-    {
-      "type": "assert_dom",
-      "locator": { "role": "dialog", "name": "导入存档", "exact": true },
-      "expect": { "count": 1, "visible": true }
-    },
-    {
-      "type": "click",
-      "locator": { "role": "button", "name": "选择 .sav 文件…", "exact": true }
-    },
-    {
-      "type": "assert_dom",
-      "locator": { "text": "generated.sav", "exact": true },
-      "expect": { "count": 1, "visible": true }
-    },
-    { "type": "click", "locator": { "role": "button", "name": "导入", "exact": true } },
-    {
-      "type": "assert_dom",
-      "locator": { "css": ".runtime-status" },
-      "fields": ["text"],
-      "expect": { "text": "已导入 save00.sav" }
+      "locator": { "role": "button", "name": "[ 0] ----", "exact": true },
+      "advances_game": true,
+      "semantic_input": "0"
     },
     { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
     {
@@ -44,7 +25,9 @@
     { "type": "click", "locator": { "role": "button", "name": "导出", "exact": true } },
     {
       "type": "assert_state",
-      "expect": { "lastDownload": { "name": "save00.sav" } }
+      "expect": {
+        "lastDownload": { "name": "save00.sav", "magic": [239, 187, 191, 52] }
+      }
     }
   ],
   "limits": {

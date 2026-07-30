@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* global window */
 
-import { access, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -12,6 +12,7 @@ import {
   TraceWriter,
   compareObservations,
   goalStatus,
+  injectInGameSaveFlow,
   installRemoteFileSystem,
   isolatedProject,
   loadScenario,
@@ -55,6 +56,10 @@ async function execute(args) {
     compiledCache: scenario.compiled_cache === true,
     cleanSaves: scenario.clean_saves === true,
   });
+  if (scenario.prepare_in_game_save) {
+    const entry = path.join(webProject.project, "erb", "oracle.erb");
+    await writeFile(entry, injectInGameSaveFlow(await readFile(entry, "utf8")));
+  }
   let referenceProject;
   let reference;
   let browser;

@@ -60,12 +60,41 @@ select {
 }
 
 .app-shell {
+  position: relative;
   display: grid;
   grid-template-rows: auto 1fr auto;
   width: 100%;
   height: 100%;
   font-family: system-ui, sans-serif;
   font-size: 16px;
+}
+.project-load-progress {
+  position: absolute;
+  top: 42px;
+  left: 50%;
+  z-index: 25;
+  display: grid;
+  width: min(560px, calc(100% - 32px));
+  gap: 0.45rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid #4b5568;
+  border-radius: 7px;
+  background: #171a20ed;
+  box-shadow: 0 10px 30px #0008;
+  color: #e8e9ed;
+  transform: translateX(-50%);
+}
+.project-load-progress progress {
+  width: 100%;
+  height: 0.55rem;
+  accent-color: #5279eb;
+}
+.project-load-progress span {
+  overflow: hidden;
+  font-size: 0.88rem;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .menu-bar {
   display: flex;

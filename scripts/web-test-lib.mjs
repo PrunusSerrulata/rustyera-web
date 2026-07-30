@@ -121,6 +121,13 @@ export async function isolatedProject(source, options = {}) {
   return { root, project: destination, close: () => rm(root, { recursive: true, force: true }) };
 }
 
+export function injectInGameSaveFlow(source) {
+  const marker = "PRINTL ORACLE_READY\n";
+  if (!source.includes(marker)) throw new Error("save-flow fixture lacks ORACLE_READY marker");
+  if (source.includes("@SAVEINFO")) throw new Error("save-flow fixture already defines SAVEINFO");
+  return `${source.replace(marker, `${marker}SAVEGAME\n`)}\n@SAVEINFO\nSAVEDATA_TEXT = "browser game save"\nRETURN\n`;
+}
+
 export async function installRemoteFileSystem(page, root) {
   const safe = (relative) => {
     const resolved = path.resolve(root, relative || ".");
@@ -217,6 +224,7 @@ export async function installRemoteFileSystem(page, root) {
       async getFileHandle(name, options = {}) {
         const relative = this.child(name);
         if (options.create) await callFileSystem({ op: "write", path: relative, data: [] });
+        else await callFileSystem({ op: "stat", path: relative });
         return new RemoteFileHandle(name, relative);
       }
       removeEntry(name) {

@@ -34,6 +34,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
 <template>
   <div
     class="app-shell"
+    :aria-busy="store.projectLoading"
     :style="{
       '--game-font': store.gameTextStyle.fontFamily,
       '--game-size': store.gameTextStyle.fontSize,
@@ -213,6 +214,17 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
       <span class="runtime-status" :title="store.status">{{ store.status }}</span>
       <span class="host-badge">{{ store.bridgeKind === "tauri" ? "Tauri" : "WASM" }}</span>
     </nav>
+
+    <div
+      v-if="store.projectLoading"
+      class="project-load-progress"
+      role="status"
+      aria-live="polite"
+      aria-label="项目加载进度"
+    >
+      <progress aria-hidden="true" />
+      <span>{{ store.projectLoadProgressLabel }}</span>
+    </div>
 
     <div
       v-if="store.diagnosisNotification"

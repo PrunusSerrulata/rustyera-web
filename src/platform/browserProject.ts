@@ -160,9 +160,12 @@ export class BrowserProject {
         const bytes = new Uint8Array(await file.arrayBuffer());
         result = { type: "read", data: [...bytes], revision: hex(blake3(bytes)) };
       } else if (operation.type === "write") {
-        const handle = await getFileHandle(root, parts, true);
-        const current = await optionalFile(handle);
+        // A missing precondition must be checked before creating the destination. Creating the
+        // handle first leaves a zero-byte save behind and then makes the precondition fail.
+        const existingHandle = await optionalFileHandle(root, parts);
+        const current = existingHandle ? await existingHandle.getFile() : undefined;
         await checkPrecondition(current, operation.precondition);
+        const handle = existingHandle ?? (await getFileHandle(root, parts, true));
         const writable = await handle.createWritable({ keepExistingData: false });
         const bytes = decodeProtocolBytes(operation.data);
         await writable.write(bytes as FileSystemWriteChunkType);
@@ -413,6 +416,18 @@ async function optionalFile(handle: FileSystemFileHandle): Promise<File | undefi
     return await handle.getFile();
   } catch {
     return undefined;
+  }
+}
+
+async function optionalFileHandle(
+  root: FileSystemDirectoryHandle,
+  parts: string[],
+): Promise<FileSystemFileHandle | undefined> {
+  try {
+    return await getFileHandle(root, parts, false);
+  } catch (error) {
+    if (errorKind(error) === "not_found") return undefined;
+    throw error;
   }
 }
 
