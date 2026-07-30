@@ -1,5 +1,23 @@
 # Web game-test protocol
 
+## Browser matrix boundary
+
+`npm run test:game` owns deterministic scenario actions, canonical observations, trace capture, and
+Emuera comparison in Chromium. A browser/WASM acceptance also runs the installed native Firefox and
+Safari through the real Vue UI, OPFS project import, and WASM worker:
+
+```sh
+npm run test:browser-compat -- --browser firefox
+npm run test:browser-compat -- --browser safari
+```
+
+The native compatibility runner uses the short reference fixture and WebdriverIO. It must report the
+actual browser version/UA, OPFS availability, compile completion, and reference output. Firefox runs
+headless. Safari requires **Allow remote automation** and uses a separate minimized window when the
+driver supports minimization. Do not use Playwright Firefox or WebKit as substitutes for the
+installed applications. A missing browser, disabled Safari automation, empty output, or browser
+crash is an infrastructure failure, not a skip.
+
 ## Scenario schema
 
 Use JSON `schema_version: 1`. The format is a compatible superset of the TUI scenario format.

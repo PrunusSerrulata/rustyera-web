@@ -61,6 +61,8 @@ Deterministic game-flow tests use the real Vue UI and browser WASM worker:
 ```sh
 npm run test:game -- run --scenario tools/runtime-tester/scenarios/reference-fixture.json
 npm run test:game -- serve --scenario tools/runtime-tester/scenarios/eratw-autonomous.json
+npm run test:browser-compat -- --browser firefox
+npm run test:browser-compat -- --browser safari
 ```
 
 `run` consumes a fixed action sequence. `serve` continues over NDJSON stdin after the fixed prefix,
@@ -68,6 +70,12 @@ allowing an agent to inspect state, query DOM elements, and choose later inputs.
 random seed recorded in the trace; set it to reproduce a run. Override long-test projects with
 `--project`, and enable Emuera comparison with a scenario's `comparison.reference` plus
 `--reference-command` (and `--reference-path-command` for Wine when required).
+
+Browser/WASM acceptance covers Chromium plus the installed native Firefox and Safari applications.
+Firefox runs headless. Safari requires **Allow remote automation** in its developer settings and the
+runner minimizes its separate automation window when supported. The native-browser runner imports
+the short reference fixture into OPFS, starts the real WASM worker, and reports the browser version,
+compile status, and visible output.
 
 The Playwright wrapper stores Chromium in the fixed local directory `.playwright-browsers` under
 this frontend. The directory is ignored by Git and survives ordinary `npm ci` runs, so subsequent

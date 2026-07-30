@@ -90,12 +90,15 @@ Emuera 差分和结果报告的权威规范。修改浏览器场景、页面 act
   cargo test --workspace
   ```
 
-- 浏览器 transport、Worker、项目 I/O、展示交互或 runtime-facing 改动必须使用
-  `npm run test:game` 驱动生产 Vue UI、Chromium 和真实 WASM Worker；不得以组件 mock、
-  直接 test global 提交游戏输入或截图替代。固定场景命令为：
+- 浏览器 transport、Worker、项目 I/O、展示交互或 runtime-facing 改动必须覆盖生产 Vue UI
+  和真实 WASM Worker 的三浏览器矩阵：`npm run test:game` 驱动 Chromium 固定场景，
+  `npm run test:browser-compat` 驱动本机 Firefox 和 Safari；不得以组件 mock、Playwright 的
+  Firefox/WebKit bundle、直接 test global 提交游戏输入或截图替代。命令为：
 
   ```sh
   npm run test:game -- run --scenario SCENARIO [--project PROJECT]
+  npm run test:browser-compat -- --browser firefox
+  npm run test:browser-compat -- --browser safari
   ```
 
 - 需要 agent 探索时使用持久 `serve` 会话，逐条解析 NDJSON observation 后再执行一个输入、
