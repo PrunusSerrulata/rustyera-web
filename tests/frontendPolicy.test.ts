@@ -27,6 +27,13 @@ describe("frontend host and image-line policy", () => {
     );
   });
 
+  it("builds the release Tauri binary without a Windows console", () => {
+    const entrypoint = readFileSync(resolve("src-tauri/src/main.rs"), "utf8");
+    expect(entrypoint).toMatch(
+      /^#!\[cfg_attr\(not\(debug_assertions\), windows_subsystem = "windows"\)\]/,
+    );
+  });
+
   it("renders HTML image paragraphs with the margin-reset selector", () => {
     const wrapper = mount(HtmlNode, {
       props: {
