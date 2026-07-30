@@ -11,6 +11,12 @@ Run `npm run test:tauri -- --project PROJECT`. The runner must:
 4. drive the native WebView with WebdriverIO selectors and actions;
 5. assert `window.__RUSTYERA_TEST__.snapshot().bridgeKind === "tauri"` before feature checks.
 
+The command launches a native GUI application and platform WebView. Always run it outside the
+filesystem sandbox with `sandbox_permissions=require_escalated`, and explain in the approval
+justification that native Tauri GUI/WebView startup is required. Do not first try it in the sandbox.
+Treat an embedded WebDriver startup timeout from a sandboxed run as an invalid infrastructure
+attempt and rerun outside the sandbox before diagnosing a product or test failure.
+
 The default project is `../games/eraTW`; set `--project` or `ERATW_PROJECT` when the checkout lives
 elsewhere. Do not copy or modify the game during a native read-only test.
 

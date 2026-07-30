@@ -38,6 +38,17 @@ const imagePlacement = computed(() =>
       }
     : null,
 );
+const spaceShapeStyle = computed(() => {
+  const semantic = props.node.semantic;
+  if (semantic?.type !== "shape" || semantic.kind?.toLowerCase() !== "space") return null;
+  const width = projectLength(semantic.parameters?.[0]);
+  return width == null
+    ? null
+    : {
+        width: `${Math.max(0, width)}px`,
+        height: `${store.gameTextStyle.fontSizePx}px`,
+      };
+});
 const tooltipTitle = computed(() => {
   const semantic = props.node.semantic;
   return semantic?.type === "button" || semantic?.type === "non_button"
@@ -50,11 +61,28 @@ function activate(): void {
   if (interaction?.enabled && store.canInteract)
     void store.activate({ epoch: interaction.epoch, id: interaction.id });
 }
+
+function projectLength(value: { unit?: string; value?: unknown } | undefined): number | undefined {
+  if (!value) return undefined;
+  const raw = Number(value.value);
+  const result =
+    value.unit === "pixels" || value.unit === "logical"
+      ? value.unit === "logical"
+        ? raw / 1000
+        : raw
+      : (raw * store.gameTextStyle.fontSizePx) / 100;
+  return Number.isFinite(result) ? result : undefined;
+}
 </script>
 
 <template>
   <template v-if="node.type === 'text'">{{ node.text }}</template>
   <br v-else-if="node.kind === 'break'" />
+  <span
+    v-else-if="spaceShapeStyle"
+    class="html-node html-shape html-shape-space"
+    :style="spaceShapeStyle"
+  />
   <MediaImage v-else-if="imagePlacement" :placement="imagePlacement" />
   <component
     :is="tag"

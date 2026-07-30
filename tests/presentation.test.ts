@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { applyDelta, applySnapshot, emptyPresentation, plainLine } from "@/core/presentation";
+import {
+  applyDelta,
+  applySnapshot,
+  emptyPresentation,
+  plainLine,
+  printedHtmlLine,
+} from "@/core/presentation";
+import type { DisplayLine } from "@/core/types";
 
 describe("presentation projection", () => {
   it("applies snapshots and ordered deltas without losing line identity", () => {
@@ -88,6 +95,54 @@ describe("presentation projection", () => {
     const state = emptyPresentation();
     expect(() => applyDelta(state, { base_revision: 9, new_revision: 10, operations: [] })).toThrow(
       "revision 不连续",
+    );
+  });
+
+  it("preserves positioned images when HTML_GETPRINTEDSTR serializes an HTML line", () => {
+    const line: DisplayLine = {
+      line_id: 1,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs: [
+        {
+          type: "html_document",
+          document: {
+            nodes: [
+              {
+                type: "element",
+                kind: "no_break",
+                attributes: [],
+                children: [
+                  {
+                    type: "element",
+                    kind: "non_button",
+                    attributes: [{ name: "pos", value: "0" }],
+                    children: [
+                      {
+                        type: "element",
+                        kind: "image",
+                        attributes: [
+                          { name: "src", value: "颜绘3000" },
+                          { name: "height", value: "900" },
+                          { name: "width", value: "900" },
+                          { name: "ypos", value: "0" },
+                        ],
+                        children: [],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    expect(printedHtmlLine(line)).toBe(
+      "<p align='left'><nobr><nonbutton pos='0'><img src='颜绘3000' height='900' width='900' ypos='0'></nonbutton></nobr></p>",
     );
   });
 });

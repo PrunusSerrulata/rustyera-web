@@ -16,7 +16,13 @@ import {
 } from "@/core/debug";
 import { preferredRuntimeLocales, resolveGameTextStyle } from "@/core/gameText";
 import { MessageSkipController } from "@/core/messageSkip";
-import { applyDelta, applySnapshot, emptyPresentation, plainLine } from "@/core/presentation";
+import {
+  applyDelta,
+  applySnapshot,
+  emptyPresentation,
+  plainLine,
+  printedHtmlLine,
+} from "@/core/presentation";
 import { decodeServicePayload, encodeServicePayload } from "@/core/serviceCodec";
 import {
   defaultPreferences,
@@ -709,7 +715,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
         case "presentation_query/html_get_printed_str": {
           const index = Number(at(query, 1));
           const text = presentation.lines.at(-(index + 1));
-          response = mapOf([0, at(query, 0)], [1, text ? escapeHtml(plainLine(text)) : ""]);
+          response = mapOf(
+            [0, at(query, 0)],
+            [1, text ? printedHtmlLine(text, Number(presentation.settings.line_height ?? 0)) : ""],
+          );
           break;
         }
         case "presentation_query/serialize_physical_history": {
@@ -2046,10 +2055,6 @@ function transportValue<T>(value: T): T {
   return Object.fromEntries(
     Object.entries(raw).map(([key, child]) => [key, transportValue(child)]),
   ) as T;
-}
-
-function escapeHtml(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
 function formatDiagnostic(value: any): string {

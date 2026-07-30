@@ -249,6 +249,18 @@ export function resolveLocator(page, locator = {}) {
 }
 
 export async function runAction(page, action) {
+  if (action.type === "drain_void_waits") {
+    const maximum = Number(action.maximum ?? 100);
+    for (let attempt = 0; attempt < maximum; attempt += 1) {
+      const waiting = await page.evaluate(
+        () => window.__RUSTYERA_TEST__.snapshot().wait?.kind === "void",
+      );
+      if (!waiting) return { semanticInput: "", attempts: attempt };
+      await page.locator(".prompt-bar button[type=submit]").click();
+      await page.waitForTimeout(20);
+    }
+    throw new Error(`void wait budget exhausted after ${maximum} attempts`);
+  }
   if (action.type === "input") {
     const beforeWaitId = await page.evaluate(
       () => window.__RUSTYERA_TEST__.snapshot().wait?.wait_id,
@@ -261,6 +273,13 @@ export async function runAction(page, action) {
         const snapshot = window.__RUSTYERA_TEST__.snapshot();
         return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
       }, beforeWaitId);
+    if (action.message_skip) {
+      await page.waitForFunction(() => {
+        const snapshot = window.__RUSTYERA_TEST__.snapshot();
+        return snapshot.canInteract && snapshot.wait?.kind === "enter_key";
+      });
+      await page.locator(".game-viewport").click({ button: "right" });
+    }
     return { semanticInput: String(action.value ?? "") };
   }
   const locator = action.locator ? resolveLocator(page, action.locator) : undefined;

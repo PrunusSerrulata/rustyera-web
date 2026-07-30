@@ -40,6 +40,8 @@ const environment = {
     configuredSpec && path.basename(configuredSpec) === "project-smoke.spec.mjs" ? "1" : "0",
   VITE_RUSTYERA_TAURI_TOOLTIP:
     configuredSpec && path.basename(configuredSpec) === "tooltip.spec.mjs" ? "1" : "0",
+  VITE_RUSTYERA_TAURI_AKUMA_MAID_IMAGES:
+    configuredSpec && path.basename(configuredSpec) === "akuma-maid-images.spec.mjs" ? "1" : "0",
 };
 
 await run(

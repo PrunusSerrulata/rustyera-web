@@ -340,6 +340,10 @@ select {
   border: 1px solid currentColor;
   vertical-align: middle;
 }
+.html-shape-space {
+  display: inline-block;
+  vertical-align: top;
+}
 .media-image,
 .canvas-replay {
   display: inline-block;

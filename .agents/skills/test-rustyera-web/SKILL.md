@@ -85,6 +85,13 @@ step/time budget is exhausted.
 npm run test:tauri -- --project ../games/eraTW
 ```
 
+Tauri tests launch a native GUI application and platform WebView, so always run every
+`npm run test:tauri` command outside the filesystem sandbox with
+`sandbox_permissions=require_escalated`; state in the approval justification that the command must
+launch the native Tauri GUI/WebView. Do not make an initial sandboxed attempt. An embedded WebDriver
+startup timeout from a sandboxed run is an invalid infrastructure attempt, not a product failure;
+rerun it outside the sandbox before diagnosing the application or test.
+
 `ERATW_PROJECT` may supply another real eraTW checkout. The command builds a test-only Tauri binary
 with the WebdriverIO plugins, launches the platform WebView, opens the project through the real Rust
 filesystem commands, and drives visible controls. Assert `bridgeKind: "tauri"` before making a

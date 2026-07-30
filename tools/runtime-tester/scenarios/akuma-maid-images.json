@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eraAkumaMaid",
+  "mode": "fixed",
+  "compiled_cache": true,
+  "clean_saves": true,
+  "seed": 1126218542,
+  "actions": [
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".html-shape-space" },
+      "fields": ["count", "visible", "attributes"],
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "attributes": {
+          "class": "html-node html-shape html-shape-space",
+          "style": "width: 432px; height: 12px;"
+        }
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".media-positioned .media-sprite img" },
+      "fields": ["count", "visible"],
+      "expect": { "count": 1, "visible": true }
+    },
+    { "type": "input", "value": 0 },
+    { "type": "input", "value": 0 },
+    { "type": "input", "value": 0 },
+    { "type": "input", "value": 100 },
+    { "type": "input", "value": 100 },
+    { "type": "input", "value": 100 },
+    { "type": "input", "value": 100 },
+    { "type": "input", "value": 0, "message_skip": true },
+    { "type": "drain_void_waits", "maximum": 240 },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "弗理希艾尔", "exact": false },
+      "fields": ["count", "visible"],
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".html-node .media-positioned .media-sprite img" },
+      "fields": ["count", "visible"],
+      "expect": { "visible": true }
+    }
+  ],
+  "limits": {
+    "max_steps": 100,
+    "timeout_seconds": 900
+  }
+}

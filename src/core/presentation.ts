@@ -214,3 +214,154 @@ export function plainRun(run: any): string {
 export function plainLine(line: DisplayLine): string {
   return line.runs.map(plainRun).join("");
 }
+
+export function printedHtmlLine(line: DisplayLine, lineHeight = 0): string {
+  const content = line.runs.map((run) => printedHtmlRun(run, lineHeight)).join("");
+  return `<p align='${line.alignment}'><nobr>${content}</nobr></p>`;
+}
+
+function printedHtmlRun(run: any, lineHeight: number): string {
+  switch (run.type) {
+    case "text": {
+      let value = escapeHtml(run.text ?? "");
+      if (run.style?.strikeout) value = `<s>${value}</s>`;
+      if (run.style?.underline) value = `<u>${value}</u>`;
+      if (run.style?.italic) value = `<i>${value}</i>`;
+      if (run.style?.bold) value = `<b>${value}</b>`;
+      return value;
+    }
+    case "button": {
+      const value = protocolValueText(run.value);
+      const title = run.title == null ? "" : ` title='${escapeHtml(run.title)}'`;
+      return `<button value='${escapeHtml(value)}'${title}>${(run.runs ?? [])
+        .map((child: any) => printedHtmlRun(child, lineHeight))
+        .join("")}</button>`;
+    }
+    case "html_document":
+      return serializeHtmlDocument(run.document);
+    case "image": {
+      const placement = run.placement ?? {};
+      let value = `<img src='${escapeHtml(placement.resource_id ?? "")}`;
+      if (placement.hover_resource_id != null)
+        value += `' srcb='${escapeHtml(placement.hover_resource_id)}`;
+      if (placement.mask_resource_id != null)
+        value += `' srcm='${escapeHtml(placement.mask_resource_id)}`;
+      for (const [name, length] of [
+        ["height", placement.requested_height],
+        ["width", placement.requested_width],
+        ["ypos", placement.requested_y],
+      ] as const) {
+        if (length != null) value += `' ${name}='${projectedLength(length, lineHeight)}`;
+      }
+      return `${value}'>`;
+    }
+    case "shape": {
+      const shape = run.shape ?? {};
+      let value = `<shape type='${escapeHtml(shape.kind ?? "")}' param='${(shape.parameters ?? [])
+        .map(rawLength)
+        .join(", ")}'`;
+      if (shape.foreground && !isDefaultForeground(shape.foreground))
+        value += ` color='${htmlColor(shape.foreground)}'`;
+      if (shape.background) value += ` bcolor='${htmlColor(shape.background)}'`;
+      return `${value}>`;
+    }
+    case "column_cell":
+      return (run.content ?? []).map((child: any) => printedHtmlRun(child, lineHeight)).join("");
+    case "separator":
+      return escapeHtml(run.pattern ?? "");
+    case "space":
+      return `<shape type='space' param='${rawLength(run.width)}'>`;
+    default:
+      return "";
+  }
+}
+
+function serializeHtmlDocument(document: any): string {
+  return (document?.nodes ?? []).map(serializeHtmlRootNode).join("");
+}
+
+function serializeHtmlRootNode(node: any): string {
+  if (node.type === "element" && ["paragraph", "no_break"].includes(node.kind))
+    return (node.children ?? []).map(serializeHtmlRootNode).join("");
+  return serializeHtmlNode(node);
+}
+
+function serializeHtmlNode(node: any): string {
+  if (node.type === "text") return escapeHtml(node.text ?? "");
+  if (node.type !== "element") return "";
+  const tag = htmlTag(node.kind);
+  const attributes = (node.attributes ?? [])
+    .map((attribute: any) => ` ${attribute.name}='${escapeHtml(attribute.value ?? "")}'`)
+    .join("");
+  const opening = `<${tag}${attributes}>`;
+  if (["br", "img", "shape"].includes(tag)) return opening;
+  return `${opening}${(node.children ?? []).map(serializeHtmlNode).join("")}</${tag}>`;
+}
+
+function htmlTag(kind: string): string {
+  return (
+    (
+      {
+        bold: "b",
+        italic: "i",
+        underline: "u",
+        strike: "s",
+        font: "font",
+        paragraph: "p",
+        no_break: "nobr",
+        button: "button",
+        non_button: "nonbutton",
+        clear_button: "clearbutton",
+        image: "img",
+        shape: "shape",
+        division: "div",
+        break: "br",
+      } as Record<string, string>
+    )[kind] ?? kind
+  );
+}
+
+function protocolValueText(value: any): string {
+  if (value?.type === "boolean") return value.value ? "1" : "0";
+  if (value?.type === "bytes") return "";
+  if (value && typeof value === "object" && "value" in value) return String(value.value);
+  return value == null ? "" : String(value);
+}
+
+function projectedLength(length: any, lineHeight: number): string {
+  const value = Number(length?.value ?? 0);
+  if (length?.unit === "logical") return `${Math.trunc(value / 1000)}px`;
+  if (length?.unit === "pixels") return `${Math.trunc(value)}px`;
+  return String(Math.trunc((value * Number(lineHeight)) / 100_000));
+}
+
+function rawLength(length: any): string {
+  const value = Number(length?.value ?? 0);
+  if (length?.unit === "logical") return `${Math.trunc(value / 1000)}px`;
+  if (length?.unit === "pixels") return `${Math.trunc(value)}px`;
+  return String(Math.trunc(value));
+}
+
+function htmlColor(color: any): string {
+  return `#${[color.red, color.green, color.blue]
+    .map((component) =>
+      Number(component ?? 0)
+        .toString(16)
+        .padStart(2, "0")
+        .toUpperCase(),
+    )
+    .join("")}`;
+}
+
+function isDefaultForeground(color: any): boolean {
+  return Number(color.red) === 192 && Number(color.green) === 192 && Number(color.blue) === 192;
+}
+
+function escapeHtml(value: unknown): string {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("<", "&lt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}

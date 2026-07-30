@@ -5,7 +5,11 @@ import { mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/stores/runtime", () => ({
-  useRuntimeStore: () => ({ activate: vi.fn(), effectivePreferences: { imageScale: 1 } }),
+  useRuntimeStore: () => ({
+    activate: vi.fn(),
+    effectivePreferences: { imageScale: 1 },
+    gameTextStyle: { fontSizePx: 12 },
+  }),
 }));
 
 import HtmlNode from "@/components/HtmlNode.vue";
@@ -67,6 +71,26 @@ describe("frontend host and image-line policy", () => {
     expect(stylesheet).toMatch(
       /:is\(\.game-button, \.html-node:is\(button\)\):has\(\.media-positioned\):not\(:disabled\)[\s\S]*?> \.media-visual\.media-hovered\s*\{[^}]*border-radius:\s*var\(--game-interaction-border-radius\);[^}]*background:\s*var\(--game-interaction-hover-background\);/s,
     );
+  });
+
+  it("projects HTML space shapes before positioned images", () => {
+    const wrapper = mount(HtmlNode, {
+      props: {
+        node: {
+          type: "element",
+          kind: "shape",
+          children: [],
+          semantic: {
+            type: "shape",
+            kind: "space",
+            parameters: [{ unit: "font_height_hundredths", value: 3600 }],
+          },
+        },
+      },
+    });
+
+    expect(wrapper.get(".html-shape-space").attributes("style")).toContain("width: 432px");
+    expect(wrapper.get(".html-shape-space").attributes("style")).toContain("height: 12px");
   });
 
   it("styles timestamps and fixed-width log levels like the TUI", () => {
