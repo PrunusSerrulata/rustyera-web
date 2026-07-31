@@ -21,12 +21,14 @@ export function isStableObservationCandidate(
   canInteract: boolean,
   fault: unknown,
   modalReady = false,
+  backgroundBusy = false,
 ): boolean {
   return (
-    canInteract ||
-    modalReady ||
-    fault != null ||
-    ["debug_paused", "stopped", "faulted", "shutting_down"].includes(phase)
+    !backgroundBusy &&
+    (canInteract ||
+      modalReady ||
+      fault != null ||
+      ["debug_paused", "stopped", "faulted", "shutting_down"].includes(phase))
   );
 }
 
@@ -104,6 +106,7 @@ export function installWebTestControl(pinia: Pinia): void {
           store.canInteract,
           store.fault,
           store.traditionalSaveDialogMode != null && !store.traditionalSaveTransferBusy,
+          store.diagnosisExporting,
         );
         if (observable && current === previous) stableFrames += 1;
         else stableFrames = 0;
@@ -148,11 +151,11 @@ function mediaReplay(resources: any, resourceName: string): Record<string, unkno
   });
 }
 
-function downloadSummary(download?: { name: string; bytes: Uint8Array }): unknown {
+function downloadSummary(download?: { name: string; bytes: Uint8Array; size?: number }): unknown {
   if (!download) return null;
   return {
     name: download.name,
-    size: download.bytes.length,
+    size: download.size ?? download.bytes.length,
     magic: [...download.bytes.slice(0, 4)],
   };
 }

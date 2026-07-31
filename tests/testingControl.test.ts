@@ -15,4 +15,10 @@ describe("Web test observation boundaries", () => {
     expect(isStableObservationCandidate("running", false, { message: "fault" })).toBe(true);
     expect(isStableObservationCandidate("waiting_input", false, null, true)).toBe(true);
   });
+
+  it("keeps waiting for diagnosis export even at a fault boundary", () => {
+    expect(isStableObservationCandidate("faulted", false, { message: "fault" }, false, true)).toBe(
+      false,
+    );
+  });
 });

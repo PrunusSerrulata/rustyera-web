@@ -12,7 +12,7 @@ import type {
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import type { DiagnosisArchiveInput } from "@/core/diagnosis";
 import { pickBrowserDirectory, pickBrowserFile } from "@/platform/browserDirectory";
-import { createDiagnosisArchiveInWorker } from "@/platform/diagnosis";
+import { streamDiagnosisArchiveInWorker } from "@/platform/diagnosis";
 import { BrowserProject, cacheIdentityManifest, saveSlotName } from "@/platform/browserProject";
 import { database, loadBrowserPreferences, saveBrowserPreferences } from "@/platform/database";
 import { WorkerClient } from "@/platform/workerClient";
@@ -223,8 +223,64 @@ export class BrowserBridge implements FrontendBridge {
     return this.project;
   }
 
-  createDiagnosisArchive(input: DiagnosisArchiveInput): Promise<Uint8Array> {
-    return createDiagnosisArchiveInWorker(input);
+  async saveDiagnosis(name: string, input: DiagnosisArchiveInput): Promise<boolean> {
+    if (import.meta.env.VITE_RUSTYERA_TEST === "1") {
+      const prefix = new Uint8Array(4);
+      let size = 0;
+      await streamDiagnosisArchiveInWorker(input, async (chunk) => {
+        const prefixLength = Math.min(chunk.length, prefix.length - Math.min(size, prefix.length));
+        if (prefixLength > 0) prefix.set(chunk.subarray(0, prefixLength), size);
+        size += chunk.length;
+      });
+      (window.__RUSTYERA_TEST_DOWNLOADS__ ??= []).push({ name, bytes: prefix, size });
+      return true;
+    }
+
+    if (window.showSaveFilePicker) {
+      let handle: FileSystemFileHandle;
+      try {
+        handle = await window.showSaveFilePicker({ suggestedName: name });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return false;
+        throw error;
+      }
+      const writer = await handle.createWritable({ keepExistingData: false });
+      try {
+        await streamDiagnosisArchiveInWorker(input, (chunk) =>
+          writer.write(chunk as FileSystemWriteChunkType),
+        );
+        await writer.close();
+      } catch (error) {
+        await writer.abort().catch(() => undefined);
+        throw error;
+      }
+      return true;
+    }
+
+    const storageRoot = await navigator.storage.getDirectory();
+    const temporaryName = `diagnosis-${crypto.randomUUID()}.tar.zst`;
+    const handle = await storageRoot.getFileHandle(temporaryName, { create: true });
+    const writer = await handle.createWritable({ keepExistingData: false });
+    try {
+      await streamDiagnosisArchiveInWorker(input, (chunk) =>
+        writer.write(chunk as FileSystemWriteChunkType),
+      );
+      await writer.close();
+      const url = URL.createObjectURL(await handle.getFile());
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = name;
+      anchor.click();
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+        void storageRoot.removeEntry(temporaryName);
+      }, 0);
+      return true;
+    } catch (error) {
+      await writer.abort().catch(() => undefined);
+      await storageRoot.removeEntry(temporaryName).catch(() => undefined);
+      throw error;
+    }
   }
 
   async writeCompiledCacheChunk(

@@ -1,10 +1,25 @@
-import { createDiagnosisArchive, type DiagnosisArchiveInput } from "@/core/diagnosis";
+import { diagnosisArchiveChunks, type DiagnosisArchiveInput } from "@/core/diagnosis";
 
-self.onmessage = (event: MessageEvent<DiagnosisArchiveInput>) => {
+let chunks: Iterator<Uint8Array> | undefined;
+
+self.onmessage = (event: MessageEvent<DiagnosisArchiveInput | { type: "continue" }>) => {
   try {
-    const archive = createDiagnosisArchive(event.data);
-    self.postMessage({ archive }, { transfer: [archive.buffer] });
+    if ("type" in event.data) {
+      if (event.data.type !== "continue" || !chunks)
+        throw new Error("诊断归档 Worker 收到了无效的继续请求");
+    } else {
+      if (chunks) throw new Error("诊断归档 Worker 已经在处理导出");
+      chunks = diagnosisArchiveChunks(event.data);
+    }
+    const next = chunks.next();
+    if (next.done) {
+      chunks = undefined;
+      self.postMessage({ complete: true });
+    } else {
+      self.postMessage({ chunk: next.value }, { transfer: [next.value.buffer] });
+    }
   } catch (error) {
+    chunks = undefined;
     self.postMessage({ error: String(error) });
   }
 };

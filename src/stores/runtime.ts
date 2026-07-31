@@ -3,7 +3,7 @@ import { defineStore } from "pinia";
 import { computed, reactive, ref, shallowReactive, toRaw } from "vue";
 
 import { AudioEngine } from "@/core/audio";
-import { diagnosisArchiveName } from "@/core/diagnosis";
+import { diagnosisArchiveName, diagnosisProjectName } from "@/core/diagnosis";
 import {
   debugStopToken,
   debugVariableKey,
@@ -16,6 +16,7 @@ import {
 } from "@/core/debug";
 import { preferredRuntimeLocales, resolveGameTextStyle } from "@/core/gameText";
 import { MessageSkipController } from "@/core/messageSkip";
+import { formatRuntimeFault } from "@/core/runtimeFault";
 import {
   applyDelta,
   applySnapshot,
@@ -47,6 +48,7 @@ interface ExportState {
   name: string;
   kind: "download" | "compiled_cache" | "diagnosis_snapshot" | "diagnosis_artifact";
   chunks: Uint8Array[];
+  buffer?: Uint8Array;
   received: number;
   descriptor?: any;
   requestMessageId?: string;
@@ -115,6 +117,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const prompt = ref("");
   const inputUndo = ref<any>(null);
   const fault = ref<any>(null);
+  const faultMessage = computed(() => formatRuntimeFault(fault.value));
   const faultActionBusy = ref(false);
   const logs = shallowReactive<LogEntry[]>([]);
   const preferencesOpen = ref(false);
@@ -147,6 +150,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let compiledCacheTimer: number | undefined;
   let exportState: ExportState | undefined;
   let diagnosisState: DiagnosisState | undefined;
+  let projectTitleCaptured = false;
   let diagnosisNotificationTimer: number | undefined;
   let importBytes: Uint8Array | undefined;
   let importKind: Exclude<RuntimeStartKind, "new_game"> | undefined;
@@ -522,11 +526,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "presentation_snapshot":
         applySnapshot(presentation, value);
+        captureProjectTitle();
         batchMediaDirty = true;
         break;
       case "presentation_delta":
         try {
           applyDelta(presentation, value);
+          captureProjectTitle();
         } catch (error) {
           log("warning", String(error));
           await send({ type: "resynchronize", value: { after_sequence: null } });
@@ -957,6 +963,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     prompt.value = "";
     exportState = undefined;
     diagnosisState = undefined;
+    projectTitleCaptured = false;
     diagnosisExporting.value = false;
     traditionalSaveDialogMode.value = null;
     traditionalSaveSlots.value = [];
@@ -1009,7 +1016,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function exportDiagnosis(): Promise<void> {
     if (!canExportDiagnosis.value) return;
-    const projectName = bridge.projectName() || "project";
+    const projectName = diagnosisProjectName(projectTitleCaptured ? presentation.title : "project");
     const exportedAt = testClock ?? new Date();
     diagnosisState = {
       name: diagnosisArchiveName(projectName, exportedAt),
@@ -1233,6 +1240,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
       return;
     }
     exportState.descriptor = ready.result.transfer;
+    const totalBytes = Number(ready.result.transfer.total_bytes);
+    if (
+      exportState.kind !== "compiled_cache" &&
+      Number.isSafeInteger(totalBytes) &&
+      totalBytes >= 0
+    )
+      exportState.buffer = new Uint8Array(totalBytes);
     await requestExportChunk();
   }
 
@@ -1255,6 +1269,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     exportState.received += bytes.length;
     if (exportState.kind === "compiled_cache") {
       await bridge.writeCompiledCacheChunk(bytes, reset, chunk.complete);
+    } else if (exportState.buffer) {
+      exportState.buffer.set(bytes, Number(chunk.offset));
     } else {
       exportState.chunks.push(bytes);
     }
@@ -1268,7 +1284,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const result =
       completed.kind === "compiled_cache"
         ? new Uint8Array()
-        : concatenateChunks(completed.chunks, completed.received);
+        : (completed.buffer ?? concatenateChunks(completed.chunks, completed.received));
+    completed.buffer = undefined;
+    completed.chunks.length = 0;
     try {
       if (completed.kind === "download") {
         const saved = await bridge.saveDownload(completed.name, result);
@@ -1291,14 +1309,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
         await requestDiagnosisArtifact();
       } else {
         if (!diagnosisState?.snapshot) throw new Error("诊断快照缺失");
-        const archive = await bridge.createDiagnosisArchive({
+        const saved = await bridge.saveDiagnosis(diagnosisState.name, {
           projectName: diagnosisState.projectName,
           snapshot: diagnosisState.snapshot,
           logs: diagnosisState.logs,
           compiledArtifact: result,
           exportedAt: diagnosisState.exportedAt,
         });
-        const saved = await bridge.saveDownload(diagnosisState.name, archive);
         finishDiagnosis(
           true,
           saved ? `诊断信息已导出：${diagnosisState.name}` : "已取消导出诊断信息",
@@ -1332,6 +1349,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
     status.value = message;
     showDiagnosisNotification(message, false);
     log(success ? "info" : "error", message);
+  }
+
+  function captureProjectTitle(): void {
+    if (projectTitleCaptured || !projectOpen.value) return;
+    const title = presentation.title.trim();
+    if (!title || title === "RustyEra") return;
+    projectTitleCaptured = true;
   }
 
   function showDiagnosisNotification(message: string, persistent: boolean): void {
@@ -1943,6 +1967,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     prompt,
     inputUndo,
     fault,
+    faultMessage,
     faultActionBusy,
     logs,
     preferencesOpen,

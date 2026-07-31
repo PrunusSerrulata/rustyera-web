@@ -41,7 +41,7 @@ const bridge = vi.hoisted(() => ({
     inspect: vi.fn(),
     writeSlot: vi.fn(),
   },
-  createDiagnosisArchive: vi.fn(),
+  saveDiagnosis: vi.fn(),
   writeCompiledCacheChunk: vi.fn(),
   close: vi.fn(),
 }));
@@ -69,7 +69,7 @@ describe("runtime store session lifecycle", () => {
     bridge.traditionalSaves.pickImport.mockResolvedValue(undefined);
     bridge.traditionalSaves.inspect.mockResolvedValue({ description: "valid" });
     bridge.traditionalSaves.writeSlot.mockResolvedValue(undefined);
-    bridge.createDiagnosisArchive.mockResolvedValue(Uint8Array.of(9, 8, 7));
+    bridge.saveDiagnosis.mockResolvedValue(true);
     bridge.restartProject.mockResolvedValue({
       quickScanMs: 1,
       cacheReadMs: 2,
@@ -141,6 +141,11 @@ describe("runtime store session lifecycle", () => {
         ...emptyBatch(),
         events: [
           runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          runtimeEvent("presentation_snapshot", {
+            revision: 1,
+            title: "eraThe World",
+            history: { logical_lines: [] },
+          }),
           runtimeEvent("wait_changed", { type: "opened", value: stopWait }),
           runtimeEvent("log", { level: "info", message: "diagnostic detail" }),
         ],
@@ -149,11 +154,11 @@ describe("runtime store session lifecycle", () => {
         ...emptyBatch(),
         events: [
           runtimeEvent("state_export_ready", {
-            result: { type: "ready", transfer: { transfer_id: 11 } },
+            result: { type: "ready", transfer: { transfer_id: 11, total_bytes: 2 } },
           }),
           runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
           runtimeEvent("state_export_ready", {
-            result: { type: "ready", transfer: { transfer_id: 12 } },
+            result: { type: "ready", transfer: { transfer_id: 12, total_bytes: 2 } },
           }),
           runtimeEvent("state_export_chunk", { offset: 0, data: [3, 4], complete: true }),
         ],
@@ -192,17 +197,14 @@ describe("runtime store session lifecycle", () => {
       },
       undefined,
     );
-    expect(bridge.createDiagnosisArchive).toHaveBeenCalledWith(
+    expect(bridge.saveDiagnosis).toHaveBeenCalledWith(
+      "eraThe World-diagnosis_20260729-140506.tar.zst",
       expect.objectContaining({
-        projectName: "eraTW",
+        projectName: "eraThe World",
         snapshot: Uint8Array.of(1, 2),
         compiledArtifact: Uint8Array.of(3, 4),
         logs: expect.stringContaining("INFO  diagnostic detail"),
       }),
-    );
-    expect(bridge.saveDownload).toHaveBeenCalledWith(
-      "eraTW-diagnosis_20260729-140506.tar.zst",
-      Uint8Array.of(9, 8, 7),
     );
     expect(store.diagnosisExporting).toBe(false);
     expect(store.canInteract).toBe(true);

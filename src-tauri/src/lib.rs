@@ -38,10 +38,11 @@ struct AppState {
     session: Arc<Mutex<Option<WebSession>>>,
     project: Arc<Mutex<Option<ProjectHost>>>,
     storage: Arc<Mutex<Option<StorageHost>>>,
-    cache_writer: Arc<Mutex<Option<CacheWriter>>>,
+    cache_writer: Arc<Mutex<Option<AtomicFileWriter>>>,
+    export_writer: Arc<Mutex<Option<AtomicFileWriter>>>,
 }
 
-struct CacheWriter {
+struct AtomicFileWriter {
     temporary: tempfile::NamedTempFile,
     target: PathBuf,
 }
@@ -476,6 +477,28 @@ fn write_export(path: PathBuf, bytes: Vec<u8>) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn write_export_chunk(
+    state: State<'_, AppState>,
+    path: PathBuf,
+    bytes: Vec<u8>,
+    reset: bool,
+    complete: bool,
+) -> Result<(), String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        write_atomic_file_chunk(&state.export_writer, Some(path), &bytes, reset, complete)
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+fn cancel_export(state: State<'_, AppState>) -> Result<(), String> {
+    state.export_writer.lock().map_err(lock_error)?.take();
+    Ok(())
+}
+
+#[tauri::command]
 async fn write_compiled_cache_chunk(
     state: State<'_, AppState>,
     bytes: Vec<u8>,
@@ -511,7 +534,8 @@ fn write_compiled_cache_chunk_inner(
         let target = directory.join("compiled-project-v8.bin.zst");
         let temporary = tempfile::NamedTempFile::new_in(&directory)
             .map_err(|error| format!("cannot create temporary compiled cache: {error}"))?;
-        *state.cache_writer.lock().map_err(lock_error)? = Some(CacheWriter { temporary, target });
+        *state.cache_writer.lock().map_err(lock_error)? =
+            Some(AtomicFileWriter { temporary, target });
     }
     let mut guard = state.cache_writer.lock().map_err(lock_error)?;
     let writer = guard
@@ -532,6 +556,45 @@ fn write_compiled_cache_chunk_inner(
             .temporary
             .persist(writer.target)
             .map_err(|error| format!("cannot replace compiled cache: {}", error.error))?;
+    }
+    Ok(())
+}
+
+fn write_atomic_file_chunk(
+    slot: &Mutex<Option<AtomicFileWriter>>,
+    target: Option<PathBuf>,
+    bytes: &[u8],
+    reset: bool,
+    complete: bool,
+) -> Result<(), String> {
+    if reset {
+        let target = target.ok_or_else(|| "export path is missing".to_owned())?;
+        let parent = target
+            .parent()
+            .ok_or_else(|| "export path has no parent".to_owned())?;
+        let temporary = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|error| format!("cannot create temporary export file: {error}"))?;
+        *slot.lock().map_err(lock_error)? = Some(AtomicFileWriter { temporary, target });
+    }
+    let mut guard = slot.lock().map_err(lock_error)?;
+    let writer = guard
+        .as_mut()
+        .ok_or_else(|| "export write has not started".to_owned())?;
+    std::io::Write::write_all(&mut writer.temporary, bytes)
+        .map_err(|error| format!("cannot write export file: {error}"))?;
+    if complete {
+        let writer = guard
+            .take()
+            .ok_or_else(|| "export writer disappeared".to_owned())?;
+        writer
+            .temporary
+            .as_file()
+            .sync_all()
+            .map_err(|error| format!("cannot sync export file: {error}"))?;
+        writer
+            .temporary
+            .persist(writer.target)
+            .map_err(|error| format!("cannot replace export file: {}", error.error))?;
     }
     Ok(())
 }
@@ -603,6 +666,8 @@ pub fn run() {
             load_preferences,
             save_preferences,
             write_export,
+            write_export_chunk,
+            cancel_export,
             write_compiled_cache_chunk,
             read_import,
         ])
@@ -636,6 +701,27 @@ mod tests {
             b"firstsecond"
         );
         assert!(state.cache_writer.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn export_chunks_are_atomically_persisted() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("diagnosis.tar.zst");
+        let state = AppState::default();
+
+        write_atomic_file_chunk(
+            &state.export_writer,
+            Some(target.clone()),
+            b"first",
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(!target.exists());
+        write_atomic_file_chunk(&state.export_writer, None, b"second", false, true).unwrap();
+
+        assert_eq!(fs::read(target).unwrap(), b"firstsecond");
+        assert!(state.export_writer.lock().unwrap().is_none());
     }
 
     #[test]

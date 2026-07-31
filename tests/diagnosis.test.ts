@@ -1,16 +1,20 @@
 import { describe, expect, it } from "vitest";
 
-import { createDiagnosisArchive, diagnosisArchiveName } from "@/core/diagnosis";
+import {
+  createDiagnosisArchive,
+  diagnosisArchiveChunks,
+  diagnosisArchiveName,
+} from "@/core/diagnosis";
 
 describe("diagnosis archive", () => {
   it("matches the TUI name and tar.zst member contract", () => {
     const exportedAt = new Date(2026, 6, 29, 14, 5, 6);
-    expect(diagnosisArchiveName("eraTW", exportedAt)).toBe(
-      "eraTW-diagnosis_20260729-140506.tar.zst",
+    expect(diagnosisArchiveName("eraThe World", exportedAt)).toBe(
+      "eraThe World-diagnosis_20260729-140506.tar.zst",
     );
 
     const archive = createDiagnosisArchive({
-      projectName: "eraTW",
+      projectName: "eraThe World",
       snapshot: Uint8Array.of(1, 2),
       logs: "[14:05:06] INFO  ready\n",
       compiledArtifact: Uint8Array.of(3, 4),
@@ -20,8 +24,26 @@ describe("diagnosis archive", () => {
     expect(unpackTar(decodeRawZstd(archive))).toEqual({
       "runtime.snapshot": [1, 2],
       "runtime.log": [...new TextEncoder().encode("[14:05:06] INFO  ready\n")],
-      "eraTW-compiled-project.bin.zst": [3, 4],
+      "eraThe World-compiled-project.bin.zst": [3, 4],
     });
+  });
+
+  it("streams bounded archive chunks instead of allocating a complete output buffer", () => {
+    const chunks = [
+      ...diagnosisArchiveChunks({
+        projectName: "unsafe/project",
+        snapshot: new Uint8Array(512 * 1024),
+        logs: "",
+        compiledArtifact: new Uint8Array(512 * 1024),
+        exportedAt: new Date(2026, 6, 29, 14, 5, 6),
+      }),
+    ];
+
+    expect(chunks.length).toBeGreaterThan(8);
+    expect(Math.max(...chunks.map((chunk) => chunk.length))).toBeLessThanOrEqual(128 * 1024 + 3);
+    expect(diagnosisArchiveName("unsafe/project", new Date(2026, 6, 29, 14, 5, 6))).toBe(
+      "unsafe_project-diagnosis_20260729-140506.tar.zst",
+    );
   });
 });
 

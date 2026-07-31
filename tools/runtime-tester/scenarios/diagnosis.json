@@ -16,7 +16,7 @@
         "canInteract": true,
         "diagnosis": { "exporting": false, "canExport": true },
         "lastDownload": {
-          "name": "project-diagnosis_20260101-080000.tar.zst",
+          "name": "Oracle CSV-diagnosis_20260101-080000.tar.zst",
           "magic": [40, 181, 47, 253]
         }
       }
@@ -27,7 +27,7 @@
       "fields": ["count", "text", "visible"],
       "expect": {
         "count": 1,
-        "text": "诊断信息已导出：project-diagnosis_20260101-080000.tar.zst",
+        "text": "诊断信息已导出：Oracle CSV-diagnosis_20260101-080000.tar.zst",
         "visible": true
       }
     }

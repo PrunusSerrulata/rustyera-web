@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 const store = reactive({
   bridgeKind: "browser",
   fault: { message: "boom" } as { message: string } | null,
+  faultMessage: "Runtime 故障 [VmFault]：boom",
   faultActionBusy: false,
   canExportDiagnosis: true,
   gameInteractionsBlocked: false,
@@ -25,6 +26,7 @@ import FaultDialog from "@/components/FaultDialog.vue";
 describe("FaultDialog", () => {
   beforeEach(() => {
     store.fault = { message: "boom" };
+    store.faultMessage = "Runtime 故障 [VmFault]：boom";
     store.faultActionBusy = false;
     vi.clearAllMocks();
     document.body.innerHTML = "";
@@ -34,6 +36,9 @@ describe("FaultDialog", () => {
     const wrapper = mount(FaultDialog, { attachTo: document.body });
     const buttons = [...document.body.querySelectorAll<HTMLButtonElement>("button")];
 
+    expect(document.body.querySelector(".fault-message")?.textContent).toBe(
+      "Runtime 故障 [VmFault]：boom",
+    );
     await clickNamed(buttons, "导出诊断信息");
     await clickNamed(buttons, "返回主菜单");
     await clickNamed(buttons, "重启并重新编译");

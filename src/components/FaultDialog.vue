@@ -8,7 +8,7 @@ const store = useRuntimeStore();
 <template>
   <DraggableDialog :open="Boolean(store.fault)" title="游戏错误" wide @close="store.dismissFault">
     <p>游戏遇到了无法恢复的错误：</p>
-    <pre class="fault-message">{{ store.fault?.message ?? store.fault }}</pre>
+    <pre class="fault-message">{{ store.faultMessage }}</pre>
     <p>诊断信息归档可发送给游戏项目或 RustyEra 开发者。</p>
     <footer class="dialog-actions">
       <button

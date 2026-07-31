@@ -356,7 +356,8 @@ async function execute(args) {
         ].includes(action.type)
       ) {
         current = await observe(action.auto_enter !== false);
-        if (current.rust.fault) return fail("runtime_fault", 1, { fault: current.rust.fault });
+        if (current.rust.fault && action.allow_fault !== true)
+          return fail("runtime_fault", 1, { fault: current.rust.fault });
         if (current.comparison && !current.comparison.equal) return fail("difference", 1);
         if (current.goal.satisfied) return (emitResult("passed"), 0);
       }
@@ -410,7 +411,8 @@ async function execute(args) {
         ].includes(action.type)
       ) {
         current = await observe(action.auto_enter !== false);
-        if (current.rust.fault) return fail("runtime_fault", 1, { fault: current.rust.fault });
+        if (current.rust.fault && action.allow_fault !== true)
+          return fail("runtime_fault", 1, { fault: current.rust.fault });
         if (current.comparison && !current.comparison.equal) return fail("difference", 1);
         if (current.goal.satisfied) return (emitResult("passed"), 0);
       }

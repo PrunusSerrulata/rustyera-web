@@ -109,9 +109,10 @@ export interface FrontendBridge {
   projectName(): string | undefined;
   openUpload(): Promise<Uint8Array | undefined>;
   saveDownload(name: string, bytes: Uint8Array): Promise<boolean>;
-  createDiagnosisArchive(
+  saveDiagnosis(
+    name: string,
     input: import("@/core/diagnosis").DiagnosisArchiveInput,
-  ): Promise<Uint8Array>;
+  ): Promise<boolean>;
   writeCompiledCacheChunk(bytes: Uint8Array, reset: boolean, complete: boolean): Promise<void>;
   close(): Promise<void>;
 }

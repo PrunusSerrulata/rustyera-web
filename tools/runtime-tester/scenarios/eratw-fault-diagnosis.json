@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eraTW",
+  "mode": "fixed",
+  "clock": "2026-07-31T02:00:47Z",
+  "start": {
+    "type": "vm_snapshot",
+    "path": "../../../../games/eraTW/runtime_20260731-100047.snapshot"
+  },
+  "actions": [
+    {
+      "type": "input",
+      "value": "60",
+      "allow_fault": true
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".fault-message" },
+      "fields": ["count", "text", "visible"],
+      "expect": {
+        "count": 1,
+        "text": "Runtime 故障 [VmFault] [CAN_COM60]：an input command cannot execute while user SKIPDISP is active; wrap it in NOSKIP/ENDNOSKIP（ERB/コマンド関連/COMF/COMF60 正常位.ERB:349）",
+        "visible": true
+      }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "导出诊断信息…", "exact": true },
+      "allow_fault": true
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "diagnosis": { "exporting": false, "canExport": true },
+        "lastDownload": {
+          "name": "eraThe World-diagnosis_20260731-100047.tar.zst",
+          "magic": [40, 181, 47, 253]
+        }
+      }
+    }
+  ],
+  "limits": {
+    "max_steps": 10,
+    "timeout_seconds": 900
+  }
+}

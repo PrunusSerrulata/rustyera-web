@@ -5,7 +5,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import type { DiagnosisArchiveInput } from "@/core/diagnosis";
-import { createDiagnosisArchiveInWorker } from "@/platform/diagnosis";
+import { streamDiagnosisArchiveInWorker } from "@/platform/diagnosis";
 import type {
   DebugMessage,
   FrontendBridge,
@@ -171,8 +171,31 @@ export class TauriBridge implements FrontendBridge {
     return true;
   }
 
-  createDiagnosisArchive(input: DiagnosisArchiveInput): Promise<Uint8Array> {
-    return createDiagnosisArchiveInWorker(input);
+  async saveDiagnosis(name: string, input: DiagnosisArchiveInput): Promise<boolean> {
+    const path = await save({ defaultPath: name });
+    if (!path) return false;
+    let first = true;
+    try {
+      await streamDiagnosisArchiveInWorker(input, async (chunk) => {
+        await invoke("write_export_chunk", {
+          path,
+          bytes: [...chunk],
+          reset: first,
+          complete: false,
+        });
+        first = false;
+      });
+      await invoke("write_export_chunk", {
+        path,
+        bytes: [],
+        reset: first,
+        complete: true,
+      });
+      return true;
+    } catch (error) {
+      await invoke("cancel_export").catch(() => undefined);
+      throw error;
+    }
   }
 
   async writeCompiledCacheChunk(

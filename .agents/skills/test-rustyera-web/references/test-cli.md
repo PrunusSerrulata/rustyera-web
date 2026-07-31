@@ -90,6 +90,9 @@ An action has `type`:
   runtime advances them; the runner must not click through them.
 - `assert_state`: an `expect` subset of the serialized frontend snapshot.
 
+Set `allow_fault: true` on an action only when the scenario intentionally enters or operates on
+the fatal-error UI. The runner otherwise stops at the first runtime fault.
+
 Locators accept exactly one of `role` (plus optional `name`/`exact`), `label`, `text`, `test_id`, or
 `css`, plus optional zero-based `nth` (`-1` selects the last match). Prefer accessible role/name
 locators. A compared click/press that advances the runtime must declare `semantic_input`; missing

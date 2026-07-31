@@ -37,15 +37,15 @@ const environment = {
   VITE_RUSTYERA_TEST_PROJECT: project,
   VITE_RUSTYERA_TEST_STATE: state ?? "",
   VITE_RUSTYERA_TAURI_PROJECT_SMOKE:
-    configuredSpec && path.basename(configuredSpec) === "project-smoke.spec.mjs" ? "1" : "0",
+    configuredSpec && path.basename(configuredSpec) === "project-smoke.spec.mjs" ? "1" : "",
   VITE_RUSTYERA_TAURI_TOOLTIP:
-    configuredSpec && path.basename(configuredSpec) === "tooltip.spec.mjs" ? "1" : "0",
+    configuredSpec && path.basename(configuredSpec) === "tooltip.spec.mjs" ? "1" : "",
   VITE_RUSTYERA_TAURI_AKUMA_MAID_IMAGES:
-    configuredSpec && path.basename(configuredSpec) === "akuma-maid-images.spec.mjs" ? "1" : "0",
+    configuredSpec && path.basename(configuredSpec) === "akuma-maid-images.spec.mjs" ? "1" : "",
   VITE_RUSTYERA_TAURI_RORONA_IMAGES:
-    configuredSpec && path.basename(configuredSpec) === "rorona-images.spec.mjs" ? "1" : "0",
+    configuredSpec && path.basename(configuredSpec) === "rorona-images.spec.mjs" ? "1" : "",
   VITE_RUSTYERA_TAURI_ERATW_CLOCK:
-    configuredSpec && path.basename(configuredSpec) === "eratw-clock.spec.mjs" ? "1" : "0",
+    configuredSpec && path.basename(configuredSpec) === "eratw-clock.spec.mjs" ? "1" : "",
 };
 
 await run(

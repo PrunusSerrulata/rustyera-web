@@ -32,6 +32,11 @@ describe("frontend host and image-line policy", () => {
     );
   });
 
+  it("does not enable project-specific Tauri specs during the default suite", () => {
+    const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
+    expect(runner).not.toMatch(/VITE_RUSTYERA_TAURI_[A-Z_]+:[\s\S]*?\?\s*"1"\s*:\s*"0"/);
+  });
+
   it("builds the release Tauri binary without a Windows console", () => {
     const entrypoint = readFileSync(resolve("src-tauri/src/main.rs"), "utf8");
     expect(entrypoint).toMatch(
