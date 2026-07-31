@@ -6,14 +6,15 @@ const roronaImages = process.env.VITE_RUSTYERA_TAURI_RORONA_IMAGES ? describe : 
 
 roronaImages("Tauri erarorona image rendering", () => {
   it("keeps the title and workshop image between their surrounding text", async () => {
+    let automaticTimedWaits = 0;
     // The Tauri driver accepts physical pixels on Retina. Project the approximately
     // 1400×1000 reference window through the active device scale first.
     const deviceScale = await browser.execute(() => window.devicePixelRatio || 1);
     await browser.setWindowSize(1400 * deviceScale, 1050 * deviceScale);
     await waitForProject();
-    await drainVoidWaits(300);
+    automaticTimedWaits += await drainVoidWaits(300);
     await submit(0);
-    await drainVoidWaits(300);
+    automaticTimedWaits += await drainVoidWaits(300);
     await submit(0);
     await submit(999);
     await submit(9);
@@ -36,7 +37,7 @@ roronaImages("Tauri erarorona image rendering", () => {
     assert.ok(title.metadataGap >= 0, "title image must not cover its metadata");
 
     await submit(0);
-    await advanceEnterWaitsUntilWorkshop(1100);
+    automaticTimedWaits += await advanceEnterWaitsUntil("亚斯特丽德的工房", 1100, true);
 
     let workshop;
     await browser.waitUntil(
@@ -52,6 +53,19 @@ roronaImages("Tauri erarorona image rendering", () => {
     assert.equal(workshop.count, 1);
     assert.ok(workshop.statusGap >= 0, "workshop image must start below the status header");
     assert.ok(workshop.dialogueGap >= 0, "workshop image must end above the dialogue");
+
+    automaticTimedWaits += await advanceEnterWaitsUntil("师傅还没回来啊", 1600);
+    const firstDialogue = await dialoguePortraitMetrics();
+    assertDialoguePortraits(firstDialogue, 1);
+
+    automaticTimedWaits += await advanceEnterWaitsUntil("抱歉，请问您是", 400);
+    const secondDialogue = await dialoguePortraitMetrics();
+    assertDialoguePortraits(secondDialogue, 2);
+    assert.ok(
+      automaticTimedWaits > 0,
+      "opening fades and dialogue typewriter frames must advance without clicking",
+    );
+    console.log(JSON.stringify({ firstDialogue, secondDialogue, automaticTimedWaits }));
   });
 });
 
@@ -84,29 +98,58 @@ async function submit(value) {
 }
 
 async function drainVoidWaits(maximum) {
+  let automaticTimedWaits = 0;
   for (let attempt = 0; attempt < maximum; attempt += 1) {
     const state = await snapshot();
-    if (state.wait?.kind !== "void") return;
+    if (state.wait?.kind !== "void") return automaticTimedWaits;
+    if (state.wait.deadline_ns != null) {
+      automaticTimedWaits += 1;
+      await waitForWaitChange(state.wait.wait_id);
+      continue;
+    }
     await $(".prompt-bar button[type=submit]").click();
     await waitForWaitChange(state.wait.wait_id);
   }
   throw new Error(`void wait budget exhausted after ${maximum} attempts`);
 }
 
-async function advanceEnterWaitsUntilWorkshop(maximum) {
+async function advanceEnterWaitsUntil(expectedText, maximum, requireImage = false) {
+  let automaticTimedWaits = 0;
   for (let attempt = 0; attempt <= maximum; attempt += 1) {
     const state = await snapshot();
-    const textReached = state.output.slice(-40).join("\n").includes("亚斯特丽德的工房");
-    const imageReached = (await $(".media-visual.media-sprite").isDisplayed()).valueOf();
-    if (textReached && imageReached) return;
+    const textReached = state.output.slice(-60).join("\n").includes(expectedText);
+    const imageReached =
+      !requireImage || (await $(".media-visual.media-sprite").isDisplayed()).valueOf();
+    if (textReached && imageReached && state.wait?.deadline_ns == null) return automaticTimedWaits;
+    if (!state.wait) {
+      await waitForNextWait();
+      continue;
+    }
+    if (state.wait?.deadline_ns != null) {
+      automaticTimedWaits += 1;
+      await waitForWaitChange(state.wait.wait_id);
+      continue;
+    }
     assert.ok(
-      ["enter_key", "void"].includes(state.wait?.kind),
+      ["enter_key", "any_key", "void"].includes(state.wait?.kind) ||
+        (state.wait?.one_input && state.wait?.kind === "string_value"),
       `opening flow reached unexpected ${state.wait?.kind ?? "missing"} prompt`,
     );
-    await $(".prompt-bar button[type=submit]").click();
+    if (state.wait.kind === "string_value") await $(".game-viewport .game-button").click();
+    else await $(".prompt-bar button[type=submit]").click();
     await waitForWaitChange(state.wait.wait_id);
   }
-  throw new Error(`workshop was not visible after ${maximum} Enter waits`);
+  throw new Error(`${expectedText} was not visible after ${maximum} Enter waits`);
+}
+
+async function waitForNextWait() {
+  await browser.waitUntil(
+    async () => {
+      const state = await snapshot();
+      return state.fault != null || (state.phase === "waiting_input" && state.wait != null);
+    },
+    { timeout: STEP_TIMEOUT, timeoutMsg: "game did not expose its next input wait" },
+  );
 }
 
 async function waitForWaitChange(waitId) {
@@ -177,4 +220,52 @@ async function workshopMetrics() {
       dialogueGap: bounds && dialogueBounds ? dialogueBounds.top - bounds.bottom : -Infinity,
     };
   });
+}
+
+async function dialoguePortraitMetrics() {
+  return browser.execute(() => {
+    const images = [...document.querySelectorAll(".media-visual.media-sprite")].map((image) => {
+      const bounds = image.getBoundingClientRect();
+      return {
+        left: bounds.left,
+        top: bounds.top,
+        right: bounds.right,
+        bottom: bounds.bottom,
+        width: bounds.width,
+        height: bounds.height,
+      };
+    });
+    const [background, ...portraits] = images;
+    const dialogue = [...document.querySelectorAll(".game-line")]
+      .filter((line) => line.textContent?.includes("萝乐娜"))
+      .at(-1);
+    const dialogueBounds = dialogue?.getBoundingClientRect();
+    return {
+      imageCount: images.length,
+      background,
+      portraits,
+      dialogueTop: dialogueBounds?.top ?? null,
+    };
+  });
+}
+
+function assertDialoguePortraits(metrics, expectedPortraits) {
+  assert.ok(metrics.background, "dialogue background must be rendered");
+  assert.equal(metrics.portraits.length, expectedPortraits);
+  for (const portrait of metrics.portraits) {
+    assert.ok(
+      Math.abs(portrait.bottom - metrics.background.bottom) <= 2,
+      `portrait bottom ${portrait.bottom} must align with background ${metrics.background.bottom}`,
+    );
+    assert.ok(
+      portrait.left >= metrics.background.left - 2 &&
+        portrait.top >= metrics.background.top - 2 &&
+        portrait.right <= metrics.background.right + 2,
+      "portrait must remain inside the scene background",
+    );
+    assert.ok(
+      metrics.dialogueTop == null || portrait.bottom <= metrics.dialogueTop,
+      "portrait must not overlap the dialogue text",
+    );
+  }
 }

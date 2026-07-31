@@ -9,6 +9,7 @@ vi.mock("@/stores/runtime", () => ({
     activate: vi.fn(),
     effectivePreferences: { imageScale: 1 },
     gameTextStyle: { fontSizePx: 12 },
+    presentation: { settings: { line_height: 18_000 } },
   }),
 }));
 
@@ -51,11 +52,13 @@ describe("frontend host and image-line policy", () => {
     expect(wrapper.get("p.html-node").text()).toBe("title");
 
     const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
+    expect(stylesheet).toMatch(/\.game-viewport\s*\{[^}]*scrollbar-width:\s*thin;/s);
     expect(stylesheet).toMatch(/\.game-line \.html-node:is\(p\)\s*\{\s*margin:\s*0;/);
     expect(stylesheet).toMatch(
       /\.game-line:has\(\.media-image, \.canvas-replay\)[\s\S]*?margin:\s*0;[\s\S]*?padding:\s*0;[\s\S]*?line-height:\s*1;/,
     );
     expect(stylesheet).toMatch(/\.media-positioned\s*\{\s*overflow:\s*visible;/);
+    expect(stylesheet).toMatch(/\.virtual-history\s*\{[^}]*width:\s*100%;/s);
     expect(stylesheet).toMatch(
       /\.game-line:has\(\.media-positioned\)\s*\{[^}]*contain:\s*layout;[^}]*overflow:\s*visible;[^}]*z-index:\s*1;/s,
     );
@@ -91,6 +94,31 @@ describe("frontend host and image-line policy", () => {
 
     expect(wrapper.get(".html-shape-space").attributes("style")).toContain("width: 432px");
     expect(wrapper.get(".html-shape-space").attributes("style")).toContain("height: 12px");
+  });
+
+  it("reserves one configured console row for an overflowing HTML image", () => {
+    const wrapper = mount(HtmlNode, {
+      props: {
+        node: {
+          type: "element",
+          kind: "image",
+          children: [],
+          semantic: {
+            type: "image",
+            source: "portrait",
+            height: { unit: "font_height_hundredths", value: 3000 },
+            y: { unit: "font_height_hundredths", value: -3000 },
+          },
+        },
+      },
+      global: { stubs: { MediaImage: true } },
+    });
+
+    expect(wrapper.getComponent({ name: "MediaImage" }).props("placement")).toMatchObject({
+      height: 18_000,
+      requested_height: { unit: "font_height_hundredths", value: 3000 },
+      requested_y: { unit: "font_height_hundredths", value: -3000 },
+    });
   });
 
   it("locks positioned HTML buttons to Emuera font-relative horizontal coordinates", () => {

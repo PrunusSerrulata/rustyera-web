@@ -95,6 +95,7 @@ const directStyle = computed(() => ({
 const positionedSlotStyle = computed(() => ({
   width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
   height: `${(logicalPixels(props.placement.height) ?? store.gameTextStyle.fontSizePx) * scale.value}px`,
+  "--media-row-offset": `${-(logicalPixels(props.placement.height) ?? store.gameTextStyle.fontSizePx) * scale.value}px`,
   opacity: opacity.value,
   zIndex: props.placement.depth,
 }));
@@ -103,6 +104,14 @@ const positionedVisualStyle = computed(() => ({
   height: dimensions.value.height ? `${dimensions.value.height * scale.value}px` : undefined,
   top: verticalOffset() ?? "0px",
 }));
+const bottomAnchored = computed(() => {
+  const y = props.placement.requested_y as PresentationLength | undefined;
+  const height = props.placement.requested_height as PresentationLength | undefined;
+  if (!y || !height || y.unit !== height.unit) return false;
+  const yValue = Number(y.value);
+  const heightValue = Math.abs(Number(height.value));
+  return Number.isFinite(yValue) && Number.isFinite(heightValue) && yValue + heightValue === 0;
+});
 const spriteStyle = computed(() => ({
   width: `${(dimensions.value.width ?? 0) * scale.value}px`,
   height: `${(dimensions.value.height ?? 0) * scale.value}px`,
@@ -174,7 +183,11 @@ function stopHover(): void {
     class="media-image media-positioned"
     :style="positionedSlotStyle"
   >
-    <span class="media-visual" :style="positionedVisualStyle">
+    <span
+      class="media-visual"
+      :class="{ 'media-bottom-anchored': bottomAnchored }"
+      :style="positionedVisualStyle"
+    >
       <CanvasReplay
         :replay="canvasReplay"
         :display-width="dimensions.width ? dimensions.width * scale : undefined"
@@ -189,7 +202,7 @@ function stopHover(): void {
   >
     <span
       class="media-visual media-sprite"
-      :class="{ 'media-hovered': hovered }"
+      :class="{ 'media-hovered': hovered, 'media-bottom-anchored': bottomAnchored }"
       :style="positionedVisualStyle"
       @mouseenter="startHover"
       @mousemove="startHover"
@@ -211,7 +224,7 @@ function stopHover(): void {
   >
     <img
       class="media-visual"
-      :class="{ 'media-hovered': hovered }"
+      :class="{ 'media-hovered': hovered, 'media-bottom-anchored': bottomAnchored }"
       :src="source"
       :alt="alt ?? ''"
       :style="positionedVisualStyle"

@@ -74,6 +74,7 @@ export interface RuntimeTestConfiguration {
 
 const DEBUG_VARIABLE_PAGE_LIMIT = 256;
 const DEBUG_VARIABLE_MAX_PAGES = 16;
+const TIME_ADVANCE_INTERVAL_NS = 16_000_000;
 
 const PROJECT_PROGRESS_LABELS: Record<ProjectProgress["stage"], string> = {
   importing: "正在复制项目文件",
@@ -153,7 +154,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let pendingStart: RuntimeTestConfiguration["start"] = { type: "new_game" };
   let testClock: Date | undefined;
   let testEntropyState: bigint | undefined;
-  let testMonotonicNs: number | undefined;
+  let testMonotonicOrigin: { frontendMs: number; runtimeNs: number } | undefined;
+  let lastTimeAdvanceNs: number | undefined;
   let nextEnvironmentRevision = 1;
   let projectRuntimeStartedAt: number | undefined;
   let projectUsedCompiledCache = false;
@@ -274,7 +276,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
       : new Date("2026-01-01T00:00:00Z");
     if (Number.isNaN(testClock.getTime())) throw new Error("测试 clock 不是有效日期");
     testEntropyState = BigInt(start.seed ?? 1) || 1n;
-    testMonotonicNs = configuration.monotonicStartNs ?? 1_000_000;
+    testMonotonicOrigin = {
+      frontendMs: performance.now(),
+      runtimeNs: configuration.monotonicStartNs ?? 1_000_000,
+    };
   }
 
   async function ensureSession(): Promise<void> {
@@ -405,6 +410,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     try {
       const batch = await bridge.pump();
       await handleBatch(batch);
+      await advanceTimedWait();
       schedulePump(batch.state === "more_work" || batch.state === "output_ready" ? 0 : 16);
     } catch (error) {
       finishProjectLoad();
@@ -839,10 +845,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       value: {
         wait_id: wait.wait_id,
         token: wait.submission_token,
-        monotonic_time_ns:
-          testMonotonicNs == null
-            ? Math.round(performance.now() * 1_000_000)
-            : (testMonotonicNs += 1_000_000),
+        monotonic_time_ns: sampleMonotonicTime(),
         intent,
         message_skip: messageSkip,
       },
@@ -853,6 +856,23 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function continueMessageSkip(): Promise<void> {
     const wait = presentation.inputWait;
     if (messageSkip.continue(wait)) await submitIntent({ type: "enter" }, true);
+  }
+
+  async function advanceTimedWait(): Promise<void> {
+    if (presentation.inputWait?.deadline_ns == null) return;
+    const now = sampleMonotonicTime();
+    if (lastTimeAdvanceNs != null && now - lastTimeAdvanceNs < TIME_ADVANCE_INTERVAL_NS) return;
+    lastTimeAdvanceNs = now;
+    await send({ type: "advance_time", value: { monotonic_time_ns: now } });
+  }
+
+  function sampleMonotonicTime(): number {
+    const frontendMs = performance.now();
+    if (!testMonotonicOrigin) return Math.round(frontendMs * 1_000_000);
+    return Math.round(
+      testMonotonicOrigin.runtimeNs +
+        Math.max(0, frontendMs - testMonotonicOrigin.frontendMs) * 1_000_000,
+    );
   }
 
   function resetMessageSkip(): void {
@@ -916,6 +936,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     sessionReady.value = false;
     phase.value = "negotiating";
     runtimeEpoch.value = 0;
+    lastTimeAdvanceNs = undefined;
     inputUndo.value = null;
     fault.value = null;
     debugPausePending = false;

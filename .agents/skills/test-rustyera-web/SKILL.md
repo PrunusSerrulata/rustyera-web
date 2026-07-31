@@ -57,6 +57,14 @@ npm run test:browser-compat -- --browser firefox
 npm run test:browser-compat -- --browser safari
 ```
 
+Native Firefox and Safari tests launch an installed browser, WebDriver, and a local test server.
+Always run every `npm run test:browser-compat` command outside the filesystem sandbox with
+`sandbox_permissions=require_escalated`; state in the approval justification that native browser
+automation and local server binding are required. Do not make an initial sandboxed attempt. A
+listen `EPERM`, driver startup failure, or automation timeout from a sandboxed run is an invalid
+infrastructure attempt, not a product failure; rerun it outside the sandbox before diagnosing the
+application or test.
+
 For Emuera comparison, add one shell-quoted `--reference-command`; under Wine also add
 `--reference-path-command`. Treat timeouts, missing capabilities, schema drift, browser crashes,
 an empty reference response, an unavailable native browser, or disabled Safari remote automation

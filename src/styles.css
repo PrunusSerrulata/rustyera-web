@@ -214,6 +214,7 @@ select {
   position: relative;
   min-height: 0;
   overflow: auto;
+  scrollbar-width: thin;
   overscroll-behavior: contain;
   background: var(--game-background);
   font-family: var(--game-font);
@@ -238,7 +239,7 @@ select {
 }
 .virtual-history {
   position: relative;
-  width: calc(100% - 0.5ch);
+  width: 100%;
   margin: 0;
   z-index: 2;
 }
@@ -386,6 +387,12 @@ select {
   position: absolute;
   left: 0;
   display: block;
+}
+.media-positioned > .media-visual.media-bottom-anchored {
+  /* Emuera's ypos=-height idiom anchors an escaped image to the preceding
+     console-row boundary; the browser's configured inline slot and final line
+     descent have already advanced past that boundary. */
+  transform: translateY(calc(var(--media-row-offset) - 3px));
 }
 .media-sprite {
   overflow: hidden;

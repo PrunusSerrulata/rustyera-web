@@ -66,6 +66,68 @@
         "above": { "min": 0 },
         "no_overlap": true
       }
+    },
+    {
+      "type": "advance_enter_waits_until",
+      "maximum": 1600,
+      "auto_enter": false,
+      "until": {
+        "output_tail_contains": "师傅还没回来啊",
+        "tail_lines": 60
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite", "nth": 1 },
+      "relative_to": { "css": ".media-visual.media-sprite", "nth": 0 },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "inside": { "tolerance": 2 },
+        "bottom_aligned_within": 2
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite", "nth": 1 },
+      "relative_to": { "text": "师傅还没回来啊", "exact": false },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "above": { "min": 0 },
+        "no_overlap": true
+      }
+    },
+    {
+      "type": "advance_enter_waits_until",
+      "maximum": 400,
+      "auto_enter": false,
+      "until": {
+        "output_tail_contains": "抱歉，请问您是",
+        "tail_lines": 60
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite", "nth": 1 },
+      "relative_to": { "css": ".media-visual.media-sprite", "nth": 0 },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "inside": { "tolerance": 2 },
+        "bottom_aligned_within": 2
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite", "nth": 2 },
+      "relative_to": { "css": ".media-visual.media-sprite", "nth": 0 },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "inside": { "tolerance": 2 },
+        "bottom_aligned_within": 2
+      }
     }
   ],
   "limits": {

@@ -238,6 +238,55 @@ describe("runtime store session lifecycle", () => {
     );
   });
 
+  it("advances deadline waits from the frontend monotonic clock without user input", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    const wait = {
+      kind: "void",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 4 },
+      deadline_ns: 11_000_000,
+    };
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          runtimeEvent("wait_changed", { type: "opened", value: wait }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("wait_changed", { type: "closed", value: null })],
+      });
+    const store = useRuntimeStore();
+    store.configureTestRun({
+      start: { type: "new_game", seed: 42 },
+      monotonicStartNs: 1_000_000,
+    });
+
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      {
+        type: "advance_time",
+        value: { monotonic_time_ns: 1_000_000 },
+      },
+      undefined,
+    );
+    expect(bridge.submitRuntime).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "input" }),
+      undefined,
+    );
+
+    await vi.advanceTimersByTimeAsync(32);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        (call) => (call as unknown as [{ type?: string }])[0]?.type === "advance_time",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("imports a traditional save before starting the test runtime", async () => {
     vi.stubEnv("VITE_RUSTYERA_TEST", "1");
     bridge.openProject.mockResolvedValue({

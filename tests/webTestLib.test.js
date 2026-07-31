@@ -172,6 +172,33 @@ describe("web game test scenario", () => {
     );
   });
 
+  it("asserts bottom alignment against the reference scene image", async () => {
+    const box = (top, height) => ({
+      getBoundingClientRect: () => ({
+        left: 0,
+        top,
+        right: 100,
+        bottom: top + height,
+        width: 100,
+        height,
+      }),
+    });
+    const subject = { evaluateAll: vi.fn((callback) => callback([box(40, 60)])) };
+    const reference = { evaluateAll: vi.fn((callback) => callback([box(0, 101)])) };
+    const page = {
+      locator: vi.fn((selector) => (selector === ".portrait" ? subject : reference)),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "assert_layout",
+        locator: { css: ".portrait" },
+        relative_to: { css: ".background" },
+        expect: { bottom_aligned_within: 1 },
+      }),
+    ).resolves.toEqual(expect.objectContaining({ query: expect.any(Object) }));
+  });
+
   it("stops explicit Enter advancement when the current output tail reaches a screen", async () => {
     const snapshots = [
       { output: ["opening"], wait: { kind: "enter_key", wait_id: "1" } },
@@ -235,6 +262,127 @@ describe("web game test scenario", () => {
           output_tail_contains: "目标场景",
           locator: { css: ".target" },
         },
+      }),
+    ).resolves.toMatchObject({ attempts: 1 });
+    expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("lets deadline waits advance without clicking the game input", async () => {
+    const snapshots = [
+      {
+        output: ["淡入中"],
+        wait: { kind: "void", wait_id: "1", deadline_ns: "10000000" },
+      },
+      { output: ["目标场景"], wait: { kind: "enter_key", wait_id: "2" } },
+    ];
+    let snapshotIndex = 0;
+    const click = vi.fn();
+    const page = {
+      evaluate: vi.fn((callback) => {
+        if (String(callback).includes("waitForStableObservation")) {
+          snapshotIndex += 1;
+          return snapshots[snapshotIndex];
+        }
+        return snapshots[snapshotIndex];
+      }),
+      locator: vi.fn(() => ({ click })),
+      waitForFunction: vi.fn(),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "advance_enter_waits_until",
+        maximum: 5,
+        until: { output_tail_contains: "目标场景" },
+      }),
+    ).resolves.toMatchObject({ attempts: 1 });
+    expect(click).not.toHaveBeenCalled();
+    expect(page.waitForFunction).toHaveBeenCalledOnce();
+  });
+
+  it("submits Enter-compatible one-input message waits while advancing dialogue", async () => {
+    const snapshots = [
+      {
+        output: ["打字完成"],
+        wait: { kind: "string_value", wait_id: "1", one_input: true },
+      },
+      { output: ["目标对话"], wait: { kind: "enter_key", wait_id: "2" } },
+    ];
+    let snapshotIndex = 0;
+    const click = vi.fn();
+    const page = {
+      evaluate: vi.fn((callback) => {
+        if (String(callback).includes("waitForStableObservation")) {
+          snapshotIndex += 1;
+          return snapshots[snapshotIndex];
+        }
+        return snapshots[snapshotIndex];
+      }),
+      locator: vi.fn(() => ({ click, first: () => ({ click }) })),
+      waitForFunction: vi.fn(),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "advance_enter_waits_until",
+        maximum: 5,
+        until: { output_tail_contains: "目标对话" },
+      }),
+    ).resolves.toMatchObject({ attempts: 1 });
+    expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("waits through a transient missing prompt between dialogue waits", async () => {
+    const snapshots = [
+      { output: ["转场中"], wait: null },
+      { output: ["目标对话"], wait: { kind: "enter_key", wait_id: "2" } },
+    ];
+    let snapshotIndex = 0;
+    const page = {
+      evaluate: vi.fn((callback) => {
+        if (String(callback).includes("waitForStableObservation")) {
+          snapshotIndex += 1;
+          return snapshots[snapshotIndex];
+        }
+        return snapshots[snapshotIndex];
+      }),
+      locator: vi.fn(),
+      waitForFunction: vi.fn(),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "advance_enter_waits_until",
+        maximum: 5,
+        until: { output_tail_contains: "目标对话" },
+      }),
+    ).resolves.toMatchObject({ attempts: 1 });
+  });
+
+  it("advances an any-key introduction wait through the visible submit control", async () => {
+    const snapshots = [
+      { output: ["继续介绍"], wait: { kind: "any_key", wait_id: "1" } },
+      { output: ["目标对话"], wait: { kind: "enter_key", wait_id: "2" } },
+    ];
+    let snapshotIndex = 0;
+    const click = vi.fn();
+    const page = {
+      evaluate: vi.fn((callback) => {
+        if (String(callback).includes("waitForStableObservation")) {
+          snapshotIndex += 1;
+          return snapshots[snapshotIndex];
+        }
+        return snapshots[snapshotIndex];
+      }),
+      locator: vi.fn(() => ({ click })),
+      waitForFunction: vi.fn(),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "advance_enter_waits_until",
+        maximum: 5,
+        until: { output_tail_contains: "目标对话" },
       }),
     ).resolves.toMatchObject({ attempts: 1 });
     expect(click).toHaveBeenCalledOnce();

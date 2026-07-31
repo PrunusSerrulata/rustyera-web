@@ -171,6 +171,29 @@ describe("Era sprite images", () => {
     expect(wrapper.get<HTMLElement>(".media-visual").attributes("style")).toContain("top: -4px");
   });
 
+  it("marks ypos=-height images for Emuera bottom-row anchoring", async () => {
+    const wrapper = mount(MediaImage, {
+      props: {
+        placement: {
+          resource_id: "portrait",
+          width: 0,
+          height: 12_000,
+          depth: 0,
+          opacity: { numerator: 1, denominator: 1 },
+          revision: 5,
+          requested_height: { unit: "font_height_hundredths", value: 3000 },
+          requested_y: { unit: "font_height_hundredths", value: -3000 },
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(wrapper.get(".media-positioned").attributes("style")).toContain(
+      "--media-row-offset: -12px",
+    );
+    expect(wrapper.get(".media-visual").classes()).toContain("media-bottom-anchored");
+  });
+
   it("keeps the full positioned visual mounted while loading its hover image", async () => {
     store.presentation.resources.sprites = [
       {

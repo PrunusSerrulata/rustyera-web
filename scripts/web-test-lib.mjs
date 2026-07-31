@@ -274,12 +274,25 @@ export async function runAction(page, action) {
         throw new Error(
           `Enter wait budget exhausted before target screen ${JSON.stringify(action.until)}`,
         );
-      if (snapshot.wait?.kind !== "enter_key")
+      if (!snapshot.wait) {
+        await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+        continue;
+      }
+      if (snapshot.wait?.deadline_ns != null) {
+        await waitForAutomaticWaitChange(page, snapshot.wait.wait_id);
+        continue;
+      }
+      if (
+        !["enter_key", "any_key", "void"].includes(snapshot.wait?.kind) &&
+        !(snapshot.wait?.one_input && snapshot.wait?.kind === "string_value")
+      )
         throw new Error(
           `advance_enter_waits_until reached unexpected ${snapshot.wait?.kind ?? "missing"} prompt`,
         );
       const waitId = snapshot.wait.wait_id;
-      await page.locator(".prompt-bar button[type=submit]").click();
+      if (snapshot.wait.kind === "string_value")
+        await page.locator(".game-viewport .game-button").first().click();
+      else await page.locator(".prompt-bar button[type=submit]").click();
       await page.waitForFunction((previousWaitId) => {
         const current = window.__RUSTYERA_TEST__.snapshot();
         return current.fault != null || current.wait?.wait_id !== previousWaitId;
@@ -289,11 +302,16 @@ export async function runAction(page, action) {
   }
   if (action.type === "drain_void_waits") {
     const maximum = Number(action.maximum ?? 100);
+    let automaticTimedWaits = 0;
     for (let attempt = 0; attempt < maximum; attempt += 1) {
-      const waiting = await page.evaluate(
-        () => window.__RUSTYERA_TEST__.snapshot().wait?.kind === "void",
-      );
-      if (!waiting) return { semanticInput: "", attempts: attempt };
+      const snapshot = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+      if (snapshot.wait?.kind !== "void")
+        return { semanticInput: "", attempts: attempt, automaticTimedWaits };
+      if (snapshot.wait.deadline_ns != null) {
+        automaticTimedWaits += 1;
+        await waitForAutomaticWaitChange(page, snapshot.wait.wait_id);
+        continue;
+      }
       await page.locator(".prompt-bar button[type=submit]").click();
       await page.waitForTimeout(20);
     }
@@ -360,6 +378,14 @@ export async function runAction(page, action) {
     return { state };
   } else throw new Error(`unknown action type ${action.type}`);
   return { semanticInput: action.semantic_input };
+}
+
+async function waitForAutomaticWaitChange(page, waitId) {
+  await page.waitForFunction((previousWaitId) => {
+    const current = window.__RUSTYERA_TEST__.snapshot();
+    return current.fault != null || current.wait?.wait_id !== previousWaitId;
+  }, waitId);
+  await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
 }
 
 async function queryCanvasPixels(locator) {
@@ -443,7 +469,8 @@ function assertLayout(actual, expected) {
       expected.no_overlap ||
       expected.inside ||
       expected.right_aligned_within != null ||
-      expected.top_aligned_within != null
+      expected.top_aligned_within != null ||
+      expected.bottom_aligned_within != null
     )
       throw new Error(
         "assertion failed at layout.relative_to: relationship requires a matching element",
@@ -478,6 +505,13 @@ function assertLayout(actual, expected) {
     assertDistance("right_aligned", first.right, reference.right, expected.right_aligned_within);
   if (expected.top_aligned_within != null)
     assertDistance("top_aligned", first.top, reference.top, expected.top_aligned_within);
+  if (expected.bottom_aligned_within != null)
+    assertDistance(
+      "bottom_aligned",
+      first.bottom,
+      reference.bottom,
+      expected.bottom_aligned_within,
+    );
 }
 
 function assertSpread(label, values, tolerance) {
