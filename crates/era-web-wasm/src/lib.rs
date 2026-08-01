@@ -4,6 +4,7 @@ use era_debug_protocol::DebugMessage;
 use era_runtime::{ProjectProgressReporter, RuntimeDriveBudget};
 use era_runtime_protocol::{ProjectManifest, RuntimeMessage};
 use era_web_bridge::{WebSession, WebSessionOptions, project_identity};
+use serde::de::DeserializeOwned;
 use wasm_bindgen::prelude::*;
 
 #[derive(serde::Serialize)]
@@ -34,7 +35,7 @@ impl WasmRuntime {
         let options = if options.is_null() || options.is_undefined() {
             WebSessionOptions::default()
         } else {
-            serde_wasm_bindgen::from_value(options).map_err(js_error)?
+            from_js(options)?
         };
         let mut inner = WebSession::new(options).map_err(js_error)?;
         if let Some(progress_callback) = progress_callback {
@@ -64,7 +65,7 @@ impl WasmRuntime {
         message: JsValue,
         correlation_id: Option<u64>,
     ) -> Result<JsValue, JsValue> {
-        let message: RuntimeMessage = serde_wasm_bindgen::from_value(message).map_err(js_error)?;
+        let message: RuntimeMessage = from_js(message)?;
         to_js(
             self.inner
                 .submit_runtime(&message, correlation_id)
@@ -83,7 +84,7 @@ impl WasmRuntime {
         message: JsValue,
         correlation_id: Option<u64>,
     ) -> Result<JsValue, JsValue> {
-        let message: DebugMessage = serde_wasm_bindgen::from_value(message).map_err(js_error)?;
+        let message: DebugMessage = from_js(message)?;
         to_js(
             self.inner
                 .submit_debug(&message, correlation_id)
@@ -98,8 +99,7 @@ impl WasmRuntime {
     /// Returns a JavaScript error when the manifest is invalid or cannot be queued.
     #[wasm_bindgen(js_name = loadProject)]
     pub fn load_project(&mut self, manifest: JsValue) -> Result<JsValue, JsValue> {
-        let manifest: ProjectManifest =
-            serde_wasm_bindgen::from_value(manifest).map_err(js_error)?;
+        let manifest: ProjectManifest = from_js(manifest)?;
         to_js(self.inner.load_project(manifest).map_err(js_error)?)
     }
 
@@ -138,8 +138,7 @@ impl WasmRuntime {
         manifest: JsValue,
         cache: &js_sys::Uint8Array,
     ) -> Result<JsValue, JsValue> {
-        let manifest: ProjectManifest =
-            serde_wasm_bindgen::from_value(manifest).map_err(js_error)?;
+        let manifest: ProjectManifest = from_js(manifest)?;
         let identity = project_identity(&manifest).map_err(js_error)?;
         to_js(
             self.inner
@@ -167,6 +166,10 @@ impl WasmRuntime {
             .map_err(js_error)?;
         to_js(batch)
     }
+}
+
+fn from_js<T: DeserializeOwned>(value: JsValue) -> Result<T, JsValue> {
+    serde_wasm_bindgen::from_value(value).map_err(js_error)
 }
 
 fn to_js(value: impl serde::Serialize) -> Result<JsValue, JsValue> {

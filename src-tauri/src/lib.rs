@@ -537,27 +537,14 @@ fn write_compiled_cache_chunk_inner(
         *state.cache_writer.lock().map_err(lock_error)? =
             Some(AtomicFileWriter { temporary, target });
     }
-    let mut guard = state.cache_writer.lock().map_err(lock_error)?;
-    let writer = guard
-        .as_mut()
-        .ok_or_else(|| "compiled cache write has not started".to_owned())?;
-    std::io::Write::write_all(&mut writer.temporary, bytes)
-        .map_err(|error| format!("cannot write compiled cache: {error}"))?;
-    if complete {
-        let writer = guard
-            .take()
-            .ok_or_else(|| "compiled cache writer disappeared".to_owned())?;
-        writer
-            .temporary
-            .as_file()
-            .sync_all()
-            .map_err(|error| format!("cannot sync compiled cache: {error}"))?;
-        writer
-            .temporary
-            .persist(writer.target)
-            .map_err(|error| format!("cannot replace compiled cache: {}", error.error))?;
-    }
-    Ok(())
+    append_atomic_file_chunk(
+        &state.cache_writer,
+        bytes,
+        complete,
+        "compiled cache write has not started",
+        "compiled cache writer disappeared",
+        "compiled cache",
+    )
 }
 
 fn write_atomic_file_chunk(
@@ -576,25 +563,39 @@ fn write_atomic_file_chunk(
             .map_err(|error| format!("cannot create temporary export file: {error}"))?;
         *slot.lock().map_err(lock_error)? = Some(AtomicFileWriter { temporary, target });
     }
+    append_atomic_file_chunk(
+        slot,
+        bytes,
+        complete,
+        "export write has not started",
+        "export writer disappeared",
+        "export file",
+    )
+}
+
+fn append_atomic_file_chunk(
+    slot: &Mutex<Option<AtomicFileWriter>>,
+    bytes: &[u8],
+    complete: bool,
+    missing_message: &str,
+    disappeared_message: &str,
+    file_kind: &str,
+) -> Result<(), String> {
     let mut guard = slot.lock().map_err(lock_error)?;
-    let writer = guard
-        .as_mut()
-        .ok_or_else(|| "export write has not started".to_owned())?;
+    let writer = guard.as_mut().ok_or_else(|| missing_message.to_owned())?;
     std::io::Write::write_all(&mut writer.temporary, bytes)
-        .map_err(|error| format!("cannot write export file: {error}"))?;
+        .map_err(|error| format!("cannot write {file_kind}: {error}"))?;
     if complete {
-        let writer = guard
-            .take()
-            .ok_or_else(|| "export writer disappeared".to_owned())?;
+        let writer = guard.take().ok_or_else(|| disappeared_message.to_owned())?;
         writer
             .temporary
             .as_file()
             .sync_all()
-            .map_err(|error| format!("cannot sync export file: {error}"))?;
+            .map_err(|error| format!("cannot sync {file_kind}: {error}"))?;
         writer
             .temporary
             .persist(writer.target)
-            .map_err(|error| format!("cannot replace export file: {}", error.error))?;
+            .map_err(|error| format!("cannot replace {file_kind}: {}", error.error))?;
     }
     Ok(())
 }
