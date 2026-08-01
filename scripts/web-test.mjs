@@ -17,11 +17,17 @@ import {
   isolatedProject,
   loadScenario,
   observationFromSnapshot,
+  runtimeProgressDiagnostic,
+  runtimeProgressSignature,
   runAction,
   shellWords,
+  terminalRuntimeRejection,
 } from "./web-test-lib.mjs";
 
 const repository = fileURLToPath(new URL("..", import.meta.url));
+const OBSERVATION_SLICE_MS = 5_000;
+const OBSERVATION_REPORT_MS = 15_000;
+const OBSERVATION_STALL_MS = 60_000;
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -208,6 +214,57 @@ async function execute(args) {
       });
     }
 
+    async function waitForObservation() {
+      const startedAt = Date.now();
+      let lastProgressAt = startedAt;
+      let lastReportAt = startedAt;
+      let lastSignature;
+      for (;;) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new Error("scenario timeout exhausted");
+        try {
+          return await page.evaluate(
+            (timeout) => window.__RUSTYERA_TEST__.waitForStableObservation(timeout),
+            Math.min(OBSERVATION_SLICE_MS, remaining),
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!message.includes("等待稳定输入状态超时")) throw error;
+        }
+
+        const snapshot = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+        const now = Date.now();
+        if (snapshot?.fault != null)
+          throw new Error(
+            `runtime faulted: ${JSON.stringify(runtimeProgressDiagnostic(snapshot))}`,
+          );
+        if (terminalRuntimeRejection(snapshot))
+          throw new Error(
+            `runtime rejected the configured state: ${JSON.stringify(runtimeProgressDiagnostic(snapshot))}`,
+          );
+
+        const signature = runtimeProgressSignature(snapshot);
+        if (signature !== lastSignature) {
+          lastSignature = signature;
+          lastProgressAt = now;
+        }
+        if (now - lastReportAt >= OBSERVATION_REPORT_MS) {
+          trace.emit({
+            type: "progress",
+            waiting_for: "stable runtime observation",
+            elapsed_ms: now - startedAt,
+            stalled_ms: now - lastProgressAt,
+            runtime: runtimeProgressDiagnostic(snapshot),
+          });
+          lastReportAt = now;
+        }
+        if (now - lastProgressAt >= OBSERVATION_STALL_MS)
+          throw new Error(
+            `stable runtime observation made no progress for ${now - lastProgressAt}ms: ${JSON.stringify(runtimeProgressDiagnostic(snapshot))}`,
+          );
+      }
+    }
+
     async function observe(automaticEnter = true) {
       for (
         let automaticEnters = 0;
@@ -215,10 +272,7 @@ async function execute(args) {
         automaticEnters += 1
       ) {
         if (Date.now() > deadline) throw new Error("scenario timeout exhausted");
-        const snapshot = await page.evaluate(
-          (timeout) => window.__RUSTYERA_TEST__.waitForStableObservation(timeout),
-          Math.max(1, deadline - Date.now()),
-        );
+        const snapshot = await waitForObservation();
         const rust = observationFromSnapshot(snapshot, previousOutput);
         previousOutput = rust.output;
         if (scenario.watches.length)
@@ -272,6 +326,7 @@ async function execute(args) {
           "dblclick",
           "press",
           "drain_void_waits",
+          "advance_intermediate_waits_until",
           "advance_enter_waits_until",
         ].includes(action.type)
       )
@@ -352,6 +407,7 @@ async function execute(args) {
           "dblclick",
           "press",
           "drain_void_waits",
+          "advance_intermediate_waits_until",
           "advance_enter_waits_until",
         ].includes(action.type)
       ) {
@@ -407,6 +463,7 @@ async function execute(args) {
           "dblclick",
           "press",
           "drain_void_waits",
+          "advance_intermediate_waits_until",
           "advance_enter_waits_until",
         ].includes(action.type)
       ) {

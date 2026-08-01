@@ -8,10 +8,51 @@ import {
   isolatedProject,
   loadScenario,
   resolveLocator,
+  runtimeProgressDiagnostic,
+  runtimeProgressSignature,
   runAction,
+  terminalRuntimeRejection,
 } from "../scripts/web-test-lib.mjs";
 
 describe("web game test scenario", () => {
+  it("identifies terminal snapshot rejections without treating transient cache work as fatal", () => {
+    const versionMismatch = {
+      logs: [
+        { message: "compiled project cache preparation started" },
+        { message: "command rejected [VersionMismatch]: snapshot is stale" },
+      ],
+    };
+    const transient = {
+      logs: [{ message: "command rejected [InvalidState]: cache preparation started" }],
+    };
+
+    expect(terminalRuntimeRejection(versionMismatch)?.message).toContain("VersionMismatch");
+    expect(terminalRuntimeRejection(transient)).toBeUndefined();
+  });
+
+  it("tracks and reports the runtime fields that establish long-test progress", () => {
+    const snapshot = {
+      phase: "ready",
+      status: "项目编译完成",
+      projectOpen: true,
+      canInteract: false,
+      wait: null,
+      presentationRevision: 0,
+      output: [],
+      fault: null,
+      logs: [{ message: "command rejected [VersionMismatch]" }],
+    };
+
+    expect(runtimeProgressSignature(snapshot)).toContain("项目编译完成");
+    expect(runtimeProgressDiagnostic(snapshot)).toEqual(
+      expect.objectContaining({
+        phase: "ready",
+        status: "项目编译完成",
+        logTail: snapshot.logs,
+      }),
+    );
+  });
+
   it("uses an explicit seed and translates compatible TUI inputs", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "web-scenario-"));
     const project = path.join(root, "project");
@@ -106,6 +147,33 @@ describe("web game test scenario", () => {
     vi.unstubAllGlobals();
   });
 
+  it("waits for a clicked runtime button to consume the current wait", async () => {
+    let waitId = "8";
+    vi.stubGlobal("window", {
+      __RUSTYERA_TEST__: { snapshot: () => ({ fault: null, wait: { wait_id: waitId } }) },
+    });
+    const locator = {
+      evaluate: vi.fn(() => true),
+      click: vi.fn(() => (waitId = "9")),
+    };
+    const page = {
+      getByText: vi.fn(() => locator),
+      evaluate: vi.fn((callback) => callback()),
+      waitForFunction: vi.fn((callback, argument) => callback(argument)),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "click",
+        locator: { text: "[画像表示]", exact: true },
+      }),
+    ).resolves.toEqual({ semanticInput: undefined });
+
+    expect(locator.click).toHaveBeenCalledOnce();
+    expect(page.waitForFunction).toHaveBeenCalledWith(expect.any(Function), "8");
+    vi.unstubAllGlobals();
+  });
+
   it("drives hover through the production DOM locator", async () => {
     const locator = { hover: vi.fn() };
     const page = { getByText: vi.fn(() => locator) };
@@ -128,6 +196,35 @@ describe("web game test scenario", () => {
 
     expect(resolveLocator(page, { text: "第1年", exact: false, nth: -1 })).toBe(latest);
     expect(matches.nth).toHaveBeenCalledWith(-1);
+  });
+
+  it("requires positioned images to finish decoding", async () => {
+    const image = globalThis.document.createElement("img");
+    Object.defineProperties(image, {
+      complete: { value: true },
+      naturalWidth: { value: 1200 },
+      naturalHeight: { value: 1200 },
+    });
+    const locator = {
+      count: vi.fn(async () => 1),
+      first: vi.fn(() => locator),
+      isVisible: vi.fn(async () => true),
+      evaluate: vi.fn(async (callback) => callback(image)),
+    };
+    const page = { locator: vi.fn(() => locator) };
+
+    await expect(
+      runAction(page, {
+        type: "assert_dom",
+        locator: { css: ".media-visual" },
+        fields: ["count", "visible", "image_loaded"],
+        expect: { count: 1, visible: true, image_loaded: true },
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        query: { count: 1, visible: true, image_loaded: true },
+      }),
+    );
   });
 
   it("asserts reference-relative layout without hard-coding viewport coordinates", async () => {
@@ -229,6 +326,48 @@ describe("web game test scenario", () => {
       }),
     ).resolves.toMatchObject({ attempts: 1 });
     expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("continues a variable number of route prompts until a distinct portrait source appears", async () => {
+    const snapshots = [
+      { fault: null, wait: { kind: "integer_value", wait_id: "1" } },
+      { fault: null, wait: { kind: "enter_key", wait_id: "2" } },
+      { fault: null, wait: { kind: "integer_value", wait_id: "3" } },
+    ];
+    let snapshotIndex = 0;
+    vi.stubGlobal("window", {
+      __RUSTYERA_TEST__: {
+        snapshot: () => snapshots[snapshotIndex],
+        mediaPlacements: () => ({
+          images:
+            snapshotIndex < 2 ? [{ source: "clock" }] : [{ source: "clock" }, { source: "reimu" }],
+        }),
+        waitForStableObservation: () => snapshots[snapshotIndex],
+      },
+    });
+    const fill = vi.fn();
+    const click = vi.fn(() => {
+      snapshotIndex += 1;
+    });
+    const page = {
+      evaluate: vi.fn((callback) => callback()),
+      locator: vi.fn((selector) =>
+        selector === ".prompt-bar input" ? { fill } : { click, first: () => ({ click }) },
+      ),
+      waitForFunction: vi.fn((callback, argument) => callback(argument)),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "advance_intermediate_waits_until",
+        maximum: 10,
+        integer_value: 0,
+        until: { media_sources_at_least: 2 },
+      }),
+    ).resolves.toMatchObject({ attempts: 2, numericInputs: 1, mediaSources: 2 });
+    expect(fill).toHaveBeenCalledWith("0");
+    expect(click).toHaveBeenCalledTimes(2);
+    vi.unstubAllGlobals();
   });
 
   it("waits past a text-matched fade frame until the screen locator is visible", async () => {

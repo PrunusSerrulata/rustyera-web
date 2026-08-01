@@ -5,6 +5,7 @@ interface ImportMetaEnv {
   readonly VITE_RUSTYERA_TAURI_TEST?: string;
   readonly VITE_RUSTYERA_TEST_PROJECT?: string;
   readonly VITE_RUSTYERA_TEST_STATE?: string;
+  readonly VITE_RUSTYERA_TEST_STATE_TYPE?: string;
   readonly VITE_RUSTYERA_FRONTEND_VERSION: string;
   readonly VITE_RUSTYERA_CORE_VERSION: string;
 }

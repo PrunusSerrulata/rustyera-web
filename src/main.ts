@@ -15,8 +15,12 @@ if (import.meta.env.VITE_RUSTYERA_TEST === "1" && import.meta.env.VITE_RUSTYERA_
   const bytes = await invoke<number[]>("read_import", {
     path: import.meta.env.VITE_RUSTYERA_TEST_STATE,
   });
+  const stateType =
+    import.meta.env.VITE_RUSTYERA_TEST_STATE_TYPE === "traditional_save"
+      ? "traditional_save"
+      : "vm_snapshot";
   useRuntimeStore(pinia).configureTestRun({
-    start: { type: "vm_snapshot", bytes: new Uint8Array(bytes) },
+    start: { type: stateType, bytes: new Uint8Array(bytes) },
   });
 }
 createApp(App).use(pinia).mount("#app");

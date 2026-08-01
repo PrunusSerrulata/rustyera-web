@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
-const SNAPSHOT_TIMEOUT = 300_000;
+import { waitForRuntimeProgress } from "./runtime-progress.mjs";
+
 const snapshotRendering = process.env.VITE_RUSTYERA_TEST_STATE ? describe : describe.skip;
 
 snapshotRendering("Tauri runtime snapshot rendering", () => {
@@ -16,28 +17,23 @@ snapshotRendering("Tauri runtime snapshot rendering", () => {
     assert.equal(testWindowVisible, false, "Tauri end-to-end window should start hidden");
 
     await $(".welcome .primary").click();
-    await browser.waitUntil(
-      async () => {
-        const state = await snapshot();
-        return state?.projectOpen && state.phase === "waiting_input" && state.canInteract;
-      },
-      {
-        timeout: SNAPSHOT_TIMEOUT,
-        timeoutMsg: "configured runtime snapshot did not reach an input wait",
-      },
-    );
+    await waitForRuntimeProgress({
+      browser,
+      snapshot,
+      label: "configured runtime snapshot did not reach an input wait",
+      accept: (state) => state?.projectOpen && state.phase === "waiting_input" && state.canInteract,
+    });
 
     const viewport = await $(".game-viewport");
     const initial = await snapshot();
     if (initial.wait?.kind === "enter_key") await viewport.click({ button: "right" });
 
-    await browser.waitUntil(
-      async () => (await snapshot())?.output?.some((line) => line.includes("[Look]")),
-      {
-        timeout: SNAPSHOT_TIMEOUT,
-        timeoutMsg: "continuous Enter skipping did not reach the self-home scene",
-      },
-    );
+    await waitForRuntimeProgress({
+      browser,
+      snapshot,
+      label: "continuous Enter skipping did not reach the self-home scene",
+      accept: (state) => state?.output?.some((line) => line.includes("[Look]")),
+    });
 
     const hover = await hoverClickableImage();
     const state = await snapshot();

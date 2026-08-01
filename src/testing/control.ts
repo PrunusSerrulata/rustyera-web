@@ -9,6 +9,7 @@ export interface WebTestControl {
   openProject(): Promise<void>;
   waitForStableObservation(timeoutMs?: number): Promise<Record<string, unknown>>;
   snapshot(): Record<string, unknown>;
+  mediaPlacements(): Record<string, unknown>;
   mediaReplay(resourceName: string): Record<string, unknown>;
   inspect(watches: string[]): Promise<Record<string, unknown>>;
   exportSnapshot(): Promise<void>;
@@ -78,6 +79,7 @@ export function installWebTestControl(pinia: Pinia): void {
     configure: (configuration) => store.configureTestRun(configuration),
     openProject: () => store.openProject(),
     snapshot,
+    mediaPlacements: () => presentationMedia(store.presentation),
     mediaReplay: (resourceName) => mediaReplay(store.presentation.resources, resourceName),
     inspect: (watches) => store.inspectWatches(watches),
     exportSnapshot: () => store.exportSnapshot("normal"),
@@ -117,6 +119,30 @@ export function installWebTestControl(pinia: Pinia): void {
       throw new Error(`等待稳定输入状态超时（${timeoutMs} ms）`);
     },
   };
+}
+
+function presentationMedia(presentation: any): Record<string, unknown> {
+  const images: Array<Record<string, unknown>> = [];
+  const visitNode = (node: any, lineId: unknown): void => {
+    if (node?.semantic?.type === "image") {
+      images.push({
+        lineId,
+        source: node.semantic.source,
+        width: node.semantic.width,
+        height: node.semantic.height,
+        y: node.semantic.y,
+      });
+    }
+    for (const child of node?.children ?? []) visitNode(child, lineId);
+  };
+  for (const line of presentation.lines ?? []) {
+    for (const run of line.runs ?? []) {
+      if (run.type === "image") images.push({ lineId: line.line_id, ...run.placement });
+      if (run.type === "html_document")
+        for (const node of run.document?.nodes ?? []) visitNode(node, line.line_id);
+    }
+  }
+  return serialize({ images, backgrounds: presentation.backgrounds ?? [] });
 }
 
 function mediaReplay(resources: any, resourceName: string): Record<string, unknown> {

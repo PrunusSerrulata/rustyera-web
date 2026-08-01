@@ -11,11 +11,22 @@ npm run test:browser-compat -- --browser firefox
 npm run test:browser-compat -- --browser safari
 ```
 
-Both native-browser commands must run outside the filesystem sandbox from their first attempt with
-`sandbox_permissions=require_escalated`; explain that installed-browser automation and local server
-binding are required. Do not probe them in the sandbox first. Treat a sandbox-originated listen
-`EPERM`, driver startup failure, or automation timeout as an invalid infrastructure attempt and
-rerun outside the sandbox before diagnosing a product failure.
+Every `npm run test:game` and native-browser command must run outside the filesystem sandbox from
+its first attempt with `sandbox_permissions=require_escalated`; explain that browser automation and
+local server binding are required. Do not probe them in the sandbox first. Treat a
+sandbox-originated listen `EPERM`, driver startup failure, or automation timeout as an invalid
+infrastructure attempt and rerun outside the sandbox before diagnosing a product failure.
+
+Long scenarios must poll the test-control snapshot instead of making one silent wait. Emit a concise
+phase/status/wait/presentation/output/log diagnostic at least every 60 seconds, abort immediately on
+`fault` or a terminal version/protocol rejection, and fail a stage after 60 seconds without
+meaningful observable progress. A longer total scenario timeout is valid only while progress
+continues. Preserve the reference output and DOM/layout assertions when repairing a timeout.
+
+After clicking the native compatibility runner's visible project-open button, require the portable
+directory-file fallback or project-open state to become observable within 10 seconds. On failure,
+report every created file input's type, multiplicity, accept filter, and directory property/attribute
+instead of waiting for the overall compile timeout or leaving a native file sheet open.
 
 The native compatibility runner uses the short reference fixture and WebdriverIO. It must report the
 actual browser version/UA, OPFS availability, compile completion, and reference output. Firefox runs
@@ -69,7 +80,8 @@ An action has `type`:
 - `press`: `locator`, `key`; set `advances_game: true` and add `semantic_input` if it advances a
   compared game.
 - `query`: `locator`, optional `fields` from `count`, `text`, `html`, `value`, `visible`,
-  `enabled`, `attributes`.
+  `enabled`, `attributes`, `image_loaded`. The final field requires a decoded image with positive
+  natural dimensions, either at the locator itself or its first descendant `img`.
 - `assert_dom`: same query fields plus an `expect` subset.
 - `assert_layout`: `locator`, optional `relative_to`, and `expect`. It measures production DOM
   boxes and accepts `count`, `visible`, `same_left_within`, `same_top_within`, `no_overlap`,
@@ -81,6 +93,10 @@ An action has `type`:
   merely that an empty canvas element has layout dimensions.
 - `query_media_replay`: `resource_name`. Returns the test-only, read-only sprite and canvas replay
   graph for diagnosing a generated image without mutating Pinia or runtime state.
+- `advance_intermediate_waits_until`: advances a variable number of visible integer, Enter,
+  Enter-compatible one-input, and deadline waits until `until.media_sources_at_least` distinct
+  presentation image sources exist. Use `integer_value` (default `0`) for repeated route/encounter
+  choices; never encode a save-dependent number of intermediate prompts as repeated actions.
 - `advance_enter_waits_until`: advances visible Enter and Enter-compatible one-input waits until
   `until.output_tail_contains` appears in the latest `until.tail_lines` (default 30) and/or
   `until.locator` is visible. When both are present, both must match; use that form to avoid stopping

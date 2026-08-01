@@ -10,11 +10,13 @@ const arguments_ = process.argv.slice(2);
 const projectIndex = arguments_.indexOf("--project");
 const specIndex = arguments_.indexOf("--spec");
 const stateIndex = arguments_.indexOf("--state");
+const stateTypeIndex = arguments_.indexOf("--state-type");
 const configuredProject =
   projectIndex >= 0 ? arguments_[projectIndex + 1] : process.env.ERATW_PROJECT;
 const project = path.resolve(repository, configuredProject ?? "../games/eraTW");
 const configuredSpec = specIndex >= 0 ? arguments_[specIndex + 1] : undefined;
 const configuredState = stateIndex >= 0 ? arguments_[stateIndex + 1] : undefined;
+const configuredStateType = stateTypeIndex >= 0 ? arguments_[stateTypeIndex + 1] : "vm_snapshot";
 const state = configuredState ? path.resolve(repository, configuredState) : undefined;
 const npmExecPath = process.env.npm_execpath;
 const packageCommand = process.platform === "win32" ? process.execPath : "npm";
@@ -25,6 +27,11 @@ if (projectIndex >= 0 && !arguments_[projectIndex + 1]) {
 }
 if (specIndex >= 0 && !configuredSpec) throw new Error("--spec requires a path");
 if (stateIndex >= 0 && !configuredState) throw new Error("--state requires a path");
+if (stateTypeIndex >= 0 && !arguments_[stateTypeIndex + 1])
+  throw new Error("--state-type requires a value");
+if (!["traditional_save", "vm_snapshot"].includes(configuredStateType))
+  throw new Error("--state-type must be traditional_save or vm_snapshot");
+if (stateTypeIndex >= 0 && !configuredState) throw new Error("--state-type requires --state");
 if (process.platform === "win32" && !npmExecPath)
   throw new Error("npm_execpath is required to launch package scripts on Windows");
 await access(project);
@@ -36,6 +43,7 @@ const environment = {
   VITE_RUSTYERA_TAURI_TEST: "1",
   VITE_RUSTYERA_TEST_PROJECT: project,
   VITE_RUSTYERA_TEST_STATE: state ?? "",
+  VITE_RUSTYERA_TEST_STATE_TYPE: configuredStateType,
   VITE_RUSTYERA_TAURI_PROJECT_SMOKE:
     configuredSpec && path.basename(configuredSpec) === "project-smoke.spec.mjs" ? "1" : "",
   VITE_RUSTYERA_TAURI_TOOLTIP:
@@ -46,6 +54,10 @@ const environment = {
     configuredSpec && path.basename(configuredSpec) === "rorona-images.spec.mjs" ? "1" : "",
   VITE_RUSTYERA_TAURI_ERATW_CLOCK:
     configuredSpec && path.basename(configuredSpec) === "eratw-clock.spec.mjs" ? "1" : "",
+  VITE_RUSTYERA_TAURI_ERATW_CHARACTER_IMAGES:
+    configuredSpec && path.basename(configuredSpec) === "eratw-character-images.spec.mjs"
+      ? "1"
+      : "",
 };
 
 await run(

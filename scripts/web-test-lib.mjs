@@ -1,4 +1,4 @@
-/* global window */
+/* global window, HTMLImageElement */
 
 import { createWriteStream } from "node:fs";
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -21,6 +21,45 @@ const WAIT_KIND = {
   string_button: "StrButton",
   primitive_mouse_key: "PrimitiveMouseKey",
 };
+
+export function terminalRuntimeRejection(snapshot) {
+  return snapshot?.logs?.find((entry) =>
+    /command rejected \[(?:VersionMismatch|ProtocolMismatch)\]/.test(String(entry?.message)),
+  );
+}
+
+export function runtimeProgressSignature(snapshot) {
+  return JSON.stringify({
+    phase: snapshot?.phase,
+    status: snapshot?.status,
+    projectOpen: snapshot?.projectOpen,
+    canInteract: snapshot?.canInteract,
+    wait: snapshot?.wait
+      ? {
+          kind: snapshot.wait.kind,
+          wait_id: snapshot.wait.wait_id,
+          generation: snapshot.wait.generation,
+        }
+      : null,
+    presentationRevision: snapshot?.presentationRevision,
+    outputTail: snapshot?.output?.slice(-2),
+    lastLog: snapshot?.logs?.at(-1),
+  });
+}
+
+export function runtimeProgressDiagnostic(snapshot) {
+  return {
+    phase: snapshot?.phase,
+    status: snapshot?.status,
+    projectOpen: snapshot?.projectOpen,
+    canInteract: snapshot?.canInteract,
+    wait: snapshot?.wait,
+    presentationRevision: snapshot?.presentationRevision,
+    outputTail: snapshot?.output?.slice(-12),
+    fault: snapshot?.fault,
+    logTail: snapshot?.logs?.slice(-8),
+  };
+}
 
 export async function loadScenario(file, projectOverride, stateOverride) {
   const scenarioPath = path.resolve(file);
@@ -251,6 +290,62 @@ export function resolveLocator(page, locator = {}) {
 }
 
 export async function runAction(page, action) {
+  if (action.type === "advance_intermediate_waits_until") {
+    const maximum = Number(action.maximum ?? 100);
+    const mediaSourcesAtLeast = Number(action.until?.media_sources_at_least ?? 0);
+    if (!Number.isInteger(mediaSourcesAtLeast) || mediaSourcesAtLeast <= 0)
+      throw new Error(
+        "advance_intermediate_waits_until requires a positive until.media_sources_at_least",
+      );
+    let numericInputs = 0;
+    for (let attempt = 0; attempt <= maximum; attempt += 1) {
+      const sourceCount = await page.evaluate(() => {
+        const media = window.__RUSTYERA_TEST__.mediaPlacements();
+        return new Set(
+          (media.images ?? []).map((item) => item?.source).filter((source) => Boolean(source)),
+        ).size;
+      });
+      if (sourceCount >= mediaSourcesAtLeast)
+        return { semanticInput: "", attempts: attempt, numericInputs, mediaSources: sourceCount };
+      if (attempt === maximum)
+        throw new Error(
+          `intermediate wait budget exhausted before ${mediaSourcesAtLeast} media sources appeared`,
+        );
+
+      const snapshot = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+      if (!snapshot.wait) {
+        await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+        continue;
+      }
+      if (snapshot.wait.deadline_ns != null) {
+        await waitForAutomaticWaitChange(page, snapshot.wait.wait_id);
+        continue;
+      }
+      const waitId = snapshot.wait.wait_id;
+      if (snapshot.wait.kind === "integer_value") {
+        const input = page.locator(".prompt-bar input");
+        await input.fill(String(action.integer_value ?? 0));
+        await page.locator(".prompt-bar button[type=submit]").click();
+        numericInputs += 1;
+      } else if (
+        ["enter_key", "any_key", "void"].includes(snapshot.wait.kind) ||
+        (snapshot.wait.one_input && snapshot.wait.kind === "string_value")
+      ) {
+        if (snapshot.wait.kind === "string_value")
+          await page.locator(".game-viewport .game-button").first().click();
+        else await page.locator(".prompt-bar button[type=submit]").click();
+      } else {
+        throw new Error(
+          `advance_intermediate_waits_until reached unexpected ${snapshot.wait.kind} prompt`,
+        );
+      }
+      await page.waitForFunction((previousWaitId) => {
+        const current = window.__RUSTYERA_TEST__.snapshot();
+        return current.fault != null || current.wait?.wait_id !== previousWaitId;
+      }, waitId);
+      await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+    }
+  }
   if (action.type === "advance_enter_waits_until") {
     const maximum = Number(action.maximum ?? 100);
     const tailLines = Math.max(1, Number(action.until?.tail_lines ?? 30));
@@ -339,8 +434,23 @@ export async function runAction(page, action) {
     return { semanticInput: String(action.value ?? "") };
   }
   const locator = action.locator ? resolveLocator(page, action.locator) : undefined;
-  if (action.type === "click") await locator.click();
-  else if (action.type === "dblclick") await locator.dblclick();
+  if (action.type === "click") {
+    const runtimeInput = await locator.evaluate((element) =>
+      Boolean(
+        element.closest(".game-viewport") &&
+        (element.matches("button") || element.closest("button")),
+      ),
+    );
+    const beforeWaitId = runtimeInput
+      ? await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot().wait?.wait_id)
+      : undefined;
+    await locator.click();
+    if (beforeWaitId != null)
+      await page.waitForFunction((waitId) => {
+        const snapshot = window.__RUSTYERA_TEST__.snapshot();
+        return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
+      }, beforeWaitId);
+  } else if (action.type === "dblclick") await locator.dblclick();
   else if (action.type === "hover") await locator.hover();
   else if (action.type === "fill") await locator.fill(String(action.value ?? ""));
   else if (action.type === "press") await locator.press(String(action.key));
@@ -553,6 +663,13 @@ async function queryLocator(locator, fields = ["count", "text", "visible", "enab
       result.attributes = await first.evaluate((element) =>
         Object.fromEntries([...element.attributes].map((item) => [item.name, item.value])),
       );
+    if (fields.includes("image_loaded"))
+      result.image_loaded = await first.evaluate((element) => {
+        const image = element instanceof HTMLImageElement ? element : element.querySelector("img");
+        return Boolean(
+          image?.complete && Number(image.naturalWidth) > 0 && Number(image.naturalHeight) > 0,
+        );
+      });
   }
   return result;
 }

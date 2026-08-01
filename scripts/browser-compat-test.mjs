@@ -8,7 +8,12 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { remote } from "webdriverio";
 
-import { injectInGameSaveFlow } from "./web-test-lib.mjs";
+import {
+  injectInGameSaveFlow,
+  runtimeProgressDiagnostic,
+  runtimeProgressSignature,
+  terminalRuntimeRejection,
+} from "./web-test-lib.mjs";
 
 const repository = fileURLToPath(new URL("..", import.meta.url));
 const browserName = process.argv[process.argv.indexOf("--browser") + 1];
@@ -78,29 +83,56 @@ try {
           });
           return file;
         });
-        const nativeInputClick = HTMLInputElement.prototype.click;
+        const nativeCreateElement = document.createElement;
         const picker = {
           fallback: false,
           focusBeforeChange: false,
           confirmationDelayMs: 50,
+          attempts: [],
         };
         Object.defineProperty(window, "showDirectoryPicker", {
           configurable: true,
           value: undefined,
         });
-        HTMLInputElement.prototype.click = function () {
-          if (this.type !== "file" || !this.webkitdirectory) {
-            nativeInputClick.call(this);
-            return;
-          }
-          picker.fallback = true;
-          window.dispatchEvent(new Event("focus"));
-          picker.focusBeforeChange = true;
-          window.setTimeout(() => {
-            Object.defineProperty(this, "files", { configurable: true, value: selected });
-            this.dispatchEvent(new Event("change", { bubbles: true }));
-            HTMLInputElement.prototype.click = nativeInputClick;
-          }, picker.confirmationDelayMs);
+        document.createElement = function (tagName, options) {
+          const element = nativeCreateElement.call(this, tagName, options);
+          if (!(element instanceof HTMLInputElement)) return element;
+
+          const nativeClick = element.click.bind(element);
+          Object.defineProperty(element, "click", {
+            configurable: true,
+            value() {
+              // Safari does not consistently expose the directory flag through the same DOM
+              // property path as Firefox. The project fallback is uniquely a multi-file picker
+              // without an accept filter; traditional save pickers are single-file and filtered.
+              const isDirectoryPicker =
+                element.type === "file" && element.multiple && !element.accept;
+              picker.attempts.push({
+                accept: element.accept,
+                directoryAttribute: element.hasAttribute("webkitdirectory"),
+                directoryProperty: Boolean(element.webkitdirectory),
+                isDirectoryPicker,
+                multiple: element.multiple,
+                type: element.type,
+              });
+              if (!isDirectoryPicker) {
+                nativeClick();
+                return;
+              }
+              picker.fallback = true;
+              window.dispatchEvent(new Event("focus"));
+              picker.focusBeforeChange = true;
+              window.setTimeout(() => {
+                Object.defineProperty(element, "files", {
+                  configurable: true,
+                  value: selected,
+                });
+                element.dispatchEvent(new Event("change", { bubbles: true }));
+                document.createElement = nativeCreateElement;
+              }, picker.confirmationDelayMs);
+            },
+          });
+          return element;
         };
         window.__RUSTYERA_COMPAT_PICKER__ = picker;
         done({
@@ -145,20 +177,7 @@ try {
   await open.waitForClickable({ timeout: 30_000 });
   await open.click();
   try {
-    await browser.waitUntil(
-      async () => {
-        if (!(await browser.$(".game-viewport").isExisting())) return false;
-        return browser.execute(() => {
-          const state = window.__RUSTYERA_TEST__?.snapshot();
-          return state?.phase === "waiting_input" && state.canInteract;
-        });
-      },
-      {
-        timeout: 120_000,
-        interval: 250,
-        timeoutMsg: "WASM project did not reach a stable input wait",
-      },
-    );
+    await waitForCompatibilityRuntime(browser, browserName);
   } catch (error) {
     const diagnosis = await browser.execute(() => ({
       openButton: document.querySelector("button.primary.large")?.textContent?.trim(),
@@ -392,4 +411,90 @@ async function collectFiles(root) {
       }
     }
   }
+}
+
+async function waitForCompatibilityRuntime(browser, browserName) {
+  const startedAt = Date.now();
+  let lastProgressAt = startedAt;
+  let lastReportAt = startedAt;
+  let lastSignature;
+  let lastObservation;
+
+  while (Date.now() - startedAt < 180_000) {
+    const observation = await browser.execute(() => ({
+      picker: window.__RUSTYERA_COMPAT_PICKER__,
+      progress: window.__RUSTYERA_COMPAT_PROGRESS__?.progress,
+      state: window.__RUSTYERA_TEST__?.snapshot(),
+      status: document.querySelector(".runtime-status")?.textContent,
+      viewport: Boolean(document.querySelector(".game-viewport")),
+    }));
+    lastObservation = observation;
+    const state = observation.state;
+    if (state?.fault) {
+      throw new Error(`WASM runtime fault: ${JSON.stringify(runtimeProgressDiagnostic(state))}`);
+    }
+    const rejection = terminalRuntimeRejection(state);
+    if (rejection) {
+      throw new Error(
+        `WASM runtime rejected startup: ${JSON.stringify({
+          rejection,
+          runtime: runtimeProgressDiagnostic(state),
+        })}`,
+      );
+    }
+    if (observation.viewport && state?.phase === "waiting_input" && state.canInteract) return;
+
+    const now = Date.now();
+    const signature = JSON.stringify({
+      picker: observation.picker,
+      progress: observation.progress,
+      runtime: runtimeProgressSignature(state),
+      viewport: observation.viewport,
+    });
+    if (signature !== lastSignature) {
+      lastSignature = signature;
+      lastProgressAt = now;
+    }
+    if (now - startedAt >= 10_000 && !observation.picker?.fallback && !state?.projectOpen) {
+      throw new Error(
+        `project directory picker was not exercised within 10000ms: ${JSON.stringify(
+          compatibilityDiagnostic(observation),
+        )}`,
+      );
+    }
+    if (now - lastProgressAt >= 60_000) {
+      throw new Error(
+        `WASM startup made no observable progress for ${now - lastProgressAt}ms: ${JSON.stringify(
+          compatibilityDiagnostic(observation),
+        )}`,
+      );
+    }
+    if (now - lastReportAt >= 15_000) {
+      console.log(
+        JSON.stringify({
+          browser: browserName,
+          type: "progress",
+          waitingFor: "stable WASM input",
+          ...compatibilityDiagnostic(observation),
+        }),
+      );
+      lastReportAt = now;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(
+    `WASM project did not reach a stable input wait within 180000ms: ${JSON.stringify(
+      compatibilityDiagnostic(lastObservation),
+    )}`,
+  );
+}
+
+function compatibilityDiagnostic(observation) {
+  return {
+    picker: observation?.picker,
+    progress: observation?.progress,
+    runtime: runtimeProgressDiagnostic(observation?.state),
+    status: observation?.status,
+    viewport: observation?.viewport,
+  };
 }

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "project": "../../../../games/eraTW",
   "mode": "fixed",
-  "compiled_cache": true,
+  "compiled_cache": false,
   "clean_saves": true,
   "seed": 1,
   "actions": [

@@ -57,13 +57,13 @@ npm run test:browser-compat -- --browser firefox
 npm run test:browser-compat -- --browser safari
 ```
 
-Native Firefox and Safari tests launch an installed browser, WebDriver, and a local test server.
-Always run every `npm run test:browser-compat` command outside the filesystem sandbox with
-`sandbox_permissions=require_escalated`; state in the approval justification that native browser
-automation and local server binding are required. Do not make an initial sandboxed attempt. A
-listen `EPERM`, driver startup failure, or automation timeout from a sandboxed run is an invalid
-infrastructure attempt, not a product failure; rerun it outside the sandbox before diagnosing the
-application or test.
+Chromium game tests and native Firefox/Safari tests launch browser automation and a local test
+server. Always run every `npm run test:game` and `npm run test:browser-compat` command outside the
+filesystem sandbox with `sandbox_permissions=require_escalated`; state in the approval
+justification that browser automation and local server binding are required. Do not make an
+initial sandboxed attempt. A listen `EPERM`, driver startup failure, or automation timeout from a
+sandboxed run is an invalid infrastructure attempt, not a product failure; rerun it outside the
+sandbox before diagnosing the application or test.
 
 For Emuera comparison, add one shell-quoted `--reference-command`; under Wine also add
 `--reference-path-command`. Treat timeouts, missing capabilities, schema drift, browser crashes,
@@ -99,6 +99,24 @@ Tauri tests launch a native GUI application and platform WebView, so always run 
 launch the native Tauri GUI/WebView. Do not make an initial sandboxed attempt. An embedded WebDriver
 startup timeout from a sandboxed run is an invalid infrastructure attempt, not a product failure;
 rerun it outside the sandbox before diagnosing the application or test.
+
+Long browser and native runs must expose progress instead of using one silent wait. Poll observable
+runtime state, print a concise diagnostic at least every 60 seconds, fail immediately on a runtime
+fault or terminal version/protocol rejection, and fail a stalled stage after 60 seconds without a
+meaningful phase, status, wait, presentation, output, or log change. A longer total timeout is
+allowed only while those observations continue to show progress. If the test stalls at an
+actionable input, fix the test flow; if the runtime keeps advancing but never reaches the expected
+state, diagnose the product or game behavior. Do not weaken the expected reference state to avoid a
+timeout.
+
+For native Firefox/Safari compatibility startup, require the visible project-open action to
+exercise the directory-file fallback or begin opening a project within 10 seconds. Record the
+created file input's type, multiplicity, accept filter, and directory flag in failure diagnostics;
+do not leave a native file sheet open until the overall runtime timeout.
+
+Real-host end-to-end builds must start with the frontend's default preferences unless the scenario
+explicitly tests a preference. Do not inherit a developer's persisted font size, image scale, or
+font family, because those make reference geometry nondeterministic across machines.
 
 `ERATW_PROJECT` may supply another real eraTW checkout. The command builds a test-only Tauri binary
 with the WebdriverIO plugins, launches the platform WebView, opens the project through the real Rust

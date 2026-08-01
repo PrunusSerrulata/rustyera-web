@@ -254,7 +254,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
   });
 
   async function initialize(): Promise<void> {
-    preferences.value = await bridge.loadPreferences();
+    // Host end-to-end tests must not inherit a developer's persisted font/image
+    // preferences. Those values change Emuera geometry and made identical test
+    // binaries report different image positions on different machines.
+    preferences.value =
+      import.meta.env.VITE_RUSTYERA_TEST === "1"
+        ? defaultPreferences()
+        : await bridge.loadPreferences();
     audio.setPreferences(preferences.value);
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);

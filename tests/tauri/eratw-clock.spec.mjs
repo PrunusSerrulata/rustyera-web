@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 
+import { waitForRuntimeProgress } from "./runtime-progress.mjs";
+
 const PROJECT_TIMEOUT = 120_000;
 const STEP_TIMEOUT = 30_000;
 const eraTwClock = process.env.VITE_RUSTYERA_TAURI_ERATW_CLOCK ? describe : describe.skip;
@@ -19,6 +21,7 @@ eraTwClock("Tauri eraTW positioned clock", () => {
           clock = await clockMetrics();
           return (
             clock.count === 1 &&
+            clock.loaded &&
             clock.insideViewport &&
             clock.rightGap <= 16 &&
             Math.abs(clock.top - clock.separatorTop) <= 1
@@ -44,6 +47,7 @@ eraTwClock("Tauri eraTW positioned clock", () => {
     assert.equal(state.fault, null);
     assert.ok(state.output.some((line) => line.includes("你的倉庫")));
     assert.equal(clock.count, 1);
+    assert.ok(clock.loaded, "clock sprite source must finish decoding");
     assert.ok(clock.insideViewport, "clock must remain inside the viewport");
     assert.ok(clock.rightGap <= 16, "clock must remain near the right edge");
     assert.ok(
@@ -66,13 +70,13 @@ async function waitForProject() {
     }),
   );
   await $(".welcome .primary").click();
-  await browser.waitUntil(
-    async () => {
-      const state = await snapshot();
-      return state?.projectOpen && state.phase === "waiting_input" && state.canInteract;
-    },
-    { timeout: PROJECT_TIMEOUT, timeoutMsg: "eraTW did not reach its first input" },
-  );
+  await waitForRuntimeProgress({
+    browser,
+    snapshot,
+    label: "eraTW did not reach its first input",
+    totalTimeout: PROJECT_TIMEOUT,
+    accept: (state) => state?.projectOpen && state.phase === "waiting_input" && state.canInteract,
+  });
 }
 
 async function snapshot() {
@@ -116,15 +120,37 @@ async function clockMetrics() {
   return browser.execute(() => {
     const visual = document.querySelector(".media-visual.media-sprite");
     const owner = visual?.closest(".game-line");
+    const slot = visual?.closest(".media-positioned");
+    const separatorOwner = owner?.nextElementSibling;
     const separator = owner?.nextElementSibling?.querySelector(".separator");
     const viewport = document.querySelector(".game-viewport");
     const bounds = visual?.getBoundingClientRect();
+    const ownerBounds = owner?.getBoundingClientRect();
+    const slotBounds = slot?.getBoundingClientRect();
+    const separatorOwnerBounds = separatorOwner?.getBoundingClientRect();
+    const image = visual?.matches("img") ? visual : visual?.querySelector("img");
     const separatorBounds = separator?.getBoundingClientRect();
     const viewportBounds = viewport?.getBoundingClientRect();
     return {
       count: visual ? 1 : 0,
       mediaCount: document.querySelectorAll(".media-image, .canvas-replay").length,
+      loaded:
+        image instanceof HTMLImageElement &&
+        image.complete &&
+        image.naturalWidth > 0 &&
+        image.naturalHeight > 0,
+      naturalWidth: image instanceof HTMLImageElement ? image.naturalWidth : 0,
+      naturalHeight: image instanceof HTMLImageElement ? image.naturalHeight : 0,
       top: bounds?.top ?? -Infinity,
+      visualInlineStyle: visual?.getAttribute("style") ?? "",
+      ownerTop: ownerBounds?.top ?? -Infinity,
+      ownerHeight: ownerBounds?.height ?? 0,
+      ownerLineHeight: owner ? getComputedStyle(owner).lineHeight : "",
+      ownerFontSize: owner ? getComputedStyle(owner).fontSize : "",
+      slotTop: slotBounds?.top ?? -Infinity,
+      slotHeight: slotBounds?.height ?? 0,
+      separatorOwnerTop: separatorOwnerBounds?.top ?? Infinity,
+      separatorOwnerHeight: separatorOwnerBounds?.height ?? 0,
       separatorTop: separatorBounds?.top ?? Infinity,
       rightGap: bounds && viewportBounds ? viewportBounds.right - bounds.right : Infinity,
       insideViewport: Boolean(

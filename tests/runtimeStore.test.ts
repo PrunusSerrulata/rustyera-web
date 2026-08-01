@@ -98,6 +98,21 @@ describe("runtime store session lifecycle", () => {
     expect(store.canExportDiagnosis).toBe(false);
   });
 
+  it("uses isolated default preferences in end-to-end test builds", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    bridge.loadPreferences.mockResolvedValue({
+      ...defaultPreferences(),
+      fontSizeOverridePx: 28,
+      imageScale: 3,
+    });
+    const store = useRuntimeStore();
+
+    await store.initialize();
+
+    expect(store.preferences).toEqual(defaultPreferences());
+    expect(bridge.loadPreferences).not.toHaveBeenCalled();
+  });
+
   it("uses the browser close gesture for the WASM exit action", async () => {
     bridge.kind = "browser";
     const close = vi.spyOn(window, "close").mockImplementation(() => undefined);

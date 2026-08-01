@@ -17,6 +17,17 @@ justification that native Tauri GUI/WebView startup is required. Do not first tr
 Treat an embedded WebDriver startup timeout from a sandboxed run as an invalid infrastructure
 attempt and rerun outside the sandbox before diagnosing a product or test failure.
 
+Do not hide long game setup behind one silent WebDriver wait. For a stage whose total budget can
+exceed 60 seconds, poll the test-control snapshot, emit phase/status/wait/presentation/output/log
+diagnostics at least once per 60 seconds, abort immediately on `fault` or a terminal version/protocol
+rejection, and fail after 60 seconds without meaningful observable progress. Reaching a new input
+wait counts as progress but also means the test must decide whether to submit it; repeatedly waiting
+at an actionable prompt is a test-flow bug. Preserve the reference behavior and geometry assertions
+when repairing a timeout.
+
+The test build must use default frontend preferences unless the spec explicitly covers a preference;
+persisted user font and image settings are not valid inputs to reference-geometry tests.
+
 The default project is `../games/eraTW`; set `--project` or `ERATW_PROJECT` when the checkout lives
 elsewhere. Do not copy or modify the game during a native read-only test.
 

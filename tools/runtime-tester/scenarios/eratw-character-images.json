@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eraTW",
+  "mode": "fixed",
+  "compiled_cache": false,
+  "start": {
+    "type": "traditional_save",
+    "path": "../../../tests/fixtures/eratw/save18.sav"
+  },
+  "actions": [
+    { "type": "input", "value": 100 },
+    {
+      "type": "advance_enter_waits_until",
+      "maximum": 500,
+      "until": { "output_tail_contains": "[Look]", "tail_lines": 80 }
+    },
+    { "type": "input", "value": 995 },
+    { "type": "input", "value": 482 },
+    {
+      "type": "advance_intermediate_waits_until",
+      "maximum": 100,
+      "integer_value": 0,
+      "until": { "media_sources_at_least": 2 }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "[霊夢]", "exact": true },
+      "fields": ["count", "visible"],
+      "expect": { "count": 2, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".media-positioned > .media-visual" },
+      "fields": ["count", "visible", "image_loaded"],
+      "expect": { "count": 2, "visible": true, "image_loaded": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".media-positioned > .media-visual", "nth": 1 },
+      "fields": ["count", "visible", "image_loaded"],
+      "expect": { "count": 1, "visible": true, "image_loaded": true }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-positioned > .media-visual", "nth": 0 },
+      "relative_to": { "css": ".game-viewport" },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "inside": { "tolerance": 0 },
+        "right_aligned_within": 1
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-positioned > .media-visual", "nth": 1 },
+      "relative_to": { "css": ".game-viewport" },
+      "expect": { "count": 1, "visible": true, "inside": { "tolerance": 0 } }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-positioned > .media-visual", "nth": 1 },
+      "relative_to": { "css": ".prompt-bar" },
+      "expect": { "count": 1, "visible": true, "no_overlap": true }
+    }
+  ],
+  "limits": {
+    "max_steps": 100,
+    "timeout_seconds": 900
+  }
+}
