@@ -52,8 +52,10 @@ function encodeIpcValue(value: unknown): unknown {
 export class TauriBridge implements FrontendBridge {
   readonly kind = "tauri" as const;
   private projectPath?: string;
+  private projectIsFile = false;
   private projectProgressListener?: (progress: ProjectProgress) => void;
   private progressUnlisten?: Promise<UnlistenFn>;
+  private projectFileExportPath?: string;
 
   setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void {
     this.projectProgressListener = listener;
@@ -100,6 +102,7 @@ export class TauriBridge implements FrontendBridge {
     const testProject = import.meta.env.VITE_RUSTYERA_TEST_PROJECT;
     if (import.meta.env.VITE_RUSTYERA_TEST === "1" && testProject) {
       this.projectPath = testProject;
+      this.projectIsFile = false;
       return invoke("open_project", { path: testProject });
     }
     const path = await open({ directory: true, multiple: false, title: "打开 Era 项目" });
@@ -107,13 +110,29 @@ export class TauriBridge implements FrontendBridge {
     this.projectProgressListener?.({ stage: "scanning", completed: 0, total: 0 });
     if (this.progressUnlisten) await this.progressUnlisten;
     this.projectPath = path;
+    this.projectIsFile = false;
     return invoke("open_project", { path });
+  }
+
+  async openProjectFile(): Promise<ProjectOpenMetrics | undefined> {
+    const path = await open({
+      directory: false,
+      multiple: false,
+      title: "打开 RustyEra 项目文件",
+      filters: [{ name: "RustyEra 项目", extensions: ["reraproj"] }],
+    });
+    if (typeof path !== "string") return undefined;
+    this.projectPath = path;
+    this.projectIsFile = true;
+    return invoke("open_project_file", { path });
   }
 
   async restartProject(): Promise<ProjectOpenMetrics> {
     if (!this.projectPath) return Promise.reject(new Error("没有打开的项目"));
     if (this.progressUnlisten) await this.progressUnlisten;
-    return invoke("open_project", { path: this.projectPath });
+    return invoke(this.projectIsFile ? "open_project_file" : "open_project", {
+      path: this.projectPath,
+    });
   }
 
   async reloadProject(): Promise<void> {
@@ -155,7 +174,11 @@ export class TauriBridge implements FrontendBridge {
   }
 
   projectName(): string | undefined {
-    return this.projectPath?.split(/[\\/]/).filter(Boolean).at(-1);
+    return this.projectPath
+      ?.split(/[\\/]/)
+      .filter(Boolean)
+      .at(-1)
+      ?.replace(/\.reraproj$/i, "");
   }
 
   async openUpload(): Promise<Uint8Array | undefined> {
@@ -169,6 +192,29 @@ export class TauriBridge implements FrontendBridge {
     if (!path) return false;
     await invoke("write_export", { path, bytes: [...bytes] });
     return true;
+  }
+
+  async beginProjectFileExport(name: string): Promise<boolean> {
+    const path = await save({
+      defaultPath: name,
+      filters: [{ name: "RustyEra 项目", extensions: ["reraproj"] }],
+    });
+    if (!path) return false;
+    this.projectFileExportPath = path;
+    return true;
+  }
+
+  async writeProjectFileChunk(bytes: Uint8Array, reset: boolean, complete: boolean): Promise<void> {
+    const path = this.projectFileExportPath;
+    if (!path) throw new Error("项目文件导出尚未开始");
+    await invoke("write_export_chunk", { path, bytes: [...bytes], reset, complete });
+    if (complete) this.projectFileExportPath = undefined;
+  }
+
+  async cancelProjectFileExport(): Promise<void> {
+    if (!this.projectFileExportPath) return;
+    await invoke("cancel_export").catch(() => undefined);
+    this.projectFileExportPath = undefined;
   }
 
   async saveDiagnosis(name: string, input: DiagnosisArchiveInput): Promise<boolean> {

@@ -7,6 +7,7 @@ type WasmModule = {
     submitRuntime(message: unknown, correlationId?: bigint): bigint;
     submitDebug(message: unknown, correlationId?: bigint): bigint;
     loadProject(manifest: unknown): bigint;
+    projectFileManifest(bytes: Uint8Array): unknown;
     loadProjectWithCompiledCache(manifest: unknown, cache: Uint8Array): bigint;
     traditionalSaveSlotCount(): number;
     inspectTraditionalSave(bytes: Uint8Array): unknown;
@@ -41,6 +42,9 @@ self.onmessage = async (event: MessageEvent) => {
           break;
         case "loadProject":
           result = runtime.loadProject(args[0]);
+          break;
+        case "projectFileManifest":
+          result = runtime.projectFileManifest(args[0] as Uint8Array);
           break;
         case "loadProjectWithCompiledCache":
           result = runtime.loadProjectWithCompiledCache(args[0], args[1] as Uint8Array);

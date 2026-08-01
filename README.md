@@ -87,8 +87,9 @@ Playwright upgrade requests a newer browser revision.
 
 Current desktop Chromium uses File System Access for direct project-directory I/O and Local Font
 Access for the session-fixed font list. Current Firefox and Safari use their directory upload picker
-and import the selected project into origin-private browser storage, where saves and compiled caches
-remain available to later imports of the same project directory name. Chromium directory handles
+and import the selected project into origin-private browser storage. Once the self-contained
+`.reraproj` has been built, copied source files are removed from OPFS while saves and runtime-owned
+storage remain available. Chromium directory handles
 survive reloads only after user permission and are persisted in IndexedDB. IndexedDB otherwise
 stores only global preferences and the last Chromium directory handle.
 

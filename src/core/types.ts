@@ -92,6 +92,7 @@ export interface FrontendBridge {
   pump(): Promise<PumpBatch>;
   setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void;
   openProject(): Promise<ProjectOpenMetrics | undefined>;
+  openProjectFile(): Promise<ProjectOpenMetrics | undefined>;
   restartProject(): Promise<ProjectOpenMetrics>;
   submitProjectSource(): Promise<void>;
   reloadProject(): Promise<void>;
@@ -109,6 +110,9 @@ export interface FrontendBridge {
   projectName(): string | undefined;
   openUpload(): Promise<Uint8Array | undefined>;
   saveDownload(name: string, bytes: Uint8Array): Promise<boolean>;
+  beginProjectFileExport(name: string): Promise<boolean>;
+  writeProjectFileChunk(bytes: Uint8Array, reset: boolean, complete: boolean): Promise<void>;
+  cancelProjectFileExport(): Promise<void>;
   saveDiagnosis(
     name: string,
     input: import("@/core/diagnosis").DiagnosisArchiveInput,

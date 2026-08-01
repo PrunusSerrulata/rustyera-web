@@ -16,7 +16,13 @@ interface Window {
   showDirectoryPicker?: (options?: {
     mode?: "read" | "readwrite";
   }) => Promise<FileSystemDirectoryHandle>;
-  showSaveFilePicker?: (options?: { suggestedName?: string }) => Promise<FileSystemFileHandle>;
+  showSaveFilePicker?: (options?: {
+    suggestedName?: string;
+    types?: Array<{
+      description?: string;
+      accept: Record<string, string[]>;
+    }>;
+  }) => Promise<FileSystemFileHandle>;
   __RUSTYERA_TEST__?: import("@/testing/control").WebTestControl;
   __RUSTYERA_TEST_DOWNLOADS__?: Array<{
     name: string;

@@ -83,6 +83,15 @@ export async function importBrowserDirectory(
   return { handle: project, persistHandle: false, projectName };
 }
 
+export async function removeImportedProjectSources(
+  project: FileSystemDirectoryHandle,
+): Promise<void> {
+  const privateDirectory = await project.getDirectoryHandle(".rustyera", { create: true });
+  const sources = await readSourceManifest(privateDirectory);
+  for (const path of sources) await removeFile(project, path);
+  await writeFile(privateDirectory, SOURCE_MANIFEST, new TextEncoder().encode("[]"));
+}
+
 export function selectedProjectFiles(selectedFiles: Iterable<File>): {
   projectName: string;
   files: Array<{ path: string; file: File }>;

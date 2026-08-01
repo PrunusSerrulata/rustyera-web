@@ -110,7 +110,7 @@ export async function isolatedProject(source, options = {}) {
       return [
         ".rustyera",
         path.join(".rustyera", "cache"),
-        path.join(".rustyera", "cache", "compiled-project-v8.bin.zst"),
+        path.join(".rustyera", "cache", "compiled-project.reraproj"),
       ].includes(relative);
     },
   });

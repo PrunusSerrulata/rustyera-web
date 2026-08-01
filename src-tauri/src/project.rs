@@ -20,7 +20,7 @@ const RESOURCE_SUFFIXES: &[&str] = &[
     "bmp", "gif", "jpeg", "jpg", "png", "webp", "wav", "mp3", "ogg", "opus", "aac", "m4a", "flac",
 ];
 const SOURCE_INDEX_VERSION: u32 = 1;
-const COMPILED_CACHE_NAME: &str = "compiled-project-v8.bin.zst";
+const COMPILED_CACHE_NAME: &str = "compiled-project.reraproj";
 
 #[derive(Clone)]
 struct IndexedFile {
@@ -48,6 +48,8 @@ pub struct ProjectHost {
     manifest: Option<ProjectManifest>,
     indexed_files: Vec<IndexedFile>,
     revision: u64,
+    embedded_resources: BTreeMap<String, Vec<u8>>,
+    packaged: bool,
 }
 
 impl ProjectHost {
@@ -98,6 +100,8 @@ impl ProjectHost {
                 files,
             }),
             revision,
+            embedded_resources: BTreeMap::new(),
+            packaged: false,
         })
     }
 
@@ -187,6 +191,49 @@ impl ProjectHost {
             manifest: None,
             indexed_files,
             revision,
+            embedded_resources: BTreeMap::new(),
+            packaged: false,
+        })
+    }
+
+    pub fn from_project_file(path: &Path, bytes: &[u8]) -> Result<Self, String> {
+        let path = path
+            .canonicalize()
+            .map_err(|error| format!("cannot open project file: {error}"))?;
+        if !path.is_file()
+            || !path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("reraproj"))
+        {
+            return Err("selected path is not a .reraproj file".into());
+        }
+        let decoded = era_runtime::decode_project_file(bytes, bytes.len())
+            .map_err(|error| error.to_string())?;
+        let indexed_files = decoded
+            .manifest
+            .files
+            .iter()
+            .map(indexed_file)
+            .collect::<Result<Vec<_>, _>>()?;
+        let embedded_resources = decoded
+            .manifest
+            .files
+            .iter()
+            .filter_map(|file| match (&file.category, &file.payload) {
+                (FileCategory::Resource, FilePayload::Bytes(bytes)) => {
+                    Some((file.relative_path.to_lowercase(), bytes.as_slice().to_vec()))
+                }
+                _ => None,
+            })
+            .collect();
+        Ok(Self {
+            root: path.parent().unwrap_or_else(|| Path::new(".")).to_owned(),
+            manifest: Some(decoded.manifest),
+            indexed_files,
+            revision: decoded.identity.project_revision,
+            embedded_resources,
+            packaged: true,
         })
     }
 
@@ -254,6 +301,9 @@ impl ProjectHost {
         &mut self,
         progress: Option<&dyn Fn(usize, usize)>,
     ) -> Result<ReloadProject, String> {
+        if self.packaged {
+            return Err("a packaged project cannot reload source files".into());
+        }
         self.materialize_with_progress(progress)?;
         let candidate =
             Self::scan_with_progress(&self.root, self.revision.saturating_add(1), progress)?;
@@ -301,6 +351,9 @@ impl ProjectHost {
     }
 
     pub fn read_resource(&self, relative_path: &str) -> Result<Vec<u8>, String> {
+        if let Some(bytes) = self.embedded_resources.get(&relative_path.to_lowercase()) {
+            return Ok(bytes.clone());
+        }
         fs::read(self.resource_path(relative_path)?)
             .map_err(|error| format!("cannot read resource: {error}"))
     }
@@ -310,6 +363,9 @@ impl ProjectHost {
         relative_path: &str,
         maximum_bytes: u32,
     ) -> Result<Vec<u8>, String> {
+        if let Some(bytes) = self.embedded_resources.get(&relative_path.to_lowercase()) {
+            return Ok(bytes[..bytes.len().min(maximum_bytes as usize)].to_vec());
+        }
         let path = self.resource_path(relative_path)?;
         let file =
             fs::File::open(path).map_err(|error| format!("cannot open resource: {error}"))?;

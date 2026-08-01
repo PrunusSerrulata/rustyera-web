@@ -103,6 +103,20 @@ impl WasmRuntime {
         to_js(self.inner.load_project(manifest).map_err(js_error)?)
     }
 
+    /// Decode the manifest embedded in a self-contained `RustyEra` project file.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error when the file is corrupt or uses an unsupported version.
+    #[wasm_bindgen(js_name = projectFileManifest)]
+    pub fn project_file_manifest(&self, bytes: &js_sys::Uint8Array) -> Result<JsValue, JsValue> {
+        to_js(
+            self.inner
+                .project_file_manifest(&bytes.to_vec())
+                .map_err(js_error)?,
+        )
+    }
+
     /// Return the active project's selectable traditional-save slot count.
     ///
     /// # Errors

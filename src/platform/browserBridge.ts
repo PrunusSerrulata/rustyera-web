@@ -10,10 +10,20 @@ import type {
   TraditionalSaveAccess,
 } from "@/core/types";
 import { decodeImageMetadata } from "@/core/imageMetadata";
+import { blake3 } from "@noble/hashes/blake3.js";
 import type { DiagnosisArchiveInput } from "@/core/diagnosis";
-import { pickBrowserDirectory, pickBrowserFile } from "@/platform/browserDirectory";
+import {
+  pickBrowserDirectory,
+  pickBrowserFile,
+  removeImportedProjectSources,
+} from "@/platform/browserDirectory";
 import { streamDiagnosisArchiveInWorker } from "@/platform/diagnosis";
-import { BrowserProject, cacheIdentityManifest, saveSlotName } from "@/platform/browserProject";
+import {
+  BrowserProject,
+  cacheIdentityManifest,
+  type BrowserManifest,
+  saveSlotName,
+} from "@/platform/browserProject";
 import { database, loadBrowserPreferences, saveBrowserPreferences } from "@/platform/database";
 import { WorkerClient } from "@/platform/workerClient";
 
@@ -40,7 +50,11 @@ export class BrowserBridge implements FrontendBridge {
   };
   private readonly worker = new WorkerClient();
   private project?: BrowserProject;
+  private importedToOpfs = false;
+  private sourceManifest?: BrowserManifest;
   private cacheWriter?: FileSystemWritableFileStream;
+  private projectFileWriter?: FileSystemWritableFileStream;
+  private projectFileFallback?: { name: string; chunks: Uint8Array[] };
   private projectProgressListener?: (progress: ProjectProgress) => void;
 
   setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void {
@@ -86,10 +100,12 @@ export class BrowserBridge implements FrontendBridge {
     if (picked.persistHandle && import.meta.env.VITE_RUSTYERA_TEST !== "1")
       await database.handles.put({ key: "last-project", handle });
     this.project = new BrowserProject(handle, 1, picked.projectName);
+    this.importedToOpfs = !picked.persistHandle;
     const started = performance.now();
     const manifest = await this.project.scan((completed, total) =>
       this.projectProgressListener?.({ stage: "scanning", completed, total }),
     );
+    this.sourceManifest = manifest;
     const sourceReadMs = performance.now() - started;
     const cacheStarted = performance.now();
     const cache = await this.project.readCompiledCache();
@@ -104,6 +120,12 @@ export class BrowserBridge implements FrontendBridge {
           [cache.buffer],
         );
         cacheImported = true;
+        if (this.importedToOpfs) {
+          this.project.useEmbeddedManifest(manifest);
+          await removeImportedProjectSources(this.project.root);
+          this.importedToOpfs = false;
+          this.sourceManifest = undefined;
+        }
       } catch {
         await this.worker.call("loadProject", manifest);
       }
@@ -119,8 +141,61 @@ export class BrowserBridge implements FrontendBridge {
     } satisfies ProjectOpenMetrics;
   }
 
+  async openProjectFile(): Promise<ProjectOpenMetrics | undefined> {
+    const file = await pickBrowserFile(".reraproj,application/octet-stream");
+    if (!file) return undefined;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const started = performance.now();
+    const manifest = await this.worker.call<BrowserManifest>("projectFileManifest", bytes);
+    const storageRoot = await navigator.storage.getDirectory();
+    const projects = await storageRoot.getDirectoryHandle(".rustyera-project-files", {
+      create: true,
+    });
+    const key = [...blake3(bytes)].map((value) => value.toString(16).padStart(2, "0")).join("");
+    const root = await projects.getDirectoryHandle(key, { create: true });
+    this.project = new BrowserProject(
+      root,
+      manifest.project_revision,
+      file.name.replace(/\.reraproj$/i, ""),
+    );
+    await this.project.writeCompiledProjectFile(bytes);
+    this.project.useEmbeddedManifest(manifest);
+    this.sourceManifest = undefined;
+    this.importedToOpfs = false;
+    await this.worker.callWithTransfer(
+      "loadProjectWithCompiledCache",
+      [manifest, bytes],
+      [bytes.buffer],
+    );
+    return {
+      quickScanMs: 0,
+      cacheReadMs: 0,
+      sourceReadMs: 0,
+      submitMs: performance.now() - started,
+      cacheImported: true,
+    };
+  }
+
   async restartProject(): Promise<ProjectOpenMetrics> {
     if (!this.project) throw new Error("没有打开的项目");
+    const embedded = this.project.embeddedManifest();
+    if (embedded) {
+      const bytes = await this.project.readCompiledCache();
+      if (!bytes) throw new Error("项目文件缓存缺失");
+      const started = performance.now();
+      await this.worker.callWithTransfer(
+        "loadProjectWithCompiledCache",
+        [embedded, bytes],
+        [bytes.buffer],
+      );
+      return {
+        quickScanMs: 0,
+        cacheReadMs: 0,
+        sourceReadMs: 0,
+        submitMs: performance.now() - started,
+        cacheImported: true,
+      };
+    }
     const started = performance.now();
     await this.worker.call(
       "loadProject",
@@ -149,6 +224,10 @@ export class BrowserBridge implements FrontendBridge {
 
   async submitProjectSource(): Promise<void> {
     if (!this.project) throw new Error("没有打开的项目");
+    const embedded = this.project.embeddedManifest();
+    if (embedded) {
+      throw new Error("项目文件与当前 runtime 不兼容，无法回退到外部源码");
+    }
     await this.worker.call(
       "loadProject",
       await this.project.scan((completed, total) =>
@@ -216,6 +295,70 @@ export class BrowserBridge implements FrontendBridge {
     anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 0);
     return true;
+  }
+
+  async beginProjectFileExport(name: string): Promise<boolean> {
+    if (import.meta.env.VITE_RUSTYERA_TEST === "1") {
+      this.projectFileFallback = { name, chunks: [] };
+      return true;
+    }
+    if (window.showSaveFilePicker) {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: name,
+          types: [
+            {
+              description: "RustyEra 项目",
+              accept: { "application/octet-stream": [".reraproj"] },
+            },
+          ],
+        });
+        this.projectFileWriter = await handle.createWritable({ keepExistingData: false });
+        return true;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return false;
+        throw error;
+      }
+    }
+    // Firefox and Safari do not expose a streaming save picker. Retain chunks only on those
+    // hosts and create one Blob at completion, which is the least memory-efficient fallback.
+    this.projectFileFallback = { name, chunks: [] };
+    return true;
+  }
+
+  async writeProjectFileChunk(
+    bytes: Uint8Array,
+    _reset: boolean,
+    complete: boolean,
+  ): Promise<void> {
+    if (this.projectFileWriter) {
+      await this.projectFileWriter.write(bytes as FileSystemWriteChunkType);
+      if (complete) {
+        await this.projectFileWriter.close();
+        this.projectFileWriter = undefined;
+      }
+      return;
+    }
+    const fallback = this.projectFileFallback;
+    if (!fallback) throw new Error("项目文件导出尚未开始");
+    fallback.chunks.push(new Uint8Array(bytes));
+    if (!complete) return;
+    const result = new Uint8Array(fallback.chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+    let offset = 0;
+    for (const chunk of fallback.chunks) {
+      result.set(chunk, offset);
+      offset += chunk.length;
+    }
+    downloadBrowserFile(fallback.name, result);
+    this.projectFileFallback = undefined;
+  }
+
+  async cancelProjectFileExport(): Promise<void> {
+    if (this.projectFileWriter) {
+      await this.projectFileWriter.abort().catch(() => undefined);
+      this.projectFileWriter = undefined;
+    }
+    this.projectFileFallback = undefined;
   }
 
   private requireProject(): BrowserProject {
@@ -294,7 +437,7 @@ export class BrowserBridge implements FrontendBridge {
         create: true,
       });
       const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
-      const handle = await cacheDirectory.getFileHandle("compiled-project-v8.bin.zst", {
+      const handle = await cacheDirectory.getFileHandle("compiled-project.reraproj", {
         create: true,
       });
       this.cacheWriter = await handle.createWritable({ keepExistingData: false });
@@ -304,6 +447,14 @@ export class BrowserBridge implements FrontendBridge {
     if (complete) {
       await this.cacheWriter.close();
       this.cacheWriter = undefined;
+      if (this.importedToOpfs) {
+        const manifest = this.sourceManifest;
+        if (!manifest) throw new Error("OPFS 项目源码清理缺少已验证的项目清单");
+        this.project.useEmbeddedManifest(manifest);
+        await removeImportedProjectSources(this.project.root);
+        this.importedToOpfs = false;
+        this.sourceManifest = undefined;
+      }
     }
   }
 

@@ -229,6 +229,18 @@ impl WebSession {
         self.load_project_request(identity, Some(manifest), None)
     }
 
+    /// Decode and validate the manifest embedded in a self-contained project file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the project file is corrupt, unsupported, or exceeds its own
+    /// transfer size.
+    pub fn project_file_manifest(&self, bytes: &[u8]) -> Result<ProjectManifest, String> {
+        era_runtime::decode_project_file(bytes, bytes.len())
+            .map(|decoded| decoded.manifest)
+            .map_err(|error| error.to_string())
+    }
+
     /// Return the active project's traditional-save slot count.
     ///
     /// # Errors

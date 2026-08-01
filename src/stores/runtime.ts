@@ -56,7 +56,8 @@ type LogEntry = DiagnosisLogEntry & { authoritative: boolean };
 
 interface ExportState {
   name: string;
-  kind: "download" | "compiled_cache" | "diagnosis_snapshot" | "diagnosis_artifact";
+  kind:
+    "download" | "project_file" | "compiled_cache" | "diagnosis_snapshot" | "diagnosis_artifact";
   chunks: Uint8Array[];
   buffer?: Uint8Array;
   received: number;
@@ -102,6 +103,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const projectSelecting = ref(false);
   const projectProgress = ref<ProjectProgress>();
   const openProjectConfirmationOpen = ref(false);
+  let pendingProjectSelection: "directory" | "file" = "directory";
   const prompt = ref("");
   const inputUndo = ref<any>(null);
   const fault = ref<any>(null);
@@ -313,12 +315,21 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function openProject(): Promise<void> {
+    await selectProject("directory");
+  }
+
+  async function openProjectFile(): Promise<void> {
+    await selectProject("file");
+  }
+
+  async function selectProject(selection: "directory" | "file"): Promise<void> {
     if (!canOpenProject.value) return;
+    pendingProjectSelection = selection;
     if (projectOpen.value) {
       openProjectConfirmationOpen.value = true;
       return;
     }
-    await loadProject(false);
+    await loadProject(false, selection);
   }
 
   function cancelOpenProject(): void {
@@ -328,10 +339,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function confirmOpenProject(): Promise<void> {
     if (!openProjectConfirmationOpen.value || !canOpenProject.value) return;
     openProjectConfirmationOpen.value = false;
-    await loadProject(true);
+    await loadProject(true, pendingProjectSelection);
   }
 
-  async function loadProject(replaceCurrent: boolean): Promise<void> {
+  async function loadProject(
+    replaceCurrent: boolean,
+    selection: "directory" | "file",
+  ): Promise<void> {
     projectSelecting.value = true;
     acceptingProjectProgress = true;
     try {
@@ -341,7 +355,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
         await ensureSession();
       }
       status.value = "正在读取项目…";
-      const metrics = await bridge.openProject();
+      const metrics = await (selection === "file"
+        ? bridge.openProjectFile()
+        : bridge.openProject());
       if (!metrics) {
         if (replaceCurrent) projectOpen.value = false;
         finishProjectLoad();
@@ -353,7 +369,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       projectRuntimeStartedAt = performance.now();
       log(
         "info",
-        `项目读取：快速扫描 ${metrics.quickScanMs.toFixed(0)} ms，缓存读取 ${metrics.cacheReadMs.toFixed(0)} ms，源码读取 ${metrics.sourceReadMs.toFixed(0)} ms，提交 ${metrics.submitMs.toFixed(0)} ms${metrics.cacheImported ? "（已导入编译缓存）" : "（冷编译）"}`,
+        `项目读取：快速扫描 ${metrics.quickScanMs.toFixed(0)} ms，缓存读取 ${metrics.cacheReadMs.toFixed(0)} ms，源码读取 ${metrics.sourceReadMs.toFixed(0)} ms，提交 ${metrics.submitMs.toFixed(0)} ms${metrics.cacheImported ? "（已导入项目文件）" : "（冷编译）"}`,
       );
       continueProjectBuildProgress();
       schedulePump(0);
@@ -480,11 +496,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
               compiledCacheTimer = undefined;
               void beginCompiledCacheExport().catch((error) => {
                 exportState = undefined;
-                log("warning", `编译缓存生成失败：${String(error)}`);
+                log("warning", `项目文件生成失败：${String(error)}`);
               });
             }, 1000);
         } else if (value.payload_required) {
-          showProjectLoadTransition("编译缓存未命中，正在读取项目源码…");
+          showProjectLoadTransition("项目文件缓存未命中，正在读取项目源码…");
           projectUsedCompiledCache = false;
           projectRuntimeStartedAt = performance.now();
           await bridge.submitProjectSource();
@@ -560,12 +576,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
         log(value.level ?? "info", `[${value.code}] ${value.message}`, true);
         if (
           value.code === "runtime.compiled_cache_ready" &&
-          (exportState?.kind === "compiled_cache" || exportState?.kind === "diagnosis_artifact") &&
+          (exportState?.kind === "compiled_cache" ||
+            exportState?.kind === "project_file" ||
+            exportState?.kind === "diagnosis_artifact") &&
           !exportState.descriptor
         )
           await (exportState.kind === "diagnosis_artifact"
             ? requestDiagnosisArtifact()
-            : requestCompiledCacheExport());
+            : exportState.kind === "project_file"
+              ? requestProjectFileExport()
+              : requestCompiledCacheExport());
         break;
       case "log":
         if (!isRecoverableStaleDebugLog(value.message))
@@ -581,6 +601,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           const message = `状态导出被 Runtime 拒绝：${value.message ?? "未知原因"}`;
           if (exportState.kind.startsWith("diagnosis_")) finishDiagnosis(false, message);
           else {
+            if (exportState.kind === "project_file") await bridge.cancelProjectFileExport();
             exportState = undefined;
             status.value = message;
             if (diagnosisExporting.value) void startDiagnosisSnapshot();
@@ -892,7 +913,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       projectUsedCompiledCache = metrics.cacheImported;
       log(
         "info",
-        `项目重新读取：快速扫描 ${metrics.quickScanMs.toFixed(0)} ms，缓存读取 ${metrics.cacheReadMs.toFixed(0)} ms，源码读取 ${metrics.sourceReadMs.toFixed(0)} ms，提交 ${metrics.submitMs.toFixed(0)} ms${metrics.cacheImported ? "（已导入编译缓存）" : "（冷编译）"}`,
+        `项目重新读取：快速扫描 ${metrics.quickScanMs.toFixed(0)} ms，缓存读取 ${metrics.cacheReadMs.toFixed(0)} ms，源码读取 ${metrics.sourceReadMs.toFixed(0)} ms，提交 ${metrics.submitMs.toFixed(0)} ms${metrics.cacheImported ? "（已导入项目文件）" : "（冷编译）"}`,
       );
       continueProjectBuildProgress();
     } catch (error) {
@@ -913,6 +934,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function resetSessionState(): void {
+    if (exportState?.kind === "project_file")
+      void bridge
+        .cancelProjectFileExport()
+        .catch((error) => log("warning", `清理项目文件导出失败：${String(error)}`));
     Object.assign(presentation, emptyPresentation());
     runtimePump.setReady(false);
     phase.value = "negotiating";
@@ -1188,13 +1213,47 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function beginCompiledCacheExport(): Promise<void> {
     if (exportState) return;
     exportState = {
-      name: "compiled-project-v8.bin.zst",
+      name: "compiled-project.reraproj",
       kind: "compiled_cache",
       chunks: [],
       received: 0,
     };
-    status.value = "正在后台生成编译缓存…";
+    status.value = "正在后台生成项目文件…";
     await requestCompiledCacheExport();
+  }
+
+  async function exportProjectFile(): Promise<void> {
+    if (exportState || !runtimeReady.value || gameInteractionsBlocked.value) return;
+    const title = diagnosisProjectName(
+      presentation.title.trim() || bridge.projectName() || "RustyEra项目",
+    );
+    const name = `${title}.reraproj`;
+    if (!(await bridge.beginProjectFileExport(name))) {
+      status.value = "已取消导出项目文件";
+      return;
+    }
+    exportState = {
+      name,
+      kind: "project_file",
+      chunks: [],
+      received: 0,
+    };
+    status.value = "正在生成项目文件…";
+    try {
+      await requestProjectFileExport();
+    } catch (error) {
+      await bridge.cancelProjectFileExport();
+      exportState = undefined;
+      throw error;
+    }
+  }
+
+  async function requestProjectFileExport(): Promise<void> {
+    const messageId = await send({
+      type: "state_export_request",
+      value: { kind: "compiled_project_cache", snapshot_purpose: "normal" },
+    });
+    if (exportState?.kind === "project_file") exportState.requestMessageId = String(messageId);
   }
 
   async function requestCompiledCacheExport(): Promise<void> {
@@ -1209,8 +1268,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (!exportState) return;
     if (ready.result.type !== "ready") {
       const message = `当前状态不能导出快照：${(ready.result.reasons ?? []).join(", ")}`;
+      const failedKind = exportState.kind;
       log("warning", message);
-      if (exportState.kind.startsWith("diagnosis_")) finishDiagnosis(false, message);
+      if (failedKind.startsWith("diagnosis_")) finishDiagnosis(false, message);
+      if (failedKind === "project_file") await bridge.cancelProjectFileExport();
       exportState = undefined;
       return;
     }
@@ -1218,6 +1279,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const totalBytes = Number(ready.result.transfer.total_bytes);
     if (
       exportState.kind !== "compiled_cache" &&
+      exportState.kind !== "project_file" &&
       Number.isSafeInteger(totalBytes) &&
       totalBytes >= 0
     )
@@ -1242,12 +1304,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const bytes = Uint8Array.from(chunk.data, (value: number | bigint) => Number(value));
     const reset = exportState.received === 0;
     exportState.received += bytes.length;
-    if (exportState.kind === "compiled_cache") {
-      await bridge.writeCompiledCacheChunk(bytes, reset, chunk.complete);
-    } else if (exportState.buffer) {
-      exportState.buffer.set(bytes, Number(chunk.offset));
-    } else {
-      exportState.chunks.push(bytes);
+    try {
+      if (exportState.kind === "compiled_cache") {
+        await bridge.writeCompiledCacheChunk(bytes, reset, chunk.complete);
+      } else if (exportState.kind === "project_file") {
+        await bridge.writeProjectFileChunk(bytes, reset, chunk.complete);
+      } else if (exportState.buffer) {
+        exportState.buffer.set(bytes, Number(chunk.offset));
+      } else {
+        exportState.chunks.push(bytes);
+      }
+    } catch (error) {
+      if (exportState.kind === "project_file") await bridge.cancelProjectFileExport();
+      exportState = undefined;
+      throw error;
     }
     if (!chunk.complete) await requestExportChunk();
     else await finishExportTransfer();
@@ -1268,6 +1338,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
         status.value = saved ? `已导出 ${completed.name}` : "已取消导出 VM 快照";
         exportState = undefined;
         if (diagnosisExporting.value) await startDiagnosisSnapshot();
+      } else if (completed.kind === "project_file") {
+        status.value = `已导出 ${completed.name}`;
+        exportState = undefined;
       } else if (completed.kind === "compiled_cache") {
         status.value = `已导出 ${completed.name}`;
         exportState = undefined;
@@ -1300,6 +1373,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       if (completed.kind.startsWith("diagnosis_"))
         finishDiagnosis(false, `诊断信息导出失败：${String(error)}`);
       else {
+        if (completed.kind === "project_file") await bridge.cancelProjectFileExport();
         exportState = undefined;
         const message = `状态导出失败：${String(error)}`;
         status.value = message;
@@ -1977,6 +2051,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     promptPlaceholder,
     initialize,
     openProject,
+    openProjectFile,
     cancelOpenProject,
     confirmOpenProject,
     submitText,
@@ -1991,6 +2066,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     recoverFromFault,
     exportDiagnosis,
     exportSnapshot,
+    exportProjectFile,
     exportTraditionalSaveForTest,
     restoreSnapshot,
     openTraditionalSaveDialog,

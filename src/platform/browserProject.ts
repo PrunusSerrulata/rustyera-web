@@ -16,7 +16,7 @@ const RESOURCE_SUFFIXES = new Set([
   "flac",
 ]);
 
-interface ScannedFile {
+export interface ScannedFile {
   relative_path: string;
   category: string;
   payload: { type: "utf8" | "bytes"; value: string | Uint8Array };
@@ -37,6 +37,8 @@ export type FileScanProgress = (completed: number, total: number) => void;
 
 export class BrowserProject {
   private readonly files = new Map<string, FileSystemFileHandle>();
+  private readonly embeddedResources = new Map<string, Uint8Array>();
+  private usesEmbeddedManifest = false;
   private manifestValue?: BrowserManifest;
 
   constructor(
@@ -44,6 +46,25 @@ export class BrowserProject {
     private revision = 1,
     readonly name = root.name,
   ) {}
+
+  useEmbeddedManifest(manifest: BrowserManifest): void {
+    this.revision = manifest.project_revision;
+    this.embeddedResources.clear();
+    this.usesEmbeddedManifest = true;
+    for (const file of manifest.files) {
+      if (file.category === "resource" && file.payload.type === "bytes") {
+        this.embeddedResources.set(
+          safePath(file.relative_path).toLocaleLowerCase(),
+          new Uint8Array(file.payload.value as Uint8Array),
+        );
+      }
+    }
+    this.manifestValue = cacheIdentityManifest(manifest);
+  }
+
+  embeddedManifest(): BrowserManifest | undefined {
+    return this.usesEmbeddedManifest ? this.manifestValue : undefined;
+  }
 
   async scan(progress?: FileScanProgress): Promise<BrowserManifest> {
     this.files.clear();
@@ -68,7 +89,7 @@ export class BrowserProject {
     try {
       const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
       const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
-      const handle = await cacheDirectory.getFileHandle("compiled-project-v8.bin.zst");
+      const handle = await cacheDirectory.getFileHandle("compiled-project.reraproj");
       return new Uint8Array(await (await handle.getFile()).arrayBuffer());
     } catch (error) {
       if (errorKind(error) === "not_found") return undefined;
@@ -76,7 +97,19 @@ export class BrowserProject {
     }
   }
 
+  async writeCompiledProjectFile(bytes: Uint8Array): Promise<void> {
+    const privateDirectory = await this.root.getDirectoryHandle(".rustyera", { create: true });
+    const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
+    const handle = await cacheDirectory.getFileHandle("compiled-project.reraproj", {
+      create: true,
+    });
+    const writer = await handle.createWritable({ keepExistingData: false });
+    await writer.write(bytes as FileSystemWriteChunkType);
+    await writer.close();
+  }
+
   async reloadRequest(progress?: FileScanProgress): Promise<any> {
+    if (this.embeddedManifest()) throw new Error("项目文件不包含可热重载的外部源码目录");
     const previous = this.manifestValue ?? (await this.scan(progress));
     this.revision += 1;
     const current = await this.scan(progress);
@@ -112,6 +145,8 @@ export class BrowserProject {
 
   async readResource(relativePath: string): Promise<Uint8Array> {
     const normalized = safePath(relativePath);
+    const embedded = this.embeddedResources.get(normalized.toLocaleLowerCase());
+    if (embedded) return new Uint8Array(embedded);
     const handle = this.files.get(normalized.toLocaleLowerCase());
     if (!handle) throw new Error(`未知资源：${relativePath}`);
     return new Uint8Array(await (await handle.getFile()).arrayBuffer());
@@ -119,6 +154,8 @@ export class BrowserProject {
 
   async readResourcePrefix(relativePath: string, maximumBytes: number): Promise<Uint8Array> {
     const normalized = safePath(relativePath);
+    const embedded = this.embeddedResources.get(normalized.toLocaleLowerCase());
+    if (embedded) return embedded.slice(0, maximumBytes);
     const handle = this.files.get(normalized.toLocaleLowerCase());
     if (!handle) throw new Error(`未知资源：${relativePath}`);
     const file = await handle.getFile();

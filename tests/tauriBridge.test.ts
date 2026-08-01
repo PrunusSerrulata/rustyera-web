@@ -40,6 +40,23 @@ describe("Tauri project restart", () => {
     await expect(new TauriBridge().restartProject()).rejects.toThrow("没有打开的项目");
   });
 
+  it("reopens a selected project file through the packaged-project command", async () => {
+    open.mockResolvedValue("/game/eraTW.reraproj");
+    invoke.mockResolvedValue({ cacheImported: true });
+    const bridge = new TauriBridge();
+
+    await bridge.openProjectFile();
+    await bridge.restartProject();
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "open_project_file", {
+      path: "/game/eraTW.reraproj",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "open_project_file", {
+      path: "/game/eraTW.reraproj",
+    });
+    expect(bridge.projectName()).toBe("eraTW");
+  });
+
   it("forwards native project progress events", async () => {
     let receive: ((event: { payload: unknown }) => void) | undefined;
     listen.mockImplementation(async (_name, callback) => {

@@ -227,6 +227,44 @@ async fn open_project(
 }
 
 #[tauri::command]
+async fn open_project_file(
+    state: State<'_, AppState>,
+    path: PathBuf,
+) -> Result<ProjectOpenMetrics, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let started = Instant::now();
+        let bytes =
+            fs::read(&path).map_err(|error| format!("cannot read project file: {error}"))?;
+        let mut host = ProjectHost::from_project_file(&path, &bytes)?;
+        let identity = host.identity();
+        with_session(&state, |session| {
+            session.load_project_with_compiled_cache(identity, &bytes)
+        })?;
+        let submit_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let storage_key = blake3::hash(path.to_string_lossy().as_bytes()).to_hex();
+        let storage_root = host
+            .root()
+            .join(".rustyera/packaged-projects")
+            .join(storage_key.as_str());
+        *state.storage.lock().map_err(lock_error)? = Some(StorageHost::new(storage_root));
+        // The runtime now owns the compiled artifact; retaining the manifest is unnecessary,
+        // while ProjectHost keeps only embedded resources required by frontend services.
+        let _ = host.take_manifest_with_progress(None)?;
+        *state.project.lock().map_err(lock_error)? = Some(host);
+        Ok(ProjectOpenMetrics {
+            quick_scan_ms: 0.0,
+            cache_read_ms: 0.0,
+            source_read_ms: 0.0,
+            submit_ms,
+            cache_imported: true,
+        })
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn submit_project_source(app: AppHandle, state: State<'_, AppState>) -> Result<u64, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -463,7 +501,7 @@ fn write_compiled_cache_chunk_inner(
         let directory = root.join(".rustyera/cache");
         fs::create_dir_all(&directory)
             .map_err(|error| format!("cannot create compiled cache directory: {error}"))?;
-        let target = directory.join("compiled-project-v8.bin.zst");
+        let target = directory.join("compiled-project.reraproj");
         let temporary = tempfile::NamedTempFile::new_in(&directory)
             .map_err(|error| format!("cannot create temporary compiled cache: {error}"))?;
         *state.cache_writer.lock().map_err(lock_error)? =
@@ -590,6 +628,7 @@ pub fn run() {
             submit_debug,
             pump,
             open_project,
+            open_project_file,
             submit_project_source,
             reload_project,
             read_resource,
@@ -628,7 +667,7 @@ mod tests {
             fs::read(
                 directory
                     .path()
-                    .join(".rustyera/cache/compiled-project-v8.bin.zst")
+                    .join(".rustyera/cache/compiled-project.reraproj")
             )
             .unwrap(),
             b"firstsecond"

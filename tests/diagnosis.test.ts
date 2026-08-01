@@ -24,7 +24,7 @@ describe("diagnosis archive", () => {
     expect(unpackTar(decodeRawZstd(archive))).toEqual({
       "runtime.snapshot": [1, 2],
       "runtime.log": [...new TextEncoder().encode("[14:05:06] INFO  ready\n")],
-      "eraThe World-compiled-project.bin.zst": [3, 4],
+      "eraThe World.reraproj": [3, 4],
     });
   });
 

@@ -4,6 +4,7 @@ import {
   importBrowserDirectory,
   pickBrowserDirectory,
   pickBrowserFile,
+  removeImportedProjectSources,
   selectedProjectFiles,
 } from "@/platform/browserDirectory";
 
@@ -68,6 +69,10 @@ class MemoryDirectoryHandle {
   async removeEntry(name: string): Promise<void> {
     if (!this.children.delete(name)) throw new DOMException("missing", "NotFoundError");
   }
+
+  async *entries() {
+    yield* this.children.entries();
+  }
 }
 
 function projectFile(path: string, contents = ""): File {
@@ -128,6 +133,20 @@ describe("portable browser directory selection", () => {
 
     expect(progress).toHaveBeenCalledOnce();
     expect(progress).toHaveBeenCalledWith("scanning", 0, 0);
+  });
+
+  it("removes OPFS source copies after a project file has been built", async () => {
+    const storage = new MemoryDirectoryHandle("root");
+    const picked = await importBrowserDirectory(
+      [projectFile("game/ERB/main.erb", "@SYSTEM_TITLE\nRETURN\n")],
+      storage as any,
+    );
+
+    await removeImportedProjectSources(picked.handle);
+
+    const erb = await (picked.handle as any).getDirectoryHandle("ERB");
+    await expect(erb.getFileHandle("main.erb")).rejects.toMatchObject({ name: "NotFoundError" });
+    await expect((picked.handle as any).getDirectoryHandle(".rustyera")).resolves.toBeDefined();
   });
 
   it("returns no directory when either browser picker is cancelled", async () => {

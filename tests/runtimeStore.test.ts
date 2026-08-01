@@ -22,6 +22,7 @@ const bridge = vi.hoisted(() => ({
     },
   ),
   openProject: vi.fn(),
+  openProjectFile: vi.fn(),
   restartProject: vi.fn(),
   submitProjectSource: vi.fn(),
   reloadProject: vi.fn(),
@@ -34,6 +35,9 @@ const bridge = vi.hoisted(() => ({
   projectName: vi.fn(() => "eraTW"),
   openUpload: vi.fn(),
   saveDownload: vi.fn(),
+  beginProjectFileExport: vi.fn(),
+  writeProjectFileChunk: vi.fn(),
+  cancelProjectFileExport: vi.fn(),
   traditionalSaves: {
     listSlots: vi.fn(),
     exportSlot: vi.fn(),
@@ -61,6 +65,7 @@ describe("runtime store session lifecycle", () => {
     bridge.submitDebug.mockImplementation(async () => nextDebugMessageId++);
     bridge.pump.mockResolvedValue(emptyBatch());
     bridge.saveDownload.mockResolvedValue(true);
+    bridge.beginProjectFileExport.mockResolvedValue(true);
     bridge.traditionalSaves.listSlots.mockResolvedValue([
       { slot: 0, occupied: false },
       { slot: 1, occupied: true },
@@ -142,6 +147,47 @@ describe("runtime store session lifecycle", () => {
       },
       undefined,
     );
+  });
+
+  it("streams a titled project file through the host export boundary", async () => {
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          runtimeEvent("presentation_snapshot", {
+            revision: 1,
+            title: "测试项目",
+            history: { logical_lines: [] },
+          }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_export_ready", {
+            result: { type: "ready", transfer: { transfer_id: 7, total_bytes: 3 } },
+          }),
+          runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2, 3], complete: true }),
+        ],
+      });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+
+    await store.exportProjectFile();
+    await vi.advanceTimersByTimeAsync(32);
+
+    expect(bridge.beginProjectFileExport).toHaveBeenCalledWith("测试项目.reraproj");
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      {
+        type: "state_export_request",
+        value: { kind: "compiled_project_cache", snapshot_purpose: "normal" },
+      },
+      undefined,
+    );
+    expect(bridge.writeProjectFileChunk).toHaveBeenCalledWith(Uint8Array.of(1, 2, 3), true, true);
   });
 
   it("exports the TUI-compatible diagnosis archive while locking game interaction", async () => {

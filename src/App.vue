@@ -58,6 +58,9 @@ onMounted(() => void store.initialize());
       <button class="primary large" :disabled="!store.canOpenProject" @click="store.openProject">
         打开 Era 项目…
       </button>
+      <button class="large" :disabled="!store.canOpenProject" @click="store.openProjectFile">
+        从项目文件启动…
+      </button>
       <p v-if="store.bridgeKind === 'browser'" class="hint">
         Chromium 可直接读写项目目录；Firefox 和 Safari 会将所选项目导入浏览器存储。
       </p>

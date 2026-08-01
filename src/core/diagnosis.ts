@@ -39,7 +39,7 @@ export function* diagnosisArchiveChunks(input: DiagnosisArchiveInput): Generator
   const tarParts = [
     ...tarMemberParts("runtime.snapshot", input.snapshot, timestamp),
     ...tarMemberParts("runtime.log", encoder.encode(input.logs), timestamp),
-    ...tarMemberParts(`${projectName}-compiled-project.bin.zst`, input.compiledArtifact, timestamp),
+    ...tarMemberParts(`${projectName}.reraproj`, input.compiledArtifact, timestamp),
     new Uint8Array(TAR_BLOCK_BYTES * 2),
   ];
   const contentSize = tarParts.reduce((total, part) => total + part.length, 0);

@@ -30,7 +30,16 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
         <button :disabled="!store.canOpenProject" @click="action(store.openProject)">
           打开项目…
         </button>
+        <button :disabled="!store.canOpenProject" @click="action(store.openProjectFile)">
+          从项目文件启动…
+        </button>
         <hr />
+        <button
+          :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
+          @click="action(store.exportProjectFile)"
+        >
+          导出项目文件…
+        </button>
         <button
           :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
           @click="action(store.restart)"
