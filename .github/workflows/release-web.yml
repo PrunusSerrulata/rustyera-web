@@ -15,6 +15,10 @@ on:
         description: Tag to create when publishing (for example, v0.1.0)
         required: false
         type: string
+      core_commit:
+        description: Full rustyera-core commit SHA (leave empty for the latest main commit)
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -27,7 +31,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  resolve-core:
+    runs-on: ubuntu-latest
+    outputs:
+      revision: ${{ steps.core.outputs.revision }}
+    steps:
+      - name: Resolve core revision
+        id: core
+        env:
+          CORE_COMMIT: ${{ inputs.core_commit }}
+        run: |
+          revision="$CORE_COMMIT"
+          if [[ -z "$revision" ]]; then
+            revision="$(git ls-remote https://github.com/PrunusSerrulata/rustyera-core.git refs/heads/main | cut -f1)"
+          fi
+          if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "core_commit must be a full 40-character lowercase commit SHA" >&2
+            exit 1
+          fi
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
   browser:
+    needs: resolve-core
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -38,6 +63,11 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Pin core dependencies
+        shell: pwsh
+        run: node scripts/pin-core-dependencies.mjs '${{ needs.resolve-core.outputs.revision }}'
+      - name: Refresh lockfile for selected core
+        run: cargo update
       - uses: jetli/wasm-pack-action@v0.4.0
       - run: npm ci
       - run: npm run check:core-rev
@@ -59,6 +89,7 @@ jobs:
 
   tauri:
     name: Tauri (${{ matrix.name }})
+    needs: resolve-core
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -81,6 +112,11 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Pin core dependencies
+        shell: pwsh
+        run: node scripts/pin-core-dependencies.mjs '${{ needs.resolve-core.outputs.revision }}'
+      - name: Refresh lockfile for selected core
+        run: cargo update
       - run: npm ci
       - run: npm run check:core-rev
       - run: cargo check --workspace --all-targets --locked
