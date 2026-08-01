@@ -27,7 +27,6 @@ import {
   safeNumber,
   saveSlotFileName,
   snapshotFileName,
-  transportValue,
   type DiagnosisLogEntry,
 } from "@/core/runtimeSupport";
 import { formatRuntimeFault } from "@/core/runtimeFault";
@@ -50,6 +49,7 @@ import {
   type TraditionalSaveSlot,
 } from "@/core/types";
 import { platformBridge } from "@/platform";
+import { transportValue } from "@/stores/runtimeTransport";
 
 type LogEntry = DiagnosisLogEntry & { authoritative: boolean };
 
