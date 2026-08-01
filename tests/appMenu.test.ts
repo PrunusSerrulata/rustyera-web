@@ -66,6 +66,10 @@ vi.mock("@/stores/runtime", () => ({ useRuntimeStore: () => store }));
 
 import App from "@/App.vue";
 
+function mountApp() {
+  return shallowMount(App, { global: { stubs: { AppMenuBar: false } } });
+}
+
 const controlledLabels = [
   "重新开始",
   "返回标题",
@@ -105,7 +109,7 @@ describe("application menus", () => {
   });
 
   it("disables project and debug actions until the game is running", async () => {
-    const loading = shallowMount(App);
+    const loading = mountApp();
     let states = await menuStates(loading);
     for (const label of controlledLabels) {
       expect(states.get(label), label).toBe(true);
@@ -116,7 +120,7 @@ describe("application menus", () => {
     store.runtimeReady = true;
     store.canExportDiagnosis = true;
     store.canManageTraditionalSaves = true;
-    const running = shallowMount(App);
+    const running = mountApp();
     states = await menuStates(running);
     for (const label of controlledLabels) {
       expect(states.get(label), label).toBe(false);
@@ -126,7 +130,7 @@ describe("application menus", () => {
 
   it("shows portable save transfer actions only in the WASM host", async () => {
     store.bridgeKind = "tauri";
-    const wrapper = shallowMount(App);
+    const wrapper = mountApp();
     const states = await menuStates(wrapper);
 
     expect(states.has("导出存档…")).toBe(false);
@@ -137,7 +141,7 @@ describe("application menus", () => {
   });
 
   it("shows the active internal project workload", () => {
-    const wrapper = shallowMount(App);
+    const wrapper = mountApp();
     const progress = wrapper.get("[aria-label='项目加载进度']");
 
     expect(wrapper.get(".app-shell").attributes("aria-busy")).toBe("true");
@@ -149,7 +153,7 @@ describe("application menus", () => {
   });
 
   it("labels the WASM exit action as closing the current tab", async () => {
-    const wrapper = shallowMount(App);
+    const wrapper = mountApp();
     const states = await menuStates(wrapper);
 
     expect(states.has("关闭当前标签页")).toBe(true);
