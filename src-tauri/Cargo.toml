@@ -1,6 +1,6 @@
 [package]
 name = "era-web-tauri"
-version = "0.0.1-alpha.1-tauri"
+version = "0.1.0-alpha.1-tauri"
 edition.workspace = true
 license.workspace = true
 
