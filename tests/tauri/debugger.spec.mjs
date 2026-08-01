@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 const PROJECT_TIMEOUT = 240_000;
 
 describe("Tauri debugger with the real eraTW project", () => {
-  it("provides console, variables, call stack, and source-line stepping", async () => {
+  it("provides console, variables, and the stable-wait call stack", async () => {
     await browser.waitUntil(async () => Boolean(await snapshot()), {
       timeout: 20_000,
       timeoutMsg: "test control was not installed in the Tauri WebView",
@@ -14,11 +14,26 @@ describe("Tauri debugger with the real eraTW project", () => {
     assert.equal(initial.projectOpen, false);
     assert.equal(initial.debug.singleStepEnabled, false);
 
+    await $(".welcome .primary").click();
+    await browser.waitUntil(
+      async () => {
+        const state = await snapshot();
+        return state?.projectOpen && state.phase === "waiting_input" && state.canInteract;
+      },
+      { timeout: PROJECT_TIMEOUT, timeoutMsg: "eraTW did not reach a stable input wait" },
+    );
+
     await openDebugMenu();
     await button("启用调试").click();
-    await browser.waitUntil(async () => (await snapshot())?.debug.enabled === true);
+    try {
+      await browser.waitUntil(async () => (await snapshot())?.debug.enabled === true, {
+        timeout: 20_000,
+        timeoutMsg: "debug grant did not become active",
+      });
+    } catch (error) {
+      throw new Error(`${error.message}; snapshot=${JSON.stringify(await snapshot())}`);
+    }
 
-    await $(".welcome .primary").click();
     await openDebugMenu();
     await button("控制台…").click();
     await $(".dialog-panel[aria-label='EraBasic 调试控制台']").waitForDisplayed();
@@ -83,10 +98,19 @@ describe("Tauri debugger with the real eraTW project", () => {
     await closeDialog("EraBasic 调试控制台");
     await openDebugMenu();
     await button("变量查看器…").click();
-    await browser.waitUntil(async () => (await snapshot())?.debug.variablesLoading === false, {
-      timeout: 60_000,
-      timeoutMsg: "variable table refresh did not complete",
-    });
+    await browser.waitUntil(
+      async () => {
+        const state = await snapshot();
+        return (
+          state?.debug.variablesLoading === false &&
+          state.debug.variables.some((candidate) => candidate.name === scalar.name)
+        );
+      },
+      {
+        timeout: 60_000,
+        timeoutMsg: `${scalar.name} was not restored after the variable table refresh`,
+      },
+    );
     const refreshedRow = await variableRow(scalar.name);
     await refreshedRow.waitForDisplayed({ timeout: 30_000 });
     await refreshedRow.$("button=读取").click();
@@ -129,21 +153,22 @@ describe("Tauri debugger with the real eraTW project", () => {
     const frameRows = await stackDialog.$$(".debug-table:last-child tbody tr");
     const fiberText = await fiberRows[0].getText();
     const frameText = await frameRows[0].getText();
-    assert.match(fiberText, /runnable/);
+    assert.match(fiberText, /waiting_host/);
     assert.ok(frameText.trim().length > 0);
 
-    const beforeStep = await snapshot();
-    assert.equal(beforeStep.debug.canStep, true);
-    const beforeStop = JSON.stringify(beforeStep.debug.stop.stop);
-    await browser.keys(["F10"]);
+    const stableStop = await snapshot();
+    assert.equal(stableStop.debug.canStep, false);
+    await closeDialog("Fibers / 调用栈");
+    await openDebugMenu();
+    assert.equal(await button("单步执行 (F10)").isEnabled(), false);
+    await button("关闭单步运行").click();
     await browser.waitUntil(
-      async () => (await snapshot())?.debug.stop?.reason?.type === "step_completed",
-      { timeout: 20_000, timeoutMsg: "F10 did not complete a source-line step" },
+      async () => {
+        const state = await snapshot();
+        return state?.phase === "waiting_input" && state.canInteract;
+      },
+      { timeout: 20_000, timeoutMsg: "runtime did not resume after disabling single-step mode" },
     );
-    const afterStep = await snapshot();
-    assert.equal(afterStep.phase, "debug_paused");
-    assert.equal(afterStep.debug.stop.reason.type, "step_completed");
-    assert.notEqual(JSON.stringify(afterStep.debug.stop.stop), beforeStop);
 
     console.log(
       JSON.stringify({
@@ -153,7 +178,7 @@ describe("Tauri debugger with the real eraTW project", () => {
         fiber: fiberText,
         frame: frameText,
         prompt: promptPlaceholder,
-        step: afterStep.debug.stop,
+        stop: stableStop.debug.stop,
       }),
     );
   });

@@ -10,7 +10,7 @@ describe("Tauri project replacement", () => {
     });
     assert.equal((await snapshot()).bridgeKind, "tauri");
 
-    await $(".welcome .primary").click();
+    if (!(await snapshot()).projectOpen) await $(".welcome .primary").click();
     await waitForStableProject();
     const before = await snapshot();
 

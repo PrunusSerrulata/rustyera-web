@@ -66,12 +66,6 @@ try {
   });
   await browser.url(`http://127.0.0.1:${port}`);
   let minimized = false;
-  if (browserName === "safari") {
-    minimized = await browser
-      .minimizeWindow()
-      .then(() => true)
-      .catch(() => false);
-  }
   const setup = await browser.executeAsync(
     async (payload, done) => {
       try {
@@ -150,20 +144,33 @@ try {
   const open = await browser.$("button.primary.large");
   await open.waitForClickable({ timeout: 30_000 });
   await open.click();
-  await browser.waitUntil(
-    async () => {
-      if (!(await browser.$(".game-viewport").isExisting())) return false;
-      return browser.execute(() => {
-        const state = window.__RUSTYERA_TEST__?.snapshot();
-        return state?.phase === "waiting_input" && state.canInteract;
-      });
-    },
-    {
-      timeout: 120_000,
-      interval: 250,
-      timeoutMsg: "WASM project did not reach a stable input wait",
-    },
-  );
+  try {
+    await browser.waitUntil(
+      async () => {
+        if (!(await browser.$(".game-viewport").isExisting())) return false;
+        return browser.execute(() => {
+          const state = window.__RUSTYERA_TEST__?.snapshot();
+          return state?.phase === "waiting_input" && state.canInteract;
+        });
+      },
+      {
+        timeout: 120_000,
+        interval: 250,
+        timeoutMsg: "WASM project did not reach a stable input wait",
+      },
+    );
+  } catch (error) {
+    const diagnosis = await browser.execute(() => ({
+      openButton: document.querySelector("button.primary.large")?.textContent?.trim(),
+      fileInput: Boolean(document.querySelector('input[type="file"][webkitdirectory]')),
+      picker: window.__RUSTYERA_COMPAT_PICKER__,
+      progress: window.__RUSTYERA_COMPAT_PROGRESS__?.progress,
+      state: window.__RUSTYERA_TEST__?.snapshot(),
+      status: document.querySelector(".runtime-status")?.textContent,
+      viewport: Boolean(document.querySelector(".game-viewport")),
+    }));
+    throw new Error(`${error.message}; diagnosis=${JSON.stringify(diagnosis)}`);
+  }
   const projectProgress = await browser.execute(() => {
     const observed = window.__RUSTYERA_COMPAT_PROGRESS__;
     observed?.capture();
@@ -345,6 +352,12 @@ try {
     throw new Error(
       `portable directory picker was not exercised: ${JSON.stringify(observed.picker)}`,
     );
+  }
+  if (browserName === "safari") {
+    minimized = await browser
+      .minimizeWindow()
+      .then(() => true)
+      .catch(() => false);
   }
   console.log(
     JSON.stringify({
