@@ -49,6 +49,7 @@ import {
   type TraditionalSaveSlot,
 } from "@/core/types";
 import { platformBridge } from "@/platform";
+import { RuntimePumpCoordinator } from "@/stores/runtimePump";
 import { transportValue } from "@/stores/runtimeTransport";
 
 type LogEntry = DiagnosisLogEntry & { authoritative: boolean };
@@ -101,8 +102,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const projectSelecting = ref(false);
   const projectProgress = ref<ProjectProgress>();
   const openProjectConfirmationOpen = ref(false);
-  const sessionReady = ref(false);
-  const pumping = ref(false);
   const prompt = ref("");
   const inputUndo = ref<any>(null);
   const fault = ref<any>(null);
@@ -135,7 +134,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const heldKeys = new Set<number>();
   const audio = new AudioEngine(bridge, preferences.value);
   bridge.setProjectProgressListener(handleProjectProgress);
-  let pumpTimer: number | undefined;
   let compiledCacheTimer: number | undefined;
   let exportState: ExportState | undefined;
   let diagnosisState: DiagnosisState | undefined;
@@ -169,8 +167,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
       reject?: (error: Error) => void;
     }
   >();
-  let sessionTransitioning = false;
   const messageSkip = new MessageSkipController();
+  const runtimePump = new RuntimePumpCoordinator(bridge, {
+    handleBatch,
+    advanceTimedWait,
+    handleError(error) {
+      finishProjectLoad();
+      fault.value = { code: "frontend", message: String(error) };
+      log("error", String(error));
+    },
+  });
 
   const effectivePreferences = computed(() => previewPreferences.value ?? preferences.value);
   const gameTextStyle = computed(() =>
@@ -186,7 +192,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   );
   const runtimeReady = computed(
     () =>
-      sessionReady.value &&
+      runtimePump.ready &&
       projectOpen.value &&
       [
         "running",
@@ -198,7 +204,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       ].includes(phase.value),
   );
   const canExportDiagnosis = computed(
-    () => runtimeReady.value && !diagnosisExporting.value && !sessionTransitioning,
+    () => runtimeReady.value && !diagnosisExporting.value && !runtimePump.transitioning,
   );
   const canManageTraditionalSaves = computed(
     () =>
@@ -282,14 +288,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function ensureSession(): Promise<void> {
-    if (sessionReady.value) return;
+    if (runtimePump.ready) return;
     try {
       fonts.value = await bridge.listFonts();
     } catch (error) {
       log("warning", `无法读取系统字体：${String(error)}`);
     }
     const batch = await bridge.createSession(sessionOptions());
-    sessionReady.value = true;
+    runtimePump.setReady(true);
     await handleBatch(batch);
     schedulePump(0);
   }
@@ -359,14 +365,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } finally {
       projectSelecting.value = false;
       if (replaceCurrent) {
-        sessionTransitioning = false;
+        runtimePump.setTransitioning(false);
         schedulePump(0);
       }
     }
   }
 
   async function recreateSessionForProjectSelection(): Promise<void> {
-    sessionTransitioning = true;
+    runtimePump.setTransitioning(true);
     clearSessionTimers();
     resetMessageSkip();
     resetSessionState();
@@ -375,20 +381,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await audio
       .synchronize([])
       .catch((error) => log("warning", `更换项目时停止音频失败：${String(error)}`));
-    while (pumping.value)
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await runtimePump.waitUntilIdle();
     // A pump already in flight may have projected stale events after the immediate clear.
     resetSessionState();
     const batch = await bridge.createSession(sessionOptions());
-    sessionReady.value = true;
+    runtimePump.setReady(true);
     await handleBatch(batch);
   }
 
   function clearSessionTimers(): void {
-    if (pumpTimer != null) {
-      window.clearTimeout(pumpTimer);
-      pumpTimer = undefined;
-    }
+    runtimePump.clearTimer();
     if (compiledCacheTimer != null) {
       window.clearTimeout(compiledCacheTimer);
       compiledCacheTimer = undefined;
@@ -396,28 +398,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function schedulePump(delay = 16): void {
-    if (!sessionReady.value || sessionTransitioning || pumpTimer != null) return;
-    pumpTimer = window.setTimeout(() => {
-      pumpTimer = undefined;
-      void pumpOnce();
-    }, delay);
-  }
-
-  async function pumpOnce(): Promise<void> {
-    if (pumping.value || sessionTransitioning) return;
-    pumping.value = true;
-    try {
-      const batch = await bridge.pump();
-      await handleBatch(batch);
-      await advanceTimedWait();
-      schedulePump(batch.state === "more_work" || batch.state === "output_ready" ? 0 : 16);
-    } catch (error) {
-      finishProjectLoad();
-      fault.value = { code: "frontend", message: String(error) };
-      log("error", String(error));
-    } finally {
-      pumping.value = false;
-    }
+    runtimePump.schedule(delay);
   }
 
   async function handleBatch(batch: PumpBatch): Promise<void> {
@@ -889,15 +870,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (
       !projectOpen.value ||
       projectLoading.value ||
-      sessionTransitioning ||
+      runtimePump.transitioning ||
       diagnosisExporting.value
     )
       return;
     beginProjectLoad("正在创建新的 Runtime session…");
-    sessionTransitioning = true;
+    runtimePump.setTransitioning(true);
     clearSessionTimers();
-    while (pumping.value)
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await runtimePump.waitUntilIdle();
     resetMessageSkip();
     await audio
       .synchronize([])
@@ -905,7 +885,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     resetSessionState();
     try {
       const batch = await bridge.createSession(sessionOptions());
-      sessionReady.value = true;
+      runtimePump.setReady(true);
       await handleBatch(batch);
       projectRuntimeStartedAt = performance.now();
       const metrics = await bridge.restartProject();
@@ -921,7 +901,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       status.value = message;
       log("error", message);
     } finally {
-      sessionTransitioning = false;
+      runtimePump.setTransitioning(false);
       schedulePump(0);
     }
   }
@@ -934,7 +914,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   function resetSessionState(): void {
     Object.assign(presentation, emptyPresentation());
-    sessionReady.value = false;
+    runtimePump.setReady(false);
     phase.value = "negotiating";
     runtimeEpoch.value = 0;
     lastTimeAdvanceNs = undefined;
@@ -973,7 +953,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function reloadProject(): Promise<void> {
-    if (projectLoading.value || sessionTransitioning || diagnosisExporting.value) return;
+    if (projectLoading.value || runtimePump.transitioning || diagnosisExporting.value) return;
     beginProjectLoad("正在重新加载项目…");
     try {
       await bridge.reloadProject();
@@ -1792,7 +1772,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function projectViewport(): Promise<void> {
-    if (!sessionReady.value) return;
+    if (!runtimePump.ready) return;
     const viewport = document.querySelector(".game-viewport");
     if (!(viewport instanceof HTMLElement)) return;
     await send({
@@ -1817,7 +1797,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function sendClientState(): Promise<void> {
-    if (!sessionReady.value) return;
+    if (!runtimePump.ready) return;
     await send({
       type: "client_state_changed",
       value: {
@@ -1837,7 +1817,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       requestBrowserTabClose();
       return;
     }
-    if (!sessionReady.value) return bridge.close();
+    if (!runtimePump.ready) return bridge.close();
     await send({ type: "shutdown_request", value: { graceful: true } });
   }
 
