@@ -28,13 +28,16 @@ justification that native Tauri GUI/WebView startup is required. Do not first tr
 Treat an embedded WebDriver startup timeout from a sandboxed run as an invalid infrastructure
 attempt and rerun outside the sandbox before diagnosing a product or test failure.
 
-Do not hide long game setup behind one silent WebDriver wait. For a stage whose total budget can
-exceed 60 seconds, poll the test-control snapshot, emit phase/status/wait/presentation/output/log
-diagnostics at least once per 60 seconds, abort immediately on `fault` or a terminal version/protocol
-rejection, and fail after 60 seconds without meaningful observable progress. Reaching a new input
-wait counts as progress but also means the test must decide whether to submit it; repeatedly waiting
-at an actionable prompt is a test-flow bug. Preserve the reference behavior and geometry assertions
-when repairing a timeout.
+Do not hide long game setup behind one silent WebDriver wait. From launch through exit, poll every 5
+seconds and emit a complete snapshot containing phase/status/wait/presentation/output/log state and
+every current HTML element's tag, attributes, text/value, and visibility. Abort immediately on
+`fault` or a terminal version/protocol rejection. Compare snapshots without timestamps and other
+reporting-only metadata; if two consecutive snapshots are identical, terminate immediately as
+stalled with no further grace period. Reaching a new input wait counts as progress but also means
+the test must decide before the next poll whether to submit it; repeatedly waiting at an actionable
+prompt is a test-flow bug. Preserve the reference behavior and geometry assertions when repairing a
+timeout. All tests in the task share a 60-minute wall-clock limit, and no full suite may be started
+more than once.
 
 The test build must use default frontend preferences unless the spec explicitly covers a preference;
 persisted user font and image settings are not valid inputs to reference-geometry tests.

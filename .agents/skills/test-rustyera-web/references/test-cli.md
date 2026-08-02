@@ -17,11 +17,14 @@ local server binding are required. Do not probe them in the sandbox first. Treat
 sandbox-originated listen `EPERM`, driver startup failure, or automation timeout as an invalid
 infrastructure attempt and rerun outside the sandbox before diagnosing a product failure.
 
-Long scenarios must poll the test-control snapshot instead of making one silent wait. Emit a concise
-phase/status/wait/presentation/output/log diagnostic at least every 60 seconds, abort immediately on
-`fault` or a terminal version/protocol rejection, and fail a stage after 60 seconds without
-meaningful observable progress. A longer total scenario timeout is valid only while progress
-continues. Preserve the reference output and DOM/layout assertions when repairing a timeout.
+From launch through exit, long scenarios must poll and emit a complete snapshot every 5 seconds
+instead of making one silent wait. The snapshot must enumerate every current HTML element with its
+tag, attributes, text/value, and visibility, plus phase/status/wait/presentation/output/log state.
+Abort immediately on `fault` or a terminal version/protocol rejection. Compare snapshots after
+removing timestamps and reporting-only metadata; if two consecutive snapshots are identical,
+terminate immediately as stalled without waiting for another timeout. Preserve the reference
+output and DOM/layout assertions when repairing a timeout. All task tests share one 60-minute
+wall-clock budget, and each full suite may start only once.
 
 After clicking the native compatibility runner's visible project-open button, require the portable
 directory-file fallback or project-open state to become observable within 10 seconds. On failure,
@@ -119,6 +122,9 @@ it is a scenario error rather than an implicit reference step.
 Full events are written to `trace.ndjson`; stdout removes full output arrays and truncates large
 deltas. Events include `start`, `observation`, `action`, `query`, `inspection`, `checkpoint`,
 `error`, and `result`.
+
+The mandatory 5-second progress event is not truncated: it contains the full HTML-element snapshot
+and complete observable state needed for exact comparison and failure reporting.
 
 - Exit `0`: passed or deliberately stopped.
 - Exit `1`: semantic difference, failed DOM/frontend assertion, or unmet goal.

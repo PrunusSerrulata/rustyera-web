@@ -13,6 +13,22 @@ screenshot-only evidence. Read [test-cli.md](references/test-cli.md) before chan
 scenario or compatibility runner, [page-api.md](references/page-api.md) before adding browser DOM
 or frontend-state actions, and [tauri-e2e.md](references/tauri-e2e.md) before changing a Tauri test.
 
+## Enforce the task budget
+
+- Start one shared 60-minute wall-clock budget with the task's first test command. It includes all
+  subsequent checks, targeted reruns, end-to-end waits, and test-failure investigation. Bound every
+  command by the remaining time.
+- Start each distinct full test suite at most once per task. After a failure is fixed, rerun only
+  the directly affected test file, named case, browser scenario, or native scenario; never rerun
+  the full suite.
+- From launch through exit, every browser and Tauri end-to-end run must emit a complete snapshot
+  every 5 seconds. Each snapshot enumerates every current HTML element with its tag, attributes,
+  text/value, and visibility, and includes runtime, presentation, output, status, and log state.
+  Ignore timestamps and reporting-only metadata during comparison. If two consecutive snapshots
+  are identical, the game is static: terminate immediately and report a stalled-test failure.
+- At the 60-minute deadline, terminate all test processes and report the active command, exact
+  case/stage, last complete snapshot, elapsed time, completed checks, and unverified checks.
+
 ## Choose the real target
 
 - A browser/WASM claim requires the production Vue UI and real WASM worker in all three desktop
@@ -86,14 +102,12 @@ launch the native Tauri GUI/WebView. Do not make an initial sandboxed attempt. A
 startup timeout from a sandboxed run is an invalid infrastructure attempt, not a product failure;
 rerun it outside the sandbox before diagnosing the application or test.
 
-Long browser and native runs must expose progress instead of using one silent wait. Poll observable
-runtime state, print a concise diagnostic at least every 60 seconds, fail immediately on a runtime
-fault or terminal version/protocol rejection, and fail a stalled stage after 60 seconds without a
-meaningful phase, status, wait, presentation, output, or log change. A longer total timeout is
-allowed only while those observations continue to show progress. If the test stalls at an
-actionable input, fix the test flow; if the runtime keeps advancing but never reaches the expected
-state, diagnose the product or game behavior. Do not weaken the expected reference state to avoid a
-timeout.
+Long browser and native runs must expose progress instead of using one silent wait. Poll and print
+the complete snapshot described above every 5 seconds, fail immediately on a runtime fault or
+terminal version/protocol rejection, and fail immediately when a snapshot matches the preceding
+one. There is no additional stall grace period. If the test stalls at an actionable input, fix the
+test flow; if the runtime keeps advancing but never reaches the expected state, diagnose the
+product or game behavior. Do not weaken the expected reference state to avoid a timeout.
 
 For native Firefox/Safari compatibility startup, require the visible project-open action to
 exercise the directory-file fallback or begin opening a project within 10 seconds. Record the
@@ -122,8 +136,10 @@ snapshots are RustyEra-only unless the scenario supplies an equivalent reference
 
 ## Validate changes
 
-Run focused Vitest first, then `npm test`, typecheck, ESLint, Prettier check, build, WASM build, the
-relevant Chromium game scenario, and both native-browser compatibility commands. For Tauri-facing
-changes, also run `npm run test:tauri` against the real eraTW checkout. Use the short reference
-fixture for browser CLI and cross-browser compatibility changes, and eraTW for native debugger and
-long-flow coverage. If the reference CLI changes, apply its repository's own validation gates.
+Run focused Vitest first, then run `npm test` once, followed by typecheck, ESLint, Prettier check,
+build, WASM build, the relevant Chromium game scenario, and both native-browser compatibility
+commands. If the complete Vitest fails, fix it and rerun only the directly affected files or named
+cases. For Tauri-facing changes, also run `npm run test:tauri` against the real eraTW checkout. Use
+the short reference fixture for browser CLI and cross-browser compatibility changes, and eraTW for
+native debugger and long-flow coverage. If the reference CLI changes, apply its repository's own
+validation gates.

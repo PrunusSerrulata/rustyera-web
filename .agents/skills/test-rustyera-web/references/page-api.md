@@ -18,6 +18,13 @@ The Playwright-injected directory handle proxies an isolated project copy. It va
 against that root and implements the same project scan, resource, compiled-cache, and storage paths
 as `BrowserBridge`. Never weaken this path boundary or enable the test global in a production build.
 
+End-to-end progress reporting must call the observation surface every 5 seconds from launch through
+exit and combine it with a full `document.querySelectorAll("*")` enumeration. For every element,
+record tag, attributes, text/value, and visibility. Compare canonical snapshots after excluding
+timestamps and other reporting-only metadata. If a snapshot equals the preceding 5-second
+snapshot, immediately terminate the run as stalled; do not wait for a longer action, stage, or
+scenario timeout.
+
 Canonical presentation text is the differential source of truth because virtual history means the
 live DOM may contain only visible rows. DOM queries remain the source of truth for rendered
 visibility, accessibility, attributes, HTML islands, menus, dialogs, focus, and enabled state.
