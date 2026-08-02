@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 
+import { establishReferenceWindow, paintedImageBounds } from "./media-geometry.mjs";
+import { driveRuntimeUntil, waitForRuntimeProgress } from "./runtime-progress.mjs";
+
 const PROJECT_TIMEOUT = 120_000;
 const STEP_TIMEOUT = 30_000;
 const roronaImages = process.env.VITE_RUSTYERA_TAURI_RORONA_IMAGES ? describe : describe.skip;
@@ -7,17 +10,11 @@ const roronaImages = process.env.VITE_RUSTYERA_TAURI_RORONA_IMAGES ? describe : 
 roronaImages("Tauri erarorona image rendering", () => {
   it("keeps the title and workshop image between their surrounding text", async () => {
     let automaticTimedWaits = 0;
-    // The Tauri driver accepts physical pixels on Retina. Project the approximately
-    // 1400×1000 reference window through the active device scale first.
-    const deviceScale = await browser.execute(() => window.devicePixelRatio || 1);
-    await browser.setWindowSize(1400 * deviceScale, 1050 * deviceScale);
+    // Establish the reference client area after the project has applied its
+    // window configuration.
     await waitForProject();
-    automaticTimedWaits += await drainVoidWaits(300);
-    await submit(0);
-    automaticTimedWaits += await drainVoidWaits(300);
-    await submit(0);
-    await submit(999);
-    await submit(9);
+    await establishReferenceWindow(1400, 1050);
+    automaticTimedWaits += await reachTitle(20);
 
     let title;
     try {
@@ -29,7 +26,18 @@ roronaImages("Tauri erarorona image rendering", () => {
         { timeout: STEP_TIMEOUT, timeoutMsg: "title image geometry did not stabilize" },
       );
     } catch (error) {
-      console.error(JSON.stringify({ failureStage: "title geometry", title }));
+      const failureState = await snapshot();
+      console.error(
+        JSON.stringify({
+          failureStage: "title geometry",
+          title,
+          phase: failureState.phase,
+          wait: failureState.wait,
+          fault: failureState.fault,
+          outputTail: failureState.output.slice(-30),
+          media: await visibleMedia(),
+        }),
+      );
       throw error;
     }
     assert.equal(title.count, 1);
@@ -37,7 +45,7 @@ roronaImages("Tauri erarorona image rendering", () => {
     assert.ok(title.metadataGap >= 0, "title image must not cover its metadata");
 
     await submit(0);
-    automaticTimedWaits += await advanceEnterWaitsUntil("亚斯特丽德的工房", 1100, true);
+    await skipOpeningWithRightClick();
 
     let workshop;
     await browser.waitUntil(
@@ -76,41 +84,84 @@ async function waitForProject() {
   });
   assert.equal((await snapshot()).bridgeKind, "tauri");
   await $(".welcome .primary").click();
-  await browser.waitUntil(
-    async () => {
-      const state = await snapshot();
-      return state?.projectOpen && state.phase === "waiting_input" && state.canInteract;
-    },
-    { timeout: PROJECT_TIMEOUT, timeoutMsg: "erarorona did not reach its first input" },
-  );
+  await waitForRuntimeProgress({
+    browser,
+    snapshot,
+    label: "erarorona did not reach its first input",
+    totalTimeout: PROJECT_TIMEOUT,
+    accept: (state) => state?.projectOpen && state.phase === "waiting_input" && state.canInteract,
+  });
 }
 
 async function snapshot() {
   return browser.execute(() => window.__RUSTYERA_TEST__?.snapshot());
 }
 
-async function submit(value) {
+async function submit(value, requireStable = false) {
   const before = await snapshot();
   const input = await $(".prompt-bar input");
   await input.setValue(String(value));
   await $(".prompt-bar button[type=submit]").click();
-  await waitForWaitChange(before.wait?.wait_id);
+  await waitForWaitChange(before.wait?.wait_id, requireStable);
 }
 
-async function drainVoidWaits(maximum) {
+async function reachTitle(maximum) {
   let automaticTimedWaits = 0;
   for (let attempt = 0; attempt < maximum; attempt += 1) {
     const state = await snapshot();
-    if (state.wait?.kind !== "void") return automaticTimedWaits;
-    if (state.wait.deadline_ns != null) {
+    const tail = state.output.slice(-80).join("\n");
+    if (
+      tail.includes("era萝乐娜") &&
+      tail.includes("[0] 新的游戏") &&
+      state.wait?.kind === "integer_value" &&
+      state.wait?.stability === "stable_input"
+    )
+      return automaticTimedWaits;
+    if (state.wait?.deadline_ns != null) {
       automaticTimedWaits += 1;
       await waitForWaitChange(state.wait.wait_id);
       continue;
     }
-    await $(".prompt-bar button[type=submit]").click();
-    await waitForWaitChange(state.wait.wait_id);
+    const value = tail.includes("我已阅读须知并同意")
+      ? 0
+      : tail.includes("是否要开启声音")
+        ? 0
+        : tail.includes("[999] 设置完毕")
+          ? 999
+          : tail.includes("[9] 关闭信息")
+            ? 9
+            : undefined;
+    assert.notEqual(value, undefined, `unexpected pre-title prompt: ${state.wait?.kind}`);
+    await submit(value, true);
   }
-  throw new Error(`void wait budget exhausted after ${maximum} attempts`);
+  throw new Error(`title was not reached after ${maximum} state-driven setup inputs`);
+}
+
+async function skipOpeningWithRightClick() {
+  await browser.waitUntil(
+    async () => {
+      const state = await snapshot();
+      return state.fault != null || (state.canInteract && state.wait?.kind === "enter_key");
+    },
+    { timeout: STEP_TIMEOUT, timeoutMsg: "new-game opening did not expose an Enter wait" },
+  );
+  await $(".game-viewport").click({ button: "right" });
+  await driveRuntimeUntil({
+    browser,
+    snapshot,
+    label: "Rorona dialogue and workshop background after right-click skip",
+    totalTimeout: 180_000,
+    pollInterval: 100,
+    accept: async (state) => {
+      const workshop = await workshopMetrics();
+      return (
+        workshop.count === 1 &&
+        workshop.statusGap >= 0 &&
+        workshop.dialogueGap >= 0 &&
+        state.output.slice(-60).join("\n").includes("亚斯特丽德的工房")
+      );
+    },
+  });
 }
 
 async function advanceEnterWaitsUntil(expectedText, maximum, requireImage = false) {
@@ -152,14 +203,17 @@ async function waitForNextWait() {
   );
 }
 
-async function waitForWaitChange(waitId) {
+async function waitForWaitChange(waitId, requireStable = false) {
   if (waitId == null) return;
   await browser.waitUntil(
     async () => {
       const state = await snapshot();
       return (
         state.fault != null ||
-        (state.phase === "waiting_input" && state.canInteract && state.wait?.wait_id !== waitId)
+        (state.phase === "waiting_input" &&
+          state.canInteract &&
+          state.wait?.wait_id !== waitId &&
+          (!requireStable || state.wait?.stability === "stable_input"))
       );
     },
     { timeout: STEP_TIMEOUT, timeoutMsg: "game input did not advance" },
@@ -167,7 +221,11 @@ async function waitForWaitChange(waitId) {
 }
 
 async function titleMetrics() {
-  return browser.execute(() => {
+  const paintedBounds = await paintedImageBounds(
+    ".media-visual.media-sprite img",
+    ".media-visual.media-sprite",
+  );
+  return browser.execute((paintedBounds) => {
     const image = document.querySelector(".media-visual.media-sprite");
     const viewport = document.querySelector(".game-viewport");
     const metadata = [...document.querySelectorAll(".game-line")].find(
@@ -181,6 +239,7 @@ async function titleMetrics() {
       imageBounds: bounds
         ? { left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom }
         : null,
+      paintedBounds,
       viewportBounds: viewportBounds
         ? {
             left: viewportBounds.left,
@@ -190,16 +249,29 @@ async function titleMetrics() {
           }
         : null,
       insideViewport: Boolean(
-        bounds &&
+        paintedBounds &&
         viewportBounds &&
-        bounds.left >= viewportBounds.left &&
-        bounds.top >= viewportBounds.top &&
-        bounds.right <= viewportBounds.right &&
-        bounds.bottom <= viewportBounds.bottom,
+        paintedBounds.left >= viewportBounds.left &&
+        paintedBounds.top >= viewportBounds.top &&
+        paintedBounds.right <= viewportBounds.right &&
+        paintedBounds.bottom <= viewportBounds.bottom,
       ),
       metadataGap: bounds && metadataBounds ? metadataBounds.top - bounds.bottom : -Infinity,
     };
-  });
+  }, paintedBounds);
+}
+
+async function visibleMedia() {
+  return browser.execute(() =>
+    [...document.querySelectorAll(".media-image, .canvas-replay")].map((element) => {
+      const bounds = element.getBoundingClientRect();
+      return {
+        className: element.className,
+        source: element instanceof HTMLImageElement ? element.currentSrc : "",
+        bounds: { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height },
+      };
+    }),
+  );
 }
 
 async function workshopMetrics() {

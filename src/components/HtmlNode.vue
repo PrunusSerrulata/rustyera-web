@@ -51,14 +51,19 @@ const spaceShapeStyle = computed(() => {
         height: `${store.gameTextStyle.fontSizePx}px`,
       };
 });
+const positionedHeight = computed(() => positionedMediaHeight(props.node));
 const lockedPositionStyle = computed(() => {
   const semantic = props.node.semantic;
   if (!["button", "non_button"].includes(semantic?.type) || semantic.position == null) return null;
   const position = Number(semantic.position);
-  return Number.isFinite(position)
-    ? { left: `${(position * store.gameTextStyle.fontSizePx) / 100}px` }
-    : null;
+  if (!Number.isFinite(position)) return null;
+  const height = positionedHeight.value;
+  return {
+    left: `${(position * store.gameTextStyle.fontSizePx) / 100}px`,
+    height: height == null ? undefined : `${height}px`,
+  };
 });
+const hasPositionedMedia = computed(() => positionedHeight.value != null);
 const tooltipTitle = computed(() => {
   const semantic = props.node.semantic;
   return semantic?.type === "button" || semantic?.type === "non_button"
@@ -82,6 +87,30 @@ function projectLength(value: { unit?: string; value?: unknown } | undefined): n
         : raw
       : (raw * store.gameTextStyle.fontSizePx) / 100;
   return Number.isFinite(result) ? result : undefined;
+}
+
+function positionedMediaHeight(node: any): number | undefined {
+  if (!(node?.children ?? []).some((child: any) => child?.kind === "break")) return undefined;
+  let found = false;
+  let measurable = true;
+  let bottom = 0;
+  const visit = (child: any): void => {
+    if (child?.semantic?.type === "image") {
+      const projectedHeight = projectLength(child.semantic.height);
+      const projectedY = child.semantic.y == null ? 0 : projectLength(child.semantic.y);
+      if (projectedHeight == null || projectedHeight === 0 || projectedY == null) {
+        measurable = false;
+        return;
+      }
+      found = true;
+      bottom = Math.max(bottom, projectedY + Math.abs(projectedHeight));
+    }
+    for (const nested of child?.children ?? []) visit(nested);
+  };
+  for (const child of node?.children ?? []) visit(child);
+  return found && measurable
+    ? Math.max(store.gameLineHeightPx, bottom * store.effectivePreferences.imageScale)
+    : undefined;
 }
 
 function textSegments(value: unknown): Array<{ text: string; space: boolean; width?: string }> {
@@ -119,7 +148,10 @@ function textSegments(value: unknown): Array<{ text: string; space: boolean; wid
     :disabled="node.interaction && (!node.interaction.enabled || !store.canInteract)"
     :aria-description="tooltipTitle"
     class="html-node"
-    :class="{ 'html-node-positioned': lockedPositionStyle }"
+    :class="{
+      'html-node-positioned': lockedPositionStyle,
+      'html-positioned-media': lockedPositionStyle && hasPositionedMedia,
+    }"
     :style="lockedPositionStyle"
     :data-era-tooltip="tooltipTitle"
     @click="activate"

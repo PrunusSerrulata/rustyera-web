@@ -8,8 +8,12 @@ const eraTwCharacterImages = process.env.VITE_RUSTYERA_TAURI_ERATW_CHARACTER_IMA
   ? describe
   : describe.skip;
 
-eraTwCharacterImages("Tauri eraTW clock and character images", () => {
-  it("restores save 18, follows Reimu, and renders the clock and portrait", async () => {
+eraTwCharacterImages("Tauri eraTW positioned clock and character images", () => {
+  it("restores save 18, verifies the home clock, and follows Reimu", async () => {
+    assert.ok(
+      process.env.VITE_RUSTYERA_TEST_STATE?.endsWith("tests/fixtures/eratw/save18.sav"),
+      "character image regression must restore the preserved slot 18 save",
+    );
     await browser.waitUntil(async () => Boolean(await snapshot()), {
       timeout: 20_000,
       timeoutMsg: "test control was not installed in the Tauri WebView",
@@ -27,6 +31,30 @@ eraTwCharacterImages("Tauri eraTW clock and character images", () => {
     await advanceTransientWaitsToInteger(100);
     await submit("100");
     await advanceEnterWaitsUntilLook(500);
+
+    let clock;
+    await browser.waitUntil(
+      async () => {
+        clock = await clockMetrics();
+        return (
+          clock.count === 1 &&
+          clock.loaded &&
+          clock.insideViewport &&
+          clock.rightGap <= 16 &&
+          clock.top >= clock.separatorTop &&
+          clock.top - clock.separatorTop <= 18
+        );
+      },
+      { timeout: STEP_TIMEOUT, timeoutMsg: "home clock geometry did not stabilize" },
+    );
+    assert.ok(clock.loaded, "clock sprite source must finish decoding");
+    assert.ok(clock.insideViewport, "clock must remain inside the viewport");
+    assert.ok(clock.rightGap <= 16, "clock must remain near the right edge");
+    assert.ok(
+      clock.top >= clock.separatorTop && clock.top - clock.separatorTop <= 18,
+      "clock must remain immediately below the home screen's adjacent upper separator",
+    );
+
     await submit("995");
     await submit("482");
     const route = await advanceIntermediateWaitsUntilMediaSources(2, 100, "0");
@@ -66,6 +94,8 @@ eraTwCharacterImages("Tauri eraTW clock and character images", () => {
         phase: state.phase,
         wait: state.wait,
         outputTail: state.output.slice(-20),
+        clock,
+        route,
         metrics,
       }),
     );
@@ -112,6 +142,40 @@ eraTwCharacterImages("Tauri eraTW clock and character images", () => {
 
 async function snapshot() {
   return browser.execute(() => window.__RUSTYERA_TEST__?.snapshot());
+}
+
+async function clockMetrics() {
+  return browser.execute(() => {
+    const visual = document.querySelector(".media-visual.media-sprite");
+    const owner = visual?.closest(".game-line");
+    const separator = owner?.nextElementSibling?.querySelector(".separator");
+    const viewport = document.querySelector(".game-viewport");
+    const bounds = visual?.getBoundingClientRect();
+    const image = visual?.matches("img") ? visual : visual?.querySelector("img");
+    const separatorBounds = separator?.getBoundingClientRect();
+    const viewportBounds = viewport?.getBoundingClientRect();
+    return {
+      count: visual ? 1 : 0,
+      loaded:
+        image instanceof HTMLImageElement &&
+        image.complete &&
+        image.naturalWidth > 0 &&
+        image.naturalHeight > 0,
+      naturalWidth: image instanceof HTMLImageElement ? image.naturalWidth : 0,
+      naturalHeight: image instanceof HTMLImageElement ? image.naturalHeight : 0,
+      top: bounds?.top ?? -Infinity,
+      separatorTop: separatorBounds?.top ?? Infinity,
+      rightGap: bounds && viewportBounds ? viewportBounds.right - bounds.right : Infinity,
+      insideViewport: Boolean(
+        bounds &&
+        viewportBounds &&
+        bounds.left >= viewportBounds.left &&
+        bounds.top >= viewportBounds.top &&
+        bounds.right <= viewportBounds.right &&
+        bounds.bottom <= viewportBounds.bottom,
+      ),
+    };
+  });
 }
 
 async function submit(value) {

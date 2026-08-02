@@ -27,8 +27,8 @@ const textStyle = computed(() => {
     fontSize:
       store.effectivePreferences.fontSizeOverridePx != null
         ? "var(--game-size)"
-        : style.font_millipoints
-          ? `${Number(style.font_millipoints) / 1000}pt`
+        : style.font_millipixels
+          ? `${Number(style.font_millipixels) / 1000}px`
           : undefined,
   };
 });

@@ -13,6 +13,29 @@ export async function waitForRuntimeProgress({
   reportInterval = DEFAULT_REPORT_INTERVAL,
   pollInterval = DEFAULT_POLL_INTERVAL,
 }) {
+  return driveRuntimeUntil({
+    browser,
+    snapshot,
+    label,
+    accept,
+    totalTimeout,
+    stallTimeout,
+    reportInterval,
+    pollInterval,
+  });
+}
+
+export async function driveRuntimeUntil({
+  browser,
+  snapshot,
+  label,
+  accept,
+  advance,
+  totalTimeout = DEFAULT_TOTAL_TIMEOUT,
+  stallTimeout = DEFAULT_STALL_TIMEOUT,
+  reportInterval = DEFAULT_REPORT_INTERVAL,
+  pollInterval = DEFAULT_POLL_INTERVAL,
+}) {
   const startedAt = Date.now();
   let lastProgressAt = startedAt;
   let lastReportAt = startedAt;
@@ -35,7 +58,7 @@ export async function waitForRuntimeProgress({
         `${label}: runtime rejected the configured state: ${JSON.stringify(diagnosticState(state))}`,
       );
     }
-    if (accept(state)) return state;
+    if (await accept(state)) return state;
 
     const signature = progressSignature(state);
     if (signature !== lastSignature) {
@@ -66,7 +89,8 @@ export async function waitForRuntimeProgress({
       );
     }
 
-    await browser.pause(pollInterval);
+    const advanced = (await advance?.(state)) ?? false;
+    if (!advanced) await browser.pause(pollInterval);
   }
 }
 

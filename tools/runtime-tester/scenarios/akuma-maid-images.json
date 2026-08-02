@@ -5,6 +5,7 @@
   "compiled_cache": true,
   "clean_saves": true,
   "seed": 1126218542,
+  "viewport": { "width": 1120, "height": 1010 },
   "actions": [
     {
       "type": "assert_dom",
@@ -15,19 +16,13 @@
         "visible": true,
         "attributes": {
           "class": "html-node html-shape html-shape-space",
-          "style": "width: 432px; height: 12px;"
+          "style": "width: 648px; height: 18px;"
         }
       }
     },
     {
       "type": "assert_dom",
       "locator": { "css": ".media-positioned .media-sprite img" },
-      "fields": ["count", "visible"],
-      "expect": { "count": 1, "visible": true }
-    },
-    {
-      "type": "assert_dom",
-      "locator": { "css": ".virtual-history.history-bottom-aligned" },
       "fields": ["count", "visible"],
       "expect": { "count": 1, "visible": true }
     },
@@ -50,7 +45,7 @@
       "expect": {
         "count": 1,
         "visible": true,
-        "above": { "min": 0 },
+        "above": { "min": 0, "max": 12 },
         "no_overlap": true
       }
     },

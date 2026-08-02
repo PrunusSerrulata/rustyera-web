@@ -7,6 +7,7 @@ import GameTooltip from "@/components/GameTooltip.vue";
 import HtmlNode from "@/components/HtmlNode.vue";
 import MediaImage from "@/components/MediaImage.vue";
 import { isViewportContinuationClick } from "@/core/viewportInteraction";
+import { measureGameViewport } from "@/platform/viewportMeasurement";
 import { useRuntimeStore } from "@/stores/runtime";
 
 const store = useRuntimeStore();
@@ -17,12 +18,14 @@ const viewportHeight = ref(0);
 let viewportObserver: ResizeObserver | undefined;
 let viewportFrame: number | undefined;
 let projectedWidth = -1;
+let projectedHeight = -1;
+let projectedLineColumns = -1;
 const virtualizer = useVirtualizer(
   computed(() => {
     return {
       count: store.presentation.lines.length,
       getScrollElement: () => viewport.value ?? null,
-      estimateSize: () => 26,
+      estimateSize: () => Math.max(1, store.gameLineHeightPx),
       overscan: 20,
       // Preserve measured rows across same-epoch snapshots, but isolate restarted sessions.
       getItemKey: (index: number) =>
@@ -110,34 +113,33 @@ function projectHtmlLength(value: any, absolute = false): number | undefined {
 }
 
 function click(event: MouseEvent): void {
+  if (!store.useMouse) return;
   if (viewport.value && isViewportContinuationClick(event, viewport.value)) {
     void store.continueFromViewport();
   }
 }
 
-function measureViewportColumns(): void {
-  if (!viewport.value) return;
-  const probe = document.createElement("span");
-  const sample = "0000000000";
-  probe.className = "column-width-probe";
-  probe.textContent = sample;
-  viewport.value.append(probe);
-  const columnWidth = probe.getBoundingClientRect().width / sample.length;
-  probe.remove();
-  const availableWidth = history.value?.clientWidth || viewport.value.clientWidth;
-  if (columnWidth > 0 && availableWidth > 0) {
-    viewportColumns.value = Math.max(1, Math.floor(availableWidth / columnWidth));
-  }
+function wheel(event: WheelEvent): void {
+  if (!store.useMouse || !viewport.value) return;
+  viewport.value.scrollTop += Math.sign(event.deltaY) * store.scrollHeight * store.gameLineHeightPx;
 }
 
 function synchronizeViewport(): void {
   viewportFrame = undefined;
   if (!viewport.value) return;
-  viewportHeight.value = viewport.value.clientHeight;
-  measureViewportColumns();
-  if (viewport.value.clientWidth === projectedWidth) return;
-  projectedWidth = viewport.value.clientWidth;
-  void store.projectViewport();
+  const measurement = measureGameViewport(viewport.value, history.value);
+  viewportHeight.value = measurement.height;
+  viewportColumns.value = measurement.lineColumns;
+  if (
+    measurement.width === projectedWidth &&
+    measurement.height === projectedHeight &&
+    measurement.lineColumns === projectedLineColumns
+  )
+    return;
+  projectedWidth = measurement.width;
+  projectedHeight = measurement.height;
+  projectedLineColumns = measurement.lineColumns;
+  void store.projectViewport(measurement);
 }
 
 function scheduleViewportSynchronization(): void {
@@ -160,7 +162,7 @@ watch(
   () => [store.gameTextStyle?.fontFamily, store.gameTextStyle?.fontSize],
   async () => {
     await nextTick();
-    measureViewportColumns();
+    synchronizeViewport();
   },
 );
 </script>
@@ -169,11 +171,13 @@ watch(
   <main
     ref="viewport"
     class="game-viewport"
+    :class="{ 'mouse-disabled': !store.useMouse }"
     tabindex="0"
     :inert="store.gameInteractionsBlocked"
     :aria-busy="store.gameInteractionsBlocked"
     @click="click"
-    @contextmenu.prevent="store.skip"
+    @contextmenu.prevent="store.useMouse && store.skip()"
+    @wheel.prevent="wheel"
   >
     <div class="background-layer">
       <MediaImage

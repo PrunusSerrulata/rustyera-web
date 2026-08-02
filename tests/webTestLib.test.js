@@ -296,6 +296,65 @@ describe("web game test scenario", () => {
     ).resolves.toEqual(expect.objectContaining({ query: expect.any(Object) }));
   });
 
+  it("can measure a text locator by its logical game-line box", async () => {
+    const line = {
+      getBoundingClientRect: () => ({
+        left: 0,
+        top: 40,
+        right: 200,
+        bottom: 60,
+        width: 200,
+        height: 20,
+      }),
+    };
+    const text = {
+      closest: vi.fn((selector) => (selector === ".game-line" ? line : null)),
+      getBoundingClientRect: () => ({
+        left: 20,
+        top: 36,
+        right: 80,
+        bottom: 58,
+        width: 60,
+        height: 22,
+      }),
+    };
+    const subject = {
+      evaluateAll: vi.fn((callback, mode) =>
+        callback(
+          [
+            {
+              getBoundingClientRect: () => ({
+                left: 0,
+                top: 0,
+                right: 100,
+                bottom: 40,
+                width: 100,
+                height: 40,
+              }),
+            },
+          ],
+          mode,
+        ),
+      ),
+    };
+    const reference = {
+      evaluateAll: vi.fn((callback, mode) => callback([text], mode)),
+    };
+    const page = {
+      locator: vi.fn((selector) => (selector === ".image" ? subject : reference)),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "assert_layout",
+        locator: { css: ".image" },
+        relative_to: { css: ".title" },
+        relative_box: "game_line",
+        expect: { above: { min: 0, max: 0 }, no_overlap: true },
+      }),
+    ).resolves.toEqual(expect.objectContaining({ query: expect.any(Object) }));
+  });
+
   it("stops explicit Enter advancement when the current output tail reaches a screen", async () => {
     const snapshots = [
       { output: ["opening"], wait: { kind: "enter_key", wait_id: "1" } },
@@ -432,6 +491,37 @@ describe("web game test scenario", () => {
       runAction(page, {
         type: "advance_enter_waits_until",
         maximum: 5,
+        until: { output_tail_contains: "目标场景" },
+      }),
+    ).resolves.toMatchObject({ attempts: 1 });
+    expect(click).not.toHaveBeenCalled();
+    expect(page.waitForFunction).toHaveBeenCalledOnce();
+  });
+
+  it("waits for active right-click skipping when automatic Enter submission is disabled", async () => {
+    const snapshots = [
+      { output: ["过场中"], wait: { kind: "enter_key", wait_id: "1" } },
+      { output: ["目标场景"], wait: { kind: "enter_key", wait_id: "2" } },
+    ];
+    let snapshotIndex = 0;
+    const click = vi.fn();
+    const page = {
+      evaluate: vi.fn((callback) => {
+        if (String(callback).includes("waitForStableObservation")) {
+          snapshotIndex += 1;
+          return snapshots[snapshotIndex];
+        }
+        return snapshots[snapshotIndex];
+      }),
+      locator: vi.fn(() => ({ click })),
+      waitForFunction: vi.fn(),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "advance_enter_waits_until",
+        maximum: 5,
+        auto_enter: false,
         until: { output_tail_contains: "目标场景" },
       }),
     ).resolves.toMatchObject({ attempts: 1 });

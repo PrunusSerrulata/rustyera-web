@@ -68,6 +68,12 @@ select {
   font-family: system-ui, sans-serif;
   font-size: 16px;
 }
+.menu-row {
+  min-height: 0;
+}
+.menu-disabled .project-load-progress {
+  top: 8px;
+}
 .project-load-progress {
   position: absolute;
   top: 42px;
@@ -249,10 +255,10 @@ select {
   top: 0;
   width: max-content;
   min-width: 100%;
-  min-height: 1em;
+  min-height: var(--game-line-height);
   margin: 0;
-  padding: 0 0 1px;
-  line-height: 1;
+  padding: 0;
+  line-height: var(--game-line-height);
   white-space: pre;
   overflow-wrap: normal;
   contain: layout paint;
@@ -265,10 +271,10 @@ select {
 }
 .game-line:has(.media-image, .canvas-replay),
 .game-line .html-node:is(p):has(.media-image, .canvas-replay) {
-  min-height: 1em;
+  min-height: var(--game-line-height);
   margin: 0;
   padding: 0;
-  line-height: 1;
+  line-height: var(--game-line-height);
 }
 .game-line:has(.media-positioned) {
   /* ypos visuals intentionally draw outside their one-row layout slot. */
@@ -300,6 +306,10 @@ select {
 }
 :is(.game-button, .html-node:is(button)):hover:not(:disabled) {
   background: var(--game-interaction-hover-background);
+  color: var(--game-focus);
+}
+.game-viewport.mouse-disabled :is(.game-button, .html-node:is(button), [data-era-tooltip]) {
+  pointer-events: none;
 }
 :is(.game-button, .html-node:is(button)):has(.media-positioned):hover:not(:disabled) {
   background: transparent;
@@ -357,11 +367,14 @@ select {
   width: 0;
   vertical-align: top;
 }
-.html-node.html-node-positioned:has(> br:last-child) {
+.html-node.html-node-positioned.html-positioned-media > br {
+  display: none;
+}
+.html-node.html-node-positioned:not(.html-positioned-media):has(> br:last-child) {
   /* A trailing HTML break reserves a row in Emuera. Browsers otherwise collapse
      the empty line after the final <br>, including its font descent, shortening
      image documents by one row. */
-  padding-bottom: calc(1em + 3px);
+  padding-bottom: 1.25em;
 }
 .media-image,
 .canvas-replay {
@@ -392,7 +405,7 @@ select {
   /* Emuera's ypos=-height idiom anchors an escaped image to the preceding
      console-row boundary; the browser's configured inline slot and final line
      descent have already advanced past that boundary. */
-  transform: translateY(calc(var(--media-row-offset) - 3px));
+  transform: translateY(var(--media-row-offset));
 }
 .media-sprite {
   overflow: hidden;
@@ -497,6 +510,22 @@ select {
 .preferences-form {
   display: grid;
   gap: 14px;
+}
+
+.project-preferences {
+  display: grid;
+  gap: 10px;
+  margin: 4px 0;
+  padding: 12px;
+  border: 1px solid #3a3f4b;
+  border-radius: 6px;
+}
+
+.project-preferences > label {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr);
+  align-items: center;
+  gap: 12px;
 }
 .traditional-save-form {
   display: grid;

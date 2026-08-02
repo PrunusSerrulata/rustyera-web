@@ -56,15 +56,75 @@ describe("dialog actions", () => {
         open: true,
         value: { ...defaultPreferences(), fontSizeOverridePx: 24 },
         fonts: ["Project Font"],
+        configurationEntries: [
+          {
+            code: "FontSize",
+            japanese: "フォントサイズ",
+            english: "Font size",
+            value: "12",
+            kind: "integer",
+            allowed: [],
+            fixed: false,
+            applicability: 12,
+          },
+          {
+            code: "UseMouse",
+            japanese: "マウスを使用する",
+            english: "Use mouse",
+            value: "YES",
+            kind: "boolean",
+            allowed: [],
+            fixed: false,
+            applicability: 12,
+          },
+        ],
       },
     });
 
     await clickButton("恢复默认值");
+    const projectInput = document.body.querySelector<HTMLInputElement>(
+      '.project-preferences input[type="number"]',
+    )!;
+    projectInput.value = "18";
+    projectInput.dispatchEvent(new Event("input", { bubbles: true }));
+    const booleanSelect = document.body.querySelector<HTMLSelectElement>(
+      ".project-preferences select",
+    )!;
+    expect([...booleanSelect.options].map((option) => option.value)).toEqual(["YES", "NO"]);
+    booleanSelect.value = "NO";
+    booleanSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
     await clickButton("保存");
     expect(wrapper.emitted("save")?.at(-1)?.[0]).toEqual(defaultPreferences());
+    expect(wrapper.emitted("save")?.at(-1)?.[1]).toEqual([
+      { code: "FontSize", value: "18" },
+      { code: "UseMouse", value: "NO" },
+    ]);
 
     await clickButton("取消");
     expect(wrapper.emitted("close")).toHaveLength(2);
+    wrapper.unmount();
+  });
+
+  it("treats a cleared accessibility font size as following the game configuration", async () => {
+    const wrapper = mount(PreferencesDialog, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        value: { ...defaultPreferences(), fontSizeOverridePx: 24 },
+        fonts: [],
+      },
+    });
+    const input = document.body.querySelector<HTMLInputElement>(
+      '.preferences-form > label input[type="number"]',
+    )!;
+
+    input.value = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    await clickButton("保存");
+
+    expect(wrapper.emitted("save")?.at(-1)?.[0]).toMatchObject({ fontSizeOverridePx: null });
     wrapper.unmount();
   });
 

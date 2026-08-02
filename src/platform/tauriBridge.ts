@@ -1,4 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -12,6 +13,7 @@ import type {
   Preferences,
   ProjectProgress,
   ProjectOpenMetrics,
+  ProjectConfigurationEntry,
   PumpBatch,
   RuntimeMessage,
   SessionOptions,
@@ -101,17 +103,19 @@ export class TauriBridge implements FrontendBridge {
   async openProject(): Promise<ProjectOpenMetrics | undefined> {
     const testProject = import.meta.env.VITE_RUSTYERA_TEST_PROJECT;
     if (import.meta.env.VITE_RUSTYERA_TEST === "1" && testProject) {
+      const metrics = await invoke<ProjectOpenMetrics>("open_project", { path: testProject });
       this.projectPath = testProject;
       this.projectIsFile = false;
-      return invoke("open_project", { path: testProject });
+      return metrics;
     }
     const path = await open({ directory: true, multiple: false, title: "打开 Era 项目" });
     if (typeof path !== "string") return undefined;
     this.projectProgressListener?.({ stage: "scanning", completed: 0, total: 0 });
     if (this.progressUnlisten) await this.progressUnlisten;
+    const metrics = await invoke<ProjectOpenMetrics>("open_project", { path });
     this.projectPath = path;
     this.projectIsFile = false;
-    return invoke("open_project", { path });
+    return metrics;
   }
 
   async openProjectFile(): Promise<ProjectOpenMetrics | undefined> {
@@ -122,9 +126,10 @@ export class TauriBridge implements FrontendBridge {
       filters: [{ name: "RustyEra 项目", extensions: ["reraproj"] }],
     });
     if (typeof path !== "string") return undefined;
+    const metrics = await invoke<ProjectOpenMetrics>("open_project_file", { path });
     this.projectPath = path;
     this.projectIsFile = true;
-    return invoke("open_project_file", { path });
+    return metrics;
   }
 
   async restartProject(): Promise<ProjectOpenMetrics> {
@@ -171,6 +176,51 @@ export class TauriBridge implements FrontendBridge {
 
   savePreferences(preferences: Preferences): Promise<Preferences> {
     return invoke("save_preferences", { preferences });
+  }
+
+  projectConfigurationWritable(): boolean {
+    return Boolean(this.projectPath) && !this.projectIsFile;
+  }
+
+  writeProjectConfiguration(expectedDigest: Uint8Array, contents: string): Promise<void> {
+    return invoke("write_project_configuration", {
+      expectedDigest: [...expectedDigest],
+      contents,
+    });
+  }
+
+  async applyProjectConfiguration(
+    entries: ProjectConfigurationEntry[],
+    viewportChrome: { width: number; height: number },
+  ): Promise<void> {
+    const values = new Map(entries.map((entry) => [entry.code, entry.value]));
+    const integer = (code: string): number | undefined => {
+      const value = values.get(code);
+      if (value == null || !/^-?\d+$/.test(value)) return undefined;
+      const parsed = Number(value);
+      return Number.isSafeInteger(parsed) ? parsed : undefined;
+    };
+    const boolean = (code: string, fallback: boolean): boolean => {
+      const value = values.get(code)?.toUpperCase();
+      if (value == null) return fallback;
+      return value === "YES" || value === "TRUE" || value === "1";
+    };
+    const window = getCurrentWindow();
+    const maximized = boolean("WindowMaximixed", false);
+    await window.setResizable(boolean("SizableWindow", true));
+    await window.unmaximize();
+    const width = integer("WindowX");
+    const height = integer("WindowY");
+    if (width != null && height != null && width > 0 && height > 0)
+      await window.setSize(
+        new LogicalSize(width + viewportChrome.width, height + viewportChrome.height),
+      );
+    if (boolean("SetWindowPos", false)) {
+      const x = integer("WindowPosX");
+      const y = integer("WindowPosY");
+      if (x != null && y != null) await window.setPosition(new LogicalPosition(x, y));
+    }
+    if (maximized) await window.maximize();
   }
 
   projectName(): string | undefined {

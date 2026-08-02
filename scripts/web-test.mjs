@@ -164,7 +164,7 @@ async function execute(args) {
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
       locale: "zh-CN",
-      viewport: { width: 1280, height: 800 },
+      viewport: scenario.viewport,
       reducedMotion: "reduce",
     });
     page = await context.newPage();

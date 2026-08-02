@@ -6,6 +6,7 @@
   "clean_saves": true,
   "seed": 1126218542,
   "clock": "2026-01-01T00:00:00Z",
+  "viewport": { "width": 1415, "height": 1056 },
   "actions": [
     { "type": "drain_void_waits", "maximum": 300 },
     { "type": "input", "value": 0 },
@@ -17,6 +18,7 @@
       "type": "assert_layout",
       "locator": { "css": ".media-visual.media-sprite" },
       "relative_to": { "text": "era萝乐娜", "exact": true },
+      "relative_box": "game_line",
       "expect": {
         "count": 1,
         "visible": true,
@@ -34,7 +36,7 @@
         "inside": { "tolerance": 0 }
       }
     },
-    { "type": "input", "value": 0, "auto_enter": false },
+    { "type": "input", "value": 0, "message_skip": true },
     {
       "type": "advance_enter_waits_until",
       "maximum": 1100,

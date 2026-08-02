@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 #[cfg(not(unix))]
 use std::time::UNIX_EPOCH;
@@ -239,6 +239,43 @@ impl ProjectHost {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn write_configuration(
+        &self,
+        expected_digest: &[u8],
+        contents: &str,
+    ) -> Result<(), String> {
+        if self.packaged {
+            return Err("项目文件中的 emuera.config 为只读".into());
+        }
+        let relative_path = self
+            .indexed_files
+            .iter()
+            .find(|file| file.relative_path.eq_ignore_ascii_case("emuera.config"))
+            .map_or("emuera.config", |file| file.relative_path.as_str());
+        let target = self.root.join(relative_path);
+        let current_digest = match normalized_file_bytes(&target, FileCategory::Configuration) {
+            Ok(bytes) => blake3::hash(&bytes).as_bytes().to_vec(),
+            Err(_) if !target.exists() => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        if current_digest != expected_digest {
+            return Err("emuera.config 已被其他程序修改，请重新打开偏好设置".into());
+        }
+        let mut temporary = tempfile::NamedTempFile::new_in(&self.root)
+            .map_err(|error| format!("cannot create temporary configuration file: {error}"))?;
+        temporary
+            .write_all(contents.as_bytes())
+            .map_err(|error| format!("cannot write configuration file: {error}"))?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|error| format!("cannot sync configuration file: {error}"))?;
+        temporary
+            .persist(target)
+            .map_err(|error| format!("cannot replace configuration file: {}", error.error))?;
+        Ok(())
     }
 
     pub fn identity(&self) -> ProjectIdentity {
@@ -713,5 +750,26 @@ mod tests {
         let observed = observed.into_inner();
         assert_eq!(observed[..2], [(0, 0), (0, 2)]);
         assert_eq!(observed.last(), Some(&(2, 2)));
+    }
+
+    #[test]
+    fn configuration_write_checks_digest_and_atomically_replaces_root_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("emuera.config");
+        fs::write(&path, "フォントサイズ:12\n").unwrap();
+        let project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+        let digest = blake3::hash("フォントサイズ:12\n".as_bytes());
+
+        project
+            .write_configuration(digest.as_bytes(), "フォントサイズ:18\n")
+            .unwrap();
+
+        assert_eq!(fs::read_to_string(path).unwrap(), "フォントサイズ:18\n");
+        assert!(
+            project
+                .write_configuration(digest.as_bytes(), "フォントサイズ:20\n")
+                .unwrap_err()
+                .contains("其他程序修改")
+        );
     }
 }

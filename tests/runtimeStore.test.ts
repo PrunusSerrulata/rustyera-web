@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { defaultPreferences, type ProjectProgress } from "@/core/types";
+import { defaultPreferences, type Preferences, type ProjectProgress } from "@/core/types";
 
 const emptyBatch = () => ({
   state: "idle" as const,
@@ -32,6 +32,9 @@ const bridge = vi.hoisted(() => ({
   listFonts: vi.fn(async () => []),
   loadPreferences: vi.fn(async () => defaultPreferences()),
   savePreferences: vi.fn(),
+  projectConfigurationWritable: vi.fn(() => true),
+  writeProjectConfiguration: vi.fn(),
+  applyProjectConfiguration: vi.fn(),
   projectName: vi.fn(() => "eraTW"),
   openUpload: vi.fn(),
   saveDownload: vi.fn(),
@@ -75,6 +78,10 @@ describe("runtime store session lifecycle", () => {
     bridge.traditionalSaves.inspect.mockResolvedValue({ description: "valid" });
     bridge.traditionalSaves.writeSlot.mockResolvedValue(undefined);
     bridge.saveDiagnosis.mockResolvedValue(true);
+    bridge.savePreferences.mockImplementation(async (value: Preferences) => value);
+    bridge.projectConfigurationWritable.mockReturnValue(true);
+    bridge.writeProjectConfiguration.mockResolvedValue(undefined);
+    bridge.applyProjectConfiguration.mockResolvedValue(undefined);
     bridge.restartProject.mockResolvedValue({
       quickScanMs: 1,
       cacheReadMs: 2,
@@ -89,6 +96,7 @@ describe("runtime store session lifecycle", () => {
   });
 
   afterEach(() => {
+    document.body.replaceChildren();
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
@@ -116,6 +124,236 @@ describe("runtime store session lifecycle", () => {
 
     expect(store.preferences).toEqual(defaultPreferences());
     expect(bridge.loadPreferences).not.toHaveBeenCalled();
+  });
+
+  it("reports the configured game viewport before starting a new game", async () => {
+    const viewport = document.createElement("main");
+    viewport.className = "game-viewport";
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 1100 },
+      clientHeight: { configurable: true, value: 750 },
+    });
+    document.body.append(viewport);
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", {
+          success: true,
+          diagnostics: [],
+          configuration: null,
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+
+    const commands = bridge.submitRuntime.mock.calls.map((call: unknown[]) => call[0] as any);
+    const projectionIndex = commands.findIndex(
+      (command) => command.type === "projection_observation",
+    );
+    const startIndex = commands.findIndex((command) => command.type === "start");
+    expect(projectionIndex).toBeGreaterThanOrEqual(0);
+    expect(startIndex).toBeGreaterThan(projectionIndex);
+    expect(commands[projectionIndex]).toMatchObject({
+      value: { client_size: { width: 1100, height: 750 } },
+    });
+  });
+
+  it("exposes applicable emuera.config entries and asks Runtime to validate changes", async () => {
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", {
+          success: true,
+          diagnostics: [],
+          configuration: {
+            project_revision: 9,
+            source_digest: new Uint8Array(32).fill(4),
+            entries: [
+              {
+                code: "FontSize",
+                japanese: "フォントサイズ",
+                english: "Font size",
+                value: "12",
+                kind: "integer",
+                allowed: [],
+                fixed: false,
+                applicability: 8,
+              },
+              {
+                code: "TuiOnly",
+                japanese: "",
+                english: "TUI only",
+                value: "TRUE",
+                kind: "boolean",
+                allowed: [],
+                fixed: false,
+                applicability: 2,
+              },
+              {
+                code: "UseMenu",
+                japanese: "メニューを使用する",
+                english: "Show menu",
+                value: "NO",
+                kind: "boolean",
+                allowed: [],
+                fixed: false,
+                applicability: 12,
+              },
+              {
+                code: "UseMouse",
+                japanese: "マウスを使用する",
+                english: "Use mouse",
+                value: "NO",
+                kind: "boolean",
+                allowed: [],
+                fixed: false,
+                applicability: 12,
+              },
+              {
+                code: "ScrollHeight",
+                japanese: "スクロール行数",
+                english: "Lines per scroll",
+                value: "4",
+                kind: "integer",
+                allowed: [],
+                fixed: false,
+                applicability: 12,
+              },
+            ],
+          },
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+    expect(store.configurationEntries.map((entry) => entry.code)).toEqual([
+      "FontSize",
+      "UseMenu",
+      "UseMouse",
+      "ScrollHeight",
+    ]);
+    expect(store.useMenu).toBe(false);
+    expect(store.useMouse).toBe(false);
+    expect(store.scrollHeight).toBe(4);
+    expect(bridge.applyProjectConfiguration).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({ code: "FontSize" }),
+        expect.objectContaining({ code: "UseMenu" }),
+        expect.objectContaining({ code: "UseMouse" }),
+        expect.objectContaining({ code: "ScrollHeight" }),
+      ],
+      { width: 0, height: 0 },
+    );
+
+    await store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "18" }]);
+
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      {
+        type: "prepare_configuration_update",
+        value: {
+          project_revision: 9,
+          expected_source_digest: new Array(32).fill(4),
+          changes: [{ code: "FontSize", value: "18" }],
+        },
+      },
+      undefined,
+    );
+  });
+
+  it("continues loading when the host cannot apply a native window setting", async () => {
+    bridge.applyProjectConfiguration.mockRejectedValueOnce(new Error("window unavailable"));
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", {
+          success: true,
+          diagnostics: [],
+          configuration: {
+            project_revision: 1,
+            source_digest: new Uint8Array(32).fill(1),
+            entries: [
+              {
+                code: "SizableWindow",
+                japanese: "",
+                english: "Resizable window",
+                value: "YES",
+                kind: "boolean",
+                allowed: [],
+                fixed: false,
+                applicability: 8,
+              },
+            ],
+          },
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    await expect(store.enableDebug()).resolves.toBeUndefined();
+
+    expect(store.fault).toBeNull();
+    expect(store.status).toBe("项目编译完成");
+    expect(store.logs.at(-1)?.message).toContain("客户端项目配置应用失败");
+  });
+
+  it("writes a Runtime-prepared configuration and recreates the project session", async () => {
+    let messageId = 20;
+    bridge.submitRuntime.mockImplementation(async () => messageId++);
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", {
+          success: true,
+          diagnostics: [],
+          configuration: {
+            project_revision: 3,
+            source_digest: new Uint8Array(32).fill(7),
+            entries: [
+              {
+                code: "FontSize",
+                japanese: "フォントサイズ",
+                english: "Font size",
+                value: "12",
+                kind: "integer",
+                allowed: [],
+                fixed: false,
+                applicability: 8,
+              },
+            ],
+          },
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    store.projectOpen = true;
+    await store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "18" }]);
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "configuration_update_prepared",
+          {
+            project_revision: 3,
+            expected_source_digest: new Uint8Array(32).fill(7),
+            contents: "フォントサイズ:18\n",
+            restart_required: true,
+          },
+          21,
+        ),
+      ],
+    });
+
+    await vi.advanceTimersByTimeAsync(32);
+
+    expect(bridge.writeProjectConfiguration).toHaveBeenCalledWith(
+      new Uint8Array(32).fill(7),
+      "フォントサイズ:18\n",
+    );
+    expect(bridge.restartProject).toHaveBeenCalledOnce();
   });
 
   it("uses the browser close gesture for the WASM exit action", async () => {

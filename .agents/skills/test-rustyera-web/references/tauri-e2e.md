@@ -11,6 +11,17 @@ Run `npm run test:tauri -- --project PROJECT`. The runner must:
 4. drive the native WebView with WebdriverIO selectors and actions;
 5. assert `window.__RUSTYERA_TEST__.snapshot().bridgeKind === "tauri"` before feature checks.
 
+The embedded provider uses `tauri-plugin-wdio-webdriver` inside the application and must not enable
+`autoInstallTauriDriver`. The external Cargo `tauri-driver` is not used by this provider and is not
+supported on macOS. Treat its absence in generic environment diagnostics as non-blocking; require
+the embedded server and a real `bridgeKind: "tauri"` session before accepting the test.
+The test-only Tauri configuration must create a visible main window, and the runner must expose
+backend/service progress; an application process without a discoverable native window is a test
+startup failure, not evidence that the GUI is running.
+Use the service's standalone session lifecycle for the native spec runner. This avoids duplicating
+the embedded application lifecycle between WebdriverIO launcher and worker processes while keeping
+the same WebdriverIO selectors/actions, native WebView session, and service cleanup guarantees.
+
 The command launches a native GUI application and platform WebView. Always run it outside the
 filesystem sandbox with `sandbox_permissions=require_escalated`, and explain in the approval
 justification that native Tauri GUI/WebView startup is required. Do not first try it in the sandbox.

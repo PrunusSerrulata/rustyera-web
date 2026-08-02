@@ -31,6 +31,7 @@ class SaveFileHandle {
         this.bytes = new Uint8Array(bytes);
       },
       close: async () => {},
+      abort: async () => {},
     };
   }
 }
@@ -111,6 +112,34 @@ describe("browser resource manifest normalization", () => {
 });
 
 describe("browser project reads", () => {
+  it("atomically updates a root emuera.config after checking its normalized digest", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const handle = await root.getFileHandle("emuera.config", { create: true });
+    await (await handle.createWritable()).write(new TextEncoder().encode("フォントサイズ:12\n"));
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    await project.scan();
+    const { blake3 } = await import("@noble/hashes/blake3.js");
+    const digest = blake3(new TextEncoder().encode("フォントサイズ:12\n"));
+
+    await project.writeConfiguration(digest, "フォントサイズ:18\n");
+
+    expect(
+      new TextDecoder().decode(new Uint8Array(await (await handle.getFile()).arrayBuffer())),
+    ).toBe("フォントサイズ:18\n");
+    await expect(project.writeConfiguration(digest, "フォントサイズ:20\n")).rejects.toThrow(
+      "已被其他程序修改",
+    );
+  });
+
+  it("keeps configuration embedded in packaged projects read-only", async () => {
+    const project = new BrowserProject(new SaveDirectoryHandle("storage") as any, 1, "game");
+    project.useEmbeddedManifest({ project_revision: 1, files: [] });
+
+    await expect(project.writeConfiguration(new Uint8Array(), "FontSize:18\n")).rejects.toThrow(
+      "只读",
+    );
+  });
+
   it("serves resources embedded in a packaged project", async () => {
     const project = new BrowserProject(new SaveDirectoryHandle("storage") as any, 1, "game");
     project.useEmbeddedManifest({

@@ -1,8 +1,15 @@
 import { blake3 } from "@noble/hashes/blake3.js";
 import { defineStore } from "pinia";
-import { computed, reactive, ref, shallowReactive } from "vue";
+import { computed, nextTick, reactive, ref, shallowReactive } from "vue";
 
 import { AudioEngine } from "@/core/audio";
+import {
+  clientConfigurationEntries,
+  equalConfigurationIdentity,
+  parsePreparedConfiguration,
+  parseProjectConfiguration,
+  prepareConfigurationUpdate,
+} from "@/core/configuration";
 import { diagnosisArchiveName, diagnosisProjectName } from "@/core/diagnosis";
 import {
   debugStopToken,
@@ -42,6 +49,8 @@ import {
   defaultPreferences,
   type InteractionToken,
   type Preferences,
+  type ProjectConfigurationChange,
+  type ProjectConfigurationSnapshot,
   type ProjectProgress,
   type PumpBatch,
   type RuntimeMessage,
@@ -49,6 +58,10 @@ import {
   type TraditionalSaveSlot,
 } from "@/core/types";
 import { platformBridge } from "@/platform";
+import {
+  currentGameViewportMeasurement,
+  type GameViewportMeasurement,
+} from "@/platform/viewportMeasurement";
 import { RuntimePumpCoordinator } from "@/stores/runtimePump";
 import { transportValue } from "@/stores/runtimeTransport";
 
@@ -93,6 +106,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const bridge = platformBridge();
   const presentation = reactive(emptyPresentation());
   const preferences = ref<Preferences>(defaultPreferences());
+  const projectConfiguration = ref<ProjectConfigurationSnapshot | null>(null);
+  let pendingConfigurationUpdate:
+    { messageId: string; snapshot: ProjectConfigurationSnapshot } | undefined;
   const previewPreferences = ref<Preferences | null>(null);
   const fonts = ref<string[]>(["system-ui", "sans-serif", "serif", "monospace"]);
   const phase = ref("negotiating");
@@ -181,9 +197,29 @@ export const useRuntimeStore = defineStore("runtime", () => {
   });
 
   const effectivePreferences = computed(() => previewPreferences.value ?? preferences.value);
+  const configurationEntries = computed(() =>
+    clientConfigurationEntries(projectConfiguration.value, bridge.kind),
+  );
+  const configurationReadOnly = computed(
+    () => projectConfiguration.value != null && !bridge.projectConfigurationWritable(),
+  );
+  const useMenu = computed(() => configurationBoolean("UseMenu", true));
+  const useMouse = computed(() => configurationBoolean("UseMouse", true));
+  const scrollHeight = computed(() => {
+    const value = Number(configurationValue("ScrollHeight") ?? 1);
+    return Number.isSafeInteger(value) ? Math.max(1, value) : 1;
+  });
   const gameTextStyle = computed(() =>
     resolveGameTextStyle(effectivePreferences.value, presentation.lines),
   );
+  const gameLineHeightPx = computed(() => {
+    if (effectivePreferences.value.fontSizeOverridePx != null)
+      return gameTextStyle.value.fontSizePx + 1;
+    const configured = Number(presentation.settings.line_height ?? 0) / 1000;
+    return Number.isFinite(configured) && configured > 0
+      ? configured
+      : gameTextStyle.value.fontSizePx + 1;
+  });
   const canInteract = computed(
     () =>
       presentation.inputWait != null &&
@@ -264,7 +300,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     document.addEventListener("visibilitychange", sendClientState);
     window.addEventListener("focus", sendClientState);
     window.addEventListener("blur", sendClientState);
-    window.addEventListener("resize", projectViewport);
+    window.addEventListener("resize", () => void projectViewport());
   }
 
   function configureTestRun(configuration: RuntimeTestConfiguration): void {
@@ -480,8 +516,21 @@ export const useRuntimeStore = defineStore("runtime", () => {
         for (const diagnostic of value.diagnostics ?? []) {
           log(diagnostic.level ?? "info", formatDiagnostic(diagnostic), true);
         }
+        updateProjectConfiguration(value.configuration);
         if (value.success) {
           finishProjectLoad();
+          await nextTick();
+          if (projectConfiguration.value) {
+            try {
+              await bridge.applyProjectConfiguration(
+                configurationEntries.value,
+                viewportChrome(currentGameViewportMeasurement()),
+              );
+            } catch (error) {
+              log("warning", `客户端项目配置应用失败：${String(error)}`);
+            }
+          }
+          await settleProjectViewport();
           status.value = "项目编译完成";
           if (pendingStart.type === "new_game") {
             await send({
@@ -531,6 +580,39 @@ export const useRuntimeStore = defineStore("runtime", () => {
         }
         batchMediaDirty = true;
         break;
+      case "runtime_resynchronized":
+        phase.value = value.phase;
+        runtimeEpoch.value = value.epoch ?? runtimeEpoch.value;
+        applySnapshot(presentation, value.presentation);
+        inputUndo.value = value.input_undo ?? null;
+        updateProjectConfiguration(value.configuration);
+        captureProjectTitle();
+        batchMediaDirty = true;
+        break;
+      case "configuration_update_prepared": {
+        const pending = pendingConfigurationUpdate;
+        if (!pending || pending.messageId !== String(correlationId)) {
+          log("warning", "忽略了过期的项目配置保存响应");
+          break;
+        }
+        pendingConfigurationUpdate = undefined;
+        try {
+          const prepared = parsePreparedConfiguration(value);
+          if (!equalConfigurationIdentity(prepared, pending.snapshot))
+            throw new Error("项目配置在保存前已经变化");
+          await bridge.writeProjectConfiguration(
+            prepared.expected_source_digest,
+            prepared.contents,
+          );
+          status.value = "项目配置已保存，正在重新启动…";
+          if (prepared.restart_required) window.setTimeout(() => void restart(), 0);
+        } catch (error) {
+          const message = `保存项目配置失败：${String(error)}`;
+          status.value = message;
+          log("error", message);
+        }
+        break;
+      }
       case "wait_changed":
         if (value.type === "opened" || value.type === "updated")
           presentation.inputWait = value.value;
@@ -593,6 +675,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "command_rejected":
         log("warning", value.message ?? "Runtime 拒绝了命令", true);
+        if (pendingConfigurationUpdate?.messageId === String(correlationId)) {
+          pendingConfigurationUpdate = undefined;
+          status.value = `项目配置未保存：${value.message ?? "Runtime 拒绝了命令"}`;
+        }
         if (
           exportState?.requestMessageId === String(correlationId) &&
           !String(value.message ?? "").includes("compiled project cache preparation started") &&
@@ -626,6 +712,29 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } catch (error) {
       log("warning", `音频播放失败：${String(error)}`);
     }
+  }
+
+  function updateProjectConfiguration(value: unknown): void {
+    if (value == null) {
+      projectConfiguration.value = null;
+      return;
+    }
+    try {
+      projectConfiguration.value = parseProjectConfiguration(value);
+    } catch (error) {
+      projectConfiguration.value = null;
+      log("error", `项目配置响应无效：${String(error)}`);
+    }
+  }
+
+  function configurationValue(code: string): string | undefined {
+    return projectConfiguration.value?.entries.find((entry) => entry.code === code)?.value;
+  }
+
+  function configurationBoolean(code: string, fallback: boolean): boolean {
+    const value = configurationValue(code)?.toUpperCase();
+    if (value == null) return fallback;
+    return value === "YES" || value === "TRUE" || value === "1";
   }
 
   async function handleEffects(effects: any[]): Promise<void> {
@@ -974,6 +1083,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     traditionalSaveOverwriteSlot.value = null;
     importBytes = undefined;
     importKind = undefined;
+    projectConfiguration.value = null;
+    pendingConfigurationUpdate = undefined;
     nextEnvironmentRevision = 1;
   }
 
@@ -1834,10 +1945,31 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
   }
 
-  async function savePreferences(value: Preferences): Promise<void> {
+  async function savePreferences(
+    value: Preferences,
+    changes: ProjectConfigurationChange[] = [],
+  ): Promise<void> {
     preferences.value = await bridge.savePreferences(value);
     previewPreferences.value = null;
     audio.setPreferences(preferences.value);
+    if (!changes.length) return;
+    const snapshot = projectConfiguration.value;
+    if (!snapshot || !bridge.projectConfigurationWritable()) {
+      const message = !snapshot ? "项目配置尚未加载" : "当前项目配置为只读";
+      status.value = message;
+      log("error", message);
+      return;
+    }
+    if (pendingConfigurationUpdate) {
+      status.value = "项目配置正在保存，请稍候";
+      return;
+    }
+    const messageId = await send({
+      type: "prepare_configuration_update",
+      value: prepareConfigurationUpdate(snapshot, changes),
+    });
+    pendingConfigurationUpdate = { messageId: String(messageId), snapshot };
+    status.value = "正在验证项目配置…";
   }
 
   function preview(value: Preferences | null): void {
@@ -1845,18 +1977,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
     audio.setPreferences(value ?? preferences.value);
   }
 
-  async function projectViewport(): Promise<void> {
+  async function projectViewport(measurement = currentGameViewportMeasurement()): Promise<void> {
     if (!runtimePump.ready) return;
-    const viewport = document.querySelector(".game-viewport");
-    if (!(viewport instanceof HTMLElement)) return;
+    if (!measurement) return;
     await send({
       type: "projection_observation",
       value: {
         environment_revision: nextEnvironmentRevision,
         presentation_revision: presentation.revision,
-        client_size: { width: viewport.clientWidth, height: viewport.clientHeight },
+        client_size: { width: measurement.width, height: measurement.height },
         projection_space_revision: nextEnvironmentRevision++,
-        line_columns: Math.max(1, Math.floor(viewport.clientWidth / 8)),
+        line_columns: measurement.lineColumns,
         text_box: prompt.value,
         transform: {
           x_numerator: 1,
@@ -1868,6 +1999,22 @@ export const useRuntimeStore = defineStore("runtime", () => {
         },
       },
     });
+  }
+
+  function viewportChrome(measurement: GameViewportMeasurement | undefined): {
+    width: number;
+    height: number;
+  } {
+    return measurement
+      ? { width: measurement.chromeWidth, height: measurement.chromeHeight }
+      : { width: 0, height: 0 };
+  }
+
+  async function settleProjectViewport(): Promise<void> {
+    await nextTick();
+    for (let frame = 0; frame < 3; frame += 1)
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await projectViewport();
   }
 
   async function sendClientState(): Promise<void> {
@@ -1983,6 +2130,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
       event.preventDefault();
       void undo();
+    } else if ((event.ctrlKey || event.metaKey) && event.key === ",") {
+      event.preventDefault();
+      preferencesOpen.value = true;
     } else if (
       event.key === "F10" &&
       debugEnabled.value &&
@@ -2002,8 +2152,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
     bridgeKind: bridge.kind,
     presentation,
     preferences,
+    configurationEntries,
+    configurationReadOnly,
+    useMenu,
+    useMouse,
+    scrollHeight,
     effectivePreferences,
     gameTextStyle,
+    gameLineHeightPx,
     fonts,
     phase,
     runtimeEpoch,

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 
+import { establishReferenceWindow, paintedImageBounds } from "./media-geometry.mjs";
+import { driveRuntimeUntil } from "./runtime-progress.mjs";
+
 const PROJECT_TIMEOUT = 120_000;
 const STEP_TIMEOUT = 30_000;
 const PORTRAIT_TIMEOUT = 60_000;
@@ -12,6 +15,8 @@ akumaMaidImages("Tauri eraAkumaMaid image rendering", () => {
     let stage = "install test control";
     let title;
     try {
+      // The configured 18px font makes the title art 648px tall. Establish the
+      // reference client area after the project has applied its window config.
       await browser.waitUntil(async () => Boolean(await snapshot()), {
         timeout: 20_000,
         timeoutMsg: "test control was not installed in the Tauri WebView",
@@ -30,25 +35,43 @@ akumaMaidImages("Tauri eraAkumaMaid image rendering", () => {
           timeoutMsg: "eraAkumaMaid did not reach its title input",
         },
       );
+      // Project configuration intentionally restores its own window size while
+      // loading, so establish the reference observation window afterwards.
+      await establishReferenceWindow(1120, 1010);
       await $(".media-positioned .media-sprite img").waitForDisplayed({
         timeout: STEP_TIMEOUT,
       });
 
       stage = "verify title image";
       title = await titleMetrics();
-      assert.equal(title.spacerWidth, 432);
-      assert.equal(title.imageHeight, 432);
-      assert.equal(title.imageTop, -396);
-      assert.ok(title.bottomAligned, "short title history must be bottom-aligned");
-      assert.ok(
-        title.imageViewportTop >= -0.5,
-        "title image must not be clipped above the viewport",
-      );
+      assert.equal(title.spacerWidth, 648);
+      assert.equal(title.imageHeight, 648);
+      assert.equal(title.imageTop, -594);
+      if (title.imageViewportTop < -0.5) {
+        assert.ok(title.scrollTop > 0, "hidden title pixels must be reachable by scrolling up");
+        await browser.execute(() => {
+          const viewport = document.querySelector(".game-viewport");
+          if (viewport instanceof HTMLElement) viewport.scrollTop = 0;
+        });
+        await browser.pause(100);
+        const scrolledTitle = await titleMetrics();
+        assert.ok(
+          scrolledTitle.imageViewportBottom > 0,
+          "scrolling to the beginning must keep the title image visible",
+        );
+        assert.ok(
+          scrolledTitle.imageViewportTop > title.imageViewportTop,
+          "scrolling to the beginning must reveal more of the title image",
+        );
+      }
       assert.ok(
         title.imageViewportBottom <= title.viewportHeight + 0.5,
         "title image must not be clipped below the viewport",
       );
-      assert.ok(title.dividerGap >= -0.5, "title image must not overlap the following divider");
+      assert.ok(
+        title.dividerGap >= -0.5 && title.dividerGap <= 12,
+        "title image must be bottom-aligned to the following divider without overlapping it",
+      );
       assert.ok(title.textGap >= -0.5, "title image must not overlap the following title text");
       await reportProgress(stage);
 
@@ -207,25 +230,35 @@ async function submitString(value) {
 }
 
 async function advanceOpeningToRoom(maximum) {
-  for (let attempt = 0; attempt <= maximum; attempt += 1) {
-    const state = await snapshot();
-    const roomReached =
+  let submitted = 0;
+  await driveRuntimeUntil({
+    browser,
+    snapshot,
+    label: "maid room portrait",
+    totalTimeout: 180_000,
+    pollInterval: 100,
+    accept: async (state) =>
       state.output.some((line) => line.includes("你的房間")) &&
-      (await $(".canvas-replay").isDisplayed());
-    if (roomReached) return;
-    assert.ok(
-      ["enter_key", "void"].includes(state.wait?.kind),
-      `opening flow reached unexpected ${state.wait?.kind ?? "missing"} prompt`,
-    );
-    if (attempt === maximum)
-      throw new Error(`maid room was not visible after ${maximum} Enter waits`);
-    const waitId = state.wait.wait_id;
-    await $(".prompt-bar button[type=submit]").click();
-    await browser.waitUntil(async () => (await snapshot()).wait?.wait_id !== waitId, {
-      timeout: STEP_TIMEOUT,
-      timeoutMsg: "opening Enter wait did not advance",
-    });
-  }
+      (await $(".canvas-replay").isDisplayed()),
+    advance: async (state) => {
+      if (state.phase === "running" || state.wait == null || state.wait.deadline_ns != null)
+        return false;
+      assert.ok(
+        ["enter_key", "void"].includes(state.wait.kind),
+        `opening flow reached unexpected ${state.wait.kind} prompt`,
+      );
+      if (submitted === maximum)
+        throw new Error(`maid room was not visible after ${maximum} Enter waits`);
+      const waitId = state.wait.wait_id;
+      await $(".prompt-bar button[type=submit]").click();
+      submitted += 1;
+      await browser.waitUntil(async () => (await snapshot()).wait?.wait_id !== waitId, {
+        timeout: STEP_TIMEOUT,
+        timeoutMsg: "opening Enter wait did not advance",
+      });
+      return true;
+    },
+  });
 }
 
 async function reportProgress(stage) {
@@ -242,11 +275,14 @@ async function reportProgress(stage) {
 }
 
 async function titleMetrics() {
-  return browser.execute(() => {
+  const paintedBounds = await paintedImageBounds(
+    ".media-positioned .media-sprite img",
+    ".media-positioned .media-sprite",
+  );
+  return browser.execute((paintedBounds) => {
     const spacer = document.querySelector(".html-shape-space");
     const image = document.querySelector(".media-positioned .media-sprite");
     const viewport = document.querySelector(".game-viewport");
-    const history = document.querySelector(".virtual-history");
     const imageBounds = image?.getBoundingClientRect();
     const viewportBounds = viewport?.getBoundingClientRect();
     const imageLineIndex = Number(image?.closest(".game-line")?.getAttribute("data-index"));
@@ -264,15 +300,25 @@ async function titleMetrics() {
       spacerWidth: spacer?.getBoundingClientRect().width ?? 0,
       imageHeight: image?.getBoundingClientRect().height ?? 0,
       imageTop: Number.parseFloat(getComputedStyle(image).top) || 0,
-      bottomAligned: history?.classList.contains("history-bottom-aligned") ?? false,
+      paintedBounds,
       viewportHeight: viewportBounds?.height ?? 0,
+      scrollTop: viewport?.scrollTop ?? 0,
+      scrollHeight: viewport?.scrollHeight ?? 0,
       imageViewportTop:
-        imageBounds && viewportBounds
-          ? imageBounds.top - viewportBounds.top
+        paintedBounds && viewportBounds
+          ? paintedBounds.top - viewportBounds.top
           : Number.NEGATIVE_INFINITY,
       imageViewportBottom:
-        imageBounds && viewportBounds
-          ? imageBounds.bottom - viewportBounds.top
+        paintedBounds && viewportBounds
+          ? paintedBounds.bottom - viewportBounds.top
+          : Number.POSITIVE_INFINITY,
+      imageContentTop:
+        paintedBounds && viewportBounds
+          ? paintedBounds.top - viewportBounds.top + (viewport?.scrollTop ?? 0)
+          : Number.NEGATIVE_INFINITY,
+      imageContentBottom:
+        paintedBounds && viewportBounds
+          ? paintedBounds.bottom - viewportBounds.top + (viewport?.scrollTop ?? 0)
           : Number.POSITIVE_INFINITY,
       dividerGap:
         imageBounds && dividerBounds
@@ -281,7 +327,7 @@ async function titleMetrics() {
       textGap:
         imageBounds && textBounds ? textBounds.top - imageBounds.bottom : Number.NEGATIVE_INFINITY,
     };
-  });
+  }, paintedBounds);
 }
 
 async function portraitMetrics() {

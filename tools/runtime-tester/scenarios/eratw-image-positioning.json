@@ -44,7 +44,8 @@
       "expect": {
         "count": 1,
         "visible": true,
-        "top_aligned_within": 1
+        "below": { "min": 0, "max": 18 },
+        "no_overlap": true
       }
     },
     {

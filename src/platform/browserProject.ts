@@ -66,6 +66,34 @@ export class BrowserProject {
     return this.usesEmbeddedManifest ? this.manifestValue : undefined;
   }
 
+  configurationWritable(): boolean {
+    return !this.usesEmbeddedManifest;
+  }
+
+  async writeConfiguration(expectedDigest: Uint8Array, contents: string): Promise<void> {
+    if (!this.configurationWritable()) throw new Error("项目文件中的 emuera.config 为只读");
+    let handle = this.files.get("emuera.config");
+    let currentDigest = new Uint8Array();
+    if (handle) {
+      const file = await handle.getFile();
+      const text = decodeProjectSource(new Uint8Array(await file.arrayBuffer()), "emuera.config");
+      currentDigest = blake3(new TextEncoder().encode(text));
+    }
+    if (!equalBytes(currentDigest, expectedDigest))
+      throw new Error("emuera.config 已被其他程序修改，请重新打开偏好设置");
+    handle ??= await this.root.getFileHandle("emuera.config", { create: true });
+    const writer = await handle.createWritable({ keepExistingData: false });
+    try {
+      await writer.write(new TextEncoder().encode(contents) as FileSystemWriteChunkType);
+      await writer.close();
+    } catch (error) {
+      await writer.abort().catch(() => undefined);
+      throw error;
+    }
+    this.files.set("emuera.config", handle);
+    this.manifestValue = undefined;
+  }
+
   async scan(progress?: FileScanProgress): Promise<BrowserManifest> {
     this.files.clear();
     progress?.(0, 0);

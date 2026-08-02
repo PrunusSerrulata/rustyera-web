@@ -70,8 +70,14 @@ struct ProjectOpenMetrics {
 
 impl Preferences {
     fn normalized(mut self) -> Self {
-        self.schema_version = 1;
-        self.font_size_override_px = Some(self.font_size_override_px.unwrap_or(12).clamp(8, 72));
+        let legacy_default_font_size =
+            self.schema_version < 2 && self.font_size_override_px == Some(12);
+        self.schema_version = 2;
+        self.font_size_override_px = if legacy_default_font_size {
+            None
+        } else {
+            self.font_size_override_px.map(|value| value.clamp(8, 72))
+        };
         self.image_scale = if self.image_scale.is_finite() {
             self.image_scale.clamp(0.25, 4.0)
         } else {
@@ -360,6 +366,26 @@ async fn read_resource_prefix(
 }
 
 #[tauri::command]
+async fn write_project_configuration(
+    state: State<'_, AppState>,
+    expected_digest: Vec<u8>,
+    contents: String,
+) -> Result<(), String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .project
+            .lock()
+            .map_err(lock_error)?
+            .as_ref()
+            .ok_or_else(|| "no project is open".to_owned())?
+            .write_configuration(&expected_digest, &contents)
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn storage_request(
     state: State<'_, AppState>,
     request: StorageRequest,
@@ -584,9 +610,9 @@ fn preferences_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn default_preferences() -> Preferences {
     Preferences {
-        schema_version: 1,
+        schema_version: 2,
         font_family_override: None,
-        font_size_override_px: Some(12),
+        font_size_override_px: None,
         image_scale: 1.0,
         master_volume: 1.0,
     }
@@ -633,6 +659,7 @@ pub fn run() {
             reload_project,
             read_resource,
             read_resource_prefix,
+            write_project_configuration,
             storage_request,
             list_fonts,
             load_preferences,
@@ -697,13 +724,25 @@ mod tests {
     }
 
     #[test]
-    fn missing_or_legacy_font_size_normalizes_to_twelve_pixels() {
+    fn missing_font_size_follows_the_game_configuration() {
         let normalized = Preferences {
             font_size_override_px: None,
             ..default_preferences()
         }
         .normalized();
 
-        assert_eq!(normalized.font_size_override_px, Some(12));
+        assert_eq!(normalized.font_size_override_px, None);
+    }
+
+    #[test]
+    fn legacy_default_font_size_becomes_an_opt_in_override() {
+        let normalized = Preferences {
+            schema_version: 1,
+            font_size_override_px: Some(12),
+            ..default_preferences()
+        }
+        .normalized();
+
+        assert_eq!(normalized.font_size_override_px, None);
     }
 }

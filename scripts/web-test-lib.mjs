@@ -41,6 +41,14 @@ export async function loadScenario(file, projectOverride, stateOverride) {
         : Number(configuredSeed);
   if (seed != null && (!Number.isInteger(seed) || seed < 0 || seed > 0x7fff_ffff))
     throw new Error("seed must be a non-negative 32-bit integer");
+  const viewport = raw.viewport ?? { width: 1280, height: 800 };
+  if (
+    !Number.isInteger(viewport.width) ||
+    !Number.isInteger(viewport.height) ||
+    viewport.width < 320 ||
+    viewport.height < 240
+  )
+    throw new Error("scenario viewport must contain integer width/height of at least 320x240");
   const actions = raw.actions
     ? raw.actions.map((item) => ({ ...item }))
     : (raw.inputs ?? []).map((item) => ({
@@ -61,6 +69,7 @@ export async function loadScenario(file, projectOverride, stateOverride) {
           : undefined,
     },
     seed,
+    viewport,
     actions,
     watches: (raw.watches ?? []).map(String),
     goal: raw.goal ?? {},
@@ -342,6 +351,10 @@ export async function runAction(page, action) {
           `advance_enter_waits_until reached unexpected ${snapshot.wait?.kind ?? "missing"} prompt`,
         );
       const waitId = snapshot.wait.wait_id;
+      if (action.auto_enter === false) {
+        await waitForAutomaticWaitChange(page, waitId);
+        continue;
+      }
       if (snapshot.wait.kind === "string_value")
         await page.locator(".game-viewport .game-button").first().click();
       else await page.locator(".prompt-bar button[type=submit]").click();
@@ -417,7 +430,7 @@ export async function runAction(page, action) {
     return { query: actual, semanticInput: action.semantic_input };
   } else if (action.type === "assert_layout") {
     const relative = action.relative_to ? resolveLocator(page, action.relative_to) : undefined;
-    const actual = await queryLayout(locator, relative);
+    const actual = await queryLayout(locator, relative, action.box, action.relative_box);
     assertLayout(actual, action.expect ?? {});
     return { query: { layout: actual }, semanticInput: action.semantic_input };
   } else if (action.type === "assert_canvas_pixels") {
@@ -475,9 +488,9 @@ async function queryCanvasPixels(locator) {
   }, count);
 }
 
-async function queryLayout(locator, relative) {
-  const subject = await layoutBoxes(locator);
-  const reference = relative ? await layoutBoxes(relative) : undefined;
+async function queryLayout(locator, relative, boxMode, relativeBoxMode) {
+  const subject = await layoutBoxes(locator, boxMode);
+  const reference = relative ? await layoutBoxes(relative, relativeBoxMode) : undefined;
   return {
     count: subject.length,
     visible: subject.some((item) => item.width > 0 && item.height > 0),
@@ -487,19 +500,24 @@ async function queryLayout(locator, relative) {
   };
 }
 
-async function layoutBoxes(locator) {
-  return locator.evaluateAll((elements) =>
-    elements.map((element) => {
-      const box = element.getBoundingClientRect();
-      return {
-        left: box.left,
-        top: box.top,
-        right: box.right,
-        bottom: box.bottom,
-        width: box.width,
-        height: box.height,
-      };
-    }),
+async function layoutBoxes(locator, mode) {
+  if (mode != null && mode !== "game_line") throw new Error(`unsupported layout box mode: ${mode}`);
+  return locator.evaluateAll(
+    (elements, boxMode) =>
+      elements.map((element) => {
+        const measured = boxMode === "game_line" ? element.closest(".game-line") : element;
+        if (!measured) throw new Error("layout element is not inside a game line");
+        const box = measured.getBoundingClientRect();
+        return {
+          left: box.left,
+          top: box.top,
+          right: box.right,
+          bottom: box.bottom,
+          width: box.width,
+          height: box.height,
+        };
+      }),
+    mode,
   );
 }
 
@@ -565,7 +583,8 @@ function assertLayout(actual, expected) {
       first.bottom > reference.bottom + tolerance
     )
       throw new Error(
-        `assertion failed at layout.inside: subject exceeds relative_to by more than ${tolerance}px`,
+        `assertion failed at layout.inside: subject ${JSON.stringify(first)} exceeds ` +
+          `relative_to ${JSON.stringify(reference)} by more than ${tolerance}px`,
       );
   }
   if (expected.right_aligned_within != null)

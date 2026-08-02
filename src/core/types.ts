@@ -18,7 +18,7 @@ export interface PumpBatch {
 }
 
 export interface Preferences {
-  schemaVersion: 1;
+  schemaVersion: 2;
   fontFamilyOverride: string | null;
   fontSizeOverridePx: number | null;
   imageScale: number;
@@ -26,9 +26,9 @@ export interface Preferences {
 }
 
 export const defaultPreferences = (): Preferences => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   fontFamilyOverride: null,
-  fontSizeOverridePx: 12,
+  fontSizeOverridePx: null,
   imageScale: 1,
   masterVolume: 1,
 });
@@ -107,6 +107,12 @@ export interface FrontendBridge {
   listFonts(): Promise<string[]>;
   loadPreferences(): Promise<Preferences>;
   savePreferences(preferences: Preferences): Promise<Preferences>;
+  projectConfigurationWritable(): boolean;
+  writeProjectConfiguration(expectedDigest: Uint8Array, contents: string): Promise<void>;
+  applyProjectConfiguration(
+    entries: ProjectConfigurationEntry[],
+    viewportChrome: { width: number; height: number },
+  ): Promise<void>;
   projectName(): string | undefined;
   openUpload(): Promise<Uint8Array | undefined>;
   saveDownload(name: string, bytes: Uint8Array): Promise<boolean>;
@@ -136,7 +142,46 @@ export interface TextStyle {
   underline: boolean;
   strikeout: boolean;
   font_family?: string;
-  font_millipoints: number;
+  font_millipixels: number;
+}
+
+export type ProjectConfigurationValueKind =
+  | "boolean"
+  | "integer"
+  | "string"
+  | "enum"
+  | "color"
+  | "character"
+  | "integer_list"
+  | "string_list";
+
+export interface ProjectConfigurationEntry {
+  code: string;
+  japanese: string;
+  english: string;
+  value: string;
+  kind: ProjectConfigurationValueKind;
+  allowed: string[];
+  fixed: boolean;
+  applicability: number;
+}
+
+export interface ProjectConfigurationSnapshot {
+  project_revision: number | bigint;
+  source_digest: Uint8Array;
+  entries: ProjectConfigurationEntry[];
+}
+
+export interface ProjectConfigurationChange {
+  code: string;
+  value: string;
+}
+
+export interface PreparedProjectConfiguration {
+  project_revision: number | bigint;
+  expected_source_digest: Uint8Array;
+  contents: string;
+  restart_required: boolean;
 }
 
 export type TooltipFormatFlag =

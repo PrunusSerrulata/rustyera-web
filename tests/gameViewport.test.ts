@@ -1,6 +1,6 @@
 import { flushPromises, shallowMount } from "@vue/test-utils";
 import { nextTick, reactive, ref } from "vue";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const scrollToIndex = vi.hoisted(() => vi.fn());
 const virtualOptions = vi.hoisted(() => ({ value: undefined as any }));
@@ -16,12 +16,16 @@ const store = reactive({
     backgrounds: [],
     resources: { sprites: [], canvases: [] },
     htmlIsland: [],
+    tooltip: {},
   },
   continueFromViewport,
   projectViewport,
   skip: vi.fn(),
   effectivePreferences: { imageScale: 1 },
   gameTextStyle: { fontFamily: "sans-serif", fontSize: "12px", fontSizePx: 12 },
+  gameLineHeightPx: 13,
+  useMouse: true,
+  scrollHeight: 1,
 });
 
 vi.mock("@tanstack/vue-virtual", () => ({
@@ -46,12 +50,88 @@ describe("game viewport", () => {
     store.presentation.revision = 1;
     store.presentation.historyRevision = 1;
     store.presentation.lines = [{ line_id: 1, alignment: "left", runs: [] }];
+    store.useMouse = true;
+    store.scrollHeight = 1;
     virtualState.items = [];
     virtualState.totalSize = 0;
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
       callback(0);
       return 1;
     });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("reports a viewport whose height changes without a width change", async () => {
+    let resize: ResizeObserverCallback | undefined;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          resize = callback;
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    let height = 600;
+    const originalWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+    const originalHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    Object.defineProperties(HTMLElement.prototype, {
+      clientWidth: { configurable: true, get: () => 800 },
+      clientHeight: { configurable: true, get: () => height },
+    });
+
+    try {
+      const wrapper = shallowMount(GameViewport);
+      projectViewport.mockClear();
+      height = 650;
+      resize?.([], {} as ResizeObserver);
+      await flushPromises();
+
+      expect(projectViewport).toHaveBeenCalledOnce();
+      wrapper.unmount();
+    } finally {
+      if (originalWidth) Object.defineProperty(HTMLElement.prototype, "clientWidth", originalWidth);
+      else delete (HTMLElement.prototype as any).clientWidth;
+      if (originalHeight)
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", originalHeight);
+      else delete (HTMLElement.prototype as any).clientHeight;
+    }
+  });
+
+  it("reports new line columns when font metrics change at the same viewport size", async () => {
+    Object.defineProperties(HTMLElement.prototype, {
+      clientWidth: { configurable: true, get: () => 800 },
+      clientHeight: { configurable: true, get: () => 600 },
+    });
+    const originalBounds = HTMLElement.prototype.getBoundingClientRect;
+    let probeWidth = 80;
+    HTMLElement.prototype.getBoundingClientRect = function () {
+      if (this.classList.contains("column-width-probe")) return { width: probeWidth } as DOMRect;
+      return originalBounds.call(this);
+    };
+
+    let wrapper: ReturnType<typeof shallowMount> | undefined;
+    try {
+      wrapper = shallowMount(GameViewport);
+      expect(projectViewport).toHaveBeenLastCalledWith(
+        expect.objectContaining({ lineColumns: 100 }),
+      );
+      projectViewport.mockClear();
+      probeWidth = 100;
+      store.gameTextStyle.fontSize = "13px";
+      await nextTick();
+      await flushPromises();
+
+      expect(projectViewport).toHaveBeenCalledWith(expect.objectContaining({ lineColumns: 80 }));
+    } finally {
+      wrapper?.unmount();
+      HTMLElement.prototype.getBoundingClientRect = originalBounds;
+      delete (HTMLElement.prototype as any).clientWidth;
+      delete (HTMLElement.prototype as any).clientHeight;
+      store.gameTextStyle.fontSize = "12px";
+    }
   });
 
   it("follows new history output but ignores non-history presentation changes", async () => {
@@ -97,6 +177,25 @@ describe("game viewport", () => {
     await wrapper.get("main").trigger("contextmenu");
 
     expect(store.skip).toHaveBeenCalledOnce();
+    wrapper.unmount();
+  });
+
+  it("applies UseMouse and ScrollHeight to viewport pointer scrolling", async () => {
+    const wrapper = shallowMount(GameViewport);
+    const viewport = wrapper.get<HTMLElement>("main");
+    store.scrollHeight = 3;
+
+    await viewport.trigger("wheel", { deltaY: 1 });
+    expect(viewport.element.scrollTop).toBe(39);
+
+    store.useMouse = false;
+    await viewport.trigger("click", { button: 0 });
+    await viewport.trigger("contextmenu");
+    await viewport.trigger("wheel", { deltaY: 1 });
+    expect(continueFromViewport).not.toHaveBeenCalled();
+    expect(store.skip).not.toHaveBeenCalled();
+    expect(viewport.element.scrollTop).toBe(39);
+    expect(viewport.classes()).toContain("mouse-disabled");
     wrapper.unmount();
   });
 

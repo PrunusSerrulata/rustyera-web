@@ -12,11 +12,7 @@ import type {
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import { blake3 } from "@noble/hashes/blake3.js";
 import type { DiagnosisArchiveInput } from "@/core/diagnosis";
-import {
-  pickBrowserDirectory,
-  pickBrowserFile,
-  removeImportedProjectSources,
-} from "@/platform/browserDirectory";
+import { pickBrowserDirectory, pickBrowserFile } from "@/platform/browserDirectory";
 import { streamDiagnosisArchiveInWorker } from "@/platform/diagnosis";
 import {
   BrowserProject,
@@ -50,8 +46,6 @@ export class BrowserBridge implements FrontendBridge {
   };
   private readonly worker = new WorkerClient();
   private project?: BrowserProject;
-  private importedToOpfs = false;
-  private sourceManifest?: BrowserManifest;
   private cacheWriter?: FileSystemWritableFileStream;
   private projectFileWriter?: FileSystemWritableFileStream;
   private projectFileFallback?: { name: string; chunks: Uint8Array[] };
@@ -100,12 +94,10 @@ export class BrowserBridge implements FrontendBridge {
     if (picked.persistHandle && import.meta.env.VITE_RUSTYERA_TEST !== "1")
       await database.handles.put({ key: "last-project", handle });
     this.project = new BrowserProject(handle, 1, picked.projectName);
-    this.importedToOpfs = !picked.persistHandle;
     const started = performance.now();
     const manifest = await this.project.scan((completed, total) =>
       this.projectProgressListener?.({ stage: "scanning", completed, total }),
     );
-    this.sourceManifest = manifest;
     const sourceReadMs = performance.now() - started;
     const cacheStarted = performance.now();
     const cache = await this.project.readCompiledCache();
@@ -120,12 +112,6 @@ export class BrowserBridge implements FrontendBridge {
           [cache.buffer],
         );
         cacheImported = true;
-        if (this.importedToOpfs) {
-          this.project.useEmbeddedManifest(manifest);
-          await removeImportedProjectSources(this.project.root);
-          this.importedToOpfs = false;
-          this.sourceManifest = undefined;
-        }
       } catch {
         await this.worker.call("loadProject", manifest);
       }
@@ -160,8 +146,6 @@ export class BrowserBridge implements FrontendBridge {
     );
     await this.project.writeCompiledProjectFile(bytes);
     this.project.useEmbeddedManifest(manifest);
-    this.sourceManifest = undefined;
-    this.importedToOpfs = false;
     await this.worker.callWithTransfer(
       "loadProjectWithCompiledCache",
       [manifest, bytes],
@@ -263,6 +247,19 @@ export class BrowserBridge implements FrontendBridge {
 
   savePreferences(preferences: Preferences): Promise<Preferences> {
     return saveBrowserPreferences(preferences);
+  }
+
+  projectConfigurationWritable(): boolean {
+    return this.project?.configurationWritable() ?? false;
+  }
+
+  async writeProjectConfiguration(expectedDigest: Uint8Array, contents: string): Promise<void> {
+    if (!this.project) throw new Error("没有打开的项目");
+    await this.project.writeConfiguration(expectedDigest, contents);
+  }
+
+  applyProjectConfiguration(): Promise<void> {
+    return Promise.resolve();
   }
 
   projectName(): string | undefined {
@@ -447,14 +444,6 @@ export class BrowserBridge implements FrontendBridge {
     if (complete) {
       await this.cacheWriter.close();
       this.cacheWriter = undefined;
-      if (this.importedToOpfs) {
-        const manifest = this.sourceManifest;
-        if (!manifest) throw new Error("OPFS 项目源码清理缺少已验证的项目清单");
-        this.project.useEmbeddedManifest(manifest);
-        await removeImportedProjectSources(this.project.root);
-        this.importedToOpfs = false;
-        this.sourceManifest = undefined;
-      }
     }
   }
 

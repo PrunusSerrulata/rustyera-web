@@ -15,22 +15,31 @@ import { useRuntimeStore } from "@/stores/runtime";
 const store = useRuntimeStore();
 const aboutOpen = ref(false);
 
+function cssColor(color: any, fallback: string): string {
+  return color
+    ? `rgba(${color.red}, ${color.green}, ${color.blue}, ${Number(color.alpha) / 255})`
+    : fallback;
+}
+
 onMounted(() => void store.initialize());
 </script>
 
 <template>
   <div
     class="app-shell"
+    :class="{ 'menu-disabled': !store.useMenu }"
     :aria-busy="store.projectLoading"
     :style="{
       '--game-font': store.gameTextStyle.fontFamily,
       '--game-size': store.gameTextStyle.fontSize,
-      '--game-background': store.presentation.settings.background
-        ? `rgba(${store.presentation.settings.background.red}, ${store.presentation.settings.background.green}, ${store.presentation.settings.background.blue}, ${Number(store.presentation.settings.background.alpha) / 255})`
-        : '#101114',
+      '--game-line-height': `${store.gameLineHeightPx}px`,
+      '--game-background': cssColor(store.presentation.settings.background, '#101114'),
+      '--game-focus': cssColor(store.presentation.settings.button_focus_foreground, '#ffff00'),
     }"
   >
-    <AppMenuBar @open-about="aboutOpen = true" />
+    <div class="menu-row">
+      <AppMenuBar v-if="store.useMenu" @open-about="aboutOpen = true" />
+    </div>
 
     <div
       v-if="store.projectLoading"
@@ -95,6 +104,8 @@ onMounted(() => void store.initialize());
       :open="store.preferencesOpen"
       :value="store.preferences"
       :fonts="store.fonts"
+      :configuration-entries="store.configurationEntries"
+      :configuration-read-only="store.configurationReadOnly"
       @close="store.preferencesOpen = false"
       @preview="store.preview"
       @save="store.savePreferences"

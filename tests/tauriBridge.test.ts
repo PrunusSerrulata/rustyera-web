@@ -3,9 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const invoke = vi.hoisted(() => vi.fn());
 const open = vi.hoisted(() => vi.fn());
 const listen = vi.hoisted(() => vi.fn());
+const currentWindow = vi.hoisted(() => ({
+  close: vi.fn(),
+  setResizable: vi.fn(),
+  setSize: vi.fn(),
+  setPosition: vi.fn(),
+  maximize: vi.fn(),
+  unmaximize: vi.fn(),
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
-vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ close: vi.fn() }) }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => currentWindow }));
 vi.mock("@tauri-apps/api/event", () => ({ listen }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open, save: vi.fn() }));
 
@@ -15,6 +23,11 @@ describe("Tauri project restart", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     listen.mockResolvedValue(vi.fn());
+    currentWindow.setResizable.mockResolvedValue(undefined);
+    currentWindow.setSize.mockResolvedValue(undefined);
+    currentWindow.setPosition.mockResolvedValue(undefined);
+    currentWindow.maximize.mockResolvedValue(undefined);
+    currentWindow.unmaximize.mockResolvedValue(undefined);
   });
 
   it("reopens the selected project path after runtime session recreation", async () => {
@@ -40,6 +53,22 @@ describe("Tauri project restart", () => {
     await expect(new TauriBridge().restartProject()).rejects.toThrow("没有打开的项目");
   });
 
+  it("keeps the previous project when opening a replacement fails", async () => {
+    open.mockResolvedValueOnce("/game/old").mockResolvedValueOnce("/game/broken");
+    invoke
+      .mockResolvedValueOnce({ cacheImported: true })
+      .mockRejectedValueOnce(new Error("compile failed"))
+      .mockResolvedValueOnce({ cacheImported: true });
+    const bridge = new TauriBridge();
+
+    await bridge.openProject();
+    await expect(bridge.openProject()).rejects.toThrow("compile failed");
+    await bridge.restartProject();
+
+    expect(bridge.projectName()).toBe("old");
+    expect(invoke).toHaveBeenLastCalledWith("open_project", { path: "/game/old" });
+  });
+
   it("reopens a selected project file through the packaged-project command", async () => {
     open.mockResolvedValue("/game/eraTW.reraproj");
     invoke.mockResolvedValue({ cacheImported: true });
@@ -55,6 +84,23 @@ describe("Tauri project restart", () => {
       path: "/game/eraTW.reraproj",
     });
     expect(bridge.projectName()).toBe("eraTW");
+    expect(bridge.projectConfigurationWritable()).toBe(false);
+  });
+
+  it("writes configuration only for an opened source directory", async () => {
+    open.mockResolvedValue("/game/eraTW");
+    invoke.mockResolvedValue({ cacheImported: false });
+    const bridge = new TauriBridge();
+
+    expect(bridge.projectConfigurationWritable()).toBe(false);
+    await bridge.openProject();
+    expect(bridge.projectConfigurationWritable()).toBe(true);
+    await bridge.writeProjectConfiguration(Uint8Array.of(1, 2), "FontSize:18\n");
+
+    expect(invoke).toHaveBeenLastCalledWith("write_project_configuration", {
+      expectedDigest: [1, 2],
+      contents: "FontSize:18\n",
+    });
   });
 
   it("forwards native project progress events", async () => {
@@ -90,6 +136,85 @@ describe("Tauri project restart", () => {
 
     expect(progress).toHaveBeenCalledWith({ stage: "scanning", completed: 0, total: 0 });
     expect(progress.mock.invocationCallOrder[0]).toBeLessThan(invoke.mock.invocationCallOrder[0]);
+  });
+
+  it("applies native window settings from applicable project configuration", async () => {
+    const entry = (code: string, value: string) => ({
+      code,
+      japanese: "",
+      english: code,
+      value,
+      kind: "integer" as const,
+      allowed: [],
+      fixed: false,
+      applicability: 8,
+    });
+
+    await new TauriBridge().applyProjectConfiguration(
+      [
+        { ...entry("SizableWindow", "NO"), kind: "boolean" },
+        entry("WindowX", "1100"),
+        entry("WindowY", "750"),
+        { ...entry("SetWindowPos", "YES"), kind: "boolean" },
+        entry("WindowPosX", "23"),
+        entry("WindowPosY", "41"),
+        { ...entry("WindowMaximixed", "YES"), kind: "boolean" },
+      ],
+      { width: 20, height: 90 },
+    );
+
+    expect(currentWindow.setResizable).toHaveBeenCalledWith(false);
+    expect(currentWindow.setSize).toHaveBeenCalledWith(
+      expect.objectContaining({ width: 1120, height: 840 }),
+    );
+    expect(currentWindow.setPosition).toHaveBeenCalledWith(
+      expect.objectContaining({ x: 23, y: 41 }),
+    );
+    expect(currentWindow.unmaximize).toHaveBeenCalledOnce();
+    expect(currentWindow.unmaximize.mock.invocationCallOrder[0]).toBeLessThan(
+      currentWindow.setSize.mock.invocationCallOrder[0],
+    );
+    expect(currentWindow.unmaximize.mock.invocationCallOrder[0]).toBeLessThan(
+      currentWindow.setPosition.mock.invocationCallOrder[0],
+    );
+    expect(currentWindow.setPosition.mock.invocationCallOrder[0]).toBeLessThan(
+      currentWindow.maximize.mock.invocationCallOrder[0],
+    );
+    expect(currentWindow.maximize).toHaveBeenCalledOnce();
+  });
+
+  it("leaves maximized mode before restoring normal window bounds", async () => {
+    const entry = (code: string, value: string) => ({
+      code,
+      japanese: "",
+      english: code,
+      value,
+      kind: "integer" as const,
+      allowed: [],
+      fixed: false,
+      applicability: 8,
+    });
+
+    await new TauriBridge().applyProjectConfiguration(
+      [
+        { ...entry("WindowMaximixed", "NO"), kind: "boolean" },
+        entry("WindowX", "900"),
+        entry("WindowY", "600"),
+        { ...entry("SetWindowPos", "YES"), kind: "boolean" },
+        entry("WindowPosX", "11"),
+        entry("WindowPosY", "17"),
+      ],
+      { width: 0, height: 0 },
+    );
+
+    expect(currentWindow.unmaximize).toHaveBeenCalledOnce();
+    expect(currentWindow.unmaximize.mock.invocationCallOrder[0]).toBeLessThan(
+      currentWindow.setSize.mock.invocationCallOrder[0],
+    );
+    expect(currentWindow.unmaximize.mock.invocationCallOrder[0]).toBeLessThan(
+      currentWindow.setPosition.mock.invocationCallOrder[0],
+    );
+    expect(currentWindow.maximize).not.toHaveBeenCalled();
   });
 });
 

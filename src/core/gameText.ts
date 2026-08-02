@@ -13,15 +13,10 @@ export function resolveGameTextStyle(
   const runtimeStyle = latestRuntimeTextStyle(lines);
   const fontSizePx =
     preferences.fontSizeOverridePx ??
-    (runtimeStyle?.font_millipoints
-      ? (Number(runtimeStyle.font_millipoints) / 1000) * (4 / 3)
-      : 12);
+    (runtimeStyle?.font_millipixels ? Number(runtimeStyle.font_millipixels) / 1000 : 12);
   return {
     fontFamily: preferences.fontFamilyOverride || runtimeStyle?.font_family || "sans-serif",
-    fontSize:
-      preferences.fontSizeOverridePx == null && runtimeStyle?.font_millipoints
-        ? `${Number(runtimeStyle.font_millipoints) / 1000}pt`
-        : `${fontSizePx}px`,
+    fontSize: `${fontSizePx}px`,
     fontSizePx,
   };
 }

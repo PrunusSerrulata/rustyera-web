@@ -12,6 +12,8 @@ interface HandleRecord {
   handle: FileSystemDirectoryHandle;
 }
 
+type StoredPreferences = Omit<Preferences, "schemaVersion"> & { schemaVersion: number };
+
 class FrontendDatabase extends Dexie {
   settings!: EntityTable<SettingRecord, "key">;
   handles!: EntityTable<HandleRecord, "key">;
@@ -35,13 +37,15 @@ export async function saveBrowserPreferences(value: Preferences): Promise<Prefer
   return normalized;
 }
 
-export function normalizePreferences(value: Preferences): Preferences {
+export function normalizePreferences(value: StoredPreferences): Preferences {
+  const legacyDefaultFontSize =
+    Number(value.schemaVersion ?? 1) < 2 && value.fontSizeOverridePx === 12;
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     fontFamilyOverride: value.fontFamilyOverride || null,
     fontSizeOverridePx:
-      value.fontSizeOverridePx == null
-        ? 12
+      value.fontSizeOverridePx == null || legacyDefaultFontSize
+        ? null
         : Math.round(Math.min(72, Math.max(8, value.fontSizeOverridePx))),
     imageScale: Number.isFinite(value.imageScale)
       ? Math.min(4, Math.max(0.25, value.imageScale))
