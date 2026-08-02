@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 
+import { captureCompleteTauriSnapshot } from "../../scripts/tauri-test-support.mjs";
 import { establishReferenceWindow, paintedImageBounds } from "./media-geometry.mjs";
 import { driveRuntimeUntil, waitForRuntimeProgress } from "./runtime-progress.mjs";
 
 const PROJECT_TIMEOUT = 120_000;
 const STEP_TIMEOUT = 30_000;
+const OPENING_INTRO_TIMEOUT = 3_000;
+const OPENING_INTRO_MARKERS = ["亚兰德――", "之后时光流逝，直到现在――"];
 const roronaImages = process.env.VITE_RUSTYERA_TAURI_RORONA_IMAGES ? describe : describe.skip;
 
 roronaImages("Tauri erarorona image rendering", () => {
@@ -44,8 +47,12 @@ roronaImages("Tauri erarorona image rendering", () => {
     assert.ok(title.insideViewport, "title image must remain fully inside the viewport");
     assert.ok(title.metadataGap >= 0, "title image must not cover its metadata");
 
-    await submit(0);
-    await skipOpeningWithRightClick();
+    await submitPrompt(0);
+    const openingAlternatingClicks = await alternateClicksUntilWorkshop();
+    assert.ok(
+      openingAlternatingClicks > 1,
+      "the opening must be skipped with continuous alternating clicks",
+    );
 
     let workshop;
     await browser.waitUntil(
@@ -56,7 +63,15 @@ roronaImages("Tauri erarorona image rendering", () => {
       { timeout: STEP_TIMEOUT, timeoutMsg: "workshop image geometry did not stabilize" },
     );
     const state = await snapshot();
-    console.log(JSON.stringify({ title, workshop, wait: state.wait, fault: state.fault }));
+    console.log(
+      JSON.stringify({
+        title,
+        workshop,
+        openingAlternatingClicks,
+        wait: state.wait,
+        fault: state.fault,
+      }),
+    );
     assert.equal(state.fault, null);
     assert.equal(workshop.count, 1);
     assert.ok(workshop.statusGap >= 0, "workshop image must start below the status header");
@@ -99,10 +114,14 @@ async function snapshot() {
 
 async function submit(value, requireStable = false) {
   const before = await snapshot();
+  await submitPrompt(value);
+  await waitForWaitChange(before.wait?.wait_id, requireStable);
+}
+
+async function submitPrompt(value) {
   const input = await $(".prompt-bar input");
   await input.setValue(String(value));
   await $(".prompt-bar button[type=submit]").click();
-  await waitForWaitChange(before.wait?.wait_id, requireStable);
 }
 
 async function reachTitle(maximum) {
@@ -137,31 +156,81 @@ async function reachTitle(maximum) {
   throw new Error(`title was not reached after ${maximum} state-driven setup inputs`);
 }
 
-async function skipOpeningWithRightClick() {
-  await browser.waitUntil(
-    async () => {
-      const state = await snapshot();
-      return state.fault != null || (state.canInteract && state.wait?.kind === "enter_key");
-    },
-    { timeout: STEP_TIMEOUT, timeoutMsg: "new-game opening did not expose an Enter wait" },
-  );
-  await $(".game-viewport").click({ button: "right" });
+async function alternateClicksUntilWorkshop() {
+  let clicks = 0;
+  let introductionStartedAt;
+  let introductionMarker;
+  let lastClick;
   await driveRuntimeUntil({
     browser,
     snapshot,
-    label: "Rorona dialogue and workshop background after right-click skip",
+    label: "Rorona dialogue and workshop background after alternating-click skip",
     totalTimeout: 180_000,
     pollInterval: 100,
-    accept: async (state) => {
-      const workshop = await workshopMetrics();
-      return (
-        workshop.count === 1 &&
-        workshop.statusGap >= 0 &&
-        workshop.dialogueGap >= 0 &&
-        state.output.slice(-60).join("\n").includes("亚斯特丽德的工房")
-      );
+    accept: (state) => state.output.slice(-60).join("\n").includes("亚斯特丽德的工房"),
+    advance: async (state) => {
+      const output = state.output.slice(-60).join("\n");
+      const introduction = OPENING_INTRO_MARKERS.find((marker) => output.includes(marker));
+      if (introduction && introductionStartedAt == null) {
+        introductionStartedAt = Date.now();
+        introductionMarker = introduction;
+      }
+      if (
+        introductionStartedAt != null &&
+        Date.now() - introductionStartedAt >= OPENING_INTRO_TIMEOUT
+      ) {
+        const failureSnapshot = await captureCompleteTauriSnapshot(browser);
+        const diagnostic = {
+          failureStage: "opening introduction skip",
+          introduction: introductionMarker,
+          elapsedMs: Date.now() - introductionStartedAt,
+          clicks,
+          lastClick,
+          ...failureSnapshot,
+        };
+        console.error(JSON.stringify(diagnostic));
+        throw new Error(
+          `opening introduction remained visible for at least ${OPENING_INTRO_TIMEOUT}ms: ${JSON.stringify(diagnostic)}`,
+        );
+      }
+      const button = clicks % 2 === 0 ? "right" : "left";
+      lastClick = await clickViewportBottom(button);
+      clicks += 1;
+      return true;
     },
   });
+  return clicks;
+}
+
+async function clickViewportBottom(button) {
+  const viewport = await $(".game-viewport");
+  const click = await browser.execute(() => {
+    const element = document.querySelector(".game-viewport");
+    if (!(element instanceof HTMLElement)) return null;
+    element.scrollTop = element.scrollHeight;
+    const bounds = element.getBoundingClientRect();
+    const clientX = bounds.left + bounds.width / 2;
+    const clientY = bounds.bottom - 4;
+    const target = document.elementFromPoint(clientX, clientY);
+    return {
+      x: 0,
+      y: Math.max(0, Math.floor(bounds.height / 2) - 4),
+      clientX,
+      clientY,
+      scrollTop: element.scrollTop,
+      scrollHeight: element.scrollHeight,
+      target: target
+        ? {
+            tag: target.tagName.toLowerCase(),
+            className: target.className,
+            text: target.textContent?.slice(-160) ?? "",
+          }
+        : null,
+    };
+  });
+  assert.ok(click, "game viewport must exist before right-clicking its bottom edge");
+  await viewport.click({ button, x: click.x, y: click.y });
+  return { button, ...click };
 }
 
 async function advanceEnterWaitsUntil(expectedText, maximum, requireImage = false) {

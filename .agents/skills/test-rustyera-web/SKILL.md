@@ -22,6 +22,14 @@ or frontend-state actions, and [tauri-e2e.md](references/tauri-e2e.md) before ch
 - Start one shared 60-minute wall-clock budget with the task's first test command. It includes all
   subsequent checks, targeted reruns, end-to-end waits, and test-failure investigation. Bound every
   command by the remaining time.
+- Before creating, resuming, following up with, or assigning a subagent to any browser, native, or
+  other dynamic end-to-end test, complete every static gate authorized for the task. Static gates
+  include the applicable focused unit/integration tests, typecheck, lint, format check, and build
+  checks. If the user limits validation scope, "every" means every gate inside that scope and does
+  not authorize broader suites. A static failure invalidates affected prior results; rerun only the
+  smallest affected static set after the fix, and do not assign dynamic testing until all authorized
+  static gates pass again. A subagent used only for static tests may be created earlier, but it must
+  not receive a dynamic-test command before this gate is satisfied.
 - Start each distinct full test suite at most once per task. After a failure is fixed, rerun only
   the directly affected test file, named case, browser scenario, or native scenario; never rerun
   the full suite.
