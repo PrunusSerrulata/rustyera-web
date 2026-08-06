@@ -55,8 +55,11 @@ or frontend-state actions, and [tauri-e2e.md](references/tauri-e2e.md) before ch
 ## Prepare
 
 1. Inspect `AGENTS.md`, `package.json`, the relevant diff, and the selected scenario.
-2. Build `public/wasm` when it is absent or stale. Install the repository-local Playwright Chromium
-   when needed; verify native Firefox is installed and enable Safari's **Allow remote automation**
+2. Build `public/wasm` when it is absent or stale. Always run `npm run build:wasm` outside the
+   filesystem sandbox with `sandbox_permissions=require_escalated`; state in the approval
+   justification that the build must write Rust/WASM tool caches and may install `wasm-bindgen`.
+   Do not make an initial sandboxed attempt. Install the repository-local Playwright Chromium when
+   needed; verify native Firefox is installed and enable Safari's **Allow remote automation**
    developer setting before starting its WebDriver session.
 3. Keep the source game and reference repository read-only. The runner copies each project to a
    temporary directory and writes artifacts below `.rustyera/test-runs` by default.

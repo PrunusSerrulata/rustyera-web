@@ -17,17 +17,14 @@ import {
   isolatedProject,
   loadScenario,
   observationFromSnapshot,
-  runtimeProgressDiagnostic,
-  runtimeProgressSignature,
   runAction,
   shellWords,
-  terminalRuntimeRejection,
 } from "./web-test-lib.mjs";
+import { finalizeBrowserGameRun } from "./web-test-lifecycle.mjs";
+import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs";
 
 const repository = fileURLToPath(new URL("..", import.meta.url));
 const OBSERVATION_SLICE_MS = 5_000;
-const OBSERVATION_REPORT_MS = 15_000;
-const OBSERVATION_STALL_MS = 60_000;
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -71,13 +68,18 @@ async function execute(args) {
   let browser;
   let server;
   let page;
+  let agentInput;
+  let snapshotMonitor;
+  let snapshotMonitorError;
   const consoleMessages = [];
   let previousOutput = [];
   let referenceObservation;
   let steps = 0;
   const deadline = Date.now() + scenario.limits.timeout_seconds * 1000;
-  const emitResult = (status, extra = {}) =>
-    trace.emit({ type: "result", status, seed: scenario.seed, trace: tracePath, ...extra });
+  const outcome = (status, exitCode, extra = {}) => ({
+    exitCode,
+    result: { status, seed: scenario.seed, trace: tracePath, ...extra },
+  });
   const captureFailureArtifacts = async () => {
     if (!page) return;
     const artifacts = path.dirname(tracePath);
@@ -94,10 +96,43 @@ async function execute(args) {
   };
   const fail = async (status, exitCode, extra = {}) => {
     await captureFailureArtifacts();
-    emitResult(status, extra);
-    return exitCode;
+    return outcome(status, exitCode, extra);
   };
+  const classifyError = (error) => {
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    const assertionFailure = message.includes("assertion failed at");
+    return outcome(
+      assertionFailure ? "assertion_failure" : "infrastructure_failure",
+      assertionFailure ? 1 : 3,
+    );
+  };
+  let completedOutcome;
+  let runError;
   try {
+    completedOutcome = await runScenario();
+  } catch (error) {
+    runError = error;
+    await captureFailureArtifacts();
+  }
+
+  return finalizeBrowserGameRun({
+    outcome: completedOutcome,
+    runError,
+    monitor: snapshotMonitor,
+    monitorError: () => snapshotMonitorError,
+    cleanups: [
+      () => agentInput?.close(),
+      () => reference?.close(),
+      () => browser?.close(),
+      () => server?.close(),
+      () => referenceProject?.close(),
+      () => webProject.close(),
+    ],
+    trace,
+    classifyError,
+  });
+
+  async function runScenario() {
     process.env.VITE_RUSTYERA_TEST = "1";
     process.env.PLAYWRIGHT_BROWSERS_PATH ||= path.join(repository, ".playwright-browsers");
     const [{ createServer }, { chromium }] = await Promise.all([
@@ -177,6 +212,21 @@ async function execute(args) {
     await installRemoteFileSystem(page, webProject.project);
     await page.goto(`http://127.0.0.1:${port}`);
     await page.waitForFunction(() => window.__RUSTYERA_TEST__ != null);
+    snapshotMonitor = startCompleteSnapshotMonitor(
+      { execute: (script) => page.evaluate(script) },
+      {
+        deadline,
+        describeDeadline: () => "browser game test exceeded its scenario deadline",
+        eventType: "browser-game-snapshot",
+        label: "Chromium game test",
+        output: (event) => trace.emit(JSON.parse(event)),
+      },
+    );
+    void snapshotMonitor.failure.catch(async (error) => {
+      snapshotMonitorError = error;
+      agentInput?.close();
+      await page?.close().catch(() => undefined);
+    });
     await page.evaluate(
       async ({ start, seed, clock, stateUrl }) => {
         const response = stateUrl ? await fetch(stateUrl) : undefined;
@@ -218,53 +268,22 @@ async function execute(args) {
     }
 
     async function waitForObservation() {
-      const startedAt = Date.now();
-      let lastProgressAt = startedAt;
-      let lastReportAt = startedAt;
-      let lastSignature;
       for (;;) {
         const remaining = deadline - Date.now();
         if (remaining <= 0) throw new Error("scenario timeout exhausted");
         try {
-          return await page.evaluate(
-            (timeout) => window.__RUSTYERA_TEST__.waitForStableObservation(timeout),
-            Math.min(OBSERVATION_SLICE_MS, remaining),
-          );
+          return await Promise.race([
+            page.evaluate(
+              (timeout) => window.__RUSTYERA_TEST__.waitForStableObservation(timeout),
+              Math.min(OBSERVATION_SLICE_MS, remaining),
+            ),
+            snapshotMonitor.failure,
+          ]);
         } catch (error) {
+          if (snapshotMonitorError) throw snapshotMonitorError;
           const message = error instanceof Error ? error.message : String(error);
           if (!message.includes("等待稳定输入状态超时")) throw error;
         }
-
-        const snapshot = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
-        const now = Date.now();
-        if (snapshot?.fault != null)
-          throw new Error(
-            `runtime faulted: ${JSON.stringify(runtimeProgressDiagnostic(snapshot))}`,
-          );
-        if (terminalRuntimeRejection(snapshot))
-          throw new Error(
-            `runtime rejected the configured state: ${JSON.stringify(runtimeProgressDiagnostic(snapshot))}`,
-          );
-
-        const signature = runtimeProgressSignature(snapshot);
-        if (signature !== lastSignature) {
-          lastSignature = signature;
-          lastProgressAt = now;
-        }
-        if (now - lastReportAt >= OBSERVATION_REPORT_MS) {
-          trace.emit({
-            type: "progress",
-            waiting_for: "stable runtime observation",
-            elapsed_ms: now - startedAt,
-            stalled_ms: now - lastProgressAt,
-            runtime: runtimeProgressDiagnostic(snapshot),
-          });
-          lastReportAt = now;
-        }
-        if (now - lastProgressAt >= OBSERVATION_STALL_MS)
-          throw new Error(
-            `stable runtime observation made no progress for ${now - lastProgressAt}ms: ${JSON.stringify(runtimeProgressDiagnostic(snapshot))}`,
-          );
       }
     }
 
@@ -418,20 +437,20 @@ async function execute(args) {
         if (current.rust.fault && action.allow_fault !== true)
           return fail("runtime_fault", 1, { fault: current.rust.fault });
         if (current.comparison && !current.comparison.equal) return fail("difference", 1);
-        if (current.goal.satisfied) return (emitResult("passed"), 0);
+        if (current.goal.satisfied) return outcome("passed", 0);
       }
     }
     if (current.goal.satisfied || (scenario.mode === "fixed" && !Object.keys(scenario.goal).length))
-      return (emitResult("passed"), 0);
+      return outcome("passed", 0);
     if (args.command === "run") {
       const status = scenario.mode === "autonomous" ? "input_exhausted" : "goal_not_met";
       return fail(status, status === "input_exhausted" ? 2 : 1);
     }
 
-    const input = readline.createInterface({ input: process.stdin, terminal: false });
-    for await (const line of input) {
+    agentInput = readline.createInterface({ input: process.stdin, terminal: false });
+    for await (const line of agentInput) {
       const command = JSON.parse(line);
-      if (command.op === "stop") return (emitResult("stopped"), 0);
+      if (command.op === "stop") return outcome("stopped", 0);
       if (command.op === "inspect") {
         const values = await page.evaluate(
           (watches) => window.__RUSTYERA_TEST__.inspect(watches),
@@ -474,30 +493,10 @@ async function execute(args) {
         if (current.rust.fault && action.allow_fault !== true)
           return fail("runtime_fault", 1, { fault: current.rust.fault });
         if (current.comparison && !current.comparison.equal) return fail("difference", 1);
-        if (current.goal.satisfied) return (emitResult("passed"), 0);
+        if (current.goal.satisfied) return outcome("passed", 0);
       }
     }
     return fail("input_exhausted", 2);
-  } catch (error) {
-    await captureFailureArtifacts();
-    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    trace.emit({
-      type: "error",
-      message,
-    });
-    if (message.includes("assertion failed at")) {
-      emitResult("assertion_failure");
-      return 1;
-    }
-    emitResult("infrastructure_failure");
-    return 3;
-  } finally {
-    reference?.close();
-    await browser?.close();
-    await server?.close();
-    await referenceProject?.close();
-    await webProject.close();
-    await trace.close();
   }
 }
 

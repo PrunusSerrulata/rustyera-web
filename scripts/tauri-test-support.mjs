@@ -88,6 +88,7 @@ export function startTauriSessionMonitor(
 
   async function monitor() {
     let previousSnapshot;
+    let nextTick = Date.now();
     try {
       while (!stopped) {
         if (deadline != null && Date.now() >= deadline) {
@@ -117,9 +118,12 @@ export function startTauriSessionMonitor(
         assertSnapshotProgress(previousSnapshot, snapshot, label);
         previousSnapshot = snapshot;
         if (stopped) break;
+        nextTick += interval;
         await new Promise((resolve) => {
-          const remaining = deadline == null ? interval : Math.max(0, deadline - Date.now());
-          const timer = setTimeout(resolve, Math.min(interval, remaining));
+          const cadenceRemaining = Math.max(0, nextTick - Date.now());
+          const deadlineRemaining =
+            deadline == null ? cadenceRemaining : Math.max(0, deadline - Date.now());
+          const timer = setTimeout(resolve, Math.min(cadenceRemaining, deadlineRemaining));
           wake = () => {
             clearTimeout(timer);
             resolve();
