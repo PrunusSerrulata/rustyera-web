@@ -149,5 +149,6 @@ function withoutReportMetadata(value) {
         .map(([key, child]) => [key, withoutReportMetadata(child)]),
     );
   }
+  if (typeof value === "string") return value.replace(/ · 已等待 \d+ 秒/g, "");
   return value;
 }

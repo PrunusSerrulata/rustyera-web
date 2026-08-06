@@ -19,7 +19,7 @@ const RESOURCE_SUFFIXES = new Set([
 export interface ScannedFile {
   relative_path: string;
   category: string;
-  payload: { type: "utf8" | "bytes"; value: string | Uint8Array };
+  payload: { type: "utf8"; value: string } | { type: "bytes"; value: Uint8Array };
   content_hash: Uint8Array;
 }
 
@@ -40,6 +40,8 @@ export class BrowserProject {
   private readonly embeddedResources = new Map<string, Uint8Array>();
   private usesEmbeddedManifest = false;
   private manifestValue?: BrowserManifest;
+  private packagedFile?: File;
+  private importedSnapshot = false;
 
   constructor(
     readonly root: FileSystemDirectoryHandle,
@@ -62,6 +64,19 @@ export class BrowserProject {
     this.manifestValue = cacheIdentityManifest(manifest);
   }
 
+  usePackagedFile(file: File): void {
+    this.packagedFile = file;
+  }
+
+  useImportedManifest(manifest: BrowserManifest): void {
+    this.importedSnapshot = true;
+    this.manifestValue = manifest;
+  }
+
+  importedManifest(): BrowserManifest | undefined {
+    return this.importedSnapshot ? this.manifestValue : undefined;
+  }
+
   embeddedManifest(): BrowserManifest | undefined {
     return this.usesEmbeddedManifest ? this.manifestValue : undefined;
   }
@@ -72,7 +87,8 @@ export class BrowserProject {
 
   async writeConfiguration(expectedDigest: Uint8Array, contents: string): Promise<void> {
     if (!this.configurationWritable()) throw new Error("项目文件中的 emuera.config 为只读");
-    let handle = this.files.get("emuera.config");
+    let handle =
+      this.files.get("emuera.config") ?? (await optionalFileHandle(this.root, ["emuera.config"]));
     let currentDigest = new Uint8Array();
     if (handle) {
       const file = await handle.getFile();
@@ -94,7 +110,10 @@ export class BrowserProject {
     this.manifestValue = undefined;
   }
 
-  async scan(progress?: FileScanProgress): Promise<BrowserManifest> {
+  async scan(
+    progress?: FileScanProgress,
+    preloaded?: ReadonlyMap<string, ScannedFile>,
+  ): Promise<BrowserManifest> {
     this.files.clear();
     progress?.(0, 0);
     const topLevel = new Set<string>();
@@ -103,7 +122,7 @@ export class BrowserProject {
     }
     const files: ScannedFile[] = [];
     const reads: Array<() => Promise<void>> = [];
-    await this.walk(this.root, "", topLevel, files, reads);
+    await this.walk(this.root, "", topLevel, files, reads, preloaded);
     progress?.(0, reads.length);
     await runBounded(reads, 8, progress);
     files.sort((left, right) =>
@@ -113,27 +132,17 @@ export class BrowserProject {
     return this.manifestValue;
   }
 
-  async readCompiledCache(): Promise<Uint8Array | undefined> {
+  async readCompiledCache(progress?: FileScanProgress): Promise<Uint8Array | undefined> {
+    if (this.packagedFile) return readFileInChunks(this.packagedFile, progress);
     try {
       const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
       const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
       const handle = await cacheDirectory.getFileHandle("compiled-project.reraproj");
-      return new Uint8Array(await (await handle.getFile()).arrayBuffer());
+      return readFileInChunks(await handle.getFile(), progress);
     } catch (error) {
       if (errorKind(error) === "not_found") return undefined;
       throw error;
     }
-  }
-
-  async writeCompiledProjectFile(bytes: Uint8Array): Promise<void> {
-    const privateDirectory = await this.root.getDirectoryHandle(".rustyera", { create: true });
-    const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
-    const handle = await cacheDirectory.getFileHandle("compiled-project.reraproj", {
-      create: true,
-    });
-    const writer = await handle.createWritable({ keepExistingData: false });
-    await writer.write(bytes as FileSystemWriteChunkType);
-    await writer.close();
   }
 
   async reloadRequest(progress?: FileScanProgress): Promise<any> {
@@ -175,7 +184,9 @@ export class BrowserProject {
     const normalized = safePath(relativePath);
     const embedded = this.embeddedResources.get(normalized.toLocaleLowerCase());
     if (embedded) return new Uint8Array(embedded);
-    const handle = this.files.get(normalized.toLocaleLowerCase());
+    const handle =
+      this.files.get(normalized.toLocaleLowerCase()) ??
+      (await optionalFileHandle(this.root, normalized.split("/")));
     if (!handle) throw new Error(`未知资源：${relativePath}`);
     return new Uint8Array(await (await handle.getFile()).arrayBuffer());
   }
@@ -184,7 +195,9 @@ export class BrowserProject {
     const normalized = safePath(relativePath);
     const embedded = this.embeddedResources.get(normalized.toLocaleLowerCase());
     if (embedded) return embedded.slice(0, maximumBytes);
-    const handle = this.files.get(normalized.toLocaleLowerCase());
+    const handle =
+      this.files.get(normalized.toLocaleLowerCase()) ??
+      (await optionalFileHandle(this.root, normalized.split("/")));
     if (!handle) throw new Error(`未知资源：${relativePath}`);
     const file = await handle.getFile();
     return new Uint8Array(await file.slice(0, maximumBytes).arrayBuffer());
@@ -294,38 +307,27 @@ export class BrowserProject {
     topLevel: Set<string>,
     output: ScannedFile[],
     reads: Array<() => Promise<void>>,
+    preloaded?: ReadonlyMap<string, ScannedFile>,
   ): Promise<void> {
     for await (const [name, handle] of directory.entries()) {
       if (name.toLocaleLowerCase() === ".rustyera") continue;
       const relative = `${prefix}${name}`.normalize("NFC");
       if (handle.kind === "directory") {
-        await this.walk(handle, `${relative}/`, topLevel, output, reads);
+        await this.walk(handle, `${relative}/`, topLevel, output, reads, preloaded);
         continue;
       }
       const category = classify(relative, topLevel);
       if (!category) continue;
       this.files.set(relative.toLocaleLowerCase(), handle);
+      const prepared = preloaded?.get(relative);
+      if (prepared) {
+        output.push(prepared);
+        continue;
+      }
       reads.push(async () => {
         const bytes = new Uint8Array(await (await handle.getFile()).arrayBuffer());
-        if (category === "resource") {
-          output.push({
-            relative_path: relative,
-            category,
-            payload: { type: "bytes", value: bytes },
-            content_hash: blake3(bytes),
-          });
-        } else {
-          const decoded = decodeProjectSource(bytes, relative);
-          const text =
-            category === "resource_manifest" ? normalizeResourceManifest(decoded) : decoded;
-          const normalized = new TextEncoder().encode(text);
-          output.push({
-            relative_path: relative,
-            category,
-            payload: { type: "utf8", value: text },
-            content_hash: blake3(normalized),
-          });
-        }
+        const scanned = scanBrowserProjectFile(relative, bytes, topLevel);
+        if (scanned) output.push(scanned);
       });
     }
   }
@@ -334,6 +336,23 @@ export class BrowserProject {
     if (namespace === "resource") return this.root;
     return this.root.getDirectoryHandle(storageDirectoryName(namespace), { create: true });
   }
+}
+
+async function readFileInChunks(file: File, progress?: FileScanProgress): Promise<Uint8Array> {
+  progress?.(0, file.size);
+  if (file.size === 0) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    progress?.(bytes.byteLength, bytes.byteLength);
+    return bytes;
+  }
+  const bytes = new Uint8Array(file.size);
+  const chunkSize = 4 * 1024 * 1024;
+  for (let offset = 0; offset < file.size; offset += chunkSize) {
+    const chunk = new Uint8Array(await file.slice(offset, offset + chunkSize).arrayBuffer());
+    bytes.set(chunk, offset);
+    progress?.(Math.min(offset + chunk.byteLength, file.size), file.size);
+  }
+  return bytes;
 }
 
 export function saveSlotName(slot: number): string {
@@ -357,6 +376,34 @@ export function cacheIdentityManifest(manifest: BrowserManifest): BrowserManifes
           ? { type: "bytes", value: new Uint8Array() }
           : { type: "utf8", value: "" },
     })),
+  };
+}
+
+export function scanBrowserProjectFile(
+  relativePath: string,
+  bytes: Uint8Array,
+  topLevel: ReadonlySet<string>,
+): ScannedFile | undefined {
+  const relative = safePath(relativePath);
+  if (relative.split("/", 1)[0]?.toLocaleLowerCase() === ".rustyera") return undefined;
+  const category = classify(relative, topLevel);
+  if (!category) return undefined;
+  if (category === "resource") {
+    return {
+      relative_path: relative,
+      category,
+      payload: { type: "bytes", value: bytes },
+      content_hash: blake3(bytes),
+    };
+  }
+  const decoded = decodeProjectSource(bytes, relative);
+  const text = category === "resource_manifest" ? normalizeResourceManifest(decoded) : decoded;
+  const normalized = new TextEncoder().encode(text);
+  return {
+    relative_path: relative,
+    category,
+    payload: { type: "utf8", value: text },
+    content_hash: blake3(normalized),
   };
 }
 
@@ -437,7 +484,7 @@ export function storageDirectoryName(namespace: string): string {
   return names[namespace] ?? "data";
 }
 
-function classify(path: string, roots: Set<string>): string | undefined {
+function classify(path: string, roots: ReadonlySet<string>): string | undefined {
   const parts = path.split("/");
   const first = parts[0].toLocaleLowerCase();
   const suffix = parts.at(-1)?.split(".").at(-1)?.toLocaleLowerCase() ?? "";

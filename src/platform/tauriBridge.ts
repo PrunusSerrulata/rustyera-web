@@ -13,6 +13,7 @@ import type {
   Preferences,
   ProjectProgress,
   ProjectOpenMetrics,
+  ProjectSubmittedListener,
   ProjectConfigurationEntry,
   PumpBatch,
   RuntimeMessage,
@@ -21,6 +22,7 @@ import type {
 } from "@/core/types";
 
 const IPC_INTEGER_TAG = "$rustyeraInteger";
+type HostProjectOpenMetrics = Omit<ProjectOpenMetrics, "submittedAtMs">;
 
 function decodeIpcValue<T>(value: unknown): T {
   if (Array.isArray(value)) return value.map((item) => decodeIpcValue(item)) as T;
@@ -101,33 +103,43 @@ export class TauriBridge implements FrontendBridge {
     return decodeIpcValue(await invoke("pump"));
   }
 
-  async openProject(): Promise<ProjectOpenMetrics | undefined> {
+  async openProject(
+    onSubmitted?: ProjectSubmittedListener,
+  ): Promise<ProjectOpenMetrics | undefined> {
     const testProject = import.meta.env.VITE_RUSTYERA_TEST_PROJECT;
     if (import.meta.env.VITE_RUSTYERA_TEST === "1" && testProject) {
-      const metrics = await invoke<ProjectOpenMetrics>("open_project", { path: testProject });
+      const submittedAtMs = performance.now();
+      onSubmitted?.(submittedAtMs);
+      const metrics = await invoke<HostProjectOpenMetrics>("open_project", { path: testProject });
       this.projectPath = testProject;
       this.projectIsFile = false;
-      return metrics;
+      return { ...metrics, submittedAtMs };
     }
     const path = await open({ directory: true, multiple: false, title: "打开 Era 项目" });
     if (typeof path !== "string") return undefined;
+    const submittedAtMs = performance.now();
+    onSubmitted?.(submittedAtMs);
     this.projectProgressListener?.({ stage: "scanning", completed: 0, total: 0 });
     if (this.progressUnlisten) await this.progressUnlisten;
-    const metrics = await invoke<ProjectOpenMetrics>("open_project", { path });
+    const metrics = await invoke<HostProjectOpenMetrics>("open_project", { path });
     this.projectPath = path;
     this.projectIsFile = false;
-    return metrics;
+    return { ...metrics, submittedAtMs };
   }
 
-  async openProjectFile(): Promise<ProjectOpenMetrics | undefined> {
+  async openProjectFile(
+    onSubmitted?: ProjectSubmittedListener,
+  ): Promise<ProjectOpenMetrics | undefined> {
     const testProjectFile = import.meta.env.VITE_RUSTYERA_TEST_PROJECT_FILE;
     if (import.meta.env.VITE_RUSTYERA_TEST === "1" && testProjectFile) {
-      const metrics = await invoke<ProjectOpenMetrics>("open_project_file", {
+      const submittedAtMs = performance.now();
+      onSubmitted?.(submittedAtMs);
+      const metrics = await invoke<HostProjectOpenMetrics>("open_project_file", {
         path: testProjectFile,
       });
       this.projectPath = testProjectFile;
       this.projectIsFile = true;
-      return metrics;
+      return { ...metrics, submittedAtMs };
     }
     const path = await open({
       directory: false,
@@ -136,18 +148,26 @@ export class TauriBridge implements FrontendBridge {
       filters: [{ name: "RustyEra 项目", extensions: ["reraproj"] }],
     });
     if (typeof path !== "string") return undefined;
-    const metrics = await invoke<ProjectOpenMetrics>("open_project_file", { path });
+    const submittedAtMs = performance.now();
+    onSubmitted?.(submittedAtMs);
+    const metrics = await invoke<HostProjectOpenMetrics>("open_project_file", { path });
     this.projectPath = path;
     this.projectIsFile = true;
-    return metrics;
+    return { ...metrics, submittedAtMs };
   }
 
-  async restartProject(): Promise<ProjectOpenMetrics> {
+  async restartProject(onSubmitted?: ProjectSubmittedListener): Promise<ProjectOpenMetrics> {
     if (!this.projectPath) return Promise.reject(new Error("没有打开的项目"));
+    const submittedAtMs = performance.now();
+    onSubmitted?.(submittedAtMs);
     if (this.progressUnlisten) await this.progressUnlisten;
-    return invoke(this.projectIsFile ? "open_project_file" : "open_project", {
-      path: this.projectPath,
-    });
+    const metrics = await invoke<HostProjectOpenMetrics>(
+      this.projectIsFile ? "open_project_file" : "open_project",
+      {
+        path: this.projectPath,
+      },
+    );
+    return { ...metrics, submittedAtMs };
   }
 
   async reloadProject(): Promise<void> {
@@ -224,7 +244,7 @@ export class TauriBridge implements FrontendBridge {
     };
     const window = getCurrentWindow();
     const maximized = boolean("WindowMaximixed", false);
-    if (!maximized) await window.unmaximize();
+    if (!maximized && (await window.isMaximized())) await window.unmaximize();
     const width = integer("WindowX");
     const height = integer("WindowY");
     if (width != null && height != null && width > 0 && height > 0)

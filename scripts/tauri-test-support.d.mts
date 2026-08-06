@@ -13,6 +13,8 @@ export interface CompleteSnapshotMonitorOptions {
   snapshotContext?: () => unknown;
 }
 
+export function snapshotProgressSignature(snapshot: unknown): string;
+
 export function startCompleteSnapshotMonitor(
   browser: { execute(script: () => unknown): Promise<unknown> },
   options?: CompleteSnapshotMonitorOptions,

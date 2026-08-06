@@ -52,7 +52,9 @@ import {
   type Preferences,
   type ProjectConfigurationChange,
   type ProjectConfigurationSnapshot,
+  type ProjectOpenMetrics,
   type ProjectProgress,
+  type ProjectProgressStage,
   type PumpBatch,
   type RuntimeMessage,
   type SessionOptions,
@@ -123,6 +125,42 @@ export interface RuntimeTestConfiguration {
   monotonicStartNs?: number;
 }
 
+export interface StartupTelemetry {
+  attemptId: number;
+  client: "browser" | "tauri";
+  scenario: "cold" | "warm" | "project_file";
+  submittedAtMs: number;
+  bridge: {
+    quickScanMs: number | null;
+    cacheReadMs: number | null;
+    sourceReadMs: number | null;
+    submitMs: number | null;
+  };
+  durations: {
+    enumerateMs: number | null;
+    statAndIndexReadMs: number | null;
+    indexWriteMs: number | null;
+    sourceReadDecodeHashMs: number | null;
+    cacheReadMs: number | null;
+    submissionTransferMs: number | null;
+    cacheDecodeMs: number | null;
+    parseMs: number | null;
+    analyzeMs: number | null;
+    compileMs: number | null;
+    validateMs: number | null;
+  };
+  observedStages: Partial<Record<ProjectProgressStage, number>>;
+  milestones: {
+    runtimeValidationReportedMs: number | null;
+    frontendReadyToStartMs: number | null;
+    startSubmittedMs: number | null;
+    firstGamePhaseMs: number | null;
+  };
+  cacheHit: boolean | null;
+  outcome: "loading" | "success" | "failure";
+  error: string | null;
+}
+
 const DEBUG_VARIABLE_PAGE_LIMIT = 256;
 const DEBUG_VARIABLE_MAX_PAGES = 16;
 const TIME_ADVANCE_INTERVAL_NS = 16_000_000;
@@ -153,8 +191,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const projectSelecting = ref(false);
   const projectProgress = ref<ProjectProgress>();
   const projectLoadElapsedSeconds = ref(0);
+  const startupTelemetry = ref<StartupTelemetry>();
   const openProjectConfirmationOpen = ref(false);
   let pendingProjectSelection: "directory" | "file" = "directory";
+  let activeProjectSelection: "directory" | "file" = "directory";
   const prompt = ref("");
   const inputUndo = ref<any>(null);
   const fault = ref<any>(null);
@@ -205,7 +245,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let testMonotonicOrigin: { frontendMs: number; runtimeNs: number } | undefined;
   let lastTimeAdvanceNs: number | undefined;
   let nextEnvironmentRevision = 1;
-  let projectRuntimeStartedAt: number | undefined;
+  let startupAttemptSequence = 0;
+  let startupProgressStage: ProjectProgressStage | undefined;
+  let startupProgressStageStartedAtMs: number | undefined;
+  let startupStartMessageId: string | undefined;
   let projectLoadStartedAt: number | undefined;
   let projectLoadElapsedTimer: number | undefined;
   let projectUsedCompiledCache = false;
@@ -231,6 +274,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     handleBatch,
     advanceTimedWait,
     handleError(error) {
+      failStartupTelemetry(error);
       finishProjectLoad();
       fault.value = { code: "frontend", message: String(error) };
       log("error", String(error));
@@ -454,13 +498,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
     try {
       if (replaceCurrent) await recreateSessionForProjectSelection();
       else {
-        await audio.unlock();
+        unlockAudioFromUserGesture();
         await ensureSession();
       }
       status.value = "正在读取项目…";
+      startupTelemetry.value = undefined;
+      const onSubmitted = (submittedAtMs: number) =>
+        beginStartupTelemetry(submittedAtMs, selection);
       const metrics = await (selection === "file"
-        ? bridge.openProjectFile()
-        : bridge.openProject());
+        ? bridge.openProjectFile(onSubmitted)
+        : bridge.openProject(onSubmitted));
       if (!metrics) {
         if (replaceCurrent) projectOpen.value = false;
         finishProjectLoad();
@@ -468,8 +515,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
         return;
       }
       projectOpen.value = true;
+      activeProjectSelection = selection;
       projectUsedCompiledCache = metrics.cacheImported;
-      projectRuntimeStartedAt = performance.now();
+      if (!startupTelemetry.value) beginStartupTelemetry(metrics.submittedAtMs, selection);
+      applyStartupBridgeMetrics(metrics);
       log(
         "info",
         `项目读取：快速扫描 ${metrics.quickScanMs.toFixed(0)} ms，缓存读取 ${metrics.cacheReadMs.toFixed(0)} ms，源码读取 ${metrics.sourceReadMs.toFixed(0)} ms，提交 ${metrics.submitMs.toFixed(0)} ms${metrics.cacheImported ? "（已导入项目文件）" : "（冷编译）"}`,
@@ -477,6 +526,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       continueProjectBuildProgress(metrics.cacheImported);
       schedulePump(0);
     } catch (error) {
+      failStartupTelemetry(error);
       if (replaceCurrent) projectOpen.value = false;
       finishProjectLoad();
       status.value = String(error);
@@ -496,7 +546,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     resetMessageSkip();
     resetSessionState();
     status.value = "正在创建新的 Runtime session…";
-    await audio.unlock();
+    unlockAudioFromUserGesture();
     await audio
       .synchronize([])
       .catch((error) => log("warning", `更换项目时停止音频失败：${String(error)}`));
@@ -506,6 +556,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const batch = await bridge.createSession(sessionOptions());
     runtimePump.setReady(true);
     await handleBatch(batch);
+  }
+
+  function unlockAudioFromUserGesture(): void {
+    // Safari may keep AudioContext.resume() pending until it recognizes a trusted activation.
+    // Start the request inside the user gesture, but do not make project I/O depend on audio.
+    void audio.unlock().catch((error) => log("warning", `音频解锁失败：${String(error)}`));
   }
 
   function clearSessionTimers(): void {
@@ -576,17 +632,24 @@ export const useRuntimeStore = defineStore("runtime", () => {
           log("error", "Runtime 返回的设置宿主类别与当前客户端不一致，项目设置已停用");
         status.value = "Runtime 已就绪";
         break;
-      case "project_load_report":
-        if (projectRuntimeStartedAt != null) {
-          log(
-            "info",
-            `Runtime 加载阶段 ${(performance.now() - projectRuntimeStartedAt).toFixed(0)} ms`,
-          );
-          projectRuntimeStartedAt = undefined;
-        }
-        for (const diagnostic of value.diagnostics ?? []) {
-          log(diagnostic.level ?? "info", formatDiagnostic(diagnostic), true);
-        }
+      case "project_load_report": {
+        finishStartupProgressStage();
+        if (startupTelemetry.value)
+          startupTelemetry.value.milestones.runtimeValidationReportedMs = startupElapsedMs();
+        const diagnostics = value.diagnostics ?? [];
+        if (
+          startupTelemetry.value &&
+          diagnostics.some((diagnostic: any) => diagnostic.code === "runtime.compiled_cache_hit")
+        )
+          startupTelemetry.value.cacheHit = true;
+        appendLogEntries(
+          diagnostics.map((diagnostic: any) => ({
+            timestamp: new Date(),
+            level: diagnostic.level ?? "info",
+            message: formatDiagnostic(diagnostic),
+            authoritative: true,
+          })),
+        );
         updateProjectConfiguration(value.configuration);
         if (value.success) {
           if (projectConfiguration.value) {
@@ -600,6 +663,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
             }
           }
           await settleProjectViewport();
+          completeStartupFrontendReadiness();
           status.value = "项目编译完成";
           finishProjectLoad();
           if (pendingStart.type === "new_game") {
@@ -621,18 +685,33 @@ export const useRuntimeStore = defineStore("runtime", () => {
         } else if (value.payload_required) {
           showProjectLoadTransition("项目文件缓存未命中，正在读取项目源码…");
           projectUsedCompiledCache = false;
-          projectRuntimeStartedAt = performance.now();
+          if (startupTelemetry.value) {
+            startupTelemetry.value.scenario = "cold";
+            startupTelemetry.value.cacheHit = false;
+          }
           await bridge.submitProjectSource();
           continueProjectBuildProgress();
           schedulePump(0);
         } else {
+          failStartupTelemetry("项目加载失败");
           finishProjectLoad();
           status.value = "项目加载失败，请查看日志";
         }
         break;
+      }
       case "state_changed":
         phase.value = value.phase;
+        if (
+          startupTelemetry.value?.milestones.startSubmittedMs != null &&
+          startupTelemetry.value.milestones.firstGamePhaseMs == null &&
+          ["running", "waiting_input", "waiting_external"].includes(value.phase)
+        ) {
+          startupTelemetry.value.milestones.firstGamePhaseMs = startupElapsedMs();
+          startupTelemetry.value.outcome = "success";
+        }
         runtimeEpoch.value = value.epoch ?? runtimeEpoch.value;
+        if (value.phase === "faulted" || value.phase === "stopped")
+          failStartupTelemetry(`Runtime entered ${value.phase} during startup`);
         if (value.phase !== "debug_paused") debugStop.value = null;
         break;
       case "presentation_snapshot":
@@ -768,6 +847,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         importKind = undefined;
         break;
       case "fault":
+        failStartupTelemetry(value.message ?? "Runtime fault");
         fault.value = value;
         log("error", value.message ?? "Runtime fault", true);
         break;
@@ -791,6 +871,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
           log(value.level ?? "info", value.message, true);
         break;
       case "command_rejected":
+        if (String(correlationId) === startupStartMessageId)
+          failStartupTelemetry(value.message ?? "Runtime rejected startup");
         log("warning", value.message ?? "Runtime 拒绝了命令", true);
         rejectPendingConfiguration(correlationId, value.message ?? "Runtime 拒绝了命令");
         if (
@@ -1194,6 +1276,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
       diagnosisExporting.value
     )
       return;
+    startupTelemetry.value = undefined;
+    beginStartupTelemetry(performance.now(), activeProjectSelection);
     beginProjectLoad("正在创建新的 Runtime session…");
     runtimePump.setTransitioning(true);
     clearSessionTimers();
@@ -1207,15 +1291,18 @@ export const useRuntimeStore = defineStore("runtime", () => {
       const batch = await bridge.createSession(sessionOptions());
       runtimePump.setReady(true);
       await handleBatch(batch);
-      projectRuntimeStartedAt = performance.now();
       const metrics = await bridge.restartProject();
       projectUsedCompiledCache = metrics.cacheImported;
+      if (!startupTelemetry.value)
+        beginStartupTelemetry(metrics.submittedAtMs, activeProjectSelection);
+      applyStartupBridgeMetrics(metrics);
       log(
         "info",
         `项目重新读取：快速扫描 ${metrics.quickScanMs.toFixed(0)} ms，缓存读取 ${metrics.cacheReadMs.toFixed(0)} ms，源码读取 ${metrics.sourceReadMs.toFixed(0)} ms，提交 ${metrics.submitMs.toFixed(0)} ms${metrics.cacheImported ? "（已导入项目文件）" : "（冷编译）"}`,
       );
       continueProjectBuildProgress(metrics.cacheImported);
     } catch (error) {
+      failStartupTelemetry(error);
       finishProjectLoad();
       const message = `重新开始失败：${String(error)}`;
       status.value = message;
@@ -2325,8 +2412,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function settleProjectViewport(): Promise<void> {
     await nextTick();
-    for (let frame = 0; frame < 3; frame += 1)
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        resolve();
+      };
+      const timeout = window.setTimeout(finish, 100);
+      requestAnimationFrame(finish);
+    });
     await projectViewport();
   }
 
@@ -2356,7 +2452,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function send(message: RuntimeMessage, correlationId?: number): Promise<number | bigint> {
+    const telemetry = startupTelemetry.value;
+    const startupStart =
+      message.type === "start" &&
+      telemetry?.outcome === "loading" &&
+      telemetry.milestones.startSubmittedMs == null;
+    if (startupStart) telemetry.milestones.startSubmittedMs = startupElapsedMs();
     const messageId = await bridge.submitRuntime(transportValue(message), correlationId);
+    if (startupStart) startupStartMessageId = String(messageId);
     schedulePump(0);
     return messageId;
   }
@@ -2374,8 +2477,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function log(level: LogEntry["level"], message: string, authoritative = false): void {
-    logs.push({ timestamp: new Date(), level, message, authoritative });
-    if (logs.length > 10_000) logs.splice(0, logs.length - 10_000);
+    appendLogEntries([{ timestamp: new Date(), level, message, authoritative }]);
+  }
+
+  function appendLogEntries(entries: LogEntry[]): void {
+    const maximumEntries = 10_000;
+    const retained =
+      entries.length > maximumEntries ? entries.slice(entries.length - maximumEntries) : entries;
+    const overflow = Math.max(0, logs.length + retained.length - maximumEntries);
+    if (overflow > 0) logs.splice(0, overflow);
+    if (retained.length > 0) logs.push(...retained);
   }
 
   function beginProjectLoad(message: string): void {
@@ -2437,7 +2548,100 @@ export const useRuntimeStore = defineStore("runtime", () => {
     projectLoading.value = true;
     startProjectLoadElapsedTimer();
     projectProgress.value = progress;
+    recordStartupProgress(progress.stage);
     status.value = formatProjectProgress(progress);
+  }
+
+  function beginStartupTelemetry(submittedAtMs: number, selection: "directory" | "file"): void {
+    startupProgressStage = undefined;
+    startupProgressStageStartedAtMs = undefined;
+    startupStartMessageId = undefined;
+    startupTelemetry.value = {
+      attemptId: ++startupAttemptSequence,
+      client: bridge.kind,
+      scenario: selection === "file" ? "project_file" : "cold",
+      submittedAtMs,
+      bridge: {
+        quickScanMs: null,
+        cacheReadMs: null,
+        sourceReadMs: null,
+        submitMs: null,
+      },
+      durations: {
+        enumerateMs: null,
+        statAndIndexReadMs: null,
+        indexWriteMs: null,
+        sourceReadDecodeHashMs: null,
+        cacheReadMs: null,
+        submissionTransferMs: null,
+        cacheDecodeMs: null,
+        parseMs: null,
+        analyzeMs: null,
+        compileMs: null,
+        validateMs: null,
+      },
+      observedStages: {},
+      milestones: {
+        runtimeValidationReportedMs: null,
+        frontendReadyToStartMs: null,
+        startSubmittedMs: null,
+        firstGamePhaseMs: null,
+      },
+      cacheHit: null,
+      outcome: "loading",
+      error: null,
+    };
+  }
+
+  function applyStartupBridgeMetrics(metrics: ProjectOpenMetrics): void {
+    const telemetry = startupTelemetry.value;
+    if (!telemetry) return;
+    telemetry.bridge = {
+      quickScanMs: metrics.quickScanMs,
+      cacheReadMs: metrics.cacheReadMs,
+      sourceReadMs: metrics.sourceReadMs,
+      submitMs: metrics.submitMs,
+    };
+  }
+
+  function startupElapsedMs(): number {
+    return performance.now() - (startupTelemetry.value?.submittedAtMs ?? performance.now());
+  }
+
+  function completeStartupFrontendReadiness(): void {
+    const telemetry = startupTelemetry.value;
+    if (!telemetry) return;
+    telemetry.cacheHit ??= false;
+    if (telemetry.scenario !== "project_file")
+      telemetry.scenario = telemetry.cacheHit ? "warm" : "cold";
+    telemetry.milestones.frontendReadyToStartMs = startupElapsedMs();
+  }
+
+  function failStartupTelemetry(error: unknown): void {
+    if (!startupTelemetry.value || startupTelemetry.value.outcome !== "loading") return;
+    finishStartupProgressStage();
+    startupTelemetry.value.outcome = "failure";
+    startupTelemetry.value.error = String(error);
+  }
+
+  function recordStartupProgress(stage: ProjectProgressStage): void {
+    const telemetry = startupTelemetry.value;
+    if (!telemetry) return;
+    if (startupProgressStage === stage) return;
+    finishStartupProgressStage();
+    startupProgressStage = stage;
+    startupProgressStageStartedAtMs = startupElapsedMs();
+  }
+
+  function finishStartupProgressStage(): void {
+    const telemetry = startupTelemetry.value;
+    if (!telemetry || !startupProgressStage || startupProgressStageStartedAtMs == null) return;
+    telemetry.observedStages[startupProgressStage] =
+      (telemetry.observedStages[startupProgressStage] ?? 0) +
+      startupElapsedMs() -
+      startupProgressStageStartedAtMs;
+    startupProgressStage = undefined;
+    startupProgressStageStartedAtMs = undefined;
   }
 
   function startProjectLoadElapsedTimer(): void {
@@ -2507,6 +2711,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     status,
     projectOpen,
     projectLoading,
+    startupTelemetry,
     projectLoadProgressLabel,
     projectLoadProgressValue,
     openProjectConfirmationOpen,

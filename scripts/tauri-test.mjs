@@ -18,6 +18,7 @@ const projectIndex = arguments_.indexOf("--project");
 const specIndex = arguments_.indexOf("--spec");
 const stateIndex = arguments_.indexOf("--state");
 const stateTypeIndex = arguments_.indexOf("--state-type");
+const release = arguments_.includes("--release");
 const configuredProject =
   projectIndex >= 0 ? arguments_[projectIndex + 1] : process.env.ERATW_PROJECT;
 let project = path.resolve(repository, configuredProject ?? "../games/eraTW");
@@ -109,7 +110,7 @@ await run(
     "tauri",
     "--",
     "build",
-    "--debug",
+    ...(release ? [] : ["--debug"]),
     "--no-bundle",
     "--features",
     "webdriver",
@@ -121,7 +122,7 @@ await run(
   () => deadlineDiagnostic(),
 );
 Object.assign(process.env, environment);
-const binary = path.resolve(repository, "../target/debug/era-web-tauri");
+const binary = path.resolve(repository, `../target/${release ? "release" : "debug"}/era-web-tauri`);
 const capabilities = createTauriCapabilities(binary, {
   driverProvider: "embedded",
   logLevel: "info",

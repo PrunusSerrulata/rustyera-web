@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { blake3 } from "@noble/hashes/blake3.js";
 
 import {
   BrowserProject,
@@ -9,6 +10,7 @@ import {
   runBounded,
   saveSlotName,
 } from "../src/platform/browserProject";
+import { loadBrowserProjectFile } from "../src/platform/browserProjectFile";
 
 class SaveFileHandle {
   readonly kind = "file";
@@ -117,7 +119,7 @@ describe("browser project reads", () => {
     const handle = await root.getFileHandle("emuera.config", { create: true });
     await (await handle.createWritable()).write(new TextEncoder().encode("フォントサイズ:12\n"));
     const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
-    await project.scan();
+    project.useImportedManifest({ project_revision: 1, files: [] });
     const { blake3 } = await import("@noble/hashes/blake3.js");
     const digest = blake3(new TextEncoder().encode("フォントサイズ:12\n"));
 
@@ -140,6 +142,57 @@ describe("browser project reads", () => {
     );
   });
 
+  it("reuses the selected packaged file without copying it into browser storage", async () => {
+    const project = new BrowserProject(new SaveDirectoryHandle("storage") as any, 1, "game");
+    const bytes = Uint8Array.of(1, 2, 3, 4);
+    const file = new File([], "game.reraproj");
+    Object.defineProperty(file, "arrayBuffer", { value: async () => bytes.buffer.slice(0) });
+
+    project.usePackagedFile(file);
+
+    const progress = vi.fn();
+    await expect(project.readCompiledCache(progress)).resolves.toEqual(bytes);
+    expect(progress.mock.calls.at(-1)).toEqual([bytes.byteLength, bytes.byteLength]);
+  });
+
+  it("loads a packaged cache before returning its compact frontend manifest", () => {
+    const sourcePayload = { type: "utf8" as const, value: "" };
+    const resourcePayload = { type: "bytes" as const, value: Uint8Array.of(4, 5, 6) };
+    const manifest = {
+      project_revision: 2,
+      files: [
+        {
+          relative_path: "main.erb",
+          category: "erb",
+          payload: sourcePayload,
+          content_hash: new Uint8Array(32),
+        },
+        {
+          relative_path: "resources/a.png",
+          category: "resource",
+          payload: resourcePayload,
+          content_hash: new Uint8Array(32),
+        },
+      ],
+    };
+    const loadProjectWithCompiledCache = vi.fn(() => {
+      expect(manifest.files[0].payload).toBe(sourcePayload);
+    });
+    const bytes = Uint8Array.of(1, 2, 3);
+
+    const loaded = loadBrowserProjectFile(
+      { projectFileManifest: () => manifest, loadProjectWithCompiledCache },
+      bytes,
+    );
+
+    expect(loadProjectWithCompiledCache).toHaveBeenCalledWith(manifest, bytes);
+    expect(loaded.manifest.files[0].payload).toBe(sourcePayload);
+    expect(loaded.manifest.files[1].payload).toBe(resourcePayload);
+    expect(loaded.storageKey).toBe(
+      [...blake3(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+    );
+  });
+
   it("serves resources embedded in a packaged project", async () => {
     const project = new BrowserProject(new SaveDirectoryHandle("storage") as any, 1, "game");
     project.useEmbeddedManifest({
@@ -158,6 +211,17 @@ describe("browser project reads", () => {
     await expect(project.readResourcePrefix("resources/a.png", 2)).resolves.toEqual(
       Uint8Array.of(1, 2),
     );
+  });
+
+  it("resolves imported resources lazily without rescanning their payloads", async () => {
+    const root = new SaveDirectoryHandle("storage");
+    const resources = await root.getDirectoryHandle("resources", { create: true });
+    const handle = await resources.getFileHandle("a.png", { create: true });
+    await (await handle.createWritable()).write(Uint8Array.of(4, 5, 6));
+    const project = new BrowserProject(root as any, 1, "game");
+    project.useImportedManifest({ project_revision: 1, files: [] });
+
+    await expect(project.readResource("resources/a.png")).resolves.toEqual(Uint8Array.of(4, 5, 6));
   });
 
   it("limits concurrency and reports failures in file order", async () => {

@@ -8,13 +8,17 @@ export interface DiagnosisLogEntry {
 
 const PROJECT_PROGRESS_LABELS: Record<ProjectProgress["stage"], string> = {
   importing: "正在复制项目文件",
+  loading_cache: "正在读取项目缓存",
+  submitting: "正在准备项目数据",
   scanning: "正在读取项目文件",
   normalizing: "正在整理项目文件",
   loading_data: "正在加载项目数据",
-  parsing: "正在解析脚本文件",
-  analyzing: "正在分析脚本函数",
+  parsing: "正在解析脚本",
+  analyzing: "正在分析脚本",
   compiling: "正在编译脚本函数",
   validating: "正在验证编译结果",
+  finalizing: "正在整理编译结果",
+  preparing: "正在准备 Runtime 资源",
 };
 
 export function formatProjectProgress(progress: ProjectProgress): string {

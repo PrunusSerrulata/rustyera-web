@@ -1,9 +1,12 @@
 import { blake3 } from "@noble/hashes/blake3.js";
+import { runBounded, scanBrowserProjectFile } from "@/platform/browserProject";
+import type { BrowserManifest, ScannedFile } from "@/platform/browserProject";
 
 export interface PickedBrowserDirectory {
   handle: FileSystemDirectoryHandle;
   persistHandle: boolean;
   projectName?: string;
+  manifest?: BrowserManifest;
 }
 
 export type BrowserDirectoryProgress = (
@@ -11,16 +14,19 @@ export type BrowserDirectoryProgress = (
   completed: number,
   total: number,
 ) => void;
+export type BrowserDirectorySubmitted = () => void;
 
 const IMPORT_ROOT = ".rustyera-imports";
 const SOURCE_MANIFEST = "imported-sources.json";
 
 export async function pickBrowserDirectory(
   progress?: BrowserDirectoryProgress,
+  submitted?: BrowserDirectorySubmitted,
 ): Promise<PickedBrowserDirectory | undefined> {
   if (window.showDirectoryPicker) {
     try {
       const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+      submitted?.();
       progress?.("scanning", 0, 0);
       return {
         handle,
@@ -37,6 +43,7 @@ export async function pickBrowserDirectory(
 
   const files = await pickDirectoryFiles();
   if (!files) return undefined;
+  submitted?.();
   progress?.("importing", 0, 0);
   const storageRoot = await navigator.storage.getDirectory();
   return importBrowserDirectory(files, storageRoot, progress);
@@ -64,23 +71,50 @@ export async function importBrowserDirectory(
     .filter(({ path }) => !isRuntimeStoragePath(path))
     .map(({ path }) => path);
   const nextSourceSet = new Set(nextSources);
+  const topLevel = new Set(
+    files
+      .map(({ path }) => path.split("/", 1)[0]?.toLocaleLowerCase())
+      .filter((name): name is string => Boolean(name)),
+  );
+  for await (const [name, handle] of project.entries()) {
+    if (handle.kind === "directory") topLevel.add(name.toLocaleLowerCase());
+  }
+  const scannedFiles = new Map<string, ScannedFile>();
   progress?.("importing", 0, files.length);
 
   for (const path of previousSources) {
     if (!nextSourceSet.has(path)) await removeFile(project, path);
   }
-  for (const [index, { path, file }] of files.entries()) {
-    if (!(isRuntimeStoragePath(path) && (await fileExists(project, path))))
-      await writeFile(project, path, new Uint8Array(await file.arrayBuffer()));
-    if (index + 1 < files.length) progress?.("importing", index + 1, files.length);
-  }
+  await runBounded(
+    files.map(({ path, file }) => async () => {
+      const preserveRuntimeFile = isRuntimeStoragePath(path) && (await fileExists(project, path));
+      const bytes = preserveRuntimeFile
+        ? await readFile(project, path)
+        : new Uint8Array(await file.arrayBuffer());
+      if (!preserveRuntimeFile) await writeFile(project, path, bytes);
+      const scanned = scanBrowserProjectFile(path, bytes, topLevel);
+      if (scanned) scannedFiles.set(scanned.relative_path, scanned);
+    }),
+    8,
+    (completed, total) => progress?.("importing", completed, total),
+  );
   await writeFile(
     privateDirectory,
     SOURCE_MANIFEST,
     new TextEncoder().encode(JSON.stringify(nextSources)),
   );
-  progress?.("importing", files.length, files.length);
-  return { handle: project, persistHandle: false, projectName };
+  const manifest = {
+    project_revision: 1,
+    files: [...scannedFiles.values()].sort((left, right) =>
+      left.relative_path.localeCompare(right.relative_path, undefined, { sensitivity: "base" }),
+    ),
+  };
+  return {
+    handle: project,
+    persistHandle: false,
+    projectName,
+    manifest,
+  };
 }
 
 export async function removeImportedProjectSources(
@@ -108,6 +142,10 @@ export function selectedProjectFiles(selectedFiles: Iterable<File>): {
     if (!path) throw new Error("项目文件路径不能为空。");
     return { path, file };
   });
+  const uniquePaths = new Set(normalized.map(({ path }) => path));
+  if (uniquePaths.size !== normalized.length) {
+    throw new Error("所选目录包含重复的项目文件路径。");
+  }
   return { projectName: root, files: normalized };
 }
 
@@ -191,6 +229,17 @@ async function removeFile(root: FileSystemDirectoryHandle, relativePath: string)
   } catch (error) {
     if (!(error instanceof DOMException) || error.name !== "NotFoundError") throw error;
   }
+}
+
+async function readFile(
+  root: FileSystemDirectoryHandle,
+  relativePath: string,
+): Promise<Uint8Array> {
+  const parts = safeRelativePath(relativePath).split("/");
+  let directory = root;
+  for (const part of parts.slice(0, -1)) directory = await directory.getDirectoryHandle(part);
+  const file = await (await directory.getFileHandle(parts.at(-1)!)).getFile();
+  return new Uint8Array(await file.arrayBuffer());
 }
 
 async function fileExists(root: FileSystemDirectoryHandle, relativePath: string): Promise<boolean> {

@@ -8,6 +8,7 @@ const currentWindow = vi.hoisted(() => ({
   setResizable: vi.fn(),
   setSize: vi.fn(),
   setPosition: vi.fn(),
+  isMaximized: vi.fn(),
   maximize: vi.fn(),
   unmaximize: vi.fn(),
 }));
@@ -26,6 +27,7 @@ describe("Tauri project restart", () => {
     currentWindow.setResizable.mockResolvedValue(undefined);
     currentWindow.setSize.mockResolvedValue(undefined);
     currentWindow.setPosition.mockResolvedValue(undefined);
+    currentWindow.isMaximized.mockResolvedValue(false);
     currentWindow.maximize.mockResolvedValue(undefined);
     currentWindow.unmaximize.mockResolvedValue(undefined);
   });
@@ -186,6 +188,7 @@ describe("Tauri project restart", () => {
       application: "hot" as const,
     });
 
+    currentWindow.isMaximized.mockResolvedValueOnce(true);
     await new TauriBridge().applyProjectConfiguration(
       [
         { ...entry("WindowMaximixed", "NO"), kind: "boolean" },
@@ -201,6 +204,35 @@ describe("Tauri project restart", () => {
     );
     expect(currentWindow.setPosition).not.toHaveBeenCalled();
     expect(currentWindow.maximize).not.toHaveBeenCalled();
+  });
+
+  it("does not send an unnecessary unmaximize command for an already normal window", async () => {
+    const entry = (code: string, value: string) => ({
+      code,
+      japanese: "",
+      english: code,
+      value,
+      kind: "integer" as const,
+      allowed: [],
+      fixed: false,
+      applicability: 8,
+      default_value: value,
+      effective_value: value,
+      application: "hot" as const,
+    });
+
+    await new TauriBridge().applyProjectConfiguration(
+      [
+        { ...entry("WindowMaximixed", "NO"), kind: "boolean" },
+        entry("WindowX", "900"),
+        entry("WindowY", "600"),
+      ],
+      { width: 0, height: 0 },
+    );
+
+    expect(currentWindow.isMaximized).toHaveBeenCalledOnce();
+    expect(currentWindow.unmaximize).not.toHaveBeenCalled();
+    expect(currentWindow.setSize).toHaveBeenCalledOnce();
   });
 
   it("does not disturb native window state for unrelated hot settings", async () => {

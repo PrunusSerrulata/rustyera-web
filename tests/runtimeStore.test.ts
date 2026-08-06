@@ -16,6 +16,18 @@ const emptyBatch = () => ({
   runtimeTransitions: 0,
   events: [],
 });
+
+function stubRunningAudioContext(): void {
+  vi.stubGlobal(
+    "AudioContext",
+    class {
+      state = "running";
+      destination = {};
+      resume = vi.fn(async () => {});
+      createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn() }));
+    },
+  );
+}
 const bridge = vi.hoisted(() => ({
   kind: "tauri" as "tauri" | "browser",
   createSession: vi.fn(),
@@ -69,8 +81,13 @@ describe("runtime store session lifecycle", () => {
     setActivePinia(createPinia());
     vi.useFakeTimers();
     vi.clearAllMocks();
+    bridge.openProject.mockReset();
+    bridge.openProjectFile.mockReset();
+    bridge.pump.mockReset();
+    bridge.submitRuntime.mockReset();
     bridge.kind = "tauri";
     bridge.createSession.mockResolvedValue(emptyBatch());
+    bridge.submitRuntime.mockResolvedValue(1);
     let nextDebugMessageId = 1;
     bridge.submitDebug.mockImplementation(async () => nextDebugMessageId++);
     bridge.pump.mockResolvedValue(emptyBatch());
@@ -91,6 +108,7 @@ describe("runtime store session lifecycle", () => {
     bridge.writeProjectConfiguration.mockResolvedValue(undefined);
     bridge.applyProjectConfiguration.mockResolvedValue(undefined);
     bridge.restartProject.mockResolvedValue({
+      submittedAtMs: 0,
       quickScanMs: 1,
       cacheReadMs: 2,
       sourceReadMs: 0,
@@ -217,6 +235,58 @@ describe("runtime store session lifecycle", () => {
     expect(commands[projectionIndex]).toMatchObject({
       value: { client_size: { width: 1100, height: 750 } },
     });
+  });
+
+  it("continues startup when the host suspends animation frames", async () => {
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn(() => 1),
+    );
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", {
+          success: true,
+          diagnostics: [],
+          configuration: null,
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    const startup = store.enableDebug();
+    await vi.advanceTimersByTimeAsync(100);
+    await startup;
+
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      { type: "start", value: { mode: { type: "new_game", seed: null } } },
+      undefined,
+    );
+  });
+
+  it("retains the newest project diagnostics without incrementally trimming the log", async () => {
+    const diagnostics = Array.from({ length: 10_050 }, (_, index) => ({
+      code: "runtime.duplicate_sprite",
+      level: "warning",
+      message: `duplicate ${index}`,
+    }));
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", {
+          success: false,
+          payload_required: false,
+          diagnostics,
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+
+    expect(store.logs).toHaveLength(10_000);
+    expect(store.logs[0].message).toContain("duplicate 50");
+    expect(store.logs.at(-1)?.message).toContain("duplicate 10049");
   });
 
   it("exposes applicable emuera.config entries and asks Runtime to validate changes", async () => {
@@ -867,6 +937,7 @@ describe("runtime store session lifecycle", () => {
   it("starts a test new game with the configured deterministic seed", async () => {
     vi.stubEnv("VITE_RUSTYERA_TEST", "1");
     bridge.openProject.mockResolvedValue({
+      submittedAtMs: 0,
       quickScanMs: 1,
       cacheReadMs: 0,
       sourceReadMs: 1,
@@ -943,6 +1014,7 @@ describe("runtime store session lifecycle", () => {
   it("imports a traditional save before starting the test runtime", async () => {
     vi.stubEnv("VITE_RUSTYERA_TEST", "1");
     bridge.openProject.mockResolvedValue({
+      submittedAtMs: 0,
       quickScanMs: 1,
       cacheReadMs: 0,
       sourceReadMs: 1,
@@ -1040,6 +1112,17 @@ describe("runtime store session lifecycle", () => {
     bridge.listFonts.mockResolvedValue({ kind: "ready", fonts: ["Late Browser Font"] });
     const store = useRuntimeStore();
     store.projectOpen = true;
+    bridge.restartProject.mockImplementationOnce(async () => {
+      expect(store.startupTelemetry).toMatchObject({ outcome: "loading", client: "browser" });
+      return {
+        submittedAtMs: performance.now(),
+        quickScanMs: 1,
+        cacheReadMs: 2,
+        sourceReadMs: 0,
+        submitMs: 3,
+        cacheImported: true,
+      };
+    });
 
     await store.restart();
 
@@ -1075,9 +1158,11 @@ describe("runtime store session lifecycle", () => {
         createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn() }));
       },
     );
-    bridge.openProject.mockImplementation(async () => {
+    bridge.openProject.mockImplementation(async (onSubmitted?: (submittedAtMs: number) => void) => {
+      onSubmitted?.(performance.now());
       bridge.projectProgressListener?.({ stage: "scanning", completed: 3, total: 4 });
       return {
+        submittedAtMs: 0,
         quickScanMs: 1,
         cacheReadMs: 2,
         sourceReadMs: 3,
@@ -1126,10 +1211,22 @@ describe("runtime store session lifecycle", () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect(store.projectLoadProgressLabel).toBe("正在验证编译结果：1/2（50%） · 已等待 5 秒");
 
-    bridge.pump.mockResolvedValueOnce({
-      ...emptyBatch(),
-      events: [runtimeEvent("project_load_report", { success: true, diagnostics: [] })],
-    });
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("project_load_report", {
+            success: true,
+            diagnostics: [
+              { code: "runtime.compiled_cache_hit", level: "info", message: "cache hit" },
+            ],
+          }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("state_changed", { phase: "waiting_external", epoch: 2 })],
+      });
     await vi.advanceTimersByTimeAsync(16);
 
     expect(store.projectLoading).toBe(false);
@@ -1139,6 +1236,150 @@ describe("runtime store session lifecycle", () => {
       { type: "start", value: { mode: { type: "new_game", seed: null } } },
       undefined,
     );
+    expect(store.startupTelemetry).toMatchObject({
+      scenario: "warm",
+      cacheHit: true,
+      outcome: "success",
+      bridge: { quickScanMs: 1, cacheReadMs: 2, sourceReadMs: 3, submitMs: 4 },
+    });
+    expect(store.startupTelemetry?.observedStages.scanning).toBeTypeOf("number");
+    expect(store.startupTelemetry?.milestones.runtimeValidationReportedMs).toBeTypeOf("number");
+    expect(store.startupTelemetry?.milestones.frontendReadyToStartMs).toBeTypeOf("number");
+    expect(store.startupTelemetry?.milestones.startSubmittedMs).toBeTypeOf("number");
+    expect(store.startupTelemetry?.milestones.firstGamePhaseMs).toBeTypeOf("number");
+  });
+
+  it("terminates startup telemetry when a bridge fails after submission", async () => {
+    stubRunningAudioContext();
+    bridge.openProject.mockImplementation(async (onSubmitted?: (submittedAtMs: number) => void) => {
+      onSubmitted?.(performance.now());
+      throw new Error("scan failed");
+    });
+    const store = useRuntimeStore();
+
+    await store.openProject();
+
+    expect(store.startupTelemetry).toMatchObject({
+      scenario: "cold",
+      outcome: "failure",
+      error: "Error: scan failed",
+    });
+  });
+
+  it("does not wait for browser audio unlock before opening a project", async () => {
+    const resume = vi.fn(() => new Promise<void>(() => {}));
+    vi.stubGlobal(
+      "AudioContext",
+      class {
+        state = "suspended";
+        destination = {};
+        resume = resume;
+        createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn() }));
+      },
+    );
+    bridge.openProject.mockResolvedValue({
+      submittedAtMs: performance.now(),
+      quickScanMs: 1,
+      cacheReadMs: 0,
+      sourceReadMs: 1,
+      submitMs: 1,
+      cacheImported: false,
+    });
+    const store = useRuntimeStore();
+
+    await store.openProject();
+
+    expect(resume).toHaveBeenCalledOnce();
+    expect(bridge.createSession).toHaveBeenCalledOnce();
+    expect(bridge.openProject).toHaveBeenCalledOnce();
+  });
+
+  it("does not create a startup attempt when project selection is cancelled", async () => {
+    stubRunningAudioContext();
+    bridge.openProject.mockResolvedValue(undefined);
+    const store = useRuntimeStore();
+
+    await store.openProject();
+
+    expect(store.startupTelemetry).toBeUndefined();
+  });
+
+  it("classifies a rejected cache followed by source submission as cold", async () => {
+    stubRunningAudioContext();
+    bridge.openProject.mockImplementation(async (onSubmitted?: (submittedAtMs: number) => void) => {
+      onSubmitted?.(performance.now());
+      return {
+        submittedAtMs: performance.now(),
+        quickScanMs: 1,
+        cacheReadMs: 2,
+        sourceReadMs: 0,
+        submitMs: 3,
+        cacheImported: true,
+      };
+    });
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("project_load_report", {
+            success: false,
+            payload_required: true,
+            diagnostics: [],
+          }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("project_load_report", { success: true, diagnostics: [] })],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 })],
+      });
+    const store = useRuntimeStore();
+
+    await store.openProject();
+    await vi.advanceTimersByTimeAsync(64);
+
+    expect(bridge.submitProjectSource).toHaveBeenCalledOnce();
+    expect(store.startupTelemetry).toMatchObject({
+      scenario: "cold",
+      cacheHit: false,
+      outcome: "success",
+    });
+  });
+
+  it("fails the active attempt when Runtime rejects its Start command", async () => {
+    stubRunningAudioContext();
+    bridge.openProject.mockImplementation(async (onSubmitted?: (submittedAtMs: number) => void) => {
+      onSubmitted?.(performance.now());
+      return {
+        submittedAtMs: performance.now(),
+        quickScanMs: 1,
+        cacheReadMs: 0,
+        sourceReadMs: 1,
+        submitMs: 1,
+        cacheImported: false,
+      };
+    });
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("project_load_report", { success: true, diagnostics: [] })],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("command_rejected", { message: "start rejected" }, 1)],
+      });
+    const store = useRuntimeStore();
+
+    await store.openProject();
+    await vi.advanceTimersByTimeAsync(32);
+
+    expect(store.startupTelemetry).toMatchObject({
+      outcome: "failure",
+      error: "start rejected",
+    });
   });
 
   it("keeps Firefox and Safari directory copying visible through the build handoff", async () => {
@@ -1153,6 +1394,7 @@ describe("runtime store session lifecycle", () => {
       },
     );
     let resolveOpenProject!: (metrics: {
+      submittedAtMs: number;
       quickScanMs: number;
       cacheReadMs: number;
       sourceReadMs: number;
@@ -1180,6 +1422,7 @@ describe("runtime store session lifecycle", () => {
     expect(store.projectLoadProgressLabel).toBe("正在读取项目文件：40/40（100%）");
 
     resolveOpenProject({
+      submittedAtMs: 0,
       quickScanMs: 1,
       cacheReadMs: 2,
       sourceReadMs: 3,

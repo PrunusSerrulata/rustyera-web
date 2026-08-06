@@ -1,3 +1,5 @@
+import { loadBrowserProjectFile } from "@/platform/browserProjectFile";
+
 type WasmModule = {
   default: () => Promise<void>;
   WasmRuntime: new (
@@ -7,6 +9,7 @@ type WasmModule = {
     submitRuntime(message: unknown, correlationId?: bigint): bigint;
     submitDebug(message: unknown, correlationId?: bigint): bigint;
     loadProject(manifest: unknown): bigint;
+    loadProjectBinary(manifest: Uint8Array): bigint;
     projectFileManifest(bytes: Uint8Array): unknown;
     loadProjectWithCompiledCache(manifest: unknown, cache: Uint8Array): bigint;
     traditionalSaveSlotCount(): number;
@@ -43,9 +46,17 @@ self.onmessage = async (event: MessageEvent) => {
         case "loadProject":
           result = runtime.loadProject(args[0]);
           break;
+        case "loadProjectBinary":
+          result = runtime.loadProjectBinary(args[0] as Uint8Array);
+          break;
         case "projectFileManifest":
           result = runtime.projectFileManifest(args[0] as Uint8Array);
           break;
+        case "loadProjectFile": {
+          const bytes = args[0] as Uint8Array;
+          result = loadBrowserProjectFile(runtime, bytes);
+          break;
+        }
         case "loadProjectWithCompiledCache":
           result = runtime.loadProjectWithCompiledCache(args[0], args[1] as Uint8Array);
           break;

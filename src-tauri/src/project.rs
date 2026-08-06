@@ -25,8 +25,11 @@ const COMPILED_CACHE_NAME: &str = "compiled-project.reraproj";
 #[derive(Clone)]
 struct IndexedFile {
     relative_path: String,
+    source_path: Option<PathBuf>,
     category: FileCategory,
     content_hash: [u8; 32],
+    pending_file: Option<SubmittedFile>,
+    source_signature: Option<[u64; 5]>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -35,7 +38,7 @@ struct SourceIndex {
     files: BTreeMap<String, SourceIndexEntry>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 struct SourceIndexEntry {
     category: u8,
     signature: [u64; 5],
@@ -125,11 +128,14 @@ impl ProjectHost {
             return Err("selected project path is not a directory".into());
         }
         let index_path = root.join(".rustyera/cache/source-index-v1.json");
-        let previous = fs::read(&index_path)
+        let stored_index = fs::read(&index_path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<SourceIndex>(&bytes).ok())
-            .filter(|index| index.version == SOURCE_INDEX_VERSION)
-            .map(|index| index.files)
+            .filter(|index| index.version == SOURCE_INDEX_VERSION);
+        let previous = stored_index
+            .as_ref()
+            .map(|index| &index.files)
+            .cloned()
             .unwrap_or_default();
         let canonical_roots = canonical_source_roots(&root)?;
         let mut indexed_files = Vec::new();
@@ -147,14 +153,24 @@ impl ProjectHost {
                 .get(&relative_path)
                 .filter(|prior| prior.signature == signature && prior.category == *category as u8)
                 .and_then(|prior| decode_hash(&prior.hash).ok().map(|hash| (hash, prior.size)));
-            let (content_hash, size) = if let Some((hash, size)) = prior {
-                (hash, size)
+            let (content_hash, size, pending_file) = if let Some((hash, size)) = prior {
+                (hash, size, None)
             } else {
-                let normalized = normalized_file_bytes(path, *category)?;
+                let file = read_file(&root, path, *category)?;
+                let content_hash = file
+                    .content_hash
+                    .as_ref()
+                    .and_then(|hash| hash.as_slice().try_into().ok())
+                    .ok_or_else(|| format!("{relative_path} has an invalid content hash"))?;
+                let size = match &file.payload {
+                    FilePayload::Utf8(text) => text.len(),
+                    FilePayload::Bytes(bytes) => bytes.as_slice().len(),
+                    FilePayload::IoError(_) => 0,
+                };
                 (
-                    *blake3::hash(&normalized).as_bytes(),
-                    u64::try_from(normalized.len())
-                        .map_err(|_| format!("{relative_path} is too large"))?,
+                    content_hash,
+                    u64::try_from(size).map_err(|_| format!("{relative_path} is too large"))?,
+                    Some(file),
                 )
             };
             next_index.insert(
@@ -168,8 +184,11 @@ impl ProjectHost {
             );
             indexed_files.push(IndexedFile {
                 relative_path,
+                source_path: Some(path.clone()),
                 category: *category,
                 content_hash,
+                pending_file,
+                source_signature: Some(signature),
             });
             report_scan_progress(progress, index + 1, entries.len());
         }
@@ -179,13 +198,15 @@ impl ProjectHost {
                 .cmp(&right.relative_path.to_lowercase())
                 .then_with(|| left.relative_path.cmp(&right.relative_path))
         });
-        write_source_index(
-            &index_path,
-            &SourceIndex {
-                version: SOURCE_INDEX_VERSION,
-                files: next_index,
-            },
-        )?;
+        if stored_index.is_none() || previous != next_index {
+            write_source_index(
+                &index_path,
+                &SourceIndex {
+                    version: SOURCE_INDEX_VERSION,
+                    files: next_index,
+                },
+            )?;
+        }
         Ok(Self {
             root,
             manifest: None,
@@ -303,12 +324,39 @@ impl ProjectHost {
         progress: Option<&dyn Fn(usize, usize)>,
     ) -> Result<&ProjectManifest, String> {
         if self.manifest.is_none() {
-            let materialized = Self::scan_with_progress(&self.root, self.revision, progress)?;
-            if materialized.identity() != self.identity() {
+            if let Some(progress) = progress {
+                progress(0, self.indexed_files.len());
+            }
+            let total = self.indexed_files.len();
+            let mut files = Vec::with_capacity(total);
+            for (index, indexed) in self.indexed_files.iter_mut().enumerate() {
+                let path = indexed
+                    .source_path
+                    .clone()
+                    .unwrap_or_else(|| self.root.join(&indexed.relative_path));
+                let signature_matches = indexed.source_signature.is_some_and(|expected| {
+                    fs::metadata(&path)
+                        .is_ok_and(|metadata| metadata_signature(&metadata) == expected)
+                });
+                let file = if signature_matches {
+                    indexed
+                        .pending_file
+                        .take()
+                        .map_or_else(|| read_file(&self.root, &path, indexed.category), Ok)?
+                } else {
+                    read_file(&self.root, &path, indexed.category)?
+                };
+                files.push(file);
+                report_scan_progress(progress, index + 1, total);
+            }
+            let manifest = ProjectManifest {
+                project_revision: self.revision,
+                files,
+            };
+            if era_web_bridge::project_identity(&manifest)? != self.identity() {
                 return Err("project changed while its source files were being loaded".into());
             }
-            self.manifest = materialized.manifest;
-            self.indexed_files = materialized.indexed_files;
+            self.manifest = Some(manifest);
         }
         self.manifest
             .as_ref()
@@ -472,8 +520,11 @@ fn indexed_file(file: &SubmittedFile) -> Result<IndexedFile, String> {
         .map_err(|_| format!("{} has an invalid content hash", file.relative_path))?;
     Ok(IndexedFile {
         relative_path: file.relative_path.clone(),
+        source_path: None,
         category: file.category,
         content_hash,
+        pending_file: None,
+        source_signature: None,
     })
 }
 
@@ -719,6 +770,12 @@ mod tests {
 
         let mut quick = ProjectHost::scan_quick(directory.path(), 7).unwrap();
         let quick_identity = quick.identity();
+        assert!(
+            quick
+                .indexed_files
+                .iter()
+                .all(|file| file.pending_file.is_some())
+        );
         let materialized = quick.materialize().unwrap();
 
         assert_eq!(
@@ -738,6 +795,34 @@ mod tests {
     }
 
     #[test]
+    fn quick_scan_reads_the_real_path_while_submitting_an_nfc_protocol_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let actual_name = "cafe\u{301}.erb";
+        let actual_path = directory.path().join(actual_name);
+        fs::write(&actual_path, "@SYSTEM_TITLE\nRETURN\n").unwrap();
+
+        let mut quick = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+        let indexed = quick
+            .indexed_files
+            .iter()
+            .find(|file| file.relative_path == "caf\u{e9}.erb")
+            .unwrap();
+        let canonical_actual = actual_path.canonicalize().unwrap();
+        assert_eq!(
+            indexed.source_path.as_deref(),
+            Some(canonical_actual.as_path())
+        );
+
+        let manifest = quick.materialize().unwrap();
+        assert!(
+            manifest
+                .files
+                .iter()
+                .any(|file| file.relative_path == "caf\u{e9}.erb")
+        );
+    }
+
+    #[test]
     fn native_scan_reports_discovery_and_completed_file_counts() {
         let directory = tempfile::tempdir().unwrap();
         fs::write(directory.path().join("main.erb"), "@SYSTEM_TITLE\nRETURN\n").unwrap();
@@ -750,6 +835,23 @@ mod tests {
         let observed = observed.into_inner();
         assert_eq!(observed[..2], [(0, 0), (0, 2)]);
         assert_eq!(observed.last(), Some(&(2, 2)));
+    }
+
+    #[test]
+    fn quick_scan_rechecks_a_new_source_before_reusing_its_payload() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("main.erb");
+        fs::write(&source, "@OLD\nRETURN\n").unwrap();
+        let mut quick = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+
+        fs::write(&source, "@NEW-CONTENT\nRETURN\n").unwrap();
+
+        assert!(
+            quick
+                .materialize()
+                .unwrap_err()
+                .contains("project changed while its source files were being loaded")
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ import type {
   Preferences,
   ProjectProgress,
   ProjectOpenMetrics,
+  ProjectSubmittedListener,
   PumpBatch,
   RuntimeMessage,
   SessionOptions,
@@ -11,9 +12,9 @@ import type {
   TraditionalSaveAccess,
 } from "@/core/types";
 import { decodeImageMetadata } from "@/core/imageMetadata";
-import { blake3 } from "@noble/hashes/blake3.js";
 import type { DiagnosisArchiveInput } from "@/core/diagnosis";
 import { pickBrowserDirectory, pickBrowserFile } from "@/platform/browserDirectory";
+import { encodeBrowserManifest } from "@/platform/browserManifestCodec";
 import { streamDiagnosisArchiveInWorker } from "@/platform/diagnosis";
 import {
   BrowserProject,
@@ -23,6 +24,8 @@ import {
 } from "@/platform/browserProject";
 import { database, loadBrowserPreferences, saveBrowserPreferences } from "@/platform/database";
 import { WorkerClient } from "@/platform/workerClient";
+
+const PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 
 export class BrowserBridge implements FrontendBridge {
   readonly kind = "browser" as const;
@@ -81,11 +84,22 @@ export class BrowserBridge implements FrontendBridge {
     return this.worker.call("pump");
   }
 
-  async openProject(): Promise<ProjectOpenMetrics | undefined> {
-    const picked = await pickBrowserDirectory((stage, completed, total) =>
-      this.projectProgressListener?.({ stage, completed, total }),
+  async openProject(
+    onSubmitted?: ProjectSubmittedListener,
+  ): Promise<ProjectOpenMetrics | undefined> {
+    let submittedAtMs = 0;
+    const picked = await pickBrowserDirectory(
+      (stage, completed, total) => this.projectProgressListener?.({ stage, completed, total }),
+      () => {
+        submittedAtMs = performance.now();
+        onSubmitted?.(submittedAtMs);
+      },
     );
     if (!picked) return undefined;
+    if (submittedAtMs === 0) {
+      submittedAtMs = performance.now();
+      onSubmitted?.(submittedAtMs);
+    }
     const handle = picked.handle;
     const permission = await handle.requestPermission?.({ mode: "readwrite" });
     if (permission && permission !== "granted")
@@ -96,63 +110,54 @@ export class BrowserBridge implements FrontendBridge {
       await database.handles.put({ key: "last-project", handle });
     this.project = new BrowserProject(handle, 1, picked.projectName);
     const started = performance.now();
-    const manifest = await this.project.scan((completed, total) =>
-      this.projectProgressListener?.({ stage: "scanning", completed, total }),
-    );
+    const manifest =
+      picked.manifest ??
+      (await this.project.scan((completed, total) =>
+        this.projectProgressListener?.({ stage: "scanning", completed, total }),
+      ));
+    if (picked.manifest) this.project.useImportedManifest(picked.manifest);
     const sourceReadMs = performance.now() - started;
-    const cacheStarted = performance.now();
-    const cache = await this.project.readCompiledCache();
-    const cacheReadMs = performance.now() - cacheStarted;
-    const submitStarted = performance.now();
-    let cacheImported = false;
-    if (cache) {
-      try {
-        await this.worker.callWithTransfer(
-          "loadProjectWithCompiledCache",
-          [cacheIdentityManifest(manifest), cache],
-          [cache.buffer],
-        );
-        cacheImported = true;
-      } catch {
-        await this.worker.call("loadProject", manifest);
-      }
-    } else {
-      await this.worker.call("loadProject", manifest);
-    }
+    const loaded = await this.loadSourceProject(manifest);
     return {
+      submittedAtMs,
       quickScanMs: 0,
-      cacheReadMs,
+      cacheReadMs: loaded.cacheReadMs,
       sourceReadMs,
-      submitMs: performance.now() - submitStarted,
-      cacheImported,
+      submitMs: loaded.submitMs,
+      cacheImported: loaded.cacheImported,
     } satisfies ProjectOpenMetrics;
   }
 
-  async openProjectFile(): Promise<ProjectOpenMetrics | undefined> {
+  async openProjectFile(
+    onSubmitted?: ProjectSubmittedListener,
+  ): Promise<ProjectOpenMetrics | undefined> {
     const file = await pickBrowserFile(".reraproj,application/octet-stream");
     if (!file) return undefined;
-    const bytes = new Uint8Array(await file.arrayBuffer());
+    const submittedAtMs = performance.now();
+    onSubmitted?.(submittedAtMs);
     const started = performance.now();
-    const manifest = await this.worker.call<BrowserManifest>("projectFileManifest", bytes);
+    const bytes = await readProjectFile(file, (completed, total) =>
+      this.projectProgressListener?.({ stage: "scanning", completed, total }),
+    );
+    const loaded = await this.worker.callWithTransfer<{
+      manifest: BrowserManifest;
+      storageKey: string;
+    }>("loadProjectFile", [bytes], [bytes.buffer]);
+    const manifest = loaded.manifest;
     const storageRoot = await navigator.storage.getDirectory();
     const projects = await storageRoot.getDirectoryHandle(".rustyera-project-files", {
       create: true,
     });
-    const key = [...blake3(bytes)].map((value) => value.toString(16).padStart(2, "0")).join("");
-    const root = await projects.getDirectoryHandle(key, { create: true });
+    const root = await projects.getDirectoryHandle(loaded.storageKey, { create: true });
     this.project = new BrowserProject(
       root,
       manifest.project_revision,
       file.name.replace(/\.reraproj$/i, ""),
     );
-    await this.project.writeCompiledProjectFile(bytes);
+    this.project.usePackagedFile(file);
     this.project.useEmbeddedManifest(manifest);
-    await this.worker.callWithTransfer(
-      "loadProjectWithCompiledCache",
-      [manifest, bytes],
-      [bytes.buffer],
-    );
     return {
+      submittedAtMs,
       quickScanMs: 0,
       cacheReadMs: 0,
       sourceReadMs: 0,
@@ -161,8 +166,10 @@ export class BrowserBridge implements FrontendBridge {
     };
   }
 
-  async restartProject(): Promise<ProjectOpenMetrics> {
+  async restartProject(onSubmitted?: ProjectSubmittedListener): Promise<ProjectOpenMetrics> {
     if (!this.project) throw new Error("没有打开的项目");
+    const submittedAtMs = performance.now();
+    onSubmitted?.(submittedAtMs);
     const embedded = this.project.embeddedManifest();
     if (embedded) {
       const bytes = await this.project.readCompiledCache();
@@ -174,6 +181,7 @@ export class BrowserBridge implements FrontendBridge {
         [bytes.buffer],
       );
       return {
+        submittedAtMs,
         quickScanMs: 0,
         cacheReadMs: 0,
         sourceReadMs: 0,
@@ -182,18 +190,21 @@ export class BrowserBridge implements FrontendBridge {
       };
     }
     const started = performance.now();
-    await this.worker.call(
-      "loadProject",
-      await this.project.scan((completed, total) =>
+    const imported = this.project.importedManifest();
+    const manifest =
+      imported ??
+      (await this.project.scan((completed, total) =>
         this.projectProgressListener?.({ stage: "scanning", completed, total }),
-      ),
-    );
+      ));
+    const sourceReadMs = performance.now() - started;
+    const loaded = await this.loadSourceProject(manifest);
     return {
+      submittedAtMs,
       quickScanMs: 0,
-      cacheReadMs: 0,
-      sourceReadMs: performance.now() - started,
-      submitMs: 0,
-      cacheImported: false,
+      cacheReadMs: loaded.cacheReadMs,
+      sourceReadMs,
+      submitMs: loaded.submitMs,
+      cacheImported: loaded.cacheImported,
     };
   }
 
@@ -207,18 +218,60 @@ export class BrowserBridge implements FrontendBridge {
     });
   }
 
+  private async loadSourceProject(manifest: BrowserManifest): Promise<{
+    cacheReadMs: number;
+    submitMs: number;
+    cacheImported: boolean;
+  }> {
+    const project = this.requireProject();
+    const cacheStarted = performance.now();
+    this.projectProgressListener?.({ stage: "loading_cache", completed: 0, total: 0 });
+    const cache = await project.readCompiledCache((completed, total) =>
+      this.projectProgressListener?.({ stage: "loading_cache", completed, total }),
+    );
+    if (!cache) this.projectProgressListener?.({ stage: "loading_cache", completed: 1, total: 1 });
+    const cacheReadMs = performance.now() - cacheStarted;
+    const submitStarted = performance.now();
+    let cacheImported = false;
+    if (cache) {
+      try {
+        await this.worker.callWithTransfer(
+          "loadProjectWithCompiledCache",
+          [cacheIdentityManifest(manifest), cache],
+          [cache.buffer],
+        );
+        cacheImported = true;
+      } catch {
+        await this.submitSourceManifest(manifest);
+      }
+    } else {
+      await this.submitSourceManifest(manifest);
+    }
+    return {
+      cacheReadMs,
+      submitMs: performance.now() - submitStarted,
+      cacheImported,
+    };
+  }
+
   async submitProjectSource(): Promise<void> {
     if (!this.project) throw new Error("没有打开的项目");
     const embedded = this.project.embeddedManifest();
     if (embedded) {
       throw new Error("项目文件与当前 runtime 不兼容，无法回退到外部源码");
     }
-    await this.worker.call(
-      "loadProject",
+    await this.submitSourceManifest(
       await this.project.scan((completed, total) =>
         this.projectProgressListener?.({ stage: "scanning", completed, total }),
       ),
     );
+  }
+
+  private async submitSourceManifest(manifest: BrowserManifest): Promise<void> {
+    const encoded = await encodeBrowserManifest(manifest, (completed, total) =>
+      this.projectProgressListener?.({ stage: "submitting", completed, total }),
+    );
+    await this.worker.callWithTransfer("loadProjectBinary", [encoded], [encoded.buffer]);
   }
 
   readResource(relativePath: string): Promise<Uint8Array> {
@@ -451,6 +504,52 @@ export class BrowserBridge implements FrontendBridge {
   async close(): Promise<void> {
     this.worker.close();
   }
+}
+
+async function readProjectFile(
+  file: File,
+  progress: (completed: number, total: number) => void,
+): Promise<Uint8Array> {
+  if (file.size === 0) return new Uint8Array(await file.arrayBuffer());
+  const output = new Uint8Array(file.size);
+  progress(0, file.size);
+  for (let offset = 0; offset < file.size; offset += PROJECT_FILE_READ_CHUNK_BYTES) {
+    const end = Math.min(file.size, offset + PROJECT_FILE_READ_CHUNK_BYTES);
+    const blob = file.slice(offset, end);
+    const buffer =
+      typeof blob.arrayBuffer === "function"
+        ? await blob.arrayBuffer()
+        : await readBlobWithFileReader(blob);
+    const chunk = new Uint8Array(buffer);
+    output.set(chunk, offset);
+    progress(end, file.size);
+    await yieldToMainThread();
+  }
+  return output;
+}
+
+function readBlobWithFileReader(blob: Blob): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("项目文件读取失败"));
+    reader.onload = () => {
+      if (reader.result instanceof ArrayBuffer) resolve(reader.result);
+      else reject(new Error("项目文件读取结果不是二进制数据"));
+    };
+    reader.readAsArrayBuffer(blob);
+  });
+}
+
+function yieldToMainThread(): Promise<void> {
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      channel.port2.close();
+      resolve();
+    };
+    channel.port2.postMessage(undefined);
+  });
 }
 
 export async function queryBrowserSystemFonts(

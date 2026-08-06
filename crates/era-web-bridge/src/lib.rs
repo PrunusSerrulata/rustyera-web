@@ -239,7 +239,7 @@ impl WebSession {
     /// Returns an error when the project file is corrupt, unsupported, or exceeds its own
     /// transfer size.
     pub fn project_file_manifest(&self, bytes: &[u8]) -> Result<ProjectManifest, String> {
-        era_runtime::decode_project_file(bytes, bytes.len())
+        era_runtime::decode_project_file_frontend_manifest(bytes, bytes.len())
             .map(|decoded| decoded.manifest)
             .map_err(|error| error.to_string())
     }

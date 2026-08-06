@@ -44,6 +44,8 @@ export interface SessionOptions {
 }
 
 export interface ProjectOpenMetrics {
+  /** Frontend monotonic timestamp captured immediately after the user submitted a selection. */
+  submittedAtMs: number;
   quickScanMs: number;
   cacheReadMs: number;
   sourceReadMs: number;
@@ -51,15 +53,21 @@ export interface ProjectOpenMetrics {
   cacheImported: boolean;
 }
 
+export type ProjectSubmittedListener = (submittedAtMs: number) => void;
+
 export type ProjectProgressStage =
   | "importing"
+  | "loading_cache"
+  | "submitting"
   | "scanning"
   | "normalizing"
   | "loading_data"
   | "parsing"
   | "analyzing"
   | "compiling"
-  | "validating";
+  | "validating"
+  | "finalizing"
+  | "preparing";
 
 export interface ProjectProgress {
   stage: ProjectProgressStage;
@@ -100,9 +108,9 @@ export interface FrontendBridge {
   submitDebug(message: DebugMessage, correlationId?: number | bigint): Promise<number | bigint>;
   pump(): Promise<PumpBatch>;
   setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void;
-  openProject(): Promise<ProjectOpenMetrics | undefined>;
-  openProjectFile(): Promise<ProjectOpenMetrics | undefined>;
-  restartProject(): Promise<ProjectOpenMetrics>;
+  openProject(onSubmitted?: ProjectSubmittedListener): Promise<ProjectOpenMetrics | undefined>;
+  openProjectFile(onSubmitted?: ProjectSubmittedListener): Promise<ProjectOpenMetrics | undefined>;
+  restartProject(onSubmitted?: ProjectSubmittedListener): Promise<ProjectOpenMetrics>;
   submitProjectSource(): Promise<void>;
   reloadProject(): Promise<void>;
   readResource(relativePath: string): Promise<Uint8Array>;

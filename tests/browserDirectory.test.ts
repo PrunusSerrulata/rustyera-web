@@ -7,6 +7,7 @@ import {
   removeImportedProjectSources,
   selectedProjectFiles,
 } from "@/platform/browserDirectory";
+import { BrowserProject } from "@/platform/browserProject";
 
 class MemoryFileHandle {
   readonly kind = "file";
@@ -42,6 +43,7 @@ class MemoryFileHandle {
 class MemoryDirectoryHandle {
   readonly kind = "directory";
   private readonly children = new Map<string, MemoryDirectoryHandle | MemoryFileHandle>();
+  entriesCalls = 0;
 
   constructor(readonly name: string) {}
 
@@ -71,6 +73,7 @@ class MemoryDirectoryHandle {
   }
 
   async *entries() {
+    this.entriesCalls += 1;
     yield* this.children.entries();
   }
 }
@@ -98,7 +101,8 @@ describe("portable browser directory selection", () => {
     vi.stubGlobal("showDirectoryPicker", undefined);
     vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
     const progress = vi.fn();
-    const selection = pickBrowserDirectory(progress);
+    const submitted = vi.fn();
+    const selection = pickBrowserDirectory(progress, submitted);
     const input = document.querySelector<HTMLInputElement>('input[type="file"]');
     expect(input?.webkitdirectory).toBe(true);
     const settled = vi.fn();
@@ -114,6 +118,10 @@ describe("portable browser directory selection", () => {
     input!.dispatchEvent(new Event("change"));
 
     await expect(selection).resolves.toMatchObject({ projectName: "game", persistHandle: false });
+    expect(submitted).toHaveBeenCalledOnce();
+    expect(submitted.mock.invocationCallOrder[0]).toBeLessThan(
+      progress.mock.invocationCallOrder[0],
+    );
     expect(progress.mock.calls[0]).toEqual(["importing", 0, 0]);
     expect(progress.mock.calls.at(-1)).toEqual(["importing", 1, 1]);
   });
@@ -121,17 +129,22 @@ describe("portable browser directory selection", () => {
   it("starts progress only after a native directory handle is provided", async () => {
     const handle = new MemoryDirectoryHandle("game");
     const progress = vi.fn();
+    const submitted = vi.fn();
     vi.stubGlobal(
       "showDirectoryPicker",
       vi.fn(async () => handle),
     );
 
-    await expect(pickBrowserDirectory(progress)).resolves.toMatchObject({
+    await expect(pickBrowserDirectory(progress, submitted)).resolves.toMatchObject({
       handle,
       persistHandle: true,
     });
 
     expect(progress).toHaveBeenCalledOnce();
+    expect(submitted).toHaveBeenCalledOnce();
+    expect(submitted.mock.invocationCallOrder[0]).toBeLessThan(
+      progress.mock.invocationCallOrder[0],
+    );
     expect(progress).toHaveBeenCalledWith("scanning", 0, 0);
   });
 
@@ -147,6 +160,49 @@ describe("portable browser directory selection", () => {
     const erb = await (picked.handle as any).getDirectoryHandle("ERB");
     await expect(erb.getFileHandle("main.erb")).rejects.toMatchObject({ name: "NotFoundError" });
     await expect((picked.handle as any).getDirectoryHandle(".rustyera")).resolves.toBeDefined();
+  });
+
+  it("returns a runtime manifest from the bytes already read during import", async () => {
+    const storage = new MemoryDirectoryHandle("root");
+
+    const picked = await importBrowserDirectory(
+      [projectFile("game/ERB/main.erb", "@SYSTEM_TITLE\nRETURN\n")],
+      storage as unknown as FileSystemDirectoryHandle,
+    );
+
+    expect(picked.manifest?.files).toEqual([
+      expect.objectContaining({
+        relative_path: "ERB/main.erb",
+        category: "erb",
+        payload: { type: "utf8", value: "@SYSTEM_TITLE\nRETURN\n" },
+      }),
+    ]);
+    expect((picked.handle as unknown as MemoryDirectoryHandle).entriesCalls).toBe(1);
+  });
+
+  it("returns the same manifest as scanning the final imported directory", async () => {
+    const storage = new MemoryDirectoryHandle("root");
+    await importBrowserDirectory(
+      [projectFile("game/data/override.erb", "@OLD\nRETURN\n")],
+      storage as unknown as FileSystemDirectoryHandle,
+    );
+
+    const picked = await importBrowserDirectory(
+      [
+        projectFile("game/data/override.erb", "@NEW\nRETURN\n"),
+        projectFile("game/.rustyera/private.config", "FontSize:99\n"),
+      ],
+      storage as unknown as FileSystemDirectoryHandle,
+    );
+    const scanned = await new BrowserProject(picked.handle).scan();
+
+    expect(picked.manifest).toEqual(scanned);
+    expect(picked.manifest?.files).toEqual([
+      expect.objectContaining({
+        relative_path: "data/override.erb",
+        payload: { type: "utf8", value: "@OLD\nRETURN\n" },
+      }),
+    ]);
   });
 
   it("returns no directory when either browser picker is cancelled", async () => {
@@ -199,6 +255,12 @@ describe("portable browser directory selection", () => {
         projectFile("second/CSV/GAMEBASE.csv"),
       ]),
     ).toThrow("所选文件必须来自同一个项目目录");
+  });
+
+  it("rejects duplicate normalized paths before concurrent import", () => {
+    expect(() =>
+      selectedProjectFiles([projectFile("game/ERB/main.erb"), projectFile("game/ERB/main.erb")]),
+    ).toThrow("重复");
   });
 
   it("refreshes source files without overwriting browser-persisted saves", async () => {
