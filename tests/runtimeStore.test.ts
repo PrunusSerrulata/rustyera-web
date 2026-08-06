@@ -2,6 +2,7 @@ import { blake3 } from "@noble/hashes/blake3.js";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { plainLine } from "@/core/presentation";
 import {
   defaultPreferences,
   type Preferences,
@@ -1558,6 +1559,88 @@ describe("runtime store session lifecycle", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(store.runtimeEpoch).toBe(9);
+  });
+
+  it("keeps the previous frame visible until a redraw-disabled replacement reaches a wait", async () => {
+    const line = (lineId: number, text: string) => ({
+      line_id: lineId,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs: [{ type: "text", text, style: {} }],
+    });
+    const firstWait = {
+      kind: "integer_value",
+      wait_id: 10,
+      submission_token: { epoch: 2, id: 10 },
+      deadline_ns: 1_000_000_000,
+    };
+    const nextWait = {
+      ...firstWait,
+      wait_id: 11,
+      submission_token: { epoch: 2, id: 11 },
+      deadline_ns: 2_000_000_000,
+    };
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("presentation_snapshot", {
+            revision: 1,
+            title: "map",
+            history: { logical_lines: [line(1, "frame 1")] },
+            input_wait: firstWait,
+            redraw: { enabled: true },
+          }),
+          runtimeEvent("wait_changed", { type: "opened", value: firstWait }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("wait_changed", { type: "closed", value: null }),
+          runtimeEvent("presentation_delta", {
+            base_revision: 1,
+            new_revision: 2,
+            operations: [
+              { type: "set_input_wait", input_wait: null },
+              { type: "set_redraw", redraw: { enabled: false } },
+              { type: "delete_lines", count: 1 },
+            ],
+          }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("presentation_delta", {
+            base_revision: 2,
+            new_revision: 3,
+            operations: [
+              { type: "append_line", line: line(2, "frame 2") },
+              { type: "set_input_wait", input_wait: nextWait },
+            ],
+          }),
+          runtimeEvent("wait_changed", { type: "opened", value: nextWait }),
+        ],
+      });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.presentation.revision).toBe(1);
+    expect(plainLine(store.presentation.lines[0])).toBe("frame 1");
+
+    await vi.advanceTimersByTimeAsync(16);
+    expect(store.presentation.revision).toBe(1);
+    expect(plainLine(store.presentation.lines[0])).toBe("frame 1");
+    expect(store.canInteract).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(16);
+    expect(store.presentation.revision).toBe(3);
+    expect(plainLine(store.presentation.lines[0])).toBe("frame 2");
+    expect(store.canInteract).toBe(true);
   });
 });
 

@@ -1,6 +1,6 @@
 import { blake3 } from "@noble/hashes/blake3.js";
 import { defineStore } from "pinia";
-import { computed, nextTick, reactive, ref, shallowReactive } from "vue";
+import { computed, nextTick, reactive, ref, shallowReactive, toRaw } from "vue";
 
 import { AudioEngine } from "@/core/audio";
 import {
@@ -43,6 +43,7 @@ import {
   emptyPresentation,
   plainLine,
   printedHtmlLine,
+  type PresentationState,
 } from "@/core/presentation";
 import { decodeServicePayload, encodeServicePayload } from "@/core/serviceCodec";
 import {
@@ -129,6 +130,9 @@ const TIME_ADVANCE_INTERVAL_NS = 16_000_000;
 export const useRuntimeStore = defineStore("runtime", () => {
   const bridge = platformBridge();
   const presentation = reactive(emptyPresentation());
+  let stagedPresentation: PresentationState | undefined;
+  let stagedPresentationReady = false;
+  const presentationStaged = ref(false);
   const preferences = ref<Preferences>(defaultPreferences());
   const projectConfiguration = ref<ProjectConfigurationSnapshot | null>(null);
   let pendingConfigurationUpdate: PendingConfigurationUpdate | undefined;
@@ -274,6 +278,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   });
   const canInteract = computed(
     () =>
+      !presentationStaged.value &&
       presentation.inputWait != null &&
       phase.value !== "debug_paused" &&
       !fault.value &&
@@ -548,6 +553,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       else await handleDebug(event.message as any, event.correlationId);
       index += 1;
     }
+    if (stagedPresentationReady) batchMediaDirty = publishStagedPresentation() || batchMediaDirty;
     if (batchMediaDirty) await synchronizeMedia();
     if (debugGrantRefreshNeeded) {
       debugGrantRefreshNeeded = false;
@@ -630,28 +636,28 @@ export const useRuntimeStore = defineStore("runtime", () => {
         if (value.phase !== "debug_paused") debugStop.value = null;
         break;
       case "presentation_snapshot":
-        applySnapshot(presentation, value);
-        captureProjectTitle();
-        batchMediaDirty = true;
+        batchMediaDirty = projectPresentationSnapshot(value) || batchMediaDirty;
+        captureProjectTitle(currentPresentation());
         break;
       case "presentation_delta":
         try {
-          applyDelta(presentation, value);
-          captureProjectTitle();
+          batchMediaDirty = projectPresentationDelta(value) || batchMediaDirty;
+          captureProjectTitle(currentPresentation());
         } catch (error) {
+          stagedPresentation = undefined;
+          stagedPresentationReady = false;
+          presentationStaged.value = false;
           log("warning", String(error));
           await send({ type: "resynchronize", value: { after_sequence: null } });
         }
-        batchMediaDirty = true;
         break;
       case "runtime_resynchronized":
         phase.value = value.phase;
         runtimeEpoch.value = value.epoch ?? runtimeEpoch.value;
-        applySnapshot(presentation, value.presentation);
+        batchMediaDirty = projectPresentationSnapshot(value.presentation) || batchMediaDirty;
         inputUndo.value = value.input_undo ?? null;
         updateProjectConfiguration(value.configuration);
-        captureProjectTitle();
-        batchMediaDirty = true;
+        captureProjectTitle(currentPresentation());
         break;
       case "configuration_update_prepared": {
         const pending = pendingConfigurationUpdate;
@@ -724,9 +730,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       }
       case "wait_changed":
-        if (value.type === "opened" || value.type === "updated")
-          presentation.inputWait = value.value;
-        else if (value.type === "closed") presentation.inputWait = null;
+        if (value.type === "opened" || value.type === "updated") {
+          currentPresentation().inputWait = value.value;
+          if (stagedPresentation) stagedPresentationReady = true;
+        } else if (value.type === "closed") currentPresentation().inputWait = null;
         break;
       case "input_undo_state_changed":
         inputUndo.value = value;
@@ -821,6 +828,67 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
   }
 
+  function currentPresentation(): PresentationState {
+    return stagedPresentation ?? presentation;
+  }
+
+  function clonePresentation(source: PresentationState): PresentationState {
+    return structuredClone(toRaw(source));
+  }
+
+  function stagePresentation(): PresentationState {
+    if (!stagedPresentation) {
+      stagedPresentation = clonePresentation(presentation);
+      stagedPresentationReady = false;
+      presentationStaged.value = true;
+    }
+    return stagedPresentation;
+  }
+
+  function publishStagedPresentation(): boolean {
+    if (!stagedPresentation) return false;
+    Object.assign(presentation, stagedPresentation);
+    stagedPresentation = undefined;
+    stagedPresentationReady = false;
+    presentationStaged.value = false;
+    return true;
+  }
+
+  function projectPresentationSnapshot(snapshot: any): boolean {
+    const next = clonePresentation(currentPresentation());
+    applySnapshot(next, snapshot);
+    if (next.redraw?.enabled === false && next.inputWait == null) {
+      stagedPresentation = next;
+      stagedPresentationReady = false;
+      presentationStaged.value = true;
+      return false;
+    }
+    stagedPresentation = undefined;
+    stagedPresentationReady = false;
+    presentationStaged.value = false;
+    Object.assign(presentation, next);
+    return true;
+  }
+
+  function projectPresentationDelta(delta: any): boolean {
+    const operations = delta.operations ?? [];
+    const disablesRedraw = operations.some(
+      (operation: any) => operation.type === "set_redraw" && operation.redraw?.enabled === false,
+    );
+    const completesFrame = operations.some(
+      (operation: any) =>
+        (operation.type === "set_redraw" && operation.redraw?.enabled !== false) ||
+        (operation.type === "set_input_wait" && operation.input_wait != null),
+    );
+    const shouldStage =
+      stagedPresentation != null || presentation.redraw?.enabled === false || disablesRedraw;
+    const target = shouldStage ? stagePresentation() : presentation;
+    applyDelta(target, delta);
+    if (target !== stagedPresentation) return true;
+    if (completesFrame) stagedPresentationReady = true;
+    return false;
+  }
+
   function updateProjectConfiguration(value: unknown): void {
     if (value == null) {
       projectConfiguration.value = null;
@@ -870,6 +938,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function handleService(request: any, correlationId?: number): Promise<void> {
     try {
       const query = decodeServicePayload(request.payload);
+      const servicePresentation = currentPresentation();
       let response: Map<number, unknown>;
       switch (`${request.kind}/${request.operation}`) {
         case "entropy/random_seed": {
@@ -934,21 +1003,29 @@ export const useRuntimeStore = defineStore("runtime", () => {
           const index = Number(at(query, 1));
           response = mapOf(
             [0, at(query, 0)],
-            [1, presentation.lines[index] ? plainLine(presentation.lines[index]) : ""],
+            [
+              1,
+              servicePresentation.lines[index] ? plainLine(servicePresentation.lines[index]) : "",
+            ],
           );
           break;
         }
         case "presentation_query/html_get_printed_str": {
           const index = Number(at(query, 1));
-          const text = presentation.lines.at(-(index + 1));
+          const text = servicePresentation.lines.at(-(index + 1));
           response = mapOf(
             [0, at(query, 0)],
-            [1, text ? printedHtmlLine(text, Number(presentation.settings.line_height ?? 0)) : ""],
+            [
+              1,
+              text
+                ? printedHtmlLine(text, Number(servicePresentation.settings.line_height ?? 0))
+                : "",
+            ],
           );
           break;
         }
         case "presentation_query/serialize_physical_history": {
-          const body = presentation.lines.map(plainLine).join("\n");
+          const body = servicePresentation.lines.map(plainLine).join("\n");
           response = mapOf(
             [0, at(query, 0)],
             [1, at(query, 2) ? body : `${at(query, 1)}\n\n${body}`],
@@ -1002,7 +1079,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function submitText(): Promise<void> {
-    const wait = presentation.inputWait;
+    const wait = currentPresentation().inputWait;
     if (!wait || !canInteract.value) return;
     let intent: any;
     switch (wait.kind) {
@@ -1043,21 +1120,21 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function skip(): Promise<void> {
-    const wait = presentation.inputWait;
+    const wait = currentPresentation().inputWait;
     if (canInteract.value && messageSkip.start(wait)) {
       await submitIntent({ type: "enter" }, true);
     }
   }
 
   async function continueFromViewport(): Promise<void> {
-    if (canInteract.value && presentation.inputWait?.kind === "enter_key") {
+    if (canInteract.value && currentPresentation().inputWait?.kind === "enter_key") {
       await submitIntent({ type: "enter" }, false);
     }
   }
 
   async function submitIntent(intent: any, messageSkip: boolean): Promise<void> {
     if (diagnosisExporting.value) return;
-    const wait = presentation.inputWait;
+    const wait = currentPresentation().inputWait;
     if (!wait) return;
     if (!messageSkip) resetMessageSkip();
     await send({
@@ -1074,12 +1151,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function continueMessageSkip(): Promise<void> {
-    const wait = presentation.inputWait;
+    const wait = currentPresentation().inputWait;
     if (messageSkip.continue(wait)) await submitIntent({ type: "enter" }, true);
   }
 
   async function advanceTimedWait(): Promise<void> {
-    if (presentation.inputWait?.deadline_ns == null) return;
+    if (currentPresentation().inputWait?.deadline_ns == null) return;
     const now = sampleMonotonicTime();
     if (lastTimeAdvanceNs != null && now - lastTimeAdvanceNs < TIME_ADVANCE_INTERVAL_NS) return;
     lastTimeAdvanceNs = now;
@@ -1156,6 +1233,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
         .cancelProjectFileExport()
         .catch((error) => log("warning", `清理项目文件导出失败：${String(error)}`));
     Object.assign(presentation, emptyPresentation());
+    stagedPresentation = undefined;
+    stagedPresentationReady = false;
+    presentationStaged.value = false;
     runtimePump.setReady(false);
     phase.value = "negotiating";
     runtimeEpoch.value = 0;
@@ -1623,9 +1703,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     log(success ? "info" : "error", message);
   }
 
-  function captureProjectTitle(): void {
+  function captureProjectTitle(source: PresentationState = presentation): void {
     if (projectTitleCaptured || !projectOpen.value) return;
-    const title = presentation.title.trim();
+    const title = source.title.trim();
     if (!title || title === "RustyEra") return;
     projectTitleCaptured = true;
   }

@@ -41,6 +41,7 @@ vi.mock("@tanstack/vue-virtual", () => ({
 }));
 vi.mock("@/stores/runtime", () => ({ useRuntimeStore: () => store }));
 
+import DisplayLine from "@/components/DisplayLine.vue";
 import GameViewport from "@/components/GameViewport.vue";
 
 describe("game viewport", () => {
@@ -148,6 +149,34 @@ describe("game viewport", () => {
 
     expect(scrollToIndex).toHaveBeenCalledTimes(2);
     expect(scrollToIndex).toHaveBeenLastCalledWith(0, { align: "end" });
+    wrapper.unmount();
+  });
+
+  it("updates an equal-length dynamic tail without moving the viewport", async () => {
+    store.presentation.lines = [
+      { line_id: 1, alignment: "left", runs: [] },
+      { line_id: 2, alignment: "left", runs: [{ type: "text", text: "frame 1" }] },
+    ];
+    virtualState.items = [{ index: 1, key: "1:2", start: 13 }];
+    const wrapper = shallowMount(GameViewport);
+    const viewport = wrapper.get<HTMLElement>("main").element;
+    const setScrollTop = vi.fn();
+    Object.defineProperty(viewport, "scrollTop", {
+      configurable: true,
+      get: () => 25,
+      set: setScrollTop,
+    });
+    scrollToIndex.mockClear();
+
+    store.presentation.lines = [
+      store.presentation.lines[0],
+      { line_id: 3, alignment: "left", runs: [{ type: "text", text: "frame 2" }] },
+    ];
+    await nextTick();
+
+    expect(wrapper.findComponent(DisplayLine).props("line")).toEqual(store.presentation.lines[1]);
+    expect(scrollToIndex).not.toHaveBeenCalled();
+    expect(setScrollTop).not.toHaveBeenCalled();
     wrapper.unmount();
   });
 

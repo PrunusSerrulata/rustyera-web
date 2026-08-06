@@ -76,12 +76,12 @@ export function applyDelta(state: PresentationState, delta: any): void {
   if (delta.base_revision !== state.revision) {
     throw new Error(`展示 revision 不连续：${state.revision} → ${delta.base_revision}`);
   }
-  let historyChanged = false;
+  const previousLineCount = state.lines.length;
+  let existingLineChanged = false;
   for (const operation of delta.operations ?? []) {
     switch (operation.type) {
       case "append_line":
         state.lines.push(operation.line);
-        historyChanged = true;
         break;
       case "delete_lines":
         state.lines.splice(
@@ -107,7 +107,7 @@ export function applyDelta(state: PresentationState, delta: any): void {
       case "replace_line": {
         const index = state.lines.findIndex((line) => line.line_id === operation.line_id);
         if (index >= 0) {
-          historyChanged ||= lineContentChanged(state.lines[index], operation.line);
+          existingLineChanged ||= lineContentChanged(state.lines[index], operation.line);
           state.lines[index] = operation.line;
         }
         break;
@@ -136,7 +136,10 @@ export function applyDelta(state: PresentationState, delta: any): void {
         break;
     }
   }
-  if (historyChanged) state.historyRevision += 1;
+  // Emuera's dynamic-map loop deletes and recreates the same tail rows. Its console keeps the
+  // scrollbar unchanged when the final line count is unchanged, so only actual history growth
+  // (or an in-place line whose dimensions may change) should request another bottom follow.
+  if (state.lines.length > previousLineCount || existingLineChanged) state.historyRevision += 1;
   state.revision = delta.new_revision;
 }
 

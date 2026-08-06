@@ -63,6 +63,63 @@ describe("presentation projection", () => {
     expect(state.historyRevision).toBe(0);
   });
 
+  it("keeps an equal-length dynamic tail replacement at its current scroll position", () => {
+    const state = emptyPresentation();
+    const line = (lineId: number, text: string) => ({
+      line_id: lineId,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs: [{ type: "text", text, style: {} }],
+    });
+    applySnapshot(state, {
+      revision: 1,
+      title: "map",
+      history: { logical_lines: [line(1, "before"), line(2, "map frame 1")] },
+    });
+    const historyRevision = state.historyRevision;
+
+    applyDelta(state, {
+      base_revision: 1,
+      new_revision: 2,
+      operations: [
+        { type: "set_redraw", redraw: { enabled: false } },
+        { type: "delete_lines", count: 1 },
+        { type: "append_line", line: line(3, "map frame 2") },
+      ],
+    });
+
+    expect(state.lines.map(plainLine)).toEqual(["before", "map frame 2"]);
+    expect(state.historyRevision).toBe(historyRevision);
+  });
+
+  it("follows a same-length snapshot whose runtime line identities changed", () => {
+    const state = emptyPresentation();
+    const snapshot = (revision: number, lineId: number) => ({
+      revision,
+      title: "snapshot",
+      history: {
+        logical_lines: [
+          {
+            line_id: lineId,
+            temporary: false,
+            logical_line_start: true,
+            line_end: true,
+            alignment: "left",
+            runs: [{ type: "text", text: "same", style: {} }],
+          },
+        ],
+      },
+    });
+    applySnapshot(state, snapshot(1, 1));
+    const historyRevision = state.historyRevision;
+
+    applySnapshot(state, snapshot(2, 2));
+
+    expect(state.historyRevision).toBe(historyRevision + 1);
+  });
+
   it("marks an image replacement as output even when both images have empty alt text", () => {
     const state = emptyPresentation();
     const imageLine = (resourceId: string) => ({
