@@ -29,7 +29,9 @@ const store = vi.hoisted(() => ({
   configurationReadOnly: false,
   useMenu: true,
   gameLineHeightPx: 13,
-  fonts: [],
+  systemFonts: [],
+  fontAccessStatus: "idle",
+  fontAccessError: "",
   openProjectConfirmationOpen: false,
   logsOpen: false,
   logs: [],
@@ -64,6 +66,8 @@ const store = vi.hoisted(() => ({
   undo: vi.fn(),
   preview: vi.fn(),
   savePreferences: vi.fn(),
+  openPreferencesFromUser: vi.fn(),
+  requestSystemFonts: vi.fn(),
   cancelOpenProject: vi.fn(),
   confirmOpenProject: vi.fn(),
 }));
@@ -158,6 +162,18 @@ describe("application menus", () => {
     wrapper = mountApp();
     states = await menuStates(wrapper);
     expect(states.get("设置…")).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("opens settings through the store font-access flow", async () => {
+    store.configurationEntries = [{}];
+    const wrapper = mountApp();
+
+    await wrapper.get("nav > .menu > button").trigger("click");
+    const settings = wrapper.findAll(".menu-popup button").find((item) => item.text() === "设置…");
+    await settings!.trigger("click");
+
+    expect(store.openPreferencesFromUser).toHaveBeenCalledOnce();
     wrapper.unmount();
   });
 

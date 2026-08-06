@@ -713,6 +713,24 @@ select {
   font-size: 0.83rem;
   text-align: left;
 }
+.font-access-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+  color: #aeb3bf;
+  font-size: 0.82rem;
+  text-align: left;
+}
+.font-access-status[data-state="denied"],
+.font-access-status[data-state="error"] {
+  color: #ffb4ba;
+}
+.font-access-status button {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  font-size: 0.82rem;
+}
 .viewport-readout {
   margin-bottom: 10px;
 }

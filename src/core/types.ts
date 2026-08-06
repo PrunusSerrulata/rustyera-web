@@ -84,6 +84,14 @@ export interface TraditionalSaveAccess {
   writeSlot(slot: number, bytes: Uint8Array): Promise<void>;
 }
 
+export type SystemFontQueryResult =
+  | { kind: "ready"; fonts: string[] }
+  | { kind: "unsupported" }
+  | { kind: "denied" }
+  | { kind: "error"; message: string };
+
+export type FontAccessStatus = "idle" | "loading" | "ready" | "unsupported" | "denied" | "error";
+
 export interface FrontendBridge {
   readonly kind: "tauri" | "browser";
   readonly traditionalSaves?: TraditionalSaveAccess;
@@ -105,7 +113,7 @@ export interface FrontendBridge {
     animated: boolean;
   }>;
   handleStorage(request: any): Promise<any>;
-  listFonts(): Promise<string[]>;
+  listFonts(): Promise<SystemFontQueryResult>;
   loadPreferences(): Promise<Preferences>;
   savePreferences(preferences: Preferences): Promise<Preferences>;
   projectConfigurationWritable(): boolean;

@@ -24,6 +24,11 @@ preferences("Tauri emuera.config preferences", () => {
     await dialog.$("button=显示").click();
     assert.equal(await dialog.$("#setting-WindowX").isDisplayed(), true);
     assert.equal(await dialog.$("button=使用当前主视口大小").isDisplayed(), true);
+    const fontName = await dialog.$("#setting-FontName");
+    assert.equal(await fontName.getTagName(), "input");
+    assert.equal(await fontName.getAttribute("list"), "available-game-fonts");
+    assert.equal((await dialog.$$("#available-game-fonts option")).length > 0, true);
+    assert.equal(await dialog.$(".font-access-status").getAttribute("data-state"), "ready");
     const fontSize = await dialog.$("#setting-FontSize");
     assert.equal(await fontSize.getValue(), "16");
     await fontSize.setValue("20");

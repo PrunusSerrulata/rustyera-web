@@ -103,7 +103,9 @@ onMounted(() => void store.initialize());
     <PreferencesDialog
       :open="store.preferencesOpen"
       :value="store.preferences"
-      :fonts="store.fonts"
+      :system-fonts="store.systemFonts"
+      :font-access-status="store.fontAccessStatus"
+      :font-access-error="store.fontAccessError"
       :host-kind="store.bridgeKind"
       :viewport-measurement="store.viewportMeasurement"
       :configuration-entries="store.configurationEntries"
@@ -112,6 +114,7 @@ onMounted(() => void store.initialize());
       :busy="store.settingsBusy"
       :error="store.settingsError"
       @close="store.preferencesOpen = false"
+      @request-fonts="store.requestSystemFonts"
       @save="store.savePreferences"
     />
     <OpenProjectDialog

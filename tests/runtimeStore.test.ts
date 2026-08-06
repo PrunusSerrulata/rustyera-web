@@ -2,7 +2,12 @@ import { blake3 } from "@noble/hashes/blake3.js";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { defaultPreferences, type Preferences, type ProjectProgress } from "@/core/types";
+import {
+  defaultPreferences,
+  type Preferences,
+  type ProjectProgress,
+  type SystemFontQueryResult,
+} from "@/core/types";
 
 const emptyBatch = () => ({
   state: "idle" as const,
@@ -30,7 +35,7 @@ const bridge = vi.hoisted(() => ({
   readResource: vi.fn(),
   readImageMetadata: vi.fn(),
   handleStorage: vi.fn(),
-  listFonts: vi.fn(async () => []),
+  listFonts: vi.fn(async (): Promise<SystemFontQueryResult> => ({ kind: "ready", fonts: [] })),
   loadPreferences: vi.fn(async () => defaultPreferences()),
   savePreferences: vi.fn(),
   projectConfigurationWritable: vi.fn(() => true),
@@ -79,6 +84,7 @@ describe("runtime store session lifecycle", () => {
     bridge.traditionalSaves.inspect.mockResolvedValue({ description: "valid" });
     bridge.traditionalSaves.writeSlot.mockResolvedValue(undefined);
     bridge.saveDiagnosis.mockResolvedValue(true);
+    bridge.listFonts.mockResolvedValue({ kind: "ready", fonts: [] });
     bridge.savePreferences.mockImplementation(async (value: Preferences) => value);
     bridge.projectConfigurationWritable.mockReturnValue(true);
     bridge.writeProjectConfiguration.mockResolvedValue(undefined);
@@ -125,6 +131,57 @@ describe("runtime store session lifecycle", () => {
 
     expect(store.preferences).toEqual(defaultPreferences());
     expect(bridge.loadPreferences).not.toHaveBeenCalled();
+  });
+
+  it("keeps one pending browser font request while the authorization dialog is open", async () => {
+    bridge.kind = "browser";
+    let resolveFonts!: (result: { kind: "ready"; fonts: string[] }) => void;
+    bridge.listFonts.mockReturnValue(
+      new Promise((resolve) => {
+        resolveFonts = resolve;
+      }),
+    );
+    const store = useRuntimeStore();
+
+    store.openPreferencesFromUser();
+    store.openPreferencesFromUser();
+    expect(store.preferencesOpen).toBe(true);
+    expect(store.fontAccessStatus).toBe("loading");
+    const pending = store.requestSystemFonts();
+    expect(bridge.listFonts).toHaveBeenCalledOnce();
+
+    resolveFonts({ kind: "ready", fonts: ["Beta", "Alpha"] });
+    await pending;
+
+    expect(bridge.listFonts).toHaveBeenCalledOnce();
+    expect(store.systemFonts).toEqual(["Beta", "Alpha"]);
+    expect(store.fontAccessStatus).toBe("ready");
+  });
+
+  it("does not present generic runtime fallbacks as installed browser fonts", async () => {
+    bridge.kind = "browser";
+    bridge.listFonts.mockResolvedValue({ kind: "unsupported" });
+    const store = useRuntimeStore();
+
+    await store.requestSystemFonts();
+
+    expect(store.systemFonts).toEqual([]);
+    expect(store.fontAccessStatus).toBe("unsupported");
+  });
+
+  it("allows retry after a browser font permission denial", async () => {
+    bridge.kind = "browser";
+    bridge.listFonts.mockResolvedValueOnce({ kind: "denied" });
+    const store = useRuntimeStore();
+
+    await store.requestSystemFonts();
+    expect(store.fontAccessStatus).toBe("denied");
+
+    bridge.listFonts.mockResolvedValueOnce({ kind: "ready", fonts: ["Project Font"] });
+    await store.requestSystemFonts();
+    expect(bridge.listFonts).toHaveBeenCalledTimes(2);
+    expect(store.fontAccessStatus).toBe("ready");
+    expect(store.systemFonts).toEqual(["Project Font"]);
   });
 
   it("reports the configured game viewport before starting a new game", async () => {
@@ -858,12 +915,28 @@ describe("runtime store session lifecycle", () => {
   });
 
   it("recreates the runtime and reopens the same project for Restart", async () => {
+    bridge.kind = "browser";
+    bridge.listFonts.mockResolvedValue({ kind: "ready", fonts: ["Late Browser Font"] });
     const store = useRuntimeStore();
     store.projectOpen = true;
 
     await store.restart();
 
     expect(bridge.createSession).toHaveBeenCalledOnce();
+    expect(bridge.createSession.mock.calls[0]![0].availableFonts).toEqual([
+      "system-ui",
+      "sans-serif",
+      "serif",
+      "monospace",
+    ]);
+    await store.requestSystemFonts();
+    expect(store.systemFonts).toEqual(["Late Browser Font"]);
+    expect(bridge.createSession.mock.calls[0]![0].availableFonts).toEqual([
+      "system-ui",
+      "sans-serif",
+      "serif",
+      "monospace",
+    ]);
     expect(bridge.restartProject).toHaveBeenCalledOnce();
     expect(bridge.submitRuntime).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "start" }),

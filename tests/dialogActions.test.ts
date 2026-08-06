@@ -2,7 +2,7 @@ import { mount } from "@vue/test-utils";
 import { nextTick, reactive } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { defaultPreferences } from "@/core/types";
+import { defaultPreferences, type ProjectConfigurationEntry } from "@/core/types";
 
 const debugCommand = vi.hoisted(() => vi.fn(async () => {}));
 const closeDebugDialog = vi.hoisted(() => vi.fn());
@@ -56,7 +56,7 @@ describe("dialog actions", () => {
       props: {
         open: true,
         value: { ...defaultPreferences(), fontSizeOverridePx: 24 },
-        fonts: ["Project Font"],
+        systemFonts: ["Project Font"],
         hostKind: "tauri",
         configurationEntries: [
           {
@@ -119,7 +119,7 @@ describe("dialog actions", () => {
       props: {
         open: true,
         value: defaultPreferences(),
-        fonts: [],
+        systemFonts: [],
         hostKind: "browser",
         viewportMeasurement: {
           width: 900,
@@ -235,6 +235,46 @@ describe("dialog actions", () => {
     await nextTick();
     await clickButton("确定");
     expect(document.body.querySelector("#setting-ForeColor")?.textContent).toContain("51,102,153");
+    wrapper.unmount();
+  });
+
+  it("offers an editable system-font list and exposes permission progress", async () => {
+    const wrapper = mount(PreferencesDialog, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        value: defaultPreferences(),
+        systemFonts: ["Alpha Sans", "Beta Serif"],
+        fontAccessStatus: "loading",
+        hostKind: "browser",
+        configurationEntries: [configurationEntry("FontName", "Alpha Sans", "string")],
+      },
+    });
+
+    await clickButton("显示");
+    const input = document.body.querySelector<HTMLInputElement>("#setting-FontName")!;
+    expect(input.type).toBe("text");
+    expect(input.getAttribute("list")).toBe("available-game-fonts");
+    expect(
+      [...document.body.querySelectorAll("#available-game-fonts option")].map((option) =>
+        option.getAttribute("value"),
+      ),
+    ).toEqual(["Alpha Sans", "Beta Serif"]);
+    expect(document.body.textContent).toContain("正在等待浏览器授权并读取系统字体");
+
+    await wrapper.setProps({ fontAccessStatus: "denied" });
+    const liveStatus = document.body.querySelector("[role='status']")!;
+    expect(liveStatus.closest(".font-access-status")?.querySelector("button")).not.toBeNull();
+    expect(liveStatus.querySelector("button")).toBeNull();
+    await clickButton("重试");
+    expect(wrapper.emitted("requestFonts")).toHaveLength(1);
+
+    input.value = "Manually Entered Font";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await clickButton("应用");
+    expect(wrapper.emitted("save")?.at(-1)?.[1]).toEqual([
+      { code: "FontName", value: "Manually Entered Font" },
+    ]);
     wrapper.unmount();
   });
 
@@ -415,5 +455,25 @@ function rect(left: number, top: number, width: number, height: number): DOMRect
     x: left,
     y: top,
     toJSON: () => ({}),
+  };
+}
+
+function configurationEntry(
+  code: string,
+  value: string,
+  kind: ProjectConfigurationEntry["kind"],
+): ProjectConfigurationEntry {
+  return {
+    code,
+    japanese: code,
+    english: code,
+    value,
+    kind,
+    allowed: [],
+    fixed: false,
+    applicability: 12,
+    default_value: value,
+    effective_value: value,
+    application: "hot",
   };
 }

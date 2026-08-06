@@ -101,11 +101,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
         <hr />
         <button
           :disabled="store.configurationEntries.length === 0"
-          @click="
-            action(() => {
-              store.preferencesOpen = true;
-            })
-          "
+          @click="action(store.openPreferencesFromUser)"
         >
           设置…
         </button>

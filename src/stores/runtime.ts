@@ -63,9 +63,12 @@ import {
   type GameViewportMeasurement,
 } from "@/platform/viewportMeasurement";
 import { RuntimePumpCoordinator } from "@/stores/runtimePump";
+import { useSystemFontAccess } from "@/stores/systemFontAccess";
 import { transportValue } from "@/stores/runtimeTransport";
 
 type LogEntry = DiagnosisLogEntry & { authoritative: boolean };
+
+const sessionFontFallback = ["system-ui", "sans-serif", "serif", "monospace"];
 
 interface ExportState {
   name: string;
@@ -131,7 +134,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const configurationProfileValid = ref(true);
   const viewportMeasurement = ref<GameViewportMeasurement>();
   const previewPreferences = ref<Preferences | null>(null);
-  const fonts = ref<string[]>(["system-ui", "sans-serif", "serif", "monospace"]);
+  const {
+    systemFonts,
+    status: fontAccessStatus,
+    error: fontAccessError,
+    request: requestSystemFonts,
+  } = useSystemFontAccess(bridge, (message) => log("warning", `无法读取系统字体：${message}`));
   const phase = ref("negotiating");
   const runtimeEpoch = ref<number | bigint>(0);
   const status = ref("请选择 Era 项目文件夹");
@@ -362,22 +370,29 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function ensureSession(): Promise<void> {
     if (runtimePump.ready) return;
-    try {
-      fonts.value = await bridge.listFonts();
-    } catch (error) {
-      log("warning", `无法读取系统字体：${String(error)}`);
-    }
+    if (bridge.kind === "tauri") await requestSystemFonts();
     const batch = await bridge.createSession(sessionOptions());
     runtimePump.setReady(true);
     await handleBatch(batch);
     schedulePump(0);
   }
 
+  function openPreferencesFromUser(): void {
+    preferencesOpen.value = true;
+    void requestSystemFonts();
+  }
+
+  function openPreferencesFromRuntime(): void {
+    preferencesOpen.value = true;
+    if (bridge.kind === "tauri") void requestSystemFonts();
+  }
+
   function sessionOptions(): SessionOptions {
     return {
       clientName: bridge.kind === "tauri" ? "rustyera-vue-tauri" : "rustyera-vue-wasm",
-      // Vue wraps assigned arrays in proxies, which cannot cross the browser Worker boundary.
-      availableFonts: [...fonts.value],
+      // This fixed session capability is sampled when the runtime session is created. Browser
+      // fonts granted later remain UI choices until the next session negotiates CHKFONT again.
+      availableFonts: [...(systemFonts.value.length > 0 ? systemFonts.value : sessionFontFallback)],
       preferredLocales: [...preferredRuntimeLocales(navigator.languages)],
       audioAvailable: true,
       debugScopeMask: 1023,
@@ -822,7 +837,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       try {
         const kind = effect.kind;
         if (kind.type === "audio") await audio.applyEffect(kind.value);
-        else if (kind.type === "open_configuration") preferencesOpen.value = true;
+        else if (kind.type === "open_configuration") openPreferencesFromRuntime();
         else if (kind.type === "start_animation" || kind.type === "present_now") {
           // Rendering state already carries the recoverable revision; requestAnimationFrame
           // gives this transient effect an immediate projection boundary.
@@ -2332,7 +2347,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       void undo();
     } else if ((event.ctrlKey || event.metaKey) && event.key === ",") {
       event.preventDefault();
-      preferencesOpen.value = true;
+      openPreferencesFromUser();
     } else if (
       event.key === "F10" &&
       debugEnabled.value &&
@@ -2362,7 +2377,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     effectivePreferences,
     gameTextStyle,
     gameLineHeightPx,
-    fonts,
+    systemFonts,
+    fontAccessStatus,
+    fontAccessError,
     phase,
     runtimeEpoch,
     status,
@@ -2409,6 +2426,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     canStepDebug,
     canInteract,
     promptPlaceholder,
+    openPreferencesFromUser,
+    requestSystemFonts,
     initialize,
     openProject,
     openProjectFile,

@@ -167,6 +167,9 @@ async function execute(args) {
       viewport: scenario.viewport,
       reducedMotion: "reduce",
     });
+    await context.grantPermissions(["local-fonts"], {
+      origin: `http://127.0.0.1:${port}`,
+    });
     page = await context.newPage();
     page.on("console", (message) =>
       consoleMessages.push({ type: message.type(), text: message.text() }),

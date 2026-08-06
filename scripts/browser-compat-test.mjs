@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { remote } from "webdriverio";
 
+import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs";
+
 import {
   injectInGameSaveFlow,
   runtimeProgressDiagnostic,
@@ -41,6 +43,10 @@ if (projectIndex < 0) {
 }
 let server;
 let browser;
+let snapshotMonitor;
+let snapshotMonitorError;
+let runError;
+let compatibilityStage = "starting browser session";
 
 try {
   server = await createServer({
@@ -70,7 +76,16 @@ try {
           },
   });
   await browser.url(`http://127.0.0.1:${port}`);
+  snapshotMonitor = startCompleteSnapshotMonitor(browser, {
+    eventType: "browser-compat-snapshot",
+    label: `${browserName} compatibility`,
+    snapshotContext: () => ({ stage: compatibilityStage }),
+  });
+  void snapshotMonitor.failure.catch(async () => {
+    await browser?.deleteSession().catch(() => undefined);
+  });
   let minimized = false;
+  compatibilityStage = "installing portable project picker";
   const setup = await browser.executeAsync(
     async (payload, done) => {
       try {
@@ -173,6 +188,7 @@ try {
     capture();
   });
 
+  compatibilityStage = "opening fixture project";
   const open = await browser.$("button.primary.large");
   await open.waitForClickable({ timeout: 30_000 });
   await open.click();
@@ -190,6 +206,7 @@ try {
     }));
     throw new Error(`${error.message}; diagnosis=${JSON.stringify(diagnosis)}`);
   }
+  compatibilityStage = "validating project progress";
   const projectProgress = await browser.execute(() => {
     const observed = window.__RUSTYERA_COMPAT_PROGRESS__;
     observed?.capture();
@@ -220,11 +237,47 @@ try {
     throw new Error(`project progress was incomplete: ${JSON.stringify(projectProgress)}`);
   }
   const clickButton = async (label) => {
+    compatibilityStage = `clicking ${label}`;
     const button = await browser.$(`//button[normalize-space(.)=${JSON.stringify(label)}]`);
     await button.waitForClickable({ timeout: 30_000 });
     await button.click();
   };
+  await clickButton("文件");
+  await clickButton("设置…");
+  compatibilityStage = "checking font settings";
+  const settingsDialog = await browser.$("section[aria-label='RustyEra Web · 设置']");
+  await settingsDialog.waitForDisplayed({ timeout: 30_000 });
+  await clickButton("显示");
+  const gameFont = await settingsDialog.$("#setting-FontName");
+  await gameFont.setValue("Manually Entered Font");
+  const fontAccess = await browser.execute(() => {
+    const input = document.querySelector("#setting-FontName");
+    const status = document.querySelector(".font-access-status");
+    return {
+      inputTag: input?.tagName.toLowerCase(),
+      inputType: input?.getAttribute("type"),
+      list: input?.getAttribute("list"),
+      value: input instanceof HTMLInputElement ? input.value : null,
+      status: status?.getAttribute("data-state"),
+      statusText: status?.textContent?.trim(),
+      options: [...document.querySelectorAll("#available-game-fonts option")].map((option) =>
+        option.getAttribute("value"),
+      ),
+    };
+  });
+  if (
+    fontAccess.inputTag !== "input" ||
+    fontAccess.inputType !== "text" ||
+    fontAccess.list !== "available-game-fonts" ||
+    fontAccess.value !== "Manually Entered Font" ||
+    fontAccess.status !== "unsupported" ||
+    fontAccess.options.length !== 0
+  ) {
+    throw new Error(`font picker fallback mismatch: ${JSON.stringify(fontAccess)}`);
+  }
+  await clickButton("取消");
   await clickButton("[ 0] ----");
+  compatibilityStage = "waiting for in-game save";
   await browser.waitUntil(
     () =>
       browser.execute(() => {
@@ -241,6 +294,7 @@ try {
   await clickButton("导出存档…");
   await (await browser.$("section[aria-label='导出存档']")).waitForDisplayed({ timeout: 30_000 });
   await clickButton("导出");
+  compatibilityStage = "receiving exported save";
   const gameSave = await browser.executeAsync(async (done) => {
     try {
       done({ ok: true, download: await window.__RUSTYERA_TEST__.takeDownload(30_000) });
@@ -275,6 +329,7 @@ try {
   await clickButton("导入存档…");
   await (await browser.$("section[aria-label='导入存档']")).waitForDisplayed({ timeout: 30_000 });
   await clickButton("选择 .sav 文件…");
+  compatibilityStage = "waiting for imported save selection";
   await browser.waitUntil(
     async () =>
       (await browser.$("section[aria-label='导入存档']").getText()).includes("generated.sav"),
@@ -283,6 +338,7 @@ try {
   const importSlot = await browser.$("section[aria-label='导入存档'] select");
   await importSlot.selectByVisibleText("槽位 01（空）");
   await clickButton("导入");
+  compatibilityStage = "waiting for save import";
   const imported = await browser
     .waitUntil(
       () =>
@@ -313,6 +369,7 @@ try {
   const exportSlot = await browser.$("section[aria-label='导出存档'] select");
   await exportSlot.selectByVisibleText("槽位 01（已有存档）");
   await clickButton("导出");
+  compatibilityStage = "receiving round-trip save";
   const exportedSave = await browser.executeAsync(async (done) => {
     try {
       done({ ok: true, download: await window.__RUSTYERA_TEST__.takeDownload(30_000) });
@@ -361,6 +418,7 @@ try {
       throw new Error(`tooltip rendering mismatch: ${JSON.stringify(tooltip)}`);
     }
   }
+  compatibilityStage = "collecting final compatibility report";
   const observed = await browser.execute(() => ({
     userAgent: navigator.userAgent,
     status: document.querySelector(".runtime-status")?.textContent,
@@ -373,6 +431,7 @@ try {
     );
   }
   if (browserName === "safari") {
+    compatibilityStage = "minimizing Safari automation window";
     minimized = await browser
       .minimizeWindow()
       .then(() => true)
@@ -386,15 +445,25 @@ try {
       projectName: setup.projectName,
       opfs: setup.opfs,
       projectProgress,
+      fontAccess,
       saveTransfer,
       tooltip,
       ...observed,
     }),
   );
+} catch (error) {
+  runError = error;
 } finally {
+  try {
+    await snapshotMonitor?.stop();
+  } catch (error) {
+    snapshotMonitorError = error;
+  }
   await browser?.deleteSession().catch(() => {});
   await server?.close().catch(() => {});
 }
+if (snapshotMonitorError) throw snapshotMonitorError;
+if (runError) throw runError;
 
 async function collectFiles(root) {
   const output = [];

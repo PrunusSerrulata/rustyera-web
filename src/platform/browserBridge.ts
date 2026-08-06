@@ -7,6 +7,7 @@ import type {
   PumpBatch,
   RuntimeMessage,
   SessionOptions,
+  SystemFontQueryResult,
   TraditionalSaveAccess,
 } from "@/core/types";
 import { decodeImageMetadata } from "@/core/imageMetadata";
@@ -235,10 +236,10 @@ export class BrowserBridge implements FrontendBridge {
     return this.project.storage(request);
   }
 
-  async listFonts(): Promise<string[]> {
-    if (!window.queryLocalFonts) return ["system-ui", "sans-serif", "serif", "monospace"];
-    const fonts = await window.queryLocalFonts();
-    return [...new Set(fonts.map((font) => font.family))].sort((a, b) => a.localeCompare(b));
+  listFonts(): Promise<SystemFontQueryResult> {
+    return queryBrowserSystemFonts(
+      window.queryLocalFonts ? () => window.queryLocalFonts!() : undefined,
+    );
   }
 
   loadPreferences(): Promise<Preferences> {
@@ -449,6 +450,32 @@ export class BrowserBridge implements FrontendBridge {
 
   async close(): Promise<void> {
     this.worker.close();
+  }
+}
+
+export async function queryBrowserSystemFonts(
+  query: Window["queryLocalFonts"],
+): Promise<SystemFontQueryResult> {
+  if (!query) return { kind: "unsupported" };
+  try {
+    const available = await query();
+    const unique = new Map<string, string>();
+    for (const font of available) {
+      const family = font.family.trim();
+      const key = family.toLocaleLowerCase();
+      if (family && !unique.has(key)) unique.set(key, family);
+    }
+    return {
+      kind: "ready",
+      fonts: [...unique.values()].sort((left, right) =>
+        left.localeCompare(right, undefined, { sensitivity: "base" }),
+      ),
+    };
+  } catch (error) {
+    const name =
+      typeof error === "object" && error != null && "name" in error ? String(error.name) : "";
+    if (name === "NotAllowedError" || name === "SecurityError") return { kind: "denied" };
+    return { kind: "error", message: error instanceof Error ? error.message : String(error) };
   }
 }
 

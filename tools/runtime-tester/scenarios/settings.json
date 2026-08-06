@@ -19,6 +19,48 @@
     },
     { "type": "click", "locator": { "role": "tab", "name": "显示", "exact": true } },
     {
+      "type": "assert_dom",
+      "locator": { "css": "#setting-FontName" },
+      "fields": ["count", "visible", "attributes"],
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "attributes": {
+          "type": "text",
+          "list": "available-game-fonts",
+          "aria-describedby": "setting-FontName-font-access-status"
+        }
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": "#available-game-fonts option", "nth": 0 },
+      "fields": ["count"],
+      "expect": { "count": 0 }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".font-access-status" },
+      "fields": ["count", "text", "visible", "attributes"],
+      "expect": {
+        "count": 1,
+        "text": "正在等待浏览器授权并读取系统字体…",
+        "visible": true,
+        "attributes": { "data-state": "loading" }
+      }
+    },
+    {
+      "type": "fill",
+      "locator": { "css": "#setting-FontName" },
+      "value": "RustyEra Test Font"
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": "#setting-FontName" },
+      "fields": ["value"],
+      "expect": { "value": "RustyEra Test Font" }
+    },
+    {
       "type": "assert_layout",
       "locator": { "css": ".viewport-readout .setting-item" },
       "expect": { "count": 2, "visible": true, "same_top_within": 1 }
@@ -119,7 +161,7 @@
     { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } }
   ],
   "limits": {
-    "max_steps": 30,
+    "max_steps": 35,
     "timeout_seconds": 120
   }
 }

@@ -239,7 +239,6 @@ export async function installRemoteFileSystem(page, root) {
       requestPermission = async () => "granted";
     }
     window.showDirectoryPicker = async () => new RemoteDirectoryHandle("project");
-    window.queryLocalFonts = async () => [];
   });
 }
 

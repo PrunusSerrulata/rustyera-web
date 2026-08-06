@@ -39,13 +39,13 @@ export async function captureCompleteTauriSnapshot(browser) {
   });
 }
 
-export function assertSnapshotProgress(previousSnapshot, currentSnapshot) {
+export function assertSnapshotProgress(previousSnapshot, currentSnapshot, label = "Tauri") {
   if (
     previousSnapshot != null &&
     snapshotProgressSignature(previousSnapshot) === snapshotProgressSignature(currentSnapshot)
   ) {
     throw new Error(
-      `Tauri end-to-end test stalled: two consecutive complete snapshots were identical: ${JSON.stringify(currentSnapshot)}`,
+      `${label} end-to-end test stalled: two consecutive complete snapshots were identical: ${JSON.stringify(currentSnapshot)}`,
     );
   }
 }
@@ -59,8 +59,11 @@ export function startTauriSessionMonitor(
   {
     deadline,
     describeDeadline = () => "Tauri end-to-end task exceeded the shared 60-minute wall-clock limit",
+    eventType = "tauri-e2e-snapshot",
     interval = SNAPSHOT_INTERVAL_MS,
+    label = "Tauri",
     output = console.log,
+    snapshotContext = () => undefined,
   } = {},
 ) {
   let stopped = false;
@@ -90,27 +93,28 @@ export function startTauriSessionMonitor(
         if (deadline != null && Date.now() >= deadline) {
           throw new Error(describeDeadline());
         }
-        const snapshot = await captureCompleteTauriSnapshot(browser);
-        const runtime = snapshot.runtime;
+        const captured = await captureCompleteTauriSnapshot(browser);
+        const snapshot = { ...captured, operation: snapshotContext() };
+        const runtime = captured.runtime;
         if (runtime?.fault != null) {
-          throw new Error(`Tauri runtime faulted: ${JSON.stringify(snapshot)}`);
+          throw new Error(`${label} runtime faulted: ${JSON.stringify(snapshot)}`);
         }
         const terminalRejection = runtime?.logs?.find((entry) =>
           /command rejected \[(?:VersionMismatch|ProtocolMismatch)\]/.test(String(entry?.message)),
         );
         if (terminalRejection) {
           throw new Error(
-            `Tauri runtime rejected the configured state: ${JSON.stringify(snapshot)}`,
+            `${label} runtime rejected the configured state: ${JSON.stringify(snapshot)}`,
           );
         }
         output(
           JSON.stringify({
-            type: "tauri-e2e-snapshot",
+            type: eventType,
             capturedAt: new Date().toISOString(),
             ...snapshot,
           }),
         );
-        assertSnapshotProgress(previousSnapshot, snapshot);
+        assertSnapshotProgress(previousSnapshot, snapshot, label);
         previousSnapshot = snapshot;
         if (stopped) break;
         await new Promise((resolve) => {
@@ -129,6 +133,8 @@ export function startTauriSessionMonitor(
     }
   }
 }
+
+export const startCompleteSnapshotMonitor = startTauriSessionMonitor;
 
 function withoutReportMetadata(value) {
   if (Array.isArray(value)) return value.map(withoutReportMetadata);

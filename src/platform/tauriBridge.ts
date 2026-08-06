@@ -17,6 +17,7 @@ import type {
   PumpBatch,
   RuntimeMessage,
   SessionOptions,
+  SystemFontQueryResult,
 } from "@/core/types";
 
 const IPC_INTEGER_TAG = "$rustyeraInteger";
@@ -166,8 +167,12 @@ export class TauriBridge implements FrontendBridge {
     return invoke("storage_request", { request });
   }
 
-  listFonts(): Promise<string[]> {
-    return invoke("list_fonts");
+  async listFonts(): Promise<SystemFontQueryResult> {
+    try {
+      return { kind: "ready", fonts: await invoke<string[]>("list_fonts") };
+    } catch (error) {
+      return { kind: "error", message: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   loadPreferences(): Promise<Preferences> {

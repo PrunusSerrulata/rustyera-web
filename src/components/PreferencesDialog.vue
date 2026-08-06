@@ -3,9 +3,11 @@ import { computed, nextTick, ref } from "vue";
 
 import ColorPickerDialog from "@/components/ColorPickerDialog.vue";
 import DraggableDialog from "@/components/DraggableDialog.vue";
+import GameFontInput from "@/components/GameFontInput.vue";
 import { useSettingsDraft } from "@/components/useSettingsDraft";
 import type { SettingsField } from "@/core/settings";
 import {
+  type FontAccessStatus,
   type Preferences,
   type ProjectConfigurationChange,
   type ProjectConfigurationEntry,
@@ -16,7 +18,9 @@ const props = withDefaults(
   defineProps<{
     open: boolean;
     value: Preferences;
-    fonts: string[];
+    systemFonts: string[];
+    fontAccessStatus?: FontAccessStatus;
+    fontAccessError?: string;
     hostKind: "browser" | "tauri";
     viewportMeasurement?: GameViewportMeasurement;
     configurationEntries?: ProjectConfigurationEntry[];
@@ -27,6 +31,8 @@ const props = withDefaults(
   }>(),
   {
     configurationEntries: () => [],
+    fontAccessStatus: "idle",
+    fontAccessError: "",
     configurationReadOnly: false,
     restartPending: false,
     busy: false,
@@ -35,6 +41,7 @@ const props = withDefaults(
 );
 const emit = defineEmits<{
   close: [];
+  requestFonts: [];
   save: [value: Preferences, changes: ProjectConfigurationChange[], restart: boolean];
 }>();
 const colorField = ref<SettingsField>();
@@ -232,6 +239,17 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
                     />
                     <span class="color-setting-value">{{ configurationDraft[field.code] }}</span>
                   </button>
+                  <GameFontInput
+                    v-else-if="field.code === 'FontName'"
+                    :id="`setting-${field.code}`"
+                    v-model="configurationDraft[field.code]"
+                    :system-fonts="systemFonts"
+                    :status="fontAccessStatus"
+                    :error="fontAccessError"
+                    :host-kind="hostKind"
+                    :disabled="fieldDisabled(field)"
+                    @request-fonts="emit('requestFonts')"
+                  />
                   <input
                     v-else
                     :id="`setting-${field.code}`"
@@ -239,7 +257,6 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
                     :type="field.control === 'number' ? 'number' : 'text'"
                     :min="field.min"
                     :max="field.max"
-                    :list="field.code === 'FontName' ? 'available-game-fonts' : undefined"
                     :disabled="fieldDisabled(field)"
                   />
                   <p v-if="fieldErrors[field.code]" class="field-error" role="alert">
@@ -260,7 +277,7 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
             </button>
           </fieldset>
           <datalist id="available-game-fonts">
-            <option v-for="font in fonts" :key="font" :value="font" />
+            <option v-for="font in systemFonts" :key="font" :value="font" />
           </datalist>
         </template>
       </div>
