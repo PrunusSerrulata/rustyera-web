@@ -7,6 +7,7 @@ interface SettingsDraftOptions {
   open: () => boolean;
   configurationEntries: () => ProjectConfigurationEntry[];
   configurationReadOnly: () => boolean;
+  configurationSessionOnly: () => boolean;
 }
 
 export function useSettingsDraft(options: SettingsDraftOptions) {
@@ -54,12 +55,7 @@ export function useSettingsDraft(options: SettingsDraftOptions) {
   function changes(): ProjectConfigurationChange[] {
     return options
       .configurationEntries()
-      .filter(
-        (entry) =>
-          !options.configurationReadOnly() &&
-          !entry.fixed &&
-          configurationDraft[entry.code] !== entry.value,
-      )
+      .filter((entry) => entryEditable(entry) && configurationDraft[entry.code] !== entry.value)
       .map((entry) => ({ code: entry.code, value: String(configurationDraft[entry.code]) }));
   }
 
@@ -108,8 +104,7 @@ export function useSettingsDraft(options: SettingsDraftOptions) {
     for (const group of activeProjectTab.value?.groups ?? [])
       for (const field of group.fields) {
         const entry = entries.value.get(field.code);
-        if (entry && !entry.fixed && !options.configurationReadOnly())
-          configurationDraft[field.code] = entry.default_value;
+        if (entry && entryEditable(entry)) configurationDraft[field.code] = entry.default_value;
       }
     clearErrors();
   }
@@ -118,8 +113,8 @@ export function useSettingsDraft(options: SettingsDraftOptions) {
     const entry = entries.value.get(field.code);
     return (
       busy ||
-      options.configurationReadOnly() ||
-      Boolean(entry?.fixed) ||
+      !entry ||
+      !entryEditable(entry) ||
       (field.code === "ZipSaveData" && configurationDraft.SystemSaveInBinary !== "YES") ||
       (field.code === "WarnFunctionOverloading" &&
         configurationDraft.AllowFunctionOverloading !== "YES")
@@ -143,13 +138,31 @@ export function useSettingsDraft(options: SettingsDraftOptions) {
     resetAllDrafts();
   }
 
+  function entryEditable(entry: ProjectConfigurationEntry): boolean {
+    if (entry.fixed) return false;
+    if (!options.configurationReadOnly()) return true;
+    return options.configurationSessionOnly() && entry.application === "hot";
+  }
+
+  const activeTabEditable = computed(() =>
+    (activeProjectTab.value?.groups ?? []).some((group) =>
+      group.fields.some((field) => {
+        const entry = entries.value.get(field.code);
+        return entry != null && entryEditable(entry);
+      }),
+    ),
+  );
+  const anyFieldEditable = computed(() => options.configurationEntries().some(entryEditable));
+
   function clearErrors(): void {
     for (const code of Object.keys(fieldErrors)) delete fieldErrors[code];
   }
 
   return {
     activeProjectTab,
+    activeTabEditable,
     activeTab,
+    anyFieldEditable,
     checked,
     changes,
     configurationDraft,

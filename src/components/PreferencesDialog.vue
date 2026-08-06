@@ -25,6 +25,7 @@ const props = withDefaults(
     viewportMeasurement?: GameViewportMeasurement;
     configurationEntries?: ProjectConfigurationEntry[];
     configurationReadOnly?: boolean;
+    configurationSessionOnly?: boolean;
     restartPending?: boolean;
     busy?: boolean;
     error?: string;
@@ -34,6 +35,7 @@ const props = withDefaults(
     fontAccessStatus: "idle",
     fontAccessError: "",
     configurationReadOnly: false,
+    configurationSessionOnly: false,
     restartPending: false,
     busy: false,
     error: "",
@@ -47,7 +49,9 @@ const emit = defineEmits<{
 const colorField = ref<SettingsField>();
 const {
   activeProjectTab,
+  activeTabEditable,
   activeTab,
+  anyFieldEditable,
   cancelDraft,
   checked,
   changes,
@@ -63,6 +67,7 @@ const {
   open: () => props.open,
   configurationEntries: () => props.configurationEntries,
   configurationReadOnly: () => props.configurationReadOnly,
+  configurationSessionOnly: () => props.configurationSessionOnly,
 });
 const tabs = computed(() => projectTabs.value.map((tab) => ({ id: tab.id, label: tab.label })));
 const title = computed(() => `RustyEra ${props.hostKind === "tauri" ? "Tauri" : "Web"} · 设置`);
@@ -152,7 +157,10 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
           <p v-if="activeProjectTab.warning" class="settings-warning" role="note">
             {{ activeProjectTab.warning }}
           </p>
-          <p v-if="configurationReadOnly" class="settings-warning" role="note">
+          <p v-if="configurationSessionOnly" class="settings-warning" role="note">
+            当前运行的是项目文件；无需重启的设置仅对当前会话有效，退出游戏后将丢失。
+          </p>
+          <p v-else-if="configurationReadOnly" class="settings-warning" role="note">
             当前项目文件为只读，项目设置不可修改。
           </p>
 
@@ -270,7 +278,9 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
                 activeTab === 'display' && group.title === '窗口与主视口' && hostKind === 'tauri'
               "
               type="button"
-              :disabled="busy || configurationReadOnly || !viewportMeasurement"
+              :disabled="
+                busy || (configurationReadOnly && !configurationSessionOnly) || !viewportMeasurement
+              "
               @click="useCurrentViewport"
             >
               使用当前主视口大小
@@ -284,13 +294,20 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
 
       <p v-if="error" class="settings-error" role="alert">{{ error }}</p>
       <footer class="dialog-actions settings-actions">
-        <button type="button" :disabled="busy" @click="resetActiveTab">重置当前标签页</button>
+        <button type="button" :disabled="busy || !activeTabEditable" @click="resetActiveTab">
+          重置当前标签页
+        </button>
         <span class="spacer" />
         <button type="button" :disabled="busy" @click="close">取消</button>
-        <button type="submit" class="primary" :disabled="busy">
+        <button type="submit" class="primary" :disabled="busy || !anyFieldEditable">
           {{ busy ? "正在应用…" : "应用" }}
         </button>
-        <button type="button" class="primary" :disabled="busy" @click="apply(true)">
+        <button
+          type="button"
+          class="primary"
+          :disabled="busy || configurationSessionOnly || configurationReadOnly"
+          @click="apply(true)"
+        >
           应用并重启
         </button>
       </footer>

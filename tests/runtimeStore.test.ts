@@ -483,6 +483,126 @@ describe("runtime store session lifecycle", () => {
     expect(bridge.restartProject).not.toHaveBeenCalled();
   });
 
+  it("commits hot project-file settings for this session without writing the package", async () => {
+    let messageId = 30;
+    bridge.submitRuntime.mockImplementation(async () => messageId++);
+    bridge.projectConfigurationWritable.mockReturnValue(false);
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("project_load_report", projectConfigurationReport(4, 5, "16"))],
+    });
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    expect(store.configurationReadOnly).toBe(true);
+    expect(store.configurationSessionOnly).toBe(true);
+
+    const saving = store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "18" }]);
+    await Promise.resolve();
+    const contents = "フォントサイズ:18\n";
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "configuration_update_prepared",
+            {
+              project_revision: 4,
+              expected_source_digest: new Uint8Array(32).fill(5),
+              contents,
+              restart_required: false,
+              prepared_source_digest: blake3(new TextEncoder().encode(contents)),
+            },
+            31,
+          ),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "configuration_update_committed",
+            { configuration: projectConfigurationReport(4, 6, "18").configuration },
+            32,
+          ),
+        ],
+      });
+
+    await vi.advanceTimersByTimeAsync(64);
+    await saving;
+
+    expect(bridge.writeProjectConfiguration).not.toHaveBeenCalled();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      {
+        type: "finalize_configuration_update",
+        value: { preparation_message_id: 31, outcome: "commit" },
+      },
+      undefined,
+    );
+    expect(store.status).toContain("退出游戏后将丢失");
+    expect(store.configurationEntries[0]?.effective_value).toBe("18");
+  });
+
+  it("rejects non-hot project-file changes before starting a Runtime transaction", async () => {
+    bridge.projectConfigurationWritable.mockReturnValue(false);
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", {
+          success: true,
+          diagnostics: [],
+          configuration: {
+            project_revision: 7,
+            source_digest: new Uint8Array(32).fill(8),
+            restart_pending: false,
+            entries: [
+              {
+                code: "AutoSave",
+                japanese: "自動保存",
+                english: "Auto save",
+                value: "YES",
+                effective_value: "YES",
+                default_value: "YES",
+                application: "restart",
+                kind: "boolean",
+                allowed: [],
+                fixed: false,
+                applicability: 8,
+              },
+              {
+                code: "FontSize",
+                japanese: "フォントサイズ",
+                english: "Font size",
+                value: "16",
+                effective_value: "16",
+                default_value: "16",
+                application: "hot",
+                kind: "integer",
+                allowed: [],
+                fixed: true,
+                applicability: 8,
+              },
+            ],
+          },
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    bridge.submitRuntime.mockClear();
+
+    for (const change of [
+      { code: "AutoSave", value: "NO" },
+      { code: "FontSize", value: "18" },
+      { code: "UnknownDisplaySetting", value: "1" },
+    ]) {
+      await store.savePreferences(defaultPreferences(), [change]);
+      expect(store.settingsError).toContain("仅支持当前会话内即时生效的设置");
+    }
+
+    expect(bridge.submitRuntime).not.toHaveBeenCalled();
+    expect(bridge.writeProjectConfiguration).not.toHaveBeenCalled();
+  });
+
   it("aborts a prepared transaction when the host write fails and does not hot-apply it", async () => {
     let messageId = 40;
     bridge.submitRuntime.mockImplementation(async () => messageId++);

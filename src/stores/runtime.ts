@@ -92,6 +92,7 @@ interface DiagnosisState {
 interface PendingConfigurationBase {
   snapshot: ProjectConfigurationSnapshot;
   changedCodes: string[];
+  sessionOnly: boolean;
   resolve: () => void;
   reject: (error: unknown) => void;
 }
@@ -240,6 +241,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
     () =>
       projectConfiguration.value != null &&
       (!bridge.projectConfigurationWritable() || !configurationProfileValid.value),
+  );
+  const configurationSessionOnly = computed(
+    () =>
+      projectConfiguration.value != null &&
+      !bridge.projectConfigurationWritable() &&
+      configurationProfileValid.value,
   );
   const configurationRestartPending = computed(
     () => projectConfiguration.value?.restart_pending ?? false,
@@ -662,10 +669,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
             !contentsDigest.every((byte, index) => byte === prepared.prepared_source_digest[index])
           )
             throw new Error("Runtime 返回的项目配置摘要无效");
-          await bridge.writeProjectConfiguration(
-            prepared.expected_source_digest,
-            prepared.contents,
-          );
+          if (pending.sessionOnly && prepared.restart_required)
+            throw new Error("项目文件仅支持当前会话内即时生效的设置");
+          if (!pending.sessionOnly)
+            await bridge.writeProjectConfiguration(
+              prepared.expected_source_digest,
+              prepared.contents,
+            );
         } catch (error) {
           writeError = error;
         }
@@ -2052,18 +2062,23 @@ export const useRuntimeStore = defineStore("runtime", () => {
     settingsBusy.value = true;
     settingsError.value = "";
     startSettingsElapsedTimer();
-    let projectApplied = false;
+    let projectApplication: "persistent" | "session" | undefined;
     let preferencesSaved = false;
     try {
       if (changes.length) {
-        await saveProjectConfiguration(changes);
-        projectApplied = true;
+        if (restartAfterApply && configurationSessionOnly.value)
+          throw new Error("项目文件的会话设置无法通过重启应用");
+        projectApplication = await saveProjectConfiguration(changes);
       }
       preferences.value = await bridge.savePreferences(value);
       preferencesSaved = true;
       previewPreferences.value = null;
       audio.setPreferences(preferences.value);
-      status.value = restartAfterApply ? "设置已保存，正在重新启动…" : "设置已应用";
+      status.value = restartAfterApply
+        ? "设置已保存，正在重新启动…"
+        : projectApplication === "session"
+          ? "会话设置已应用；退出游戏后将丢失"
+          : "设置已应用";
       if (restartAfterApply) {
         preferencesOpen.value = false;
         await restart();
@@ -2071,9 +2086,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } catch (error) {
       const message = preferencesSaved
         ? `设置已保存，但重新启动失败：${String(error)}`
-        : projectApplied
-          ? `项目设置已应用，但客户端偏好保存失败：${String(error)}`
-          : `设置未保存：${String(error)}`;
+        : projectApplication === "session"
+          ? `会话设置已应用（退出游戏后将丢失），但客户端偏好保存失败：${String(error)}`
+          : projectApplication === "persistent"
+            ? `项目设置已应用，但客户端偏好保存失败：${String(error)}`
+            : `设置未保存：${String(error)}`;
       status.value = message;
       log("error", message);
       settingsError.value = message;
@@ -2101,10 +2118,21 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
   }
 
-  async function saveProjectConfiguration(changes: ProjectConfigurationChange[]): Promise<void> {
+  async function saveProjectConfiguration(
+    changes: ProjectConfigurationChange[],
+  ): Promise<"persistent" | "session"> {
     const snapshot = projectConfiguration.value;
-    if (!snapshot || !bridge.projectConfigurationWritable() || !configurationProfileValid.value)
-      throw new Error(!snapshot ? "项目配置尚未加载" : "当前项目配置为只读");
+    if (!snapshot || !configurationProfileValid.value)
+      throw new Error(!snapshot ? "项目配置尚未加载" : "当前项目配置不可修改");
+    const sessionOnly = !bridge.projectConfigurationWritable();
+    if (
+      sessionOnly &&
+      changes.some((change) => {
+        const entry = configurationEntries.value.find((item) => item.code === change.code);
+        return !entry || entry.fixed || entry.application !== "hot";
+      })
+    )
+      throw new Error("项目文件仅支持当前会话内即时生效的设置");
     if (pendingConfigurationUpdate) throw new Error("项目配置正在保存，请稍候");
     await new Promise<void>((resolve, reject) => {
       void send({
@@ -2117,6 +2145,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
             prepareMessageId: messageId,
             snapshot,
             changedCodes: changes.map((change) => change.code),
+            sessionOnly,
             resolve,
             reject,
           };
@@ -2124,6 +2153,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         })
         .catch(reject);
     });
+    return sessionOnly ? "session" : "persistent";
   }
 
   async function beginConfigurationFinalization(
@@ -2369,6 +2399,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     preferences,
     configurationEntries,
     configurationReadOnly,
+    configurationSessionOnly,
     configurationRestartPending,
     viewportMeasurement,
     useMenu,

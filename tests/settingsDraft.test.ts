@@ -29,6 +29,7 @@ describe("settings draft domain", () => {
       open: () => state.open,
       configurationEntries: () => state.entries,
       configurationReadOnly: () => state.readOnly,
+      configurationSessionOnly: () => false,
     });
     state.open = true;
     await nextTick();
@@ -61,6 +62,7 @@ describe("settings draft domain", () => {
       open: () => state.open,
       configurationEntries: () => state.entries,
       configurationReadOnly: () => false,
+      configurationSessionOnly: () => false,
     });
     state.open = true;
     await nextTick();
@@ -82,12 +84,50 @@ describe("settings draft domain", () => {
     expect(draft.checked(warning)).toBe(false);
     expect(draft.configurationDraft.ZipSaveData).toBe("YES");
   });
+
+  it("allows only hot fields in a read-only project-file session", async () => {
+    const state = reactive({
+      open: false,
+      entries: [
+        entry("UseMouse", "YES", "boolean"),
+        entry("AutoSave", "YES", "boolean", "restart"),
+      ] as ProjectConfigurationEntry[],
+    });
+    const draft = useSettingsDraft({
+      open: () => state.open,
+      configurationEntries: () => state.entries,
+      configurationReadOnly: () => true,
+      configurationSessionOnly: () => true,
+    });
+    state.open = true;
+    await nextTick();
+    const useMouse: SettingsField = {
+      code: "UseMouse",
+      label: "鼠标",
+      control: "boolean",
+    };
+    const autoSave: SettingsField = {
+      code: "AutoSave",
+      label: "自动保存",
+      control: "boolean",
+    };
+
+    expect(draft.fieldDisabled(useMouse, false)).toBe(false);
+    expect(draft.fieldDisabled(autoSave, false)).toBe(true);
+    draft.configurationDraft.UseMouse = "NO";
+    draft.configurationDraft.AutoSave = "NO";
+    expect(draft.changes()).toEqual([{ code: "UseMouse", value: "NO" }]);
+  });
 });
 
 function entry(
   code: string,
   value: string,
   kind: ProjectConfigurationEntry["kind"],
+  application: ProjectConfigurationEntry["application"] = code === "SystemSaveInBinary" ||
+  code === "ZipSaveData"
+    ? "restart"
+    : "hot",
 ): ProjectConfigurationEntry {
   return {
     code,
@@ -96,7 +136,7 @@ function entry(
     value,
     default_value: value,
     effective_value: value,
-    application: code === "SystemSaveInBinary" || code === "ZipSaveData" ? "restart" : "hot",
+    application,
     kind,
     allowed: [],
     fixed: false,

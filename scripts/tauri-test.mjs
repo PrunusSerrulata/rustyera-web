@@ -84,6 +84,12 @@ const environment = {
   VITE_RUSTYERA_TEST: "1",
   VITE_RUSTYERA_TAURI_TEST: "1",
   VITE_RUSTYERA_TEST_PROJECT: project,
+  VITE_RUSTYERA_TEST_PROJECT_FILE: path.join(
+    project,
+    ".rustyera",
+    "cache",
+    "compiled-project.reraproj",
+  ),
   VITE_RUSTYERA_TEST_STATE: state ?? "",
   VITE_RUSTYERA_TEST_STATE_TYPE: configuredStateType,
   ...Object.fromEntries(

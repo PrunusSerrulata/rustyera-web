@@ -276,18 +276,29 @@ try {
     throw new Error(`font picker fallback mismatch: ${JSON.stringify(fontAccess)}`);
   }
   await clickButton("取消");
+  const safariSaveWaitId =
+    browserName === "safari"
+      ? await browser.execute(() => window.__RUSTYERA_TEST__?.snapshot().wait?.wait_id ?? null)
+      : null;
   await clickButton("[ 0] ----");
   compatibilityStage = "waiting for in-game save";
   await browser.waitUntil(
     () =>
-      browser.execute(() => {
-        const state = window.__RUSTYERA_TEST__?.snapshot();
-        return (
-          state?.phase === "waiting_input" &&
-          state.canInteract &&
-          !state.logs.some((entry) => String(entry.message).includes("text save lacks unique code"))
-        );
-      }),
+      browser.execute(
+        (activeBrowser, previousWaitId) => {
+          const state = window.__RUSTYERA_TEST__?.snapshot();
+          return (
+            state?.phase === "waiting_input" &&
+            state.canInteract &&
+            (activeBrowser !== "safari" || state.wait?.wait_id !== previousWaitId) &&
+            !state.logs.some((entry) =>
+              String(entry.message).includes("text save lacks unique code"),
+            )
+          );
+        },
+        browserName,
+        safariSaveWaitId,
+      ),
     { timeout: 30_000, interval: 100, timeoutMsg: "in-game save did not complete" },
   );
   await clickButton("文件");

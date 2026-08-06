@@ -278,6 +278,40 @@ describe("dialog actions", () => {
     wrapper.unmount();
   });
 
+  it("edits only hot settings for the current project-file session", async () => {
+    const hot = configurationEntry("FontSize", "16", "integer");
+    const restart = {
+      ...configurationEntry("AutoSave", "YES", "boolean"),
+      application: "restart" as const,
+    };
+    const wrapper = mount(PreferencesDialog, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        value: defaultPreferences(),
+        systemFonts: [],
+        hostKind: "browser",
+        configurationEntries: [hot, restart],
+        configurationReadOnly: true,
+        configurationSessionOnly: true,
+      },
+    });
+
+    expect(document.body.textContent).toContain("无需重启的设置仅对当前会话有效，退出游戏后将丢失");
+    expect(document.body.textContent).not.toContain("项目设置不可修改");
+    await clickButton("显示");
+    const fontSize = document.body.querySelector<HTMLInputElement>("#setting-FontSize")!;
+    expect(fontSize.disabled).toBe(false);
+    fontSize.value = "18";
+    fontSize.dispatchEvent(new Event("input", { bubbles: true }));
+    await clickButton("存档");
+    expect(document.body.querySelector<HTMLInputElement>("#setting-AutoSave")!.disabled).toBe(true);
+    expect(findButton("应用并重启").disabled).toBe(true);
+    await clickButton("应用");
+    expect(wrapper.emitted("save")?.at(-1)?.[1]).toEqual([{ code: "FontSize", value: "18" }]);
+    wrapper.unmount();
+  });
+
   it("keeps invalid color edits visible and disables confirmation", async () => {
     const wrapper = mount(ColorPickerDialog, {
       attachTo: document.body,
@@ -430,12 +464,18 @@ describe("dialog actions", () => {
 });
 
 async function clickButton(label: string): Promise<void> {
+  const button = findButton(label);
+  expect(button, `missing ${label} button`).toBeDefined();
+  button.click();
+  await nextTick();
+}
+
+function findButton(label: string): HTMLButtonElement {
   const button = [...document.body.querySelectorAll<HTMLButtonElement>("button")].find(
     (candidate) => candidate.textContent?.trim() === label,
   );
   expect(button, `missing ${label} button`).toBeDefined();
-  button!.click();
-  await nextTick();
+  return button!;
 }
 
 function dispatchPointer(target: HTMLElement, clientX: number, clientY: number): void {

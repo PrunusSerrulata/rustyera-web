@@ -110,6 +110,7 @@ onMounted(() => void store.initialize());
       :viewport-measurement="store.viewportMeasurement"
       :configuration-entries="store.configurationEntries"
       :configuration-read-only="store.configurationReadOnly"
+      :configuration-session-only="store.configurationSessionOnly"
       :restart-pending="store.configurationRestartPending"
       :busy="store.settingsBusy"
       :error="store.settingsError"

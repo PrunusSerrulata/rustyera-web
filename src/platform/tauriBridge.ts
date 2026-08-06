@@ -120,6 +120,15 @@ export class TauriBridge implements FrontendBridge {
   }
 
   async openProjectFile(): Promise<ProjectOpenMetrics | undefined> {
+    const testProjectFile = import.meta.env.VITE_RUSTYERA_TEST_PROJECT_FILE;
+    if (import.meta.env.VITE_RUSTYERA_TEST === "1" && testProjectFile) {
+      const metrics = await invoke<ProjectOpenMetrics>("open_project_file", {
+        path: testProjectFile,
+      });
+      this.projectPath = testProjectFile;
+      this.projectIsFile = true;
+      return metrics;
+    }
     const path = await open({
       directory: false,
       multiple: false,
