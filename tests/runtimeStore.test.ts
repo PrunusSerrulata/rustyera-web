@@ -1631,6 +1631,7 @@ describe("runtime store session lifecycle", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(store.presentation.revision).toBe(1);
     expect(plainLine(store.presentation.lines[0])).toBe("frame 1");
+    const historyRevision = store.presentation.historyRevision;
 
     await vi.advanceTimersByTimeAsync(16);
     expect(store.presentation.revision).toBe(1);
@@ -1640,6 +1641,7 @@ describe("runtime store session lifecycle", () => {
     await vi.advanceTimersByTimeAsync(16);
     expect(store.presentation.revision).toBe(3);
     expect(plainLine(store.presentation.lines[0])).toBe("frame 2");
+    expect(store.presentation.historyRevision).toBe(historyRevision);
     expect(store.canInteract).toBe(true);
   });
 });

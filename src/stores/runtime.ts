@@ -847,6 +847,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   function publishStagedPresentation(): boolean {
     if (!stagedPresentation) return false;
+    // Redraw-disabled map refreshes can delete and recreate their tail across separate deltas.
+    // Compare the completed frame with the last published frame, not the staged intermediate
+    // length, before deciding whether the viewport should follow new history to the bottom.
+    if (stagedPresentation.lines.length <= presentation.lines.length)
+      stagedPresentation.historyRevision = presentation.historyRevision;
     Object.assign(presentation, stagedPresentation);
     stagedPresentation = undefined;
     stagedPresentationReady = false;

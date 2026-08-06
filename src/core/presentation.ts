@@ -35,16 +35,10 @@ export function emptyPresentation(): PresentationState {
 }
 
 export function applySnapshot(state: PresentationState, snapshot: any): void {
-  const previousLast = state.lines.at(-1);
   const nextLines = [...(snapshot.history?.logical_lines ?? [])] as DisplayLine[];
-  const nextLast = nextLines.at(-1);
-  if (
-    nextLines.length > state.lines.length ||
-    nextLast?.line_id !== previousLast?.line_id ||
-    lineContentChanged(previousLast, nextLast)
-  ) {
-    state.historyRevision += 1;
-  }
+  // A resynchronization snapshot can carry an equal-length dynamic-map tail with new line IDs.
+  // Emuera replaces that tail in place, so only actual history growth should request bottom follow.
+  if (nextLines.length > state.lines.length) state.historyRevision += 1;
   state.revision = snapshot.revision;
   state.title = snapshot.title;
   state.lines = nextLines;

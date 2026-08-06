@@ -94,9 +94,9 @@ describe("presentation projection", () => {
     expect(state.historyRevision).toBe(historyRevision);
   });
 
-  it("follows a same-length snapshot whose runtime line identities changed", () => {
+  it("keeps a same-length resynchronized tail replacement at its scroll position", () => {
     const state = emptyPresentation();
-    const snapshot = (revision: number, lineId: number) => ({
+    const snapshot = (revision: number, lineId: number, text: string) => ({
       revision,
       title: "snapshot",
       history: {
@@ -107,17 +107,18 @@ describe("presentation projection", () => {
             logical_line_start: true,
             line_end: true,
             alignment: "left",
-            runs: [{ type: "text", text: "same", style: {} }],
+            runs: [{ type: "text", text, style: {} }],
           },
         ],
       },
     });
-    applySnapshot(state, snapshot(1, 1));
+    applySnapshot(state, snapshot(1, 1, "frame 1"));
     const historyRevision = state.historyRevision;
 
-    applySnapshot(state, snapshot(2, 2));
+    applySnapshot(state, snapshot(2, 2, "frame 2"));
 
-    expect(state.historyRevision).toBe(historyRevision + 1);
+    expect(state.lines.map(plainLine)).toEqual(["frame 2"]);
+    expect(state.historyRevision).toBe(historyRevision);
   });
 
   it("marks an image replacement as output even when both images have empty alt text", () => {
