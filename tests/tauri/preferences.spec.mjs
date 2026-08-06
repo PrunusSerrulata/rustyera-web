@@ -15,6 +15,7 @@ preferences("Tauri emuera.config preferences", () => {
 
     await $(".welcome .primary").click();
     await waitForInteractiveProject();
+    await waitForBackgroundProjectExport();
     await $("button=文件").click();
     await $("button=设置…").click();
 
@@ -72,6 +73,19 @@ async function waitForInteractiveProject() {
     stallTimeout: PROJECT_TIMEOUT,
     accept: (state) => state?.projectOpen && state.phase === "waiting_input" && state.canInteract,
   });
+}
+
+async function waitForBackgroundProjectExport() {
+  await browser.waitUntil(
+    async () => {
+      const state = await snapshot();
+      return state?.transfer?.export == null && state.status === "已导出 compiled-project.reraproj";
+    },
+    {
+      timeout: PROJECT_TIMEOUT,
+      timeoutMsg: "background compiled-project export did not finish before opening settings",
+    },
+  );
 }
 
 async function snapshot() {
