@@ -316,13 +316,14 @@ select {
   padding: 0;
   background: transparent;
   color: inherit;
-  text-decoration: underline;
-  text-decoration-style: dotted;
+  text-decoration: none;
   pointer-events: auto;
 }
 :is(.game-button, .html-node:is(button)):hover:not(:disabled) {
+  --game-interaction-foreground: var(--game-focus);
+
   background: var(--game-interaction-hover-background);
-  color: var(--game-focus);
+  color: var(--game-interaction-foreground);
 }
 .game-viewport.mouse-disabled :is(.game-button, .html-node:is(button), [data-era-tooltip]) {
   pointer-events: none;

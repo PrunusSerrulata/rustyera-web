@@ -89,7 +89,7 @@ export const projectSettingsTabs: SettingsTab[] = [
         fields: [
           { code: "ForeColor", label: "文字颜色", control: "color" },
           { code: "BackColor", label: "背景颜色", control: "color" },
-          { code: "FocusColor", label: "选中颜色", control: "color" },
+          { code: "FocusColor", label: "选中文字颜色", control: "color" },
         ],
       },
     ],

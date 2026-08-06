@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@/stores/runtime", () => ({
   useRuntimeStore: () => ({
     activate: vi.fn(),
+    canInteract: true,
     effectivePreferences: { imageScale: 1 },
     gameTextStyle: { fontSizePx: 12 },
     gameLineHeightPx: 18,
@@ -18,6 +19,7 @@ vi.mock("@/stores/runtime", () => ({
 }));
 
 import HtmlNode from "@/components/HtmlNode.vue";
+import RunRenderer from "@/components/RunRenderer.vue";
 
 describe("frontend host and image-line policy", () => {
   it("grants both Tauri hosts the window permissions used by the frontend", () => {
@@ -99,6 +101,46 @@ describe("frontend host and image-line policy", () => {
     expect(stylesheet).toMatch(
       /:is\(\.game-button, \.html-node:is\(button\)\):has\(\.media-positioned\):not\(:disabled\)[\s\S]*?> \.media-visual\.media-hovered\s*\{[^}]*border-radius:\s*var\(--game-interaction-border-radius\);[^}]*background:\s*var\(--game-interaction-hover-background\);/s,
     );
+  });
+
+  it("uses the selected color for button text without decorating buttons", () => {
+    const wrapper = mount(RunRenderer, {
+      props: {
+        run: {
+          type: "button",
+          enabled: true,
+          token: { epoch: 1, id: 1 },
+          runs: [
+            {
+              type: "text",
+              text: "choice",
+              style: {
+                foreground: { red: 12, green: 34, blue: 56, alpha: 255 },
+                underline: false,
+                strikeout: false,
+              },
+            },
+          ],
+        },
+      },
+    });
+    const button = wrapper.get("button");
+    expect(button.attributes("disabled")).toBeUndefined();
+    const text = button.get("span");
+    expect(text.attributes("style")).toContain(
+      "color: var(--game-interaction-foreground, rgba(12, 34, 56, 1))",
+    );
+
+    const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
+    const buttonRule = stylesheet.match(
+      /\.game-button,\s*\.html-node:is\(button\)\s*\{(?<body>[^}]*)\}/,
+    );
+    expect(buttonRule?.groups?.body).toContain("text-decoration: none");
+    expect(buttonRule?.groups?.body).not.toContain("text-decoration: underline");
+    expect(stylesheet).toMatch(
+      /:is\(\.game-button, \.html-node:is\(button\)\):hover:not\(:disabled\)\s*\{[^}]*--game-interaction-foreground:\s*var\(--game-focus\);[^}]*color:\s*var\(--game-interaction-foreground\);/s,
+    );
+    wrapper.unmount();
   });
 
   it("projects HTML space shapes before positioned images", () => {

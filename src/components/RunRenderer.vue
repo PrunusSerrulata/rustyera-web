@@ -13,7 +13,7 @@ const textStyle = computed(() => {
   const foreground = style.foreground;
   const background = style.background;
   return {
-    color: foreground ? rgba(foreground) : undefined,
+    color: foreground ? `var(--game-interaction-foreground, ${rgba(foreground)})` : undefined,
     backgroundColor: background ? rgba(background) : undefined,
     fontWeight: style.bold ? "bold" : undefined,
     fontStyle: style.italic ? "italic" : undefined,

@@ -2,10 +2,19 @@ import { nextTick, reactive } from "vue";
 import { describe, expect, it } from "vitest";
 
 import { useSettingsDraft } from "@/components/useSettingsDraft";
-import type { SettingsField } from "@/core/settings";
+import { projectSettingsTabs, type SettingsField } from "@/core/settings";
 import type { ProjectConfigurationEntry } from "@/core/types";
 
 describe("settings draft domain", () => {
+  it("describes FocusColor as the selected text color", () => {
+    const focusColor = projectSettingsTabs
+      .flatMap((tab) => tab.groups)
+      .flatMap((group) => group.fields)
+      .find((field) => field.code === "FocusColor");
+
+    expect(focusColor?.label).toBe("选中文字颜色");
+  });
+
   it("collects changes across tabs, locates validation errors, and rolls edits back", async () => {
     const state = reactive({
       open: false,
