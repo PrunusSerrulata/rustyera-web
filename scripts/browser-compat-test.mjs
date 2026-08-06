@@ -381,21 +381,31 @@ try {
   await exportSlot.selectByVisibleText("槽位 01（已有存档）");
   await clickButton("导出");
   compatibilityStage = "receiving round-trip save";
-  const exportedSave = await browser.executeAsync(async (done) => {
-    try {
-      done({ ok: true, download: await window.__RUSTYERA_TEST__.takeDownload(30_000) });
-    } catch (error) {
-      done({ ok: false, error: `${error?.name ?? "Error"}: ${error?.message ?? String(error)}` });
+  await browser.waitUntil(
+    () => browser.execute(() => window.__RUSTYERA_TEST_DOWNLOADS__?.[0]?.name === "save01.sav"),
+    { timeout: 10_000, interval: 100, timeoutMsg: "round-trip save download was not produced" },
+  );
+  const exportedSave = await browser.execute(() => {
+    const download = window.__RUSTYERA_TEST_DOWNLOADS__?.shift();
+    if (!download) return null;
+    let hash = 0x811c9dc5;
+    for (const byte of download.bytes) {
+      hash ^= byte;
+      hash = Math.imul(hash, 0x01000193);
     }
+    return {
+      name: download.name,
+      byteLength: download.bytes.length,
+      signature: (hash >>> 0).toString(16).padStart(8, "0"),
+    };
   });
-  if (!exportedSave.ok) throw new Error(`traditional save export failed: ${exportedSave.error}`);
+  if (!exportedSave) throw new Error("traditional save export produced no download");
   const saveTransfer = {
     inGameSave: true,
     imported: true,
-    exportedName: exportedSave.download.name,
-    roundTrip:
-      JSON.stringify(exportedSave.download.bytes) === JSON.stringify(gameSave.download.bytes),
-    byteLength: exportedSave.download.bytes.length,
+    exportedName: exportedSave.name,
+    roundTrip: exportedSave.signature === byteSignature(gameSave.download.bytes),
+    byteLength: exportedSave.byteLength,
   };
   if (saveTransfer.exportedName !== "save01.sav" || !saveTransfer.roundTrip) {
     throw new Error(`traditional save round trip mismatch: ${JSON.stringify(saveTransfer)}`);
@@ -491,6 +501,15 @@ async function collectFiles(root) {
       }
     }
   }
+}
+
+function byteSignature(bytes) {
+  let hash = 0x811c9dc5;
+  for (const byte of bytes) {
+    hash ^= byte;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 async function waitForCompatibilityRuntime(browser, browserName) {

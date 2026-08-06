@@ -402,6 +402,7 @@ export async function runAction(page, action) {
     }
     return { semanticInput: String(action.value ?? "") };
   }
+  if (action.type === "sample_queries") return sampleQueries(page, action);
   const locator = action.locator ? resolveLocator(page, action.locator) : undefined;
   if (action.type === "click") {
     const runtimeInput = await locator.evaluate((element) =>
@@ -419,6 +420,10 @@ export async function runAction(page, action) {
         const snapshot = window.__RUSTYERA_TEST__.snapshot();
         return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
       }, beforeWaitId);
+  } else if (action.type === "scroll_key") {
+    await locator.focus();
+    await page.keyboard.press(String(action.key ?? "PageUp"));
+    await page.waitForTimeout(Number(action.settle_ms ?? 50));
   } else if (action.type === "dblclick") await locator.dblclick();
   else if (action.type === "hover") await locator.hover();
   else if (action.type === "fill") await locator.fill(String(action.value ?? ""));
@@ -465,6 +470,67 @@ async function waitForAutomaticWaitChange(page, waitId) {
     return current.fault != null || current.wait?.wait_id !== previousWaitId;
   }, waitId);
   await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+}
+
+async function sampleQueries(page, action) {
+  const count = Number(action.count ?? 3);
+  const interval = Number(action.interval_ms ?? 1_000);
+  const queries = action.queries ?? [];
+  if (!Number.isInteger(count) || count < 2)
+    throw new Error("sample_queries count must be an integer of at least 2");
+  if (!Number.isFinite(interval) || interval < 0)
+    throw new Error("sample_queries interval_ms must be a non-negative number");
+  if (!queries.length) throw new Error("sample_queries requires at least one query");
+  const names = queries.map((query) => String(query.name ?? ""));
+  if (names.some((name) => !name) || new Set(names).size !== names.length)
+    throw new Error("sample_queries query names must be non-empty and unique");
+
+  const samples = [];
+  for (let index = 0; index < count; index += 1) {
+    const runtime = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    if (runtime.fault && !action.allow_fault)
+      throw new Error(`runtime fault while sampling queries: ${JSON.stringify(runtime.fault)}`);
+    const sample = {
+      runtime: {
+        presentation_revision: runtime.presentationRevision,
+        history_revision: runtime.historyRevision,
+        output_count: runtime.output?.length,
+      },
+    };
+    for (const query of queries)
+      sample[query.name] = await queryLocator(resolveLocator(page, query.locator), query.fields);
+    samples.push(sample);
+    if (index + 1 < count) await page.waitForTimeout(interval);
+  }
+  assertSampleExpectations(samples, action.expect ?? {});
+  return { query: { samples }, semanticInput: action.semantic_input };
+}
+
+function assertSampleExpectations(samples, expected) {
+  for (const path of expected.stable ?? []) {
+    const values = samples.map((sample, index) => valueAtPath(sample, path, index));
+    if (values.some((value) => JSON.stringify(value) !== JSON.stringify(values[0])))
+      throw new Error(
+        `assertion failed at sample_queries.stable.${path}: got ${JSON.stringify(values)}`,
+      );
+  }
+  for (const path of expected.changes ?? []) {
+    const values = samples.map((sample, index) => valueAtPath(sample, path, index));
+    if (new Set(values.map((value) => JSON.stringify(value))).size < 2)
+      throw new Error(
+        `assertion failed at sample_queries.changes.${path}: got ${JSON.stringify(values)}`,
+      );
+  }
+}
+
+function valueAtPath(value, path, sampleIndex) {
+  let current = value;
+  for (const key of String(path).split(".")) {
+    if (current == null || !Object.hasOwn(current, key))
+      throw new Error(`sample_queries path ${path} is missing from sample ${sampleIndex}`);
+    current = current[key];
+  }
+  return current;
 }
 
 async function queryCanvasPixels(locator) {
@@ -638,6 +704,38 @@ async function queryLocator(locator, fields = ["count", "text", "visible", "enab
       result.attributes = await first.evaluate((element) =>
         Object.fromEntries([...element.attributes].map((item) => [item.name, item.value])),
       );
+    if (fields.includes("scroll_top"))
+      result.scroll_top = await first.evaluate((element) => element.scrollTop);
+    if (fields.includes("scroll_height"))
+      result.scroll_height = await first.evaluate((element) => element.scrollHeight);
+    if (fields.includes("client_height"))
+      result.client_height = await first.evaluate((element) => element.clientHeight);
+    if (fields.includes("at_scroll_bottom"))
+      result.at_scroll_bottom = await first.evaluate(
+        (element) => element.scrollHeight - element.scrollTop - element.clientHeight <= 1,
+      );
+    if (fields.includes("box"))
+      result.box = await first.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        return {
+          left: box.left,
+          top: box.top,
+          right: box.right,
+          bottom: box.bottom,
+          width: box.width,
+          height: box.height,
+        };
+      });
+    if (fields.includes("content_signature"))
+      result.content_signature = await locator.evaluateAll((elements) => {
+        const content = elements.map((element) => element.outerHTML).join("\u0000");
+        let hash = 0x811c9dc5;
+        for (let index = 0; index < content.length; index += 1) {
+          hash ^= content.charCodeAt(index);
+          hash = Math.imul(hash, 0x01000193);
+        }
+        return `${content.length}:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+      });
     if (fields.includes("image_loaded"))
       result.image_loaded = await first.evaluate((element) => {
         const image = element instanceof HTMLImageElement ? element : element.querySelector("img");

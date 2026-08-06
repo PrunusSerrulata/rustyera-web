@@ -189,6 +189,28 @@ describe("web game test scenario", () => {
     expect(locator.hover).toHaveBeenCalledOnce();
   });
 
+  it("scrolls a focused production viewport with real keyboard input", async () => {
+    const locator = { focus: vi.fn() };
+    const page = {
+      locator: vi.fn(() => locator),
+      keyboard: { press: vi.fn() },
+      waitForTimeout: vi.fn(),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "scroll_key",
+        locator: { css: ".game-viewport" },
+        key: "PageUp",
+        settle_ms: 80,
+      }),
+    ).resolves.toEqual({ semanticInput: undefined });
+
+    expect(locator.focus).toHaveBeenCalledOnce();
+    expect(page.keyboard.press).toHaveBeenCalledWith("PageUp");
+    expect(page.waitForTimeout).toHaveBeenCalledWith(80);
+  });
+
   it("can select the latest match for a repeated screen label", () => {
     const latest = {};
     const matches = { nth: vi.fn(() => latest) };
@@ -615,6 +637,115 @@ describe("web game test scenario", () => {
       }),
     ).resolves.toMatchObject({ attempts: 1 });
     expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("samples changing DOM content while scroll and layout stay in place", async () => {
+    let frame = 0;
+    let unstableScroll = false;
+    let staticContent = false;
+    const viewport = globalThis.document.createElement("div");
+    Object.defineProperties(viewport, {
+      scrollTop: { get: () => 320 + (unstableScroll ? frame : 0) },
+      scrollHeight: { get: () => 900 },
+      clientHeight: { get: () => 600 },
+    });
+    const heading = globalThis.document.createElement("div");
+    heading.getBoundingClientRect = () => ({
+      left: 20,
+      top: 80,
+      right: 220,
+      bottom: 100,
+      width: 200,
+      height: 20,
+    });
+    const locatorFor = (elements) => {
+      const locator = {
+        count: vi.fn(async () => elements().length),
+        first: vi.fn(() => ({
+          evaluate: vi.fn(async (callback) => callback(elements()[0])),
+        })),
+        evaluateAll: vi.fn(async (callback) => callback(elements())),
+      };
+      return locator;
+    };
+    const viewportLocator = locatorFor(() => [viewport]);
+    const headingLocator = locatorFor(() => [heading]);
+    const linesLocator = locatorFor(() =>
+      Array.from({ length: 4 }, (_, index) => {
+        const line = globalThis.document.createElement("div");
+        line.dataset.index = String(index);
+        line.style.color = `rgb(${staticContent ? 0 : frame}, 0, 0)`;
+        return line;
+      }),
+    );
+    const page = {
+      evaluate: vi.fn(async () => ({
+        fault: null,
+        presentationRevision: frame,
+        historyRevision: 4,
+        output: ["map"],
+      })),
+      locator: vi.fn((selector) => {
+        if (selector === ".game-viewport") return viewportLocator;
+        if (selector === ".map-heading") return headingLocator;
+        return linesLocator;
+      }),
+      waitForTimeout: vi.fn(async () => {
+        frame += 1;
+      }),
+    };
+    const action = {
+      type: "sample_queries",
+      count: 3,
+      interval_ms: 10,
+      queries: [
+        {
+          name: "viewport",
+          locator: { css: ".game-viewport" },
+          fields: ["scroll_top", "scroll_height", "client_height"],
+        },
+        {
+          name: "lines",
+          locator: { css: ".game-line" },
+          fields: ["count", "content_signature"],
+        },
+        { name: "map", locator: { css: ".map-heading" }, fields: ["box"] },
+      ],
+      expect: {
+        stable: ["viewport.scroll_top", "viewport.scroll_height", "lines.count", "map.box.top"],
+        changes: ["lines.content_signature"],
+      },
+    };
+
+    const result = await runAction(page, action);
+    expect(result.query.samples).toHaveLength(3);
+    expect(result.query.samples[0]).toMatchObject({
+      runtime: { presentation_revision: 0, history_revision: 4, output_count: 1 },
+      viewport: { scroll_top: 320 },
+      lines: { count: 4 },
+    });
+    expect(page.waitForTimeout).toHaveBeenCalledTimes(2);
+
+    frame = 0;
+    unstableScroll = true;
+    await expect(runAction(page, action)).rejects.toThrow(
+      "sample_queries.stable.viewport.scroll_top",
+    );
+
+    frame = 0;
+    unstableScroll = false;
+    staticContent = true;
+    await expect(runAction(page, action)).rejects.toThrow(
+      "sample_queries.changes.lines.content_signature",
+    );
+
+    frame = 0;
+    await expect(
+      runAction(page, {
+        ...action,
+        expect: { stable: ["map.box.missing"] },
+      }),
+    ).rejects.toThrow("path map.box.missing is missing from sample 0");
   });
 
   it("asserts that a generated canvas contains rendered pixels", async () => {

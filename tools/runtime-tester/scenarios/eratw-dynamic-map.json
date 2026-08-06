@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eraTW",
+  "mode": "fixed",
+  "compiled_cache": false,
+  "start": {
+    "type": "traditional_save",
+    "path": "../../../../games/eraTW/sav/save17.sav"
+  },
+  "actions": [
+    { "type": "input", "value": 120 },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "■博麗神社", "exact": true, "nth": -1 },
+      "fields": ["count", "visible"],
+      "expect": { "visible": true }
+    },
+    {
+      "type": "sample_queries",
+      "count": 2,
+      "interval_ms": 1100,
+      "queries": [
+        {
+          "name": "lines",
+          "locator": { "css": ".game-line" },
+          "fields": ["content_signature"]
+        }
+      ],
+      "expect": { "changes": ["lines.content_signature"] }
+    },
+    {
+      "type": "sample_queries",
+      "count": 4,
+      "interval_ms": 1100,
+      "queries": [
+        {
+          "name": "viewport",
+          "locator": { "css": ".game-viewport" },
+          "fields": ["scroll_height", "client_height"]
+        },
+        {
+          "name": "lines",
+          "locator": { "css": ".game-line" },
+          "fields": ["count", "content_signature"]
+        },
+        {
+          "name": "map",
+          "locator": { "text": "■博麗神社", "exact": true, "nth": -1 },
+          "fields": ["count", "box"]
+        }
+      ],
+      "expect": {
+        "stable": [
+          "runtime.history_revision",
+          "runtime.output_count",
+          "viewport.scroll_height",
+          "viewport.client_height",
+          "map.count",
+          "map.box.top"
+        ],
+        "changes": ["runtime.presentation_revision", "lines.content_signature"]
+      }
+    }
+  ],
+  "limits": {
+    "max_steps": 10,
+    "timeout_seconds": 900
+  }
+}

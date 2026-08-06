@@ -45,6 +45,7 @@ export function installWebTestControl(pinia: Pinia): void {
       canInteract: store.canInteract,
       wait: store.presentation.inputWait,
       presentationRevision: store.presentation.revision,
+      historyRevision: store.presentation.historyRevision,
       output: store.presentation.lines.map(plainLine),
       htmlIsland: store.presentation.htmlIsland,
       fault: store.fault,

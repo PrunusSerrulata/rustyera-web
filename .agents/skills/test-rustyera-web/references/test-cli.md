@@ -79,13 +79,24 @@ An action has `type`:
 - `click`: `locator`; set `advances_game: true` and `semantic_input` when it advances a compared
   game.
 - `hover`: `locator`; moves the pointer over an element without advancing the game.
+- `scroll_key`: `locator`, optional `key` (default `PageUp`) and `settle_ms` (default 50); focuses
+  the locator and scrolls it through Playwright's real keyboard input.
 - `fill`: `locator`, `value`.
 - `press`: `locator`, `key`; set `advances_game: true` and add `semantic_input` if it advances a
   compared game.
 - `query`: `locator`, optional `fields` from `count`, `text`, `html`, `value`, `visible`,
-  `enabled`, `attributes`, `image_loaded`. The final field requires a decoded image with positive
-  natural dimensions, either at the locator itself or its first descendant `img`.
+  `enabled`, `attributes`, `scroll_top`, `scroll_height`, `client_height`, `at_scroll_bottom`, `box`,
+  `content_signature`, and `image_loaded`. `box` returns the first match's viewport rectangle;
+  `content_signature` hashes all matches' `outerHTML` without storing the full DOM in the trace.
+  `image_loaded` requires a decoded image with positive natural dimensions, either at the locator
+  itself or its first descendant `img`.
 - `assert_dom`: same query fields plus an `expect` subset.
+- `sample_queries`: `count` (at least 2), `interval_ms`, named `queries` with the same locator and
+  field schema, and `expect.stable`/`expect.changes` dotted paths. It records every sample and fails
+  unless stable fields remain identical and changing fields have at least two distinct values. Each
+  sample also includes `runtime.presentation_revision`, `runtime.history_revision`, and
+  `runtime.output_count`. Use it for animations that must update content without creating history
+  or moving their layout anchor.
 - `assert_layout`: `locator`, optional `relative_to`, and `expect`. It measures production DOM
   boxes and accepts `count`, `visible`, `same_left_within`, `same_top_within`, `no_overlap`,
   `above`/`below` gap ranges (`min`/`max`), `inside.tolerance`, `right_aligned_within`, and
