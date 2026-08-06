@@ -143,6 +143,22 @@ describe("frontend host and image-line policy", () => {
     wrapper.unmount();
   });
 
+  it("falls back temporary runtime fonts to the configured game font", () => {
+    const wrapper = mount(RunRenderer, {
+      props: {
+        run: {
+          type: "text",
+          text: "map",
+          style: { font_family: "ＭＳ ゴシック" },
+        },
+      },
+    });
+
+    expect(wrapper.get("span").attributes("style")).toContain(
+      "font-family: ＭＳ ゴシック, var(--game-font)",
+    );
+  });
+
   it("projects HTML space shapes before positioned images", () => {
     const wrapper = mount(HtmlNode, {
       props: {

@@ -30,6 +30,12 @@ describe("game text projection", () => {
     ).toMatchObject({ fontFamily: "Project Font", fontSize: "20px", fontSizePx: 20 });
   });
 
+  it("keeps the configured font as the viewport default during a temporary SETFONT", () => {
+    expect(resolveGameTextStyle(defaultPreferences(), lines, "Configured Font")).toMatchObject({
+      fontFamily: "Configured Font",
+    });
+  });
+
   it("puts the Chinese application locale before an English OS locale", () => {
     expect(preferredRuntimeLocales(["en-US", "zh-CN"])[0]).toBe("zh-CN");
   });

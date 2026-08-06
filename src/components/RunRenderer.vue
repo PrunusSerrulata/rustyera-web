@@ -23,7 +23,9 @@ const textStyle = computed(() => {
         .join(" ") || undefined,
     fontFamily: store.effectivePreferences.fontFamilyOverride
       ? "var(--game-font)"
-      : (style.font_family ?? undefined),
+      : style.font_family
+        ? `${style.font_family}, var(--game-font)`
+        : undefined,
     fontSize:
       store.effectivePreferences.fontSizeOverridePx != null
         ? "var(--game-size)"

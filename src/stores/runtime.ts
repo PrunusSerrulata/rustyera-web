@@ -258,7 +258,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
     return Number.isSafeInteger(value) ? Math.max(1, value) : 1;
   });
   const gameTextStyle = computed(() =>
-    resolveGameTextStyle(effectivePreferences.value, presentation.lines),
+    resolveGameTextStyle(
+      effectivePreferences.value,
+      presentation.lines,
+      configurationValue("FontName"),
+    ),
   );
   const gameLineHeightPx = computed(() => {
     if (effectivePreferences.value.fontSizeOverridePx != null)

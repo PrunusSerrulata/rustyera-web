@@ -9,13 +9,18 @@ export interface ResolvedGameTextStyle {
 export function resolveGameTextStyle(
   preferences: Preferences,
   lines: DisplayLine[],
+  configuredFontFamily?: string,
 ): ResolvedGameTextStyle {
   const runtimeStyle = latestRuntimeTextStyle(lines);
   const fontSizePx =
     preferences.fontSizeOverridePx ??
     (runtimeStyle?.font_millipixels ? Number(runtimeStyle.font_millipixels) / 1000 : 12);
   return {
-    fontFamily: preferences.fontFamilyOverride || runtimeStyle?.font_family || "sans-serif",
+    fontFamily:
+      preferences.fontFamilyOverride ||
+      configuredFontFamily?.trim() ||
+      runtimeStyle?.font_family ||
+      "sans-serif",
     fontSize: `${fontSizePx}px`,
     fontSizePx,
   };
