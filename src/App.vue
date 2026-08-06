@@ -112,7 +112,6 @@ onMounted(() => void store.initialize());
       :busy="store.settingsBusy"
       :error="store.settingsError"
       @close="store.preferencesOpen = false"
-      @preview="store.preview"
       @save="store.savePreferences"
     />
     <OpenProjectDialog

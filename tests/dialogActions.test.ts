@@ -96,6 +96,8 @@ describe("dialog actions", () => {
     projectInput.dispatchEvent(new Event("input", { bubbles: true }));
     await clickButton("交互与输出");
     const useMouse = document.body.querySelector<HTMLInputElement>("#setting-UseMouse")!;
+    expect(useMouse.parentElement?.firstElementChild).toBe(useMouse);
+    expect(useMouse.nextElementSibling?.textContent).toBe("启用鼠标操作");
     useMouse.checked = false;
     useMouse.dispatchEvent(new Event("change", { bubbles: true }));
     await nextTick();
@@ -111,28 +113,7 @@ describe("dialog actions", () => {
     wrapper.unmount();
   });
 
-  it("treats a cleared accessibility font size as following the game configuration", async () => {
-    const wrapper = mount(PreferencesDialog, {
-      attachTo: document.body,
-      props: {
-        open: true,
-        value: { ...defaultPreferences(), fontSizeOverridePx: 24 },
-        fonts: [],
-        hostKind: "browser",
-      },
-    });
-    const input = document.body.querySelector<HTMLInputElement>("#client-font-size")!;
-
-    input.value = "";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    await nextTick();
-    await clickButton("应用");
-
-    expect(wrapper.emitted("save")?.at(-1)?.[0]).toMatchObject({ fontSizeOverridePx: null });
-    wrapper.unmount();
-  });
-
-  it("shows browser viewport data and synchronizes the 216-color palette with HEX input", async () => {
+  it("shows compact display rows and synchronizes the visual picker with HEX input", async () => {
     const wrapper = mount(PreferencesDialog, {
       attachTo: document.body,
       props: {
@@ -148,6 +129,58 @@ describe("dialog actions", () => {
           chromeHeight: 0,
         },
         configurationEntries: [
+          {
+            code: "WindowX",
+            japanese: "ウィンドウ幅",
+            english: "Window width",
+            value: "900",
+            kind: "integer",
+            allowed: [],
+            fixed: false,
+            applicability: 12,
+            default_value: "900",
+            effective_value: "900",
+            application: "hot",
+          },
+          {
+            code: "WindowY",
+            japanese: "ウィンドウ高さ",
+            english: "Window height",
+            value: "600",
+            kind: "integer",
+            allowed: [],
+            fixed: false,
+            applicability: 12,
+            default_value: "600",
+            effective_value: "600",
+            application: "hot",
+          },
+          {
+            code: "FontSize",
+            japanese: "フォントサイズ",
+            english: "Font size",
+            value: "16",
+            kind: "integer",
+            allowed: [],
+            fixed: false,
+            applicability: 12,
+            default_value: "16",
+            effective_value: "16",
+            application: "hot",
+          },
+          {
+            code: "LineHeight",
+            japanese: "行高",
+            english: "Line height",
+            value: "18",
+            kind: "integer",
+            allowed: [],
+            fixed: false,
+            applicability: 12,
+            default_value: "18",
+            effective_value: "18",
+            application: "hot",
+          },
           {
             code: "ForeColor",
             japanese: "文字色",
@@ -167,10 +200,36 @@ describe("dialog actions", () => {
 
     await clickButton("显示");
     expect(document.body.textContent).toContain("900");
+    expect(document.body.textContent).not.toContain("客户端偏好");
+    expect(document.body.querySelector("#setting-WindowX")?.closest(".settings-grid")).toBe(
+      document.body.querySelector("#setting-WindowY")?.closest(".settings-grid"),
+    );
+    expect(document.body.querySelector("#setting-FontSize")?.closest(".settings-grid")).toBe(
+      document.body.querySelector("#setting-LineHeight")?.closest(".settings-grid"),
+    );
+    expect(
+      document.body
+        .querySelector("#setting-ForeColor")
+        ?.closest(".setting-item")
+        ?.classList.contains("setting-wide"),
+    ).toBe(true);
     await clickButton("192,192,192");
-    expect(document.body.querySelectorAll(".palette-swatch")).toHaveLength(216);
+    const disk = document.body.querySelector<HTMLElement>(".color-disk")!;
+    const brightness = document.body.querySelector<HTMLElement>(".color-brightness")!;
+    expect(disk).not.toBeNull();
+    expect(brightness).not.toBeNull();
+    expect(document.body.querySelectorAll(".palette-swatch")).toHaveLength(0);
     expect(document.body.textContent).not.toContain("常用颜色");
+    expect(document.body.textContent).not.toMatch(/色相|饱和度|HSB/);
     const hex = document.body.querySelector<HTMLInputElement>(".color-hex input")!;
+    vi.spyOn(disk, "getBoundingClientRect").mockReturnValue(rect(0, 0, 200, 200));
+    dispatchPointer(disk, 200, 100);
+    await nextTick();
+    expect(hex.value).toBe("#C00000");
+    vi.spyOn(brightness, "getBoundingClientRect").mockReturnValue(rect(0, 0, 24, 300));
+    dispatchPointer(brightness, 12, 0);
+    await nextTick();
+    expect(hex.value).toBe("#FF0000");
     hex.value = "#336699";
     hex.dispatchEvent(new Event("input", { bubbles: true }));
     await nextTick();
@@ -337,4 +396,24 @@ async function clickButton(label: string): Promise<void> {
   expect(button, `missing ${label} button`).toBeDefined();
   button!.click();
   await nextTick();
+}
+
+function dispatchPointer(target: HTMLElement, clientX: number, clientY: number): void {
+  const event = new MouseEvent("pointerdown", { bubbles: true, clientX, clientY });
+  Object.defineProperty(event, "pointerId", { value: 1 });
+  target.dispatchEvent(event);
+}
+
+function rect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    x: left,
+    y: top,
+    toJSON: () => ({}),
+  };
 }

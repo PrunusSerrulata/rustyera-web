@@ -1,29 +1,25 @@
 import { nextTick, reactive } from "vue";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { useSettingsDraft } from "@/components/useSettingsDraft";
 import type { SettingsField } from "@/core/settings";
-import { defaultPreferences, type ProjectConfigurationEntry } from "@/core/types";
+import type { ProjectConfigurationEntry } from "@/core/types";
 
 describe("settings draft domain", () => {
-  it("collects changes across tabs, locates validation errors, and rolls preview back", async () => {
+  it("collects changes across tabs, locates validation errors, and rolls edits back", async () => {
     const state = reactive({
       open: false,
       readOnly: false,
-      preferences: defaultPreferences(),
       entries: [
         entry("UseMouse", "YES", "boolean"),
         entry("FontSize", "18", "integer"),
         entry("LineHeight", "19", "integer"),
       ] as ProjectConfigurationEntry[],
     });
-    const preview = vi.fn();
     const draft = useSettingsDraft({
       open: () => state.open,
-      preferences: () => state.preferences,
       configurationEntries: () => state.entries,
       configurationReadOnly: () => state.readOnly,
-      preview,
     });
     state.open = true;
     await nextTick();
@@ -38,11 +34,8 @@ describe("settings draft domain", () => {
     expect(draft.activeTab.value).toBe("display");
     expect(draft.fieldErrors.LineHeight).toContain("不能小于字号");
 
-    draft.draft.imageScale = 2;
     draft.cancelDraft();
-    expect(draft.draft.imageScale).toBe(1);
     expect(draft.configurationDraft.UseMouse).toBe("YES");
-    expect(preview).toHaveBeenLastCalledWith(null);
   });
 
   it("preserves dependent drafts while projecting forced disabled values", async () => {
@@ -57,10 +50,8 @@ describe("settings draft domain", () => {
     });
     const draft = useSettingsDraft({
       open: () => state.open,
-      preferences: defaultPreferences,
       configurationEntries: () => state.entries,
       configurationReadOnly: () => false,
-      preview: vi.fn(),
     });
     state.open = true;
     await nextTick();

@@ -100,6 +100,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
         </template>
         <hr />
         <button
+          :disabled="store.configurationEntries.length === 0"
           @click="
             action(() => {
               store.preferencesOpen = true;

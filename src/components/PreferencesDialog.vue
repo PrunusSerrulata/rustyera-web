@@ -36,7 +36,6 @@ const props = withDefaults(
 const emit = defineEmits<{
   close: [];
   save: [value: Preferences, changes: ProjectConfigurationChange[], restart: boolean];
-  preview: [value: Preferences | null];
 }>();
 const colorField = ref<SettingsField>();
 const {
@@ -46,26 +45,19 @@ const {
   checked,
   changes,
   configurationDraft,
-  draft,
   entries,
   fieldDisabled: draftFieldDisabled,
   fieldErrors,
-  preferenceDraft,
   projectTabs,
   resetActiveTab,
   setBoolean: setDraftBoolean,
   validateAll,
 } = useSettingsDraft({
   open: () => props.open,
-  preferences: () => props.value,
   configurationEntries: () => props.configurationEntries,
   configurationReadOnly: () => props.configurationReadOnly,
-  preview: (value) => emit("preview", value),
 });
-const tabs = computed(() => [
-  ...projectTabs.value.map((tab) => ({ id: tab.id, label: tab.label })),
-  { id: "client" as const, label: "客户端偏好" },
-]);
+const tabs = computed(() => projectTabs.value.map((tab) => ({ id: tab.id, label: tab.label })));
 const title = computed(() => `RustyEra ${props.hostKind === "tauri" ? "Tauri" : "Web"} · 设置`);
 
 function close(): void {
@@ -76,7 +68,7 @@ function close(): void {
 
 function apply(restart: boolean): void {
   if (!validateAll()) return;
-  emit("save", preferenceDraft(), changes(), restart);
+  emit("save", { ...props.value }, changes(), restart);
 }
 
 function fieldDisabled(field: SettingsField): boolean {
@@ -87,6 +79,15 @@ function setBoolean(field: SettingsField, event: Event): void {
   setDraftBoolean(field, (event.target as HTMLInputElement).checked);
 }
 
+function settingItemClasses(field: SettingsField, groupTitle: string): Record<string, boolean> {
+  return {
+    "boolean-setting": field.control === "boolean",
+    "setting-wide":
+      activeTab.value === "display" &&
+      (groupTitle === "颜色" || field.code === "WindowMaximixed" || field.code === "FontName"),
+  };
+}
+
 function useCurrentViewport(): void {
   if (!props.viewportMeasurement) return;
   configurationDraft.WindowX = String(Math.round(props.viewportMeasurement.width));
@@ -94,6 +95,7 @@ function useCurrentViewport(): void {
 }
 
 async function tabKeydown(event: KeyboardEvent): Promise<void> {
+  if (tabs.value.length === 0) return;
   const index = tabs.value.findIndex((tab) => tab.id === activeTab.value);
   let next = index;
   if (event.key === "ArrowRight") next = (index + 1) % tabs.value.length;
@@ -102,14 +104,20 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
   else if (event.key === "End") next = tabs.value.length - 1;
   else return;
   event.preventDefault();
-  activeTab.value = tabs.value[next]?.id ?? "client";
+  activeTab.value = tabs.value[next]?.id ?? "interaction";
   await nextTick();
   document.querySelector<HTMLElement>(`#settings-tab-${activeTab.value}`)?.focus();
 }
 </script>
 
 <template>
-  <DraggableDialog :open="open" :title="title" wide :close-disabled="busy" @close="close">
+  <DraggableDialog
+    :open="open"
+    :title="title"
+    panel-class="settings-panel"
+    :close-disabled="busy"
+    @close="close"
+  >
     <form class="settings-dialog" @submit.prevent="apply(false)">
       <div class="settings-tabs" role="tablist" aria-label="设置分类" @keydown="tabKeydown">
         <button
@@ -148,14 +156,18 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
           <fieldset v-if="activeTab === 'display' && hostKind === 'browser'" class="settings-group">
             <legend>当前主视口</legend>
             <div class="settings-grid viewport-readout">
-              <span>宽度</span
-              ><output>{{
-                viewportMeasurement ? Math.round(viewportMeasurement.width) : "—"
-              }}</output>
-              <span>高度</span
-              ><output>{{
-                viewportMeasurement ? Math.round(viewportMeasurement.height) : "—"
-              }}</output>
+              <div class="setting-item">
+                <span>主视口宽度</span>
+                <output>{{
+                  viewportMeasurement ? Math.round(viewportMeasurement.width) : "—"
+                }}</output>
+              </div>
+              <div class="setting-item">
+                <span>主视口高度</span>
+                <output>{{
+                  viewportMeasurement ? Math.round(viewportMeasurement.height) : "—"
+                }}</output>
+              </div>
             </div>
           </fieldset>
 
@@ -165,22 +177,34 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
             class="settings-group"
           >
             <legend>{{ group.title }}</legend>
-            <div class="settings-grid">
-              <template v-for="field in group.fields" :key="field.code">
-                <label :for="`setting-${field.code}`" :title="field.code">
-                  {{ field.label }}<small v-if="entries.get(field.code)?.fixed">已固定</small>
-                </label>
-                <div class="setting-control">
+            <div class="settings-grid" :class="{ 'color-settings-grid': group.title === '颜色' }">
+              <div
+                v-for="field in group.fields"
+                :key="field.code"
+                class="setting-item"
+                :class="settingItemClasses(field, group.title)"
+              >
+                <label
+                  v-if="field.control === 'boolean'"
+                  :for="`setting-${field.code}`"
+                  :title="field.code"
+                >
                   <input
-                    v-if="field.control === 'boolean'"
                     :id="`setting-${field.code}`"
                     type="checkbox"
                     :checked="checked(field)"
                     :disabled="fieldDisabled(field)"
                     @change="setBoolean(field, $event)"
                   />
+                  <span>{{ field.label }}</span>
+                  <small v-if="entries.get(field.code)?.fixed">已固定</small>
+                </label>
+                <label v-else :for="`setting-${field.code}`" :title="field.code">
+                  {{ field.label }}<small v-if="entries.get(field.code)?.fixed">已固定</small>
+                </label>
+                <div v-if="field.control !== 'boolean'" class="setting-control">
                   <select
-                    v-else-if="field.control === 'enum'"
+                    v-if="field.control === 'enum'"
                     :id="`setting-${field.code}`"
                     v-model="configurationDraft[field.code]"
                     :disabled="fieldDisabled(field)"
@@ -222,7 +246,7 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
                     {{ fieldErrors[field.code] }}
                   </p>
                 </div>
-              </template>
+              </div>
             </div>
             <button
               v-if="
@@ -238,66 +262,6 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
           <datalist id="available-game-fonts">
             <option v-for="font in fonts" :key="font" :value="font" />
           </datalist>
-        </template>
-
-        <template v-else>
-          <fieldset class="settings-group">
-            <legend>游戏文本</legend>
-            <div class="settings-grid">
-              <label for="client-font-family">字体</label>
-              <select id="client-font-family" v-model="draft.fontFamilyOverride" :disabled="busy">
-                <option :value="null">跟随游戏设置</option>
-                <option v-for="font in fonts" :key="font" :value="font">{{ font }}</option>
-              </select>
-              <label for="client-font-size">字号</label>
-              <div class="setting-control">
-                <input
-                  id="client-font-size"
-                  v-model.number="draft.fontSizeOverridePx"
-                  type="number"
-                  min="8"
-                  max="72"
-                  step="1"
-                  placeholder="跟随游戏设置"
-                  :disabled="busy"
-                />
-                <p v-if="fieldErrors.clientFontSize" class="field-error" role="alert">
-                  {{ fieldErrors.clientFontSize }}
-                </p>
-              </div>
-            </div>
-          </fieldset>
-          <fieldset class="settings-group">
-            <legend>媒体</legend>
-            <div class="settings-grid">
-              <label for="client-image-scale">图片缩放</label>
-              <div class="inline-field">
-                <input
-                  id="client-image-scale"
-                  v-model.number="draft.imageScale"
-                  type="range"
-                  min="0.25"
-                  max="4"
-                  step="0.05"
-                  :disabled="busy"
-                />
-                <output>{{ Math.round(draft.imageScale * 100) }}%</output>
-              </div>
-              <label for="client-volume">音量</label>
-              <div class="inline-field">
-                <input
-                  id="client-volume"
-                  v-model.number="draft.masterVolume"
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  :disabled="busy"
-                />
-                <output>{{ Math.round(draft.masterVolume * 100) }}%</output>
-              </div>
-            </div>
-          </fieldset>
         </template>
       </div>
 

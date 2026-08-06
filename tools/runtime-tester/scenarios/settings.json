@@ -14,26 +14,76 @@
     {
       "type": "assert_dom",
       "locator": { "role": "tab", "name": "客户端偏好", "exact": true },
-      "expect": { "count": 1, "visible": true }
+      "fields": ["count"],
+      "expect": { "count": 0 }
     },
     { "type": "click", "locator": { "role": "tab", "name": "显示", "exact": true } },
     {
-      "type": "assert_dom",
-      "locator": { "text": "当前主视口", "exact": true },
-      "expect": { "count": 1, "visible": true }
+      "type": "assert_layout",
+      "locator": { "css": ".viewport-readout .setting-item" },
+      "expect": { "count": 2, "visible": true, "same_top_within": 1 }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": "#setting-FontSize, #setting-LineHeight" },
+      "expect": { "count": 2, "visible": true, "same_top_within": 1 }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": "#setting-BackColor" },
+      "relative_to": { "css": "#setting-ForeColor" },
+      "expect": { "count": 1, "visible": true, "below": { "min": 8, "max": 14 } }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": "#setting-FocusColor" },
+      "relative_to": { "css": "#setting-BackColor" },
+      "expect": { "count": 1, "visible": true, "below": { "min": 8, "max": 14 } }
     },
     { "type": "click", "locator": { "css": "#setting-ForeColor" } },
     {
       "type": "assert_dom",
-      "locator": { "css": ".color-palette .palette-swatch" },
-      "fields": ["count", "visible"],
-      "expect": { "count": 216, "visible": true }
+      "locator": { "css": ".color-disk" },
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".color-brightness" },
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".palette-swatch" },
+      "fields": ["count"],
+      "expect": { "count": 0 }
     },
     {
       "type": "assert_dom",
       "locator": { "text": "常用颜色", "exact": true },
       "fields": ["count"],
       "expect": { "count": 0 }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "HSB", "exact": true },
+      "fields": ["count"],
+      "expect": { "count": 0 }
+    },
+    { "type": "fill", "locator": { "css": ".color-hex input" }, "value": "#336699" },
+    { "type": "click", "locator": { "css": ".color-disk" } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".color-hex input" },
+      "fields": ["value"],
+      "expect": { "value": "#999999" }
+    },
+    { "type": "fill", "locator": { "css": ".color-hex input" }, "value": "#FFFFFF" },
+    { "type": "click", "locator": { "css": ".color-brightness" } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".color-hex input" },
+      "fields": ["value"],
+      "expect": { "value": "#808080" }
     },
     { "type": "fill", "locator": { "css": ".color-hex input" }, "value": "#336699" },
     { "type": "click", "locator": { "role": "button", "name": "确定", "exact": true } },
@@ -42,6 +92,29 @@
       "locator": { "css": "#setting-ForeColor .color-setting-value" },
       "fields": ["text"],
       "expect": { "text": "51,102,153" }
+    },
+    { "type": "click", "locator": { "css": "#setting-ForeColor" } },
+    {
+      "type": "fill",
+      "locator": { "css": ".rgb-fields label:nth-child(1) input" },
+      "value": "10"
+    },
+    {
+      "type": "fill",
+      "locator": { "css": ".rgb-fields label:nth-child(2) input" },
+      "value": "20"
+    },
+    {
+      "type": "fill",
+      "locator": { "css": ".rgb-fields label:nth-child(3) input" },
+      "value": "30"
+    },
+    { "type": "click", "locator": { "role": "button", "name": "确定", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": "#setting-ForeColor .color-setting-value" },
+      "fields": ["text"],
+      "expect": { "text": "10,20,30" }
     },
     { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } }
   ],

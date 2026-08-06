@@ -1,26 +1,18 @@
 import { computed, reactive, ref, watch } from "vue";
 
 import { availableProjectTabs, type SettingsField, type SettingsTabId } from "@/core/settings";
-import {
-  defaultPreferences,
-  type Preferences,
-  type ProjectConfigurationChange,
-  type ProjectConfigurationEntry,
-} from "@/core/types";
+import type { ProjectConfigurationChange, ProjectConfigurationEntry } from "@/core/types";
 
 interface SettingsDraftOptions {
   open: () => boolean;
-  preferences: () => Preferences;
   configurationEntries: () => ProjectConfigurationEntry[];
   configurationReadOnly: () => boolean;
-  preview: (value: Preferences | null) => void;
 }
 
 export function useSettingsDraft(options: SettingsDraftOptions) {
-  const draft = reactive<Preferences>({ ...options.preferences() });
   const configurationDraft = reactive<Record<string, string>>({});
   const fieldErrors = reactive<Record<string, string>>({});
-  const activeTab = ref<SettingsTabId>("client");
+  const activeTab = ref<SettingsTabId>("interaction");
   const projectTabs = computed(() => availableProjectTabs(options.configurationEntries()));
   const activeProjectTab = computed(() =>
     projectTabs.value.find((tab) => tab.id === activeTab.value),
@@ -34,21 +26,21 @@ export function useSettingsDraft(options: SettingsDraftOptions) {
     (open) => {
       if (!open) return;
       resetAllDrafts();
-      activeTab.value = projectTabs.value[0]?.id ?? "client";
+      activeTab.value = projectTabs.value[0]?.id ?? "interaction";
     },
     { immediate: true },
   );
   watch(
     options.configurationEntries,
     () => {
-      if (options.open()) resetConfigurationDraft();
+      if (!options.open()) return;
+      resetConfigurationDraft();
+      if (!projectTabs.value.some((tab) => tab.id === activeTab.value))
+        activeTab.value = projectTabs.value[0]?.id ?? "interaction";
     },
     { deep: true },
   );
-  watch(draft, () => options.open() && options.preview(preferenceDraft()), { deep: true });
-
   function resetAllDrafts(): void {
-    Object.assign(draft, options.preferences());
     resetConfigurationDraft();
     clearErrors();
   }
@@ -57,14 +49,6 @@ export function useSettingsDraft(options: SettingsDraftOptions) {
     for (const code of Object.keys(configurationDraft)) delete configurationDraft[code];
     for (const entry of options.configurationEntries())
       configurationDraft[entry.code] = entry.value;
-  }
-
-  function preferenceDraft(): Preferences {
-    const fontSize = draft.fontSizeOverridePx as number | string | null;
-    return {
-      ...draft,
-      fontSizeOverridePx: fontSize == null || fontSize === "" ? null : Number(fontSize),
-    };
   }
 
   function changes(): ProjectConfigurationChange[] {
@@ -84,12 +68,6 @@ export function useSettingsDraft(options: SettingsDraftOptions) {
     for (const tab of projectTabs.value)
       for (const group of tab.groups) for (const field of group.fields) validateField(field);
 
-    const fontSizeOverride = draft.fontSizeOverridePx as number | string | null;
-    if (fontSizeOverride != null && fontSizeOverride !== "") {
-      const size = Number(fontSizeOverride);
-      if (!Number.isInteger(size) || size < 8 || size > 72)
-        fieldErrors.clientFontSize = "字号必须是 8 到 72 的整数";
-    }
     const fontSize = Number(configurationDraft.FontSize);
     const lineHeight = Number(configurationDraft.LineHeight);
     if (Number.isFinite(fontSize) && Number.isFinite(lineHeight) && lineHeight < fontSize)
@@ -100,7 +78,7 @@ export function useSettingsDraft(options: SettingsDraftOptions) {
       const tab = projectTabs.value.find((item) =>
         item.groups.some((group) => group.fields.some((field) => field.code === firstError)),
       );
-      activeTab.value = tab?.id ?? "client";
+      activeTab.value = tab?.id ?? "interaction";
     }
     return firstError == null;
   }
@@ -127,11 +105,6 @@ export function useSettingsDraft(options: SettingsDraftOptions) {
   }
 
   function resetActiveTab(): void {
-    if (activeTab.value === "client") {
-      Object.assign(draft, defaultPreferences());
-      clearErrors();
-      return;
-    }
     for (const group of activeProjectTab.value?.groups ?? [])
       for (const field of group.fields) {
         const entry = entries.value.get(field.code);
@@ -168,7 +141,6 @@ export function useSettingsDraft(options: SettingsDraftOptions) {
 
   function cancelDraft(): void {
     resetAllDrafts();
-    options.preview(null);
   }
 
   function clearErrors(): void {
@@ -181,11 +153,9 @@ export function useSettingsDraft(options: SettingsDraftOptions) {
     checked,
     changes,
     configurationDraft,
-    draft,
     entries,
     fieldDisabled,
     fieldErrors,
-    preferenceDraft,
     projectTabs,
     resetActiveTab,
     setBoolean,

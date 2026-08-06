@@ -1,6 +1,6 @@
 import type { ProjectConfigurationEntry } from "@/core/types";
 
-export type SettingsTabId = "interaction" | "display" | "project" | "script" | "save" | "client";
+export type SettingsTabId = "interaction" | "display" | "project" | "script" | "save";
 
 export interface SettingsField {
   code: string;

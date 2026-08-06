@@ -5,6 +5,7 @@ const props = defineProps<{
   open: boolean;
   title: string;
   wide?: boolean;
+  panelClass?: string;
   closeDisabled?: boolean;
 }>();
 const emit = defineEmits<{ close: [] }>();
@@ -110,7 +111,7 @@ onUnmounted(() => window.removeEventListener("resize", clamp));
       <section
         ref="panel"
         class="dialog-panel"
-        :class="{ wide }"
+        :class="[panelClass, { wide }]"
         role="dialog"
         aria-modal="true"
         :aria-label="title"

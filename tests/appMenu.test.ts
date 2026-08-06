@@ -25,7 +25,7 @@ const store = vi.hoisted(() => ({
   inputUndo: null,
   preferencesOpen: false,
   preferences: {},
-  configurationEntries: [],
+  configurationEntries: [] as unknown[],
   configurationReadOnly: false,
   useMenu: true,
   gameLineHeightPx: 13,
@@ -113,6 +113,7 @@ describe("application menus", () => {
     store.runtimeReady = false;
     store.canExportDiagnosis = false;
     store.canManageTraditionalSaves = false;
+    store.configurationEntries = [];
   });
 
   it("disables project and debug actions until the game is running", async () => {
@@ -145,6 +146,19 @@ describe("application menus", () => {
 
     wrapper.unmount();
     store.bridgeKind = "browser";
+  });
+
+  it("enables settings only when a project configuration is available", async () => {
+    let wrapper = mountApp();
+    let states = await menuStates(wrapper);
+    expect(states.get("设置…")).toBe(true);
+    wrapper.unmount();
+
+    store.configurationEntries = [{}];
+    wrapper = mountApp();
+    states = await menuStates(wrapper);
+    expect(states.get("设置…")).toBe(false);
+    wrapper.unmount();
   });
 
   it("shows the active internal project workload", () => {

@@ -76,6 +76,11 @@ async function waitForInteractiveProject() {
 }
 
 async function waitForBackgroundProjectExport() {
+  // A cold source build schedules cache export after one second. A cache hit leaves the project
+  // at the compiled status and has no export to serialize against.
+  await browser.pause(1_500);
+  const initial = await snapshot();
+  if (initial?.transfer?.export == null && initial.status === "项目编译完成") return;
   await browser.waitUntil(
     async () => {
       const state = await snapshot();
