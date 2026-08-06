@@ -69,6 +69,7 @@ async function waitForInteractiveProject() {
     snapshot,
     label: "configured project did not reach an input wait",
     totalTimeout: PROJECT_TIMEOUT,
+    stallTimeout: PROJECT_TIMEOUT,
     accept: (state) => state?.projectOpen && state.phase === "waiting_input" && state.canInteract,
   });
 }
