@@ -3,10 +3,18 @@ import assert from "node:assert/strict";
 import { waitForRuntimeProgress } from "./runtime-progress.mjs";
 
 const PROJECT_TIMEOUT = 120_000;
+const INITIAL_FLOW_LABELS = [
+  "睜開眼睛",
+  "睁开眼睛",
+  "初次遊玩",
+  "初次游玩",
+  "從最初開始",
+  "从最初开始",
+];
 const preferences = process.env.VITE_RUSTYERA_TAURI_PREFERENCES ? describe : describe.skip;
 
 preferences("Tauri emuera.config preferences", () => {
-  it("uses the unified host-aware settings dialog and hot-applies font geometry", async () => {
+  it("hot-applies font settings to history and preserves them across game flow resets", async () => {
     await browser.waitUntil(async () => Boolean(await snapshot()), {
       timeout: 20_000,
       timeoutMsg: "test control was not installed in the Tauri WebView",
@@ -29,6 +37,8 @@ preferences("Tauri emuera.config preferences", () => {
     assert.equal(await fontName.getAttribute("list"), "available-game-fonts");
     assert.equal((await dialog.$$("#available-game-fonts option")).length > 0, true);
     assert.equal(await dialog.$(".font-access-status").getAttribute("data-state"), "ready");
+    const configuredFont = await chooseDifferentSystemFont(await fontName.getValue());
+    await fontName.setValue(configuredFont);
     const fontSize = await dialog.$("#setting-FontSize");
     assert.equal(await fontSize.getValue(), "16");
     await fontSize.setValue("20");
@@ -44,7 +54,8 @@ preferences("Tauri emuera.config preferences", () => {
           state.phase === "waiting_input" &&
           state.canInteract &&
           metrics?.fontSize === "20px" &&
-          metrics.lineHeight === "20px"
+          metrics.lineHeight === "20px" &&
+          sameFont(metrics.flowButtonFontFamily, configuredFont)
         );
       },
       {
@@ -65,9 +76,73 @@ preferences("Tauri emuera.config preferences", () => {
       }),
     );
     assert.equal(state.fault, null);
-    assert.deepEqual(metrics, { fontSize: "20px", lineHeight: "20px", minHeight: "20px" });
+    assert.equal(metrics.fontSize, "20px");
+    assert.equal(metrics.lineHeight, "20px");
+    assert.equal(metrics.minHeight, "20px");
+    assert.equal(sameFont(metrics.flowButtonFontFamily, configuredFont), true);
+
+    const revisionBeforeFlowReset = state.presentationRevision;
+    const flowButton = await findInitialFlowButton();
+    await flowButton.click();
+    await waitForRuntimeProgress({
+      browser,
+      snapshot,
+      label: "project did not reach the next input wait after resetting the game flow style",
+      totalTimeout: PROJECT_TIMEOUT,
+      stallTimeout: PROJECT_TIMEOUT,
+      accept: async (nextState) =>
+        nextState?.projectOpen &&
+        nextState.phase === "waiting_input" &&
+        nextState.canInteract &&
+        nextState.presentationRevision !== revisionBeforeFlowReset &&
+        sameFont(await newestGameTextFontFamily(), configuredFont),
+    });
+
+    const resetState = await snapshot();
+    const resetFontFamily = await newestGameTextFontFamily();
+    console.log(
+      JSON.stringify({
+        flowReset: true,
+        phase: resetState.phase,
+        presentationRevision: resetState.presentationRevision,
+        configuredFont,
+        resetFontFamily,
+      }),
+    );
+    assert.equal(resetState.fault, null);
+    assert.equal(sameFont(resetFontFamily, configuredFont), true);
   });
 });
+
+async function chooseDifferentSystemFont(currentFont) {
+  const values = await browser.execute(() =>
+    [...document.querySelectorAll("#available-game-fonts option")].map((option) => option.value),
+  );
+  const candidates = values.filter((value) => value && !sameFont(value, currentFont));
+  const preferred = ["Arial", "Helvetica", "Menlo"].find((name) =>
+    candidates.some((candidate) => sameFont(candidate, name)),
+  );
+  const selected = preferred ?? candidates[0];
+  assert.ok(selected, "system font list must contain an alternative to the configured font");
+  return selected;
+}
+
+async function findInitialFlowButton() {
+  for (const label of INITIAL_FLOW_LABELS) {
+    const button = await $(`button*=${label}`);
+    if (await button.isExisting()) return button;
+  }
+  assert.fail("project did not expose its initial game-flow button");
+}
+
+function sameFont(actual, expected) {
+  const normalize = (value) =>
+    String(value ?? "")
+      .replaceAll(/["']/g, "")
+      .trim()
+      .toLowerCase();
+  return normalize(actual) === normalize(expected);
+}
 
 async function waitForInteractiveProject() {
   await waitForRuntimeProgress({
@@ -103,13 +178,33 @@ async function snapshot() {
 }
 
 async function gameLineMetrics() {
-  return browser.execute(() => {
+  return browser.execute((flowLabels) => {
     const line = [...document.querySelectorAll(".game-line")].find(
       (candidate) =>
         !candidate.querySelector(".media-image, .canvas-replay") && candidate.textContent?.trim(),
     );
     if (!(line instanceof HTMLElement)) return null;
     const style = getComputedStyle(line);
-    return { fontSize: style.fontSize, lineHeight: style.lineHeight, minHeight: style.minHeight };
+    const flowButton = [...document.querySelectorAll(".game-button")].find((candidate) =>
+      flowLabels.some((label) => candidate.textContent?.includes(label)),
+    );
+    return {
+      fontSize: style.fontSize,
+      lineHeight: style.lineHeight,
+      minHeight: style.minHeight,
+      flowButtonFontFamily:
+        flowButton instanceof HTMLElement && flowButton.querySelector("span") instanceof HTMLElement
+          ? getComputedStyle(flowButton.querySelector("span")).fontFamily
+          : null,
+    };
+  }, INITIAL_FLOW_LABELS);
+}
+
+async function newestGameTextFontFamily() {
+  return browser.execute(() => {
+    const text = [...document.querySelectorAll(".game-line span")]
+      .filter((candidate) => candidate.textContent?.trim())
+      .at(-1);
+    return text instanceof HTMLElement ? getComputedStyle(text).fontFamily : null;
   });
 }

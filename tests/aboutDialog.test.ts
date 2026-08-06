@@ -14,7 +14,7 @@ describe("AboutDialog", () => {
     expect(document.body.textContent).toContain("前端版本");
     expect(document.body.textContent).toContain("0.1.0-alpha.1-wasm");
     expect(document.body.textContent).toContain("core 版本");
-    expect(document.body.textContent).toContain("0.1.0-alpha.1 (3e1143e9)");
+    expect(document.body.textContent).toContain("0.1.0-alpha.1 (f5e6c2f7)");
     expect(document.body.textContent).toContain("GPL-3.0-only");
 
     document.body.querySelector<HTMLButtonElement>("button.primary")!.click();
