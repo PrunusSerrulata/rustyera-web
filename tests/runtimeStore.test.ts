@@ -1112,7 +1112,7 @@ describe("runtime store session lifecycle", () => {
     expect(store.projectOpen).toBe(true);
     expect(store.projectLoading).toBe(true);
     expect(store.canOpenProject).toBe(false);
-    expect(store.projectLoadProgressLabel).toBe("项目文件读取完成，正在准备编译与校验…");
+    expect(store.projectLoadProgressLabel).toBe("项目文件缓存命中，正在加载缓存…");
     expect(store.projectLoadProgressValue).toBeUndefined();
 
     bridge.projectProgressListener?.({ stage: "compiling", completed: 7, total: 10 });

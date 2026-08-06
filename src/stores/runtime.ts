@@ -465,7 +465,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         "info",
         `项目读取：快速扫描 ${metrics.quickScanMs.toFixed(0)} ms，缓存读取 ${metrics.cacheReadMs.toFixed(0)} ms，源码读取 ${metrics.sourceReadMs.toFixed(0)} ms，提交 ${metrics.submitMs.toFixed(0)} ms${metrics.cacheImported ? "（已导入项目文件）" : "（冷编译）"}`,
       );
-      continueProjectBuildProgress();
+      continueProjectBuildProgress(metrics.cacheImported);
       schedulePump(0);
     } catch (error) {
       if (replaceCurrent) projectOpen.value = false;
@@ -1128,7 +1128,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         "info",
         `项目重新读取：快速扫描 ${metrics.quickScanMs.toFixed(0)} ms，缓存读取 ${metrics.cacheReadMs.toFixed(0)} ms，源码读取 ${metrics.sourceReadMs.toFixed(0)} ms，提交 ${metrics.submitMs.toFixed(0)} ms${metrics.cacheImported ? "（已导入项目文件）" : "（冷编译）"}`,
       );
-      continueProjectBuildProgress();
+      continueProjectBuildProgress(metrics.cacheImported);
     } catch (error) {
       finishProjectLoad();
       const message = `重新开始失败：${String(error)}`;
@@ -2297,7 +2297,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     startProjectLoadElapsedTimer();
   }
 
-  function continueProjectBuildProgress(): void {
+  function continueProjectBuildProgress(cacheImported = false): void {
     projectLoading.value = true;
     startProjectLoadElapsedTimer();
     if (
@@ -2307,7 +2307,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     )
       return;
     projectProgress.value = undefined;
-    status.value = "项目文件读取完成，正在准备编译与校验…";
+    status.value = cacheImported
+      ? "项目文件缓存命中，正在加载缓存…"
+      : "项目文件读取完成，正在准备编译与校验…";
   }
 
   function showProjectLoadTransition(message: string): void {
