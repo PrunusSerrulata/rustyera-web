@@ -6,7 +6,7 @@ const PROJECT_TIMEOUT = 120_000;
 const preferences = process.env.VITE_RUSTYERA_TAURI_PREFERENCES ? describe : describe.skip;
 
 preferences("Tauri emuera.config preferences", () => {
-  it("validates, atomically saves, and restarts with the configured font geometry", async () => {
+  it("uses the unified host-aware settings dialog and hot-applies font geometry", async () => {
     await browser.waitUntil(async () => Boolean(await snapshot()), {
       timeout: 20_000,
       timeoutMsg: "test control was not installed in the Tauri WebView",
@@ -16,14 +16,18 @@ preferences("Tauri emuera.config preferences", () => {
     await $(".welcome .primary").click();
     await waitForInteractiveProject();
     await $("button=文件").click();
-    await $("button=偏好设置…").click();
+    await $("button=设置…").click();
 
-    const dialog = await $(".dialog-panel[aria-label='偏好设置']");
+    const dialog = await $(".dialog-panel[aria-label='RustyEra Tauri · 设置']");
     await dialog.waitForDisplayed();
-    const fontSize = await dialog.$(".//*[@title='FontSize']/following-sibling::input");
-    assert.equal(await fontSize.getValue(), "18");
+    await dialog.$("button=显示").click();
+    assert.equal(await dialog.$("#setting-WindowX").isDisplayed(), true);
+    assert.equal(await dialog.$("button=使用当前主视口大小").isDisplayed(), true);
+    const fontSize = await dialog.$("#setting-FontSize");
+    assert.equal(await fontSize.getValue(), "16");
     await fontSize.setValue("20");
-    await dialog.$("button=保存").click();
+    await dialog.$("#setting-LineHeight").setValue("20");
+    await dialog.$("button=应用").click();
 
     await browser.waitUntil(
       async () => {
@@ -39,7 +43,7 @@ preferences("Tauri emuera.config preferences", () => {
       },
       {
         timeout: PROJECT_TIMEOUT,
-        timeoutMsg: "project did not restart with the saved emuera.config font size",
+        timeoutMsg: "project did not hot-apply the saved emuera.config font size",
       },
     );
 

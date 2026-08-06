@@ -27,6 +27,7 @@ export function parseProjectConfiguration(value: unknown): ProjectConfigurationS
     project_revision: revision,
     source_digest: digest,
     entries: value.entries.map(parseEntry),
+    restart_pending: value.restart_pending == null ? false : booleanField(value, "restart_pending"),
   };
 }
 
@@ -39,6 +40,7 @@ export function parsePreparedConfiguration(value: unknown): PreparedProjectConfi
     expected_source_digest: bytesField(value, "expected_source_digest"),
     contents: value.contents,
     restart_required: value.restart_required,
+    prepared_source_digest: bytesField(value, "prepared_source_digest"),
   };
 }
 
@@ -80,6 +82,8 @@ function parseEntry(value: unknown): ProjectConfigurationEntry {
   if (!Array.isArray(value.allowed) || !value.allowed.every((item) => typeof item === "string"))
     throw new Error("项目配置候选值无效");
   if (typeof value.fixed !== "boolean") throw new Error("项目配置标志无效");
+  if (value.application != null && value.application !== "hot" && value.application !== "restart")
+    throw new Error("项目配置应用方式无效");
   const applicability = unsignedU32(value.applicability);
   return {
     code: value.code as string,
@@ -90,7 +94,18 @@ function parseEntry(value: unknown): ProjectConfigurationEntry {
     allowed: value.allowed as string[],
     fixed: value.fixed,
     applicability,
+    default_value:
+      typeof value.default_value === "string" ? value.default_value : (value.value as string),
+    effective_value:
+      typeof value.effective_value === "string" ? value.effective_value : (value.value as string),
+    application: value.application === "hot" ? "hot" : "restart",
   };
+}
+
+function booleanField(value: Record<string, unknown>, field: string): boolean {
+  const result = value[field];
+  if (typeof result !== "boolean") throw new Error(`项目配置 ${field} 字段无效`);
+  return result;
 }
 
 function unsignedU32(value: unknown): number {

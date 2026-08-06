@@ -1,3 +1,4 @@
+import { blake3 } from "@noble/hashes/blake3.js";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -248,7 +249,10 @@ describe("runtime store session lifecycle", () => {
       { width: 0, height: 0 },
     );
 
-    await store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "18" }]);
+    void store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "18" }]);
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(store.status).toMatch(/ · 已等待 1 秒$/);
 
     expect(bridge.submitRuntime).toHaveBeenCalledWith(
       {
@@ -299,7 +303,31 @@ describe("runtime store session lifecycle", () => {
     expect(store.logs.at(-1)?.message).toContain("客户端项目配置应用失败");
   });
 
-  it("writes a Runtime-prepared configuration and recreates the project session", async () => {
+  it("keeps project progress active until host configuration application finishes", async () => {
+    let finishHostConfiguration!: () => void;
+    bridge.applyProjectConfiguration.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishHostConfiguration = resolve;
+      }),
+    );
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("project_load_report", projectConfigurationReport(2, 3, "18"))],
+    });
+    const store = useRuntimeStore();
+    store.projectLoading = true;
+
+    const loading = store.enableDebug();
+    await Promise.resolve();
+    expect(store.projectLoading).toBe(true);
+    finishHostConfiguration();
+    await loading;
+
+    expect(store.projectLoading).toBe(false);
+    expect(store.status).toBe("项目编译完成");
+  });
+
+  it("writes and finalizes a Runtime-prepared configuration without forcing a restart", async () => {
     let messageId = 20;
     bridge.submitRuntime.mockImplementation(async () => messageId++);
     bridge.createSession.mockResolvedValueOnce({
@@ -330,30 +358,176 @@ describe("runtime store session lifecycle", () => {
     const store = useRuntimeStore();
     await store.enableDebug();
     store.projectOpen = true;
-    await store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "18" }]);
-    bridge.pump.mockResolvedValueOnce({
-      ...emptyBatch(),
-      events: [
-        runtimeEvent(
-          "configuration_update_prepared",
-          {
-            project_revision: 3,
-            expected_source_digest: new Uint8Array(32).fill(7),
-            contents: "フォントサイズ:18\n",
-            restart_required: true,
-          },
-          21,
-        ),
-      ],
-    });
+    const saving = store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "18" }]);
+    await Promise.resolve();
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "configuration_update_prepared",
+            {
+              project_revision: 3,
+              expected_source_digest: new Uint8Array(32).fill(7),
+              contents: "フォントサイズ:18\n",
+              restart_required: false,
+              prepared_source_digest: blake3(new TextEncoder().encode("フォントサイズ:18\n")),
+            },
+            21,
+          ),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "configuration_update_committed",
+            {
+              configuration: {
+                project_revision: 3,
+                source_digest: blake3(new TextEncoder().encode("フォントサイズ:18\n")),
+                restart_pending: false,
+                entries: [
+                  {
+                    code: "FontSize",
+                    japanese: "フォントサイズ",
+                    english: "Font size",
+                    value: "18",
+                    effective_value: "18",
+                    default_value: "18",
+                    application: "hot",
+                    kind: "integer",
+                    allowed: [],
+                    fixed: false,
+                    applicability: 8,
+                  },
+                ],
+              },
+            },
+            22,
+          ),
+        ],
+      });
 
-    await vi.advanceTimersByTimeAsync(32);
+    await vi.advanceTimersByTimeAsync(64);
+    await saving;
 
     expect(bridge.writeProjectConfiguration).toHaveBeenCalledWith(
       new Uint8Array(32).fill(7),
       "フォントサイズ:18\n",
     );
-    expect(bridge.restartProject).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      {
+        type: "finalize_configuration_update",
+        value: { preparation_message_id: 21, outcome: "commit" },
+      },
+      undefined,
+    );
+    expect(bridge.restartProject).not.toHaveBeenCalled();
+  });
+
+  it("aborts a prepared transaction when the host write fails and does not hot-apply it", async () => {
+    let messageId = 40;
+    bridge.submitRuntime.mockImplementation(async () => messageId++);
+    bridge.writeProjectConfiguration.mockRejectedValueOnce(new Error("disk full"));
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("project_load_report", projectConfigurationReport(5, 6, "12"))],
+    });
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    bridge.applyProjectConfiguration.mockClear();
+    const saving = store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "18" }]);
+    await Promise.resolve();
+    const contents = "フォントサイズ:18\n";
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "configuration_update_prepared",
+            {
+              project_revision: 5,
+              expected_source_digest: new Uint8Array(32).fill(6),
+              contents,
+              restart_required: false,
+              prepared_source_digest: blake3(new TextEncoder().encode(contents)),
+            },
+            41,
+          ),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "configuration_update_committed",
+            { configuration: projectConfigurationReport(5, 6, "12").configuration },
+            42,
+          ),
+        ],
+      });
+
+    await vi.advanceTimersByTimeAsync(64);
+    await saving;
+
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      {
+        type: "finalize_configuration_update",
+        value: { preparation_message_id: 41, outcome: "abort" },
+      },
+      undefined,
+    );
+    expect(bridge.applyProjectConfiguration).not.toHaveBeenCalled();
+    expect(store.settingsError).toContain("disk full");
+  });
+
+  it("clears a rejected finalization so a later save can start", async () => {
+    let messageId = 60;
+    bridge.submitRuntime.mockImplementation(async () => messageId++);
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("project_load_report", projectConfigurationReport(8, 9, "12"))],
+    });
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    const firstSave = store.savePreferences(defaultPreferences(), [
+      { code: "FontSize", value: "18" },
+    ]);
+    await Promise.resolve();
+    const contents = "フォントサイズ:18\n";
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "configuration_update_prepared",
+            {
+              project_revision: 8,
+              expected_source_digest: new Uint8Array(32).fill(9),
+              contents,
+              restart_required: false,
+              prepared_source_digest: blake3(new TextEncoder().encode(contents)),
+            },
+            61,
+          ),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("command_rejected", { message: "finalize rejected" }, 62)],
+      });
+    await vi.advanceTimersByTimeAsync(64);
+    await firstSave;
+    expect(store.settingsError).toContain("finalize rejected");
+
+    void store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "20" }]);
+    await Promise.resolve();
+
+    const prepareCalls = bridge.submitRuntime.mock.calls.filter(
+      (call: unknown[]) => (call[0] as any).type === "prepare_configuration_update",
+    );
+    expect(prepareCalls).toHaveLength(2);
   });
 
   it("uses the browser close gesture for the WASM exit action", async () => {
@@ -755,6 +929,8 @@ describe("runtime store session lifecycle", () => {
     bridge.projectProgressListener?.({ stage: "validating", completed: 1, total: 2 });
     expect(store.projectLoadProgressLabel).toBe("正在验证编译结果：1/2（50%）");
     expect(store.projectLoadProgressValue).toBe(50);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(store.projectLoadProgressLabel).toBe("正在验证编译结果：1/2（50%） · 已等待 5 秒");
 
     bridge.pump.mockResolvedValueOnce({
       ...emptyBatch(),
@@ -1213,6 +1389,33 @@ function runtimeEvent(type: string, value: unknown, correlationId?: number, epoc
     correlationId,
     epoch,
     message: { type, value },
+  };
+}
+
+function projectConfigurationReport(revision: number, digestByte: number, fontSize: string) {
+  return {
+    success: true,
+    diagnostics: [],
+    configuration: {
+      project_revision: revision,
+      source_digest: new Uint8Array(32).fill(digestByte),
+      restart_pending: false,
+      entries: [
+        {
+          code: "FontSize",
+          japanese: "フォントサイズ",
+          english: "Font size",
+          value: fontSize,
+          effective_value: fontSize,
+          default_value: "18",
+          application: "hot",
+          kind: "integer",
+          allowed: [],
+          fixed: false,
+          applicability: 8,
+        },
+      ],
+    },
   };
 }
 

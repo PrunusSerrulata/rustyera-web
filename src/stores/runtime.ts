@@ -86,6 +86,26 @@ interface DiagnosisState {
   snapshot?: Uint8Array;
 }
 
+interface PendingConfigurationBase {
+  snapshot: ProjectConfigurationSnapshot;
+  changedCodes: string[];
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}
+
+type PendingConfigurationUpdate =
+  | (PendingConfigurationBase & {
+      stage: "preparing";
+      prepareMessageId: number | bigint;
+    })
+  | (PendingConfigurationBase & {
+      stage: "finalizing";
+      prepareMessageId: number | bigint;
+      finalizeMessageId: number | bigint;
+      outcome: "commit" | "abort";
+      writeError?: unknown;
+    });
+
 export type RuntimeStartKind = "new_game" | "traditional_save" | "vm_snapshot";
 
 export interface RuntimeTestConfiguration {
@@ -107,8 +127,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const presentation = reactive(emptyPresentation());
   const preferences = ref<Preferences>(defaultPreferences());
   const projectConfiguration = ref<ProjectConfigurationSnapshot | null>(null);
-  let pendingConfigurationUpdate:
-    { messageId: string; snapshot: ProjectConfigurationSnapshot } | undefined;
+  let pendingConfigurationUpdate: PendingConfigurationUpdate | undefined;
+  const configurationProfileValid = ref(true);
+  const viewportMeasurement = ref<GameViewportMeasurement>();
   const previewPreferences = ref<Preferences | null>(null);
   const fonts = ref<string[]>(["system-ui", "sans-serif", "serif", "monospace"]);
   const phase = ref("negotiating");
@@ -118,6 +139,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const projectLoading = ref(false);
   const projectSelecting = ref(false);
   const projectProgress = ref<ProjectProgress>();
+  const projectLoadElapsedSeconds = ref(0);
   const openProjectConfirmationOpen = ref(false);
   let pendingProjectSelection: "directory" | "file" = "directory";
   const prompt = ref("");
@@ -127,6 +149,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const faultActionBusy = ref(false);
   const logs = shallowReactive<LogEntry[]>([]);
   const preferencesOpen = ref(false);
+  const settingsBusy = ref(false);
+  const settingsError = ref("");
+  let settingsStartedAt: number | undefined;
+  let settingsElapsedTimer: number | undefined;
   const logsOpen = ref(false);
   const debugConsoleOpen = ref(false);
   const variablesOpen = ref(false);
@@ -167,6 +193,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let lastTimeAdvanceNs: number | undefined;
   let nextEnvironmentRevision = 1;
   let projectRuntimeStartedAt: number | undefined;
+  let projectLoadStartedAt: number | undefined;
+  let projectLoadElapsedTimer: number | undefined;
   let projectUsedCompiledCache = false;
   let acceptingProjectProgress = false;
   let batchMediaDirty = false;
@@ -201,7 +229,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
     clientConfigurationEntries(projectConfiguration.value, bridge.kind),
   );
   const configurationReadOnly = computed(
-    () => projectConfiguration.value != null && !bridge.projectConfigurationWritable(),
+    () =>
+      projectConfiguration.value != null &&
+      (!bridge.projectConfigurationWritable() || !configurationProfileValid.value),
+  );
+  const configurationRestartPending = computed(
+    () => projectConfiguration.value?.restart_pending ?? false,
   );
   const useMenu = computed(() => configurationBoolean("UseMenu", true));
   const useMouse = computed(() => configurationBoolean("UseMouse", true));
@@ -257,13 +290,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const canOpenProject = computed(
     () => !projectSelecting.value && !projectLoading.value && !diagnosisExporting.value,
   );
-  const projectLoadProgressLabel = computed(() =>
-    projectLoading.value
-      ? projectProgress.value
-        ? formatProjectProgress(projectProgress.value)
-        : status.value
-      : "",
-  );
+  const projectLoadProgressLabel = computed(() => {
+    if (!projectLoading.value) return "";
+    const label = projectProgress.value
+      ? formatProjectProgress(projectProgress.value)
+      : status.value;
+    return projectLoadElapsedSeconds.value >= 1
+      ? `${label} · 已等待 ${projectLoadElapsedSeconds.value} 秒`
+      : label;
+  });
   const projectLoadProgressValue = computed(() => {
     const progress = projectProgress.value;
     if (!projectLoading.value || !progress || progress.total <= 0) return undefined;
@@ -347,6 +382,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       audioAvailable: true,
       debugScopeMask: 1023,
       maximumEnvelopeBytes: 512 * 1024 * 1024,
+      configurationProfile: bridge.kind,
     };
   }
 
@@ -503,6 +539,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const value = message.value;
     switch (message.type) {
       case "server_hello":
+        configurationProfileValid.value = value.configuration_profile === bridge.kind;
+        if (!configurationProfileValid.value)
+          log("error", "Runtime 返回的设置宿主类别与当前客户端不一致，项目设置已停用");
         status.value = "Runtime 已就绪";
         break;
       case "project_load_report":
@@ -518,8 +557,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
         }
         updateProjectConfiguration(value.configuration);
         if (value.success) {
-          finishProjectLoad();
-          await nextTick();
           if (projectConfiguration.value) {
             try {
               await bridge.applyProjectConfiguration(
@@ -532,6 +569,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           }
           await settleProjectViewport();
           status.value = "项目编译完成";
+          finishProjectLoad();
           if (pendingStart.type === "new_game") {
             await send({
               type: "start",
@@ -591,26 +629,69 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "configuration_update_prepared": {
         const pending = pendingConfigurationUpdate;
-        if (!pending || pending.messageId !== String(correlationId)) {
+        if (
+          pending?.stage !== "preparing" ||
+          String(pending.prepareMessageId) !== String(correlationId)
+        ) {
           log("warning", "忽略了过期的项目配置保存响应");
           break;
         }
-        pendingConfigurationUpdate = undefined;
+        let writeError: unknown;
         try {
           const prepared = parsePreparedConfiguration(value);
           if (!equalConfigurationIdentity(prepared, pending.snapshot))
             throw new Error("项目配置在保存前已经变化");
+          const contentsDigest = blake3(new TextEncoder().encode(prepared.contents));
+          if (
+            contentsDigest.length !== prepared.prepared_source_digest.length ||
+            !contentsDigest.every((byte, index) => byte === prepared.prepared_source_digest[index])
+          )
+            throw new Error("Runtime 返回的项目配置摘要无效");
           await bridge.writeProjectConfiguration(
             prepared.expected_source_digest,
             prepared.contents,
           );
-          status.value = "项目配置已保存，正在重新启动…";
-          if (prepared.restart_required) window.setTimeout(() => void restart(), 0);
         } catch (error) {
-          const message = `保存项目配置失败：${String(error)}`;
-          status.value = message;
-          log("error", message);
+          writeError = error;
         }
+        await beginConfigurationFinalization(
+          pending,
+          writeError == null ? "commit" : "abort",
+          writeError,
+        );
+        if (writeError == null && pendingConfigurationUpdate?.stage === "finalizing")
+          status.value = "正在应用项目配置…";
+        break;
+      }
+      case "configuration_update_committed": {
+        const pending = pendingConfigurationUpdate;
+        if (
+          pending?.stage !== "finalizing" ||
+          String(pending.finalizeMessageId) !== String(correlationId)
+        ) {
+          log("warning", "忽略了过期的项目配置提交响应");
+          break;
+        }
+        pendingConfigurationUpdate = undefined;
+        updateProjectConfiguration(value.configuration);
+        if (pending.outcome === "abort") {
+          const error = new Error(`保存项目配置失败：${String(pending.writeError)}`);
+          status.value = error.message;
+          log("error", error.message);
+          pending.reject(error);
+          break;
+        }
+        try {
+          await bridge.applyProjectConfiguration(
+            configurationEntries.value,
+            viewportChrome(viewportMeasurement.value),
+            pending.changedCodes,
+          );
+        } catch (error) {
+          log("warning", `客户端项目配置应用失败：${String(error)}`);
+        }
+        status.value = "项目配置已应用";
+        pending.resolve();
         break;
       }
       case "wait_changed":
@@ -675,10 +756,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "command_rejected":
         log("warning", value.message ?? "Runtime 拒绝了命令", true);
-        if (pendingConfigurationUpdate?.messageId === String(correlationId)) {
-          pendingConfigurationUpdate = undefined;
-          status.value = `项目配置未保存：${value.message ?? "Runtime 拒绝了命令"}`;
-        }
+        rejectPendingConfiguration(correlationId, value.message ?? "Runtime 拒绝了命令");
         if (
           exportState?.requestMessageId === String(correlationId) &&
           !String(value.message ?? "").includes("compiled project cache preparation started") &&
@@ -728,7 +806,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function configurationValue(code: string): string | undefined {
-    return projectConfiguration.value?.entries.find((entry) => entry.code === code)?.value;
+    return projectConfiguration.value?.entries.find((entry) => entry.code === code)
+      ?.effective_value;
   }
 
   function configurationBoolean(code: string, fallback: boolean): boolean {
@@ -1084,7 +1163,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
     importBytes = undefined;
     importKind = undefined;
     projectConfiguration.value = null;
-    pendingConfigurationUpdate = undefined;
+    if (pendingConfigurationUpdate) {
+      const pending = pendingConfigurationUpdate;
+      pendingConfigurationUpdate = undefined;
+      pending.reject(new Error("项目会话已重置，配置事务已取消"));
+    }
     nextEnvironmentRevision = 1;
   }
 
@@ -1948,28 +2031,123 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function savePreferences(
     value: Preferences,
     changes: ProjectConfigurationChange[] = [],
+    restartAfterApply = false,
   ): Promise<void> {
-    preferences.value = await bridge.savePreferences(value);
-    previewPreferences.value = null;
-    audio.setPreferences(preferences.value);
-    if (!changes.length) return;
-    const snapshot = projectConfiguration.value;
-    if (!snapshot || !bridge.projectConfigurationWritable()) {
-      const message = !snapshot ? "项目配置尚未加载" : "当前项目配置为只读";
+    if (settingsBusy.value) return;
+    settingsBusy.value = true;
+    settingsError.value = "";
+    startSettingsElapsedTimer();
+    let projectApplied = false;
+    let preferencesSaved = false;
+    try {
+      if (changes.length) {
+        await saveProjectConfiguration(changes);
+        projectApplied = true;
+      }
+      preferences.value = await bridge.savePreferences(value);
+      preferencesSaved = true;
+      previewPreferences.value = null;
+      audio.setPreferences(preferences.value);
+      status.value = restartAfterApply ? "设置已保存，正在重新启动…" : "设置已应用";
+      if (restartAfterApply) {
+        preferencesOpen.value = false;
+        await restart();
+      }
+    } catch (error) {
+      const message = preferencesSaved
+        ? `设置已保存，但重新启动失败：${String(error)}`
+        : projectApplied
+          ? `项目设置已应用，但客户端偏好保存失败：${String(error)}`
+          : `设置未保存：${String(error)}`;
       status.value = message;
       log("error", message);
-      return;
+      settingsError.value = message;
+    } finally {
+      settingsBusy.value = false;
+      finishSettingsElapsedTimer();
     }
-    if (pendingConfigurationUpdate) {
-      status.value = "项目配置正在保存，请稍候";
-      return;
+  }
+
+  function startSettingsElapsedTimer(): void {
+    settingsStartedAt = performance.now();
+    settingsElapsedTimer = window.setInterval(() => {
+      if (settingsStartedAt == null) return;
+      const elapsed = Math.floor((performance.now() - settingsStartedAt) / 1000);
+      if (elapsed < 1) return;
+      status.value = `${status.value.replace(/ · 已等待 \d+ 秒$/, "")} · 已等待 ${elapsed} 秒`;
+    }, 1000);
+  }
+
+  function finishSettingsElapsedTimer(): void {
+    settingsStartedAt = undefined;
+    if (settingsElapsedTimer != null) {
+      window.clearInterval(settingsElapsedTimer);
+      settingsElapsedTimer = undefined;
     }
-    const messageId = await send({
-      type: "prepare_configuration_update",
-      value: prepareConfigurationUpdate(snapshot, changes),
+  }
+
+  async function saveProjectConfiguration(changes: ProjectConfigurationChange[]): Promise<void> {
+    const snapshot = projectConfiguration.value;
+    if (!snapshot || !bridge.projectConfigurationWritable() || !configurationProfileValid.value)
+      throw new Error(!snapshot ? "项目配置尚未加载" : "当前项目配置为只读");
+    if (pendingConfigurationUpdate) throw new Error("项目配置正在保存，请稍候");
+    await new Promise<void>((resolve, reject) => {
+      void send({
+        type: "prepare_configuration_update",
+        value: prepareConfigurationUpdate(snapshot, changes),
+      })
+        .then((messageId) => {
+          pendingConfigurationUpdate = {
+            stage: "preparing",
+            prepareMessageId: messageId,
+            snapshot,
+            changedCodes: changes.map((change) => change.code),
+            resolve,
+            reject,
+          };
+          status.value = "正在验证项目配置…";
+        })
+        .catch(reject);
     });
-    pendingConfigurationUpdate = { messageId: String(messageId), snapshot };
-    status.value = "正在验证项目配置…";
+  }
+
+  async function beginConfigurationFinalization(
+    pending: Extract<PendingConfigurationUpdate, { stage: "preparing" }>,
+    outcome: "commit" | "abort",
+    writeError?: unknown,
+  ): Promise<void> {
+    try {
+      const finalizeMessageId = await send({
+        type: "finalize_configuration_update",
+        value: { preparation_message_id: pending.prepareMessageId, outcome },
+      });
+      if (pendingConfigurationUpdate !== pending) return;
+      pendingConfigurationUpdate = {
+        ...pending,
+        stage: "finalizing",
+        finalizeMessageId,
+        outcome,
+        writeError,
+      };
+    } catch (error) {
+      if (pendingConfigurationUpdate === pending) pendingConfigurationUpdate = undefined;
+      pending.reject(new Error(`项目配置事务无法完成：${String(error)}`));
+    }
+  }
+
+  function rejectPendingConfiguration(
+    correlationId: number | bigint | undefined,
+    message: string,
+  ): void {
+    const pending = pendingConfigurationUpdate;
+    if (!pending || correlationId == null) return;
+    const messageId =
+      pending.stage === "preparing" ? pending.prepareMessageId : pending.finalizeMessageId;
+    if (String(messageId) !== String(correlationId)) return;
+    pendingConfigurationUpdate = undefined;
+    const error = new Error(`项目配置未保存：${message}`);
+    status.value = error.message;
+    pending.reject(error);
   }
 
   function preview(value: Preferences | null): void {
@@ -1978,8 +2156,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function projectViewport(measurement = currentGameViewportMeasurement()): Promise<void> {
-    if (!runtimePump.ready) return;
     if (!measurement) return;
+    viewportMeasurement.value = measurement;
+    if (!runtimePump.ready) return;
     await send({
       type: "projection_observation",
       value: {
@@ -2070,10 +2249,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
     projectLoading.value = true;
     projectProgress.value = undefined;
     status.value = message;
+    startProjectLoadElapsedTimer();
   }
 
   function continueProjectBuildProgress(): void {
     projectLoading.value = true;
+    startProjectLoadElapsedTimer();
     if (
       projectProgress.value &&
       projectProgress.value.stage !== "importing" &&
@@ -2088,12 +2269,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
     projectLoading.value = true;
     projectProgress.value = undefined;
     status.value = message;
+    startProjectLoadElapsedTimer();
   }
 
   function finishProjectLoad(): void {
     acceptingProjectProgress = false;
     projectLoading.value = false;
     projectProgress.value = undefined;
+    projectLoadElapsedSeconds.value = 0;
+    projectLoadStartedAt = undefined;
+    if (projectLoadElapsedTimer != null) {
+      window.clearInterval(projectLoadElapsedTimer);
+      projectLoadElapsedTimer = undefined;
+    }
   }
 
   function handleProjectProgress(value: ProjectProgress): void {
@@ -2111,8 +2299,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
     )
       return;
     projectLoading.value = true;
+    startProjectLoadElapsedTimer();
     projectProgress.value = progress;
     status.value = formatProjectProgress(progress);
+  }
+
+  function startProjectLoadElapsedTimer(): void {
+    if (projectLoadStartedAt == null) projectLoadStartedAt = performance.now();
+    if (projectLoadElapsedTimer != null) return;
+    projectLoadElapsedTimer = window.setInterval(() => {
+      if (projectLoadStartedAt == null) return;
+      projectLoadElapsedSeconds.value = Math.floor(
+        (performance.now() - projectLoadStartedAt) / 1000,
+      );
+    }, 1000);
   }
 
   function requestBrowserTabClose(): void {
@@ -2154,6 +2354,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     preferences,
     configurationEntries,
     configurationReadOnly,
+    configurationRestartPending,
+    viewportMeasurement,
     useMenu,
     useMouse,
     scrollHeight,
@@ -2176,6 +2378,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     faultActionBusy,
     logs,
     preferencesOpen,
+    settingsBusy,
+    settingsError,
     logsOpen,
     debugConsoleOpen,
     variablesOpen,

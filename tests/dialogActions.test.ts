@@ -27,6 +27,7 @@ const debugStore = reactive({
 vi.mock("@/stores/runtime", () => ({ useRuntimeStore: () => debugStore }));
 
 import DebugDialogs from "@/components/DebugDialogs.vue";
+import ColorPickerDialog from "@/components/ColorPickerDialog.vue";
 import LogDialog from "@/components/LogDialog.vue";
 import OpenProjectDialog from "@/components/OpenProjectDialog.vue";
 import PreferencesDialog from "@/components/PreferencesDialog.vue";
@@ -49,13 +50,14 @@ describe("dialog actions", () => {
     };
   });
 
-  it("resets, saves, and cancels preferences", async () => {
+  it("applies all tab drafts together and resets only the active tab", async () => {
     const wrapper = mount(PreferencesDialog, {
       attachTo: document.body,
       props: {
         open: true,
         value: { ...defaultPreferences(), fontSizeOverridePx: 24 },
         fonts: ["Project Font"],
+        hostKind: "tauri",
         configurationEntries: [
           {
             code: "FontSize",
@@ -66,6 +68,9 @@ describe("dialog actions", () => {
             allowed: [],
             fixed: false,
             applicability: 12,
+            default_value: "18",
+            effective_value: "12",
+            application: "hot",
           },
           {
             code: "UseMouse",
@@ -76,33 +81,33 @@ describe("dialog actions", () => {
             allowed: [],
             fixed: false,
             applicability: 12,
+            default_value: "YES",
+            effective_value: "YES",
+            application: "hot",
           },
         ],
       },
     });
 
-    await clickButton("恢复默认值");
-    const projectInput = document.body.querySelector<HTMLInputElement>(
-      '.project-preferences input[type="number"]',
-    )!;
+    await clickButton("显示");
+    await clickButton("重置当前标签页");
+    const projectInput = document.body.querySelector<HTMLInputElement>("#setting-FontSize")!;
     projectInput.value = "18";
     projectInput.dispatchEvent(new Event("input", { bubbles: true }));
-    const booleanSelect = document.body.querySelector<HTMLSelectElement>(
-      ".project-preferences select",
-    )!;
-    expect([...booleanSelect.options].map((option) => option.value)).toEqual(["YES", "NO"]);
-    booleanSelect.value = "NO";
-    booleanSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await clickButton("交互与输出");
+    const useMouse = document.body.querySelector<HTMLInputElement>("#setting-UseMouse")!;
+    useMouse.checked = false;
+    useMouse.dispatchEvent(new Event("change", { bubbles: true }));
     await nextTick();
-    await clickButton("保存");
-    expect(wrapper.emitted("save")?.at(-1)?.[0]).toEqual(defaultPreferences());
+    await clickButton("应用");
+    expect(wrapper.emitted("save")?.at(-1)?.[0]).toMatchObject({ fontSizeOverridePx: 24 });
     expect(wrapper.emitted("save")?.at(-1)?.[1]).toEqual([
       { code: "FontSize", value: "18" },
       { code: "UseMouse", value: "NO" },
     ]);
 
     await clickButton("取消");
-    expect(wrapper.emitted("close")).toHaveLength(2);
+    expect(wrapper.emitted("close")).toHaveLength(1);
     wrapper.unmount();
   });
 
@@ -113,18 +118,86 @@ describe("dialog actions", () => {
         open: true,
         value: { ...defaultPreferences(), fontSizeOverridePx: 24 },
         fonts: [],
+        hostKind: "browser",
       },
     });
-    const input = document.body.querySelector<HTMLInputElement>(
-      '.preferences-form > label input[type="number"]',
-    )!;
+    const input = document.body.querySelector<HTMLInputElement>("#client-font-size")!;
 
     input.value = "";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     await nextTick();
-    await clickButton("保存");
+    await clickButton("应用");
 
     expect(wrapper.emitted("save")?.at(-1)?.[0]).toMatchObject({ fontSizeOverridePx: null });
+    wrapper.unmount();
+  });
+
+  it("shows browser viewport data and synchronizes the 216-color palette with HEX input", async () => {
+    const wrapper = mount(PreferencesDialog, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        value: defaultPreferences(),
+        fonts: [],
+        hostKind: "browser",
+        viewportMeasurement: {
+          width: 900,
+          height: 600,
+          lineColumns: 100,
+          chromeWidth: 0,
+          chromeHeight: 0,
+        },
+        configurationEntries: [
+          {
+            code: "ForeColor",
+            japanese: "文字色",
+            english: "Text color",
+            value: "192,192,192",
+            kind: "color",
+            allowed: [],
+            fixed: false,
+            applicability: 12,
+            default_value: "192,192,192",
+            effective_value: "192,192,192",
+            application: "hot",
+          },
+        ],
+      },
+    });
+
+    await clickButton("显示");
+    expect(document.body.textContent).toContain("900");
+    await clickButton("192,192,192");
+    expect(document.body.querySelectorAll(".palette-swatch")).toHaveLength(216);
+    expect(document.body.textContent).not.toContain("常用颜色");
+    const hex = document.body.querySelector<HTMLInputElement>(".color-hex input")!;
+    hex.value = "#336699";
+    hex.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    await clickButton("确定");
+    expect(document.body.querySelector("#setting-ForeColor")?.textContent).toContain("51,102,153");
+    wrapper.unmount();
+  });
+
+  it("keeps invalid color edits visible and disables confirmation", async () => {
+    const wrapper = mount(ColorPickerDialog, {
+      attachTo: document.body,
+      props: { open: true, value: "1,2,3", title: "选择颜色" },
+    });
+    const hex = document.body.querySelector<HTMLInputElement>(".color-hex input")!;
+    hex.value = "#12";
+    hex.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+
+    expect(hex.value).toBe("#12");
+    expect(document.body.textContent).toContain("#RRGGBB");
+    expect(
+      [...document.body.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent?.trim() === "确定",
+      )?.disabled,
+    ).toBe(true);
+    await clickButton("取消");
+    expect(wrapper.emitted("confirm")).toBeUndefined();
     wrapper.unmount();
   });
 

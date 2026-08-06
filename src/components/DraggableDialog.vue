@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 
-const props = defineProps<{ open: boolean; title: string; wide?: boolean }>();
+const props = defineProps<{
+  open: boolean;
+  title: string;
+  wide?: boolean;
+  closeDisabled?: boolean;
+}>();
 const emit = defineEmits<{ close: [] }>();
 const panel = ref<HTMLElement>();
 const position = ref({ x: 0, y: 0 });
@@ -61,6 +66,7 @@ function end(event: PointerEvent): void {
 }
 
 function close(): void {
+  if (props.closeDisabled) return;
   emit("close");
   if (previousFocus instanceof HTMLElement) previousFocus.focus();
 }
@@ -124,6 +130,7 @@ onUnmounted(() => window.removeEventListener("resize", clamp));
             type="button"
             class="icon-button"
             aria-label="关闭"
+            :disabled="closeDisabled"
             data-no-drag
             @pointerdown.stop
             @click="close"

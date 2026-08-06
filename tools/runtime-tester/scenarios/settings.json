@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "project": "../../../../emuera.em/emuera-reference-cli/tests/fixture",
+  "mode": "fixed",
+  "seed": 123456,
+  "actions": [
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    { "type": "click", "locator": { "role": "button", "name": "设置…", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "dialog", "name": "RustyEra Web · 设置", "exact": true },
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "tab", "name": "客户端偏好", "exact": true },
+      "expect": { "count": 1, "visible": true }
+    },
+    { "type": "click", "locator": { "role": "tab", "name": "显示", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "当前主视口", "exact": true },
+      "expect": { "count": 1, "visible": true }
+    },
+    { "type": "click", "locator": { "css": "#setting-ForeColor" } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".color-palette .palette-swatch" },
+      "fields": ["count", "visible"],
+      "expect": { "count": 216, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "常用颜色", "exact": true },
+      "fields": ["count"],
+      "expect": { "count": 0 }
+    },
+    { "type": "fill", "locator": { "css": ".color-hex input" }, "value": "#336699" },
+    { "type": "click", "locator": { "role": "button", "name": "确定", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": "#setting-ForeColor .color-setting-value" },
+      "fields": ["text"],
+      "expect": { "text": "51,102,153" }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } }
+  ],
+  "limits": {
+    "max_steps": 30,
+    "timeout_seconds": 120
+  }
+}

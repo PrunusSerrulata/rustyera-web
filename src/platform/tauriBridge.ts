@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -192,8 +192,11 @@ export class TauriBridge implements FrontendBridge {
   async applyProjectConfiguration(
     entries: ProjectConfigurationEntry[],
     viewportChrome: { width: number; height: number },
+    changedCodes?: string[],
   ): Promise<void> {
-    const values = new Map(entries.map((entry) => [entry.code, entry.value]));
+    const relevant = new Set(["WindowMaximixed", "WindowX", "WindowY"]);
+    if (changedCodes && !changedCodes.some((code) => relevant.has(code))) return;
+    const values = new Map(entries.map((entry) => [entry.code, entry.effective_value]));
     const integer = (code: string): number | undefined => {
       const value = values.get(code);
       if (value == null || !/^-?\d+$/.test(value)) return undefined;
@@ -207,19 +210,13 @@ export class TauriBridge implements FrontendBridge {
     };
     const window = getCurrentWindow();
     const maximized = boolean("WindowMaximixed", false);
-    await window.setResizable(boolean("SizableWindow", true));
-    await window.unmaximize();
+    if (!maximized) await window.unmaximize();
     const width = integer("WindowX");
     const height = integer("WindowY");
     if (width != null && height != null && width > 0 && height > 0)
       await window.setSize(
         new LogicalSize(width + viewportChrome.width, height + viewportChrome.height),
       );
-    if (boolean("SetWindowPos", false)) {
-      const x = integer("WindowPosX");
-      const y = integer("WindowPosY");
-      if (x != null && y != null) await window.setPosition(new LogicalPosition(x, y));
-    }
     if (maximized) await window.maximize();
   }
 

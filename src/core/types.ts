@@ -40,6 +40,7 @@ export interface SessionOptions {
   audioAvailable: boolean;
   debugScopeMask: number;
   maximumEnvelopeBytes: number;
+  configurationProfile: "browser" | "tauri";
 }
 
 export interface ProjectOpenMetrics {
@@ -112,6 +113,7 @@ export interface FrontendBridge {
   applyProjectConfiguration(
     entries: ProjectConfigurationEntry[],
     viewportChrome: { width: number; height: number },
+    changedCodes?: string[],
   ): Promise<void>;
   projectName(): string | undefined;
   openUpload(): Promise<Uint8Array | undefined>;
@@ -164,12 +166,16 @@ export interface ProjectConfigurationEntry {
   allowed: string[];
   fixed: boolean;
   applicability: number;
+  default_value: string;
+  effective_value: string;
+  application: "hot" | "restart";
 }
 
 export interface ProjectConfigurationSnapshot {
   project_revision: number | bigint;
   source_digest: Uint8Array;
   entries: ProjectConfigurationEntry[];
+  restart_pending: boolean;
 }
 
 export interface ProjectConfigurationChange {
@@ -182,6 +188,7 @@ export interface PreparedProjectConfiguration {
   expected_source_digest: Uint8Array;
   contents: string;
   restart_required: boolean;
+  prepared_source_digest: Uint8Array;
 }
 
 export type TooltipFormatFlag =

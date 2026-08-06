@@ -12,10 +12,10 @@ use era_runtime::{
     ProjectProgressReporter, RuntimeDriveBudget, RuntimeDriveState, RuntimeOptions, RuntimeSession,
 };
 use era_runtime_protocol::{
-    ClientCapabilities, ClientHello, InputModality, ProjectIdentity, ProjectLoadRequest,
-    ProjectManifest, RUNTIME_PROTOCOL_VERSION, RuntimeFeature, RuntimeLimits, RuntimeMessage,
-    SequenceAcknowledgement, ServerHello, ServiceCapability, ServiceKind, StateExportKind,
-    StateImportBegin, StateImportChunk, StateImportCommit, StorageCapabilities,
+    ClientCapabilities, ClientHello, ConfigurationClientProfile, InputModality, ProjectIdentity,
+    ProjectLoadRequest, ProjectManifest, RUNTIME_PROTOCOL_VERSION, RuntimeFeature, RuntimeLimits,
+    RuntimeMessage, SequenceAcknowledgement, ServerHello, ServiceCapability, ServiceKind,
+    StateExportKind, StateImportBegin, StateImportChunk, StateImportCommit, StorageCapabilities,
 };
 use erabasic_vm::VmConfig;
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,8 @@ pub struct WebSessionOptions {
     pub debug_scope_mask: u64,
     #[serde(default = "default_envelope_bytes")]
     pub maximum_envelope_bytes: u64,
+    #[serde(default = "default_configuration_profile")]
+    pub configuration_profile: ConfigurationClientProfile,
 }
 
 impl Default for WebSessionOptions {
@@ -49,6 +51,7 @@ impl Default for WebSessionOptions {
             audio_available: true,
             debug_scope_mask: default_debug_scope_mask(),
             maximum_envelope_bytes: DEFAULT_ENVELOPE_BYTES,
+            configuration_profile: default_configuration_profile(),
         }
     }
 }
@@ -578,6 +581,7 @@ fn client_hello(options: WebSessionOptions, limits: RuntimeLimits) -> ClientHell
             },
         },
         preferred_locales: options.preferred_locales,
+        configuration_profile: Some(options.configuration_profile),
     }
 }
 
@@ -599,6 +603,10 @@ const fn default_debug_scope_mask() -> u64 {
 
 const fn default_envelope_bytes() -> u64 {
     DEFAULT_ENVELOPE_BYTES
+}
+
+const fn default_configuration_profile() -> ConfigurationClientProfile {
+    ConfigurationClientProfile::Browser
 }
 
 /// All scopes requested by the debugger preference toggle.

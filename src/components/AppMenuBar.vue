@@ -106,7 +106,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
             })
           "
         >
-          偏好设置…
+          设置…
         </button>
         <hr />
         <button :disabled="store.gameInteractionsBlocked" @click="action(store.shutdown)">

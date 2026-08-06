@@ -38,7 +38,7 @@ onMounted(() => void store.initialize());
     }"
   >
     <div class="menu-row">
-      <AppMenuBar v-if="store.useMenu" @open-about="aboutOpen = true" />
+      <AppMenuBar @open-about="aboutOpen = true" />
     </div>
 
     <div
@@ -104,8 +104,13 @@ onMounted(() => void store.initialize());
       :open="store.preferencesOpen"
       :value="store.preferences"
       :fonts="store.fonts"
+      :host-kind="store.bridgeKind"
+      :viewport-measurement="store.viewportMeasurement"
       :configuration-entries="store.configurationEntries"
       :configuration-read-only="store.configurationReadOnly"
+      :restart-pending="store.configurationRestartPending"
+      :busy="store.settingsBusy"
+      :error="store.settingsError"
       @close="store.preferencesOpen = false"
       @preview="store.preview"
       @save="store.savePreferences"

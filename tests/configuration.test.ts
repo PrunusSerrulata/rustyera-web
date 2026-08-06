@@ -21,6 +21,9 @@ describe("project configuration protocol", () => {
         allowed: [],
         fixed: false,
         applicability: 12,
+        default_value: "18",
+        effective_value: "18",
+        application: "hot",
       },
       {
         code: "TAURI_ONLY",
@@ -31,8 +34,12 @@ describe("project configuration protocol", () => {
         allowed: [],
         fixed: false,
         applicability: 8,
+        default_value: "TRUE",
+        effective_value: "TRUE",
+        application: "hot",
       },
     ],
+    restart_pending: false,
   };
 
   it("parses snapshots and filters settings by client applicability", () => {
@@ -79,6 +86,7 @@ describe("project configuration protocol", () => {
         expected_source_digest: [1, 2],
         contents: "フォントサイズ:20\n",
         restart_required: true,
+        prepared_source_digest: new Array(32).fill(0),
       }),
     ).toThrow("长度无效");
   });

@@ -80,7 +80,7 @@ export class BrowserProject {
       currentDigest = blake3(new TextEncoder().encode(text));
     }
     if (!equalBytes(currentDigest, expectedDigest))
-      throw new Error("emuera.config 已被其他程序修改，请重新打开偏好设置");
+      throw new Error("emuera.config 已被其他程序修改，请重新打开设置窗口");
     handle ??= await this.root.getFileHandle("emuera.config", { create: true });
     const writer = await handle.createWritable({ keepExistingData: false });
     try {

@@ -148,38 +148,26 @@ describe("Tauri project restart", () => {
       allowed: [],
       fixed: false,
       applicability: 8,
+      default_value: value,
+      effective_value: value,
+      application: "hot" as const,
     });
 
     await new TauriBridge().applyProjectConfiguration(
       [
-        { ...entry("SizableWindow", "NO"), kind: "boolean" },
         entry("WindowX", "1100"),
         entry("WindowY", "750"),
-        { ...entry("SetWindowPos", "YES"), kind: "boolean" },
-        entry("WindowPosX", "23"),
-        entry("WindowPosY", "41"),
         { ...entry("WindowMaximixed", "YES"), kind: "boolean" },
       ],
       { width: 20, height: 90 },
     );
 
-    expect(currentWindow.setResizable).toHaveBeenCalledWith(false);
+    expect(currentWindow.setResizable).not.toHaveBeenCalled();
     expect(currentWindow.setSize).toHaveBeenCalledWith(
       expect.objectContaining({ width: 1120, height: 840 }),
     );
-    expect(currentWindow.setPosition).toHaveBeenCalledWith(
-      expect.objectContaining({ x: 23, y: 41 }),
-    );
-    expect(currentWindow.unmaximize).toHaveBeenCalledOnce();
-    expect(currentWindow.unmaximize.mock.invocationCallOrder[0]).toBeLessThan(
-      currentWindow.setSize.mock.invocationCallOrder[0],
-    );
-    expect(currentWindow.unmaximize.mock.invocationCallOrder[0]).toBeLessThan(
-      currentWindow.setPosition.mock.invocationCallOrder[0],
-    );
-    expect(currentWindow.setPosition.mock.invocationCallOrder[0]).toBeLessThan(
-      currentWindow.maximize.mock.invocationCallOrder[0],
-    );
+    expect(currentWindow.setPosition).not.toHaveBeenCalled();
+    expect(currentWindow.unmaximize).not.toHaveBeenCalled();
     expect(currentWindow.maximize).toHaveBeenCalledOnce();
   });
 
@@ -193,6 +181,9 @@ describe("Tauri project restart", () => {
       allowed: [],
       fixed: false,
       applicability: 8,
+      default_value: value,
+      effective_value: value,
+      application: "hot" as const,
     });
 
     await new TauriBridge().applyProjectConfiguration(
@@ -200,9 +191,6 @@ describe("Tauri project restart", () => {
         { ...entry("WindowMaximixed", "NO"), kind: "boolean" },
         entry("WindowX", "900"),
         entry("WindowY", "600"),
-        { ...entry("SetWindowPos", "YES"), kind: "boolean" },
-        entry("WindowPosX", "11"),
-        entry("WindowPosY", "17"),
       ],
       { width: 0, height: 0 },
     );
@@ -211,9 +199,33 @@ describe("Tauri project restart", () => {
     expect(currentWindow.unmaximize.mock.invocationCallOrder[0]).toBeLessThan(
       currentWindow.setSize.mock.invocationCallOrder[0],
     );
-    expect(currentWindow.unmaximize.mock.invocationCallOrder[0]).toBeLessThan(
-      currentWindow.setPosition.mock.invocationCallOrder[0],
+    expect(currentWindow.setPosition).not.toHaveBeenCalled();
+    expect(currentWindow.maximize).not.toHaveBeenCalled();
+  });
+
+  it("does not disturb native window state for unrelated hot settings", async () => {
+    await new TauriBridge().applyProjectConfiguration(
+      [
+        {
+          code: "WindowX",
+          japanese: "",
+          english: "Window width",
+          value: "900",
+          default_value: "760",
+          effective_value: "900",
+          application: "hot",
+          kind: "integer",
+          allowed: [],
+          fixed: false,
+          applicability: 8,
+        },
+      ],
+      { width: 0, height: 0 },
+      ["FontSize"],
     );
+
+    expect(currentWindow.unmaximize).not.toHaveBeenCalled();
+    expect(currentWindow.setSize).not.toHaveBeenCalled();
     expect(currentWindow.maximize).not.toHaveBeenCalled();
   });
 });

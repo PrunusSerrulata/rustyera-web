@@ -69,7 +69,23 @@ select {
   font-size: 16px;
 }
 .menu-row {
+  position: relative;
   min-height: 0;
+}
+.menu-disabled .menu-row {
+  height: 0;
+  z-index: 30;
+}
+.menu-disabled .menu-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translateY(calc(-100% + 4px));
+  transition: transform 120ms ease-out;
+}
+.menu-disabled .menu-row:hover .menu-bar,
+.menu-disabled .menu-row:focus-within .menu-bar {
+  transform: translateY(0);
 }
 .menu-disabled .project-load-progress {
   top: 8px;
@@ -564,6 +580,193 @@ select {
   grid-template-columns: 9em 1fr;
   align-items: center;
   gap: 10px;
+}
+.settings-dialog {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  height: min(680px, calc(100vh - 76px));
+  min-height: 420px;
+  text-align: left;
+}
+.settings-dialog button,
+.color-picker button {
+  text-align: left;
+}
+.settings-tabs {
+  display: flex;
+  gap: 3px;
+  padding-bottom: 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid #3a3f4b;
+}
+.settings-tabs button {
+  flex: 0 0 auto;
+  border-color: transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  text-align: left;
+}
+.settings-tabs button[aria-selected="true"] {
+  border-bottom-color: #6f91f2;
+  background: #303642;
+}
+.settings-scroll {
+  min-height: 0;
+  padding: 12px 3px 6px;
+  overflow: auto;
+  text-align: left;
+}
+.settings-warning,
+.settings-error {
+  margin: 0 0 12px;
+  padding: 9px 11px;
+  border-left: 3px solid #d4a449;
+  background: #342d20;
+  color: #f2d69a;
+  text-align: left;
+}
+.settings-error {
+  margin: 8px 0 0;
+  border-left-color: #d85863;
+  background: #382329;
+  color: #ffb4ba;
+}
+.settings-group {
+  margin: 0 0 12px;
+  padding: 12px;
+  border: 1px solid #3a3f4b;
+  border-radius: 6px;
+  text-align: left;
+}
+.settings-group legend {
+  padding: 0 5px;
+  color: #dfe4ee;
+  font-weight: 650;
+  text-align: left;
+}
+.settings-grid {
+  display: grid;
+  grid-template-columns: minmax(9.5rem, 0.75fr) minmax(12rem, 1fr) minmax(9.5rem, 0.75fr) minmax(
+      12rem,
+      1fr
+    );
+  align-items: start;
+  gap: 10px 12px;
+  text-align: left;
+}
+.settings-grid > label,
+.settings-grid > span {
+  padding-top: 0.47rem;
+  text-align: left;
+}
+.settings-grid label small {
+  display: block;
+  margin-top: 2px;
+  color: #aeb3bf;
+  font-weight: 400;
+  text-align: left;
+}
+.setting-control,
+.settings-grid > select,
+.settings-grid > input,
+.settings-grid > .inline-field {
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+}
+.setting-control > input:not([type="checkbox"]),
+.setting-control > select,
+.settings-grid > select,
+.settings-grid > input {
+  width: 100%;
+}
+.setting-control > input[type="checkbox"] {
+  width: 1.2rem;
+  height: 1.2rem;
+  margin: 0.45rem 0;
+}
+.field-error {
+  margin: 4px 0 0;
+  color: #ff9da5;
+  font-size: 0.83rem;
+  text-align: left;
+}
+.viewport-readout {
+  margin-bottom: 10px;
+}
+.viewport-readout output {
+  padding-top: 0.47rem;
+  text-align: left;
+}
+.color-setting {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+}
+.color-setting-swatch {
+  width: 1.4rem;
+  height: 1.4rem;
+  flex: 0 0 auto;
+  border: 1px solid #7c818c;
+  border-radius: 3px;
+}
+.settings-actions {
+  margin-top: 10px;
+  text-align: left;
+}
+.settings-dialog .inline-field output {
+  text-align: left;
+}
+.color-picker {
+  display: grid;
+  gap: 12px;
+  text-align: left;
+}
+.color-preview {
+  width: 100%;
+  height: 48px;
+  border: 1px solid #6b707c;
+  border-radius: 5px;
+}
+.color-palette {
+  display: grid;
+  grid-template-columns: repeat(18, 1fr);
+  gap: 2px;
+}
+.palette-swatch {
+  min-width: 0;
+  aspect-ratio: 1;
+  padding: 0;
+  border: 1px solid #0008;
+  border-radius: 2px;
+}
+.palette-swatch.selected {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
+}
+.color-hex,
+.rgb-fields label {
+  display: grid;
+  grid-template-columns: 3rem 1fr;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+}
+.rgb-fields {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+@media (max-width: 760px) {
+  .settings-grid {
+    grid-template-columns: minmax(8.5rem, 0.8fr) minmax(10rem, 1fr);
+  }
+  .color-palette {
+    grid-template-columns: repeat(12, 1fr);
+  }
 }
 .inline-field {
   display: flex;
