@@ -18,6 +18,32 @@ export {
   ReferenceProcess,
 } from "./web-test-reference.mjs";
 
+export function browserProjectProgressErrors(progress) {
+  const labels = progress.labels ?? [];
+  const errors = [];
+  const copied = labels.some((label) => /^正在复制项目文件：\d+\/\d+（\d+%）$/.test(label));
+  const scanned = labels.some(
+    (label) => label.startsWith("正在枚举项目文件…") || label.startsWith("正在读取项目文件："),
+  );
+  const submitted = labels.some((label) => label.startsWith("正在准备项目数据"));
+  const runtimePreparation = labels.some(
+    (label) =>
+      label.startsWith("正在编译脚本函数") ||
+      label.startsWith("正在验证编译结果") ||
+      label.startsWith("正在准备 Runtime 资源"),
+  );
+  const cacheHandoff = labels.includes("项目文件读取完成，正在准备编译与校验…");
+
+  if (!copied) errors.push("copy progress");
+  if (!scanned && !submitted) errors.push("project discovery");
+  if (progress.gaps !== 0) errors.push("continuous progress");
+  if (progress.active || !progress.completed) errors.push("completed progress");
+  if (progress.cacheHit ? !cacheHandoff : !runtimePreparation) {
+    errors.push(progress.cacheHit ? "cache handoff" : "runtime preparation");
+  }
+  return errors;
+}
+
 export async function loadScenario(file, projectOverride, stateOverride) {
   const scenarioPath = path.resolve(file);
   const raw = JSON.parse(await readFile(scenarioPath, "utf8"));

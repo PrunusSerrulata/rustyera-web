@@ -11,6 +11,7 @@ import { remote } from "webdriverio";
 import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs";
 
 import {
+  browserProjectProgressErrors,
   injectInGameSaveFlow,
   runtimeProgressDiagnostic,
   runtimeProgressSignature,
@@ -164,7 +165,7 @@ try {
   if (!setup.ok) throw new Error(`browser project import failed: ${setup.error}`);
 
   await browser.execute(() => {
-    const progress = { active: false, gaps: 0, labels: [] };
+    const progress = { active: false, completed: false, gaps: 0, labels: [] };
     const capture = () => {
       const element = document.querySelector(".project-load-progress");
       if (element) {
@@ -175,7 +176,12 @@ try {
       }
       if (!progress.active) return;
       const state = window.__RUSTYERA_TEST__?.snapshot();
-      if (!state?.canInteract && state?.status !== "项目编译完成") progress.gaps += 1;
+      if (state?.canInteract || state?.status === "项目编译完成") {
+        progress.active = false;
+        progress.completed = true;
+      } else {
+        progress.gaps += 1;
+      }
     };
     const observer = new MutationObserver(capture);
     observer.observe(document.body, {
@@ -219,22 +225,11 @@ try {
       ),
     };
   });
-  const copied = projectProgress.labels.some((label) =>
-    /^正在复制项目文件：\d+\/\d+（\d+%）$/.test(label),
-  );
-  const scanned = projectProgress.labels.some(
-    (label) => label === "正在枚举项目文件…" || label.startsWith("正在读取项目文件："),
-  );
-  const compiled = projectProgress.labels.some((label) => label.startsWith("正在编译脚本函数"));
-  const validated = projectProgress.labels.some((label) => label.startsWith("正在验证编译结果"));
-  const cacheHandoff = projectProgress.labels.includes("项目文件读取完成，正在准备编译与校验…");
-  if (
-    !copied ||
-    !scanned ||
-    projectProgress.gaps !== 0 ||
-    (projectProgress.cacheHit ? !cacheHandoff : !compiled || !validated)
-  ) {
-    throw new Error(`project progress was incomplete: ${JSON.stringify(projectProgress)}`);
+  const projectProgressErrors = browserProjectProgressErrors(projectProgress);
+  if (projectProgressErrors.length > 0) {
+    throw new Error(
+      `project progress was incomplete (${projectProgressErrors.join(", ")}): ${JSON.stringify(projectProgress)}`,
+    );
   }
   const clickButton = async (label) => {
     compatibilityStage = `clicking ${label}`;

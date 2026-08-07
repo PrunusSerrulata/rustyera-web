@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  browserProjectProgressErrors,
   compareObservations,
   isolatedProject,
   loadScenario,
@@ -15,6 +16,50 @@ import {
 } from "../scripts/web-test-lib.mjs";
 
 describe("web game test scenario", () => {
+  it("accepts coalesced cold-start progress once runtime preparation completes", () => {
+    expect(
+      browserProjectProgressErrors({
+        active: false,
+        completed: true,
+        gaps: 0,
+        cacheHit: false,
+        labels: [
+          "正在复制项目文件：2/2（100%）",
+          "正在枚举项目文件… · 已等待 1 秒",
+          "正在准备 Runtime 资源：2/2（100%）",
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  it("accepts an imported manifest handed directly to the runtime without rescanning", () => {
+    expect(
+      browserProjectProgressErrors({
+        active: false,
+        completed: true,
+        gaps: 0,
+        cacheHit: false,
+        labels: [
+          "正在复制项目文件：18/18（100%）",
+          "正在准备项目数据：18/18（100%）",
+          "正在准备 Runtime 资源：2/2（100%）",
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  it("rejects progress that disappears before runtime preparation completes", () => {
+    expect(
+      browserProjectProgressErrors({
+        active: true,
+        completed: false,
+        gaps: 1,
+        cacheHit: false,
+        labels: ["正在复制项目文件：2/2（100%）", "正在读取项目文件：2/2（100%）"],
+      }),
+    ).toEqual(["continuous progress", "completed progress", "runtime preparation"]);
+  });
+
   it("identifies terminal snapshot rejections without treating transient cache work as fatal", () => {
     const versionMismatch = {
       logs: [
