@@ -5,7 +5,9 @@ use era_runtime::{ProjectProgressReporter, RuntimeDriveBudget};
 use era_runtime_protocol::{
     FileCategory, FilePayload, ProjectManifest, ProtocolBytes, RuntimeMessage, SubmittedFile,
 };
-use era_web_bridge::{WebSession, WebSessionOptions, project_identity};
+use era_web_bridge::{
+    FRONTEND_PUMP_MAXIMUM_QUIET_SLICES, WebSession, WebSessionOptions, project_identity,
+};
 use serde::de::DeserializeOwned;
 use wasm_bindgen::prelude::*;
 
@@ -186,10 +188,13 @@ impl WasmRuntime {
     ) -> Result<JsValue, JsValue> {
         let batch = self
             .inner
-            .pump(RuntimeDriveBudget {
-                maximum_vm_instructions: u64::from(maximum_vm_instructions),
-                maximum_runtime_transitions,
-            })
+            .pump_quiet(
+                RuntimeDriveBudget {
+                    maximum_vm_instructions: u64::from(maximum_vm_instructions),
+                    maximum_runtime_transitions,
+                },
+                FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
+            )
             .map_err(js_error)?;
         to_js(batch)
     }

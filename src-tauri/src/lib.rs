@@ -25,7 +25,7 @@ use era_runtime::{
     ProjectProgress, ProjectProgressReporter, ProjectProgressStage, RuntimeDriveBudget,
 };
 use era_runtime_protocol::{RuntimeMessage, StorageRequest, StorageResponse};
-use era_web_bridge::{WebSession, WebSessionOptions};
+use era_web_bridge::{FRONTEND_PUMP_MAXIMUM_QUIET_SLICES, WebSession, WebSessionOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -158,10 +158,13 @@ async fn pump(state: State<'_, AppState>) -> Result<Value, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let batch = with_session(&state, |session| {
-            session.pump(RuntimeDriveBudget {
-                maximum_vm_instructions: 100_000,
-                maximum_runtime_transitions: 1024,
-            })
+            session.pump_quiet(
+                RuntimeDriveBudget {
+                    maximum_vm_instructions: 100_000,
+                    maximum_runtime_transitions: 1024,
+                },
+                FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
+            )
         })?;
         encode_ipc_value(&batch)
     })

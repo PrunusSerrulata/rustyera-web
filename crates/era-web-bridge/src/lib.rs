@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 const DEFAULT_ENVELOPE_BYTES: u64 = 512 * 1024 * 1024;
 const DEBUG_SCOPE_ALL: u64 = (1 << 10) - 1;
+pub const FRONTEND_PUMP_MAXIMUM_QUIET_SLICES: usize = 16;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -369,6 +370,23 @@ impl WebSession {
         })
     }
 
+    /// Coalesce consecutive compute-only drive slices into one host response.
+    ///
+    /// Worker and native IPC hosts do not need a round trip for a slice that emitted no event and
+    /// immediately reports more work. The first observable event, blocked state, terminal state,
+    /// or slice cap returns control to the frontend, preserving event ordering and service latency.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same runtime and projection errors as [`Self::pump`].
+    pub fn pump_quiet(
+        &mut self,
+        budget: RuntimeDriveBudget,
+        maximum_slices: usize,
+    ) -> Result<PumpBatch, String> {
+        coalesce_quiet_pumps(|| self.pump(budget), maximum_slices)
+    }
+
     #[must_use]
     pub const fn is_negotiated(&self) -> bool {
         self.session.is_some() && self.epoch.is_some()
@@ -379,6 +397,34 @@ impl WebSession {
         self.next_message_id = self.next_message_id.saturating_add(1);
         value
     }
+}
+
+fn coalesce_quiet_pumps(
+    mut pump: impl FnMut() -> Result<PumpBatch, String>,
+    maximum_slices: usize,
+) -> Result<PumpBatch, String> {
+    let maximum_slices = maximum_slices.max(1);
+    let mut combined = pump()?;
+    for _ in 1..maximum_slices {
+        if !combined.events.is_empty()
+            || !matches!(
+                combined.state,
+                WebDriveState::MoreWork | WebDriveState::OutputReady
+            )
+        {
+            break;
+        }
+        let mut next = pump()?;
+        combined.state = next.state;
+        combined.vm_instructions = combined
+            .vm_instructions
+            .saturating_add(next.vm_instructions);
+        combined.runtime_transitions = combined
+            .runtime_transitions
+            .saturating_add(next.runtime_transitions);
+        combined.events.append(&mut next.events);
+    }
+    Ok(combined)
 }
 
 impl From<RuntimeDriveState> for WebDriveState {
@@ -399,15 +445,20 @@ impl From<RuntimeDriveState> for WebDriveState {
 ///
 /// Returns an error if a submitted file is missing its 32-byte content hash.
 pub fn project_identity(manifest: &ProjectManifest) -> Result<ProjectIdentity, String> {
-    let mut files = manifest.files.iter().collect::<Vec<_>>();
-    files.sort_by(|left, right| {
-        left.relative_path
-            .to_lowercase()
-            .cmp(&right.relative_path.to_lowercase())
-            .then_with(|| left.relative_path.cmp(&right.relative_path))
-    });
+    let mut files = manifest
+        .files
+        .iter()
+        .map(|file| {
+            (
+                file.relative_path.to_lowercase(),
+                file.relative_path.as_str(),
+                file,
+            )
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)));
     let mut hasher = blake3::Hasher::new_derive_key("rustyera.project-source-identity.v1");
-    for file in files {
+    for (_, _, file) in files {
         let digest = file
             .content_hash
             .as_ref()
@@ -546,6 +597,7 @@ mod tests {
     use super::*;
     use era_protocol::ProtocolBytes;
     use era_runtime_protocol::{FileCategory, FilePayload, SubmittedFile};
+    use std::collections::VecDeque;
 
     #[test]
     fn session_negotiates_and_projects_server_hello() {
@@ -563,24 +615,154 @@ mod tests {
     }
 
     #[test]
-    fn identity_is_deterministic_across_manifest_order() {
-        let make = |path: &str, byte: u8| SubmittedFile {
+    fn quiet_pump_returns_immediately_for_an_observable_batch() {
+        let mut session = WebSession::new(WebSessionOptions::default()).unwrap();
+        let batch = session
+            .pump_quiet(
+                RuntimeDriveBudget::default(),
+                FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
+            )
+            .unwrap();
+        assert!(!batch.events.is_empty());
+        assert!(session.is_negotiated());
+    }
+
+    #[test]
+    fn quiet_pump_coalesces_more_work_until_the_first_event() {
+        let mut batches = VecDeque::from([
+            Ok(batch(WebDriveState::MoreWork, 10, 1, vec![])),
+            Ok(batch(WebDriveState::MoreWork, 20, 2, vec![])),
+            Ok(batch(
+                WebDriveState::OutputReady,
+                30,
+                3,
+                vec![test_event("diagnostic")],
+            )),
+            Ok(batch(WebDriveState::Idle, 40, 4, vec![])),
+        ]);
+
+        let combined = coalesce_quiet_pumps(|| batches.pop_front().unwrap(), 16).unwrap();
+
+        assert_eq!(combined.state, WebDriveState::OutputReady);
+        assert_eq!(combined.vm_instructions, 60);
+        assert_eq!(combined.runtime_transitions, 6);
+        assert_eq!(combined.events.len(), 1);
+        assert_eq!(batches.len(), 1);
+    }
+
+    #[test]
+    fn quiet_pump_stops_exactly_at_the_slice_cap() {
+        let mut calls = 0;
+        let combined = coalesce_quiet_pumps(
+            || {
+                calls += 1;
+                Ok(batch(WebDriveState::MoreWork, 7, 2, vec![]))
+            },
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(calls, 3);
+        assert_eq!(combined.vm_instructions, 21);
+        assert_eq!(combined.runtime_transitions, 6);
+        assert_eq!(combined.state, WebDriveState::MoreWork);
+    }
+
+    #[test]
+    fn quiet_pump_does_not_continue_terminal_or_blocked_states() {
+        for state in [
+            WebDriveState::Idle,
+            WebDriveState::Stopped,
+            WebDriveState::Faulted,
+        ] {
+            let mut calls = 0;
+            let combined = coalesce_quiet_pumps(
+                || {
+                    calls += 1;
+                    Ok(batch(state, 1, 1, vec![]))
+                },
+                16,
+            )
+            .unwrap();
+            assert_eq!(calls, 1);
+            assert_eq!(combined.state, state);
+        }
+    }
+
+    #[test]
+    fn quiet_pump_propagates_a_later_slice_error() {
+        let mut batches = VecDeque::from([
+            Ok(batch(WebDriveState::MoreWork, 10, 1, vec![])),
+            Err("drive failed".to_owned()),
+        ]);
+
+        let error = coalesce_quiet_pumps(|| batches.pop_front().unwrap(), 16).unwrap_err();
+
+        assert_eq!(error, "drive failed");
+    }
+
+    #[test]
+    fn project_identity_matches_the_cross_host_fixed_vector() {
+        let make = |path: &str, category: FileCategory, digest: Vec<u8>| SubmittedFile {
             relative_path: path.into(),
-            category: FileCategory::Erb,
+            category,
             payload: FilePayload::Utf8(String::from("@TEST\nRETURN")),
-            content_hash: Some(ProtocolBytes::new(vec![byte; 32])),
+            content_hash: Some(ProtocolBytes::new(digest)),
         };
         let left = ProjectManifest {
             project_revision: 7,
-            files: vec![make("ERB/b.erb", 2), make("ERB/a.erb", 1)],
+            files: vec![
+                make("ERB/a.erb", FileCategory::Erb, vec![1; 32]),
+                make("ERB/A.erb", FileCategory::Erh, vec![2; 32]),
+                make("CSV/config.csv", FileCategory::Csv, (0_u8..32).collect()),
+                make("resources/icon.png", FileCategory::Resource, vec![255; 32]),
+            ],
         };
         let right = ProjectManifest {
             project_revision: 7,
-            files: vec![make("ERB/a.erb", 1), make("ERB/b.erb", 2)],
+            files: vec![
+                make("resources/icon.png", FileCategory::Resource, vec![255; 32]),
+                make("CSV/config.csv", FileCategory::Csv, (0_u8..32).collect()),
+                make("ERB/A.erb", FileCategory::Erh, vec![2; 32]),
+                make("ERB/a.erb", FileCategory::Erb, vec![1; 32]),
+            ],
         };
         assert_eq!(
             project_identity(&left).unwrap(),
             project_identity(&right).unwrap()
         );
+        assert_eq!(
+            project_identity(&left).unwrap().source_digest.as_slice(),
+            &[
+                0x15, 0xd7, 0x21, 0x99, 0xf2, 0xe3, 0x3c, 0x42, 0x9e, 0x0b, 0xd4, 0x18, 0x5e, 0x34,
+                0x41, 0xa2, 0x3c, 0x06, 0x50, 0xc1, 0x42, 0x78, 0xd5, 0x76, 0x0c, 0x51, 0x27, 0xd1,
+                0xa7, 0x0e, 0x07, 0xec,
+            ]
+        );
+    }
+
+    fn batch(
+        state: WebDriveState,
+        vm_instructions: u64,
+        runtime_transitions: u32,
+        events: Vec<WebEvent>,
+    ) -> PumpBatch {
+        PumpBatch {
+            state,
+            vm_instructions,
+            runtime_transitions,
+            events,
+        }
+    }
+
+    fn test_event(message_type: &str) -> WebEvent {
+        WebEvent {
+            channel: WebChannel::Runtime,
+            sequence: 1,
+            message_id: 1,
+            correlation_id: None,
+            epoch: Some(1),
+            message: serde_json::json!({ "type": message_type }),
+        }
     }
 }
