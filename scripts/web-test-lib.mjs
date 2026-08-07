@@ -222,13 +222,27 @@ export async function installRemoteFileSystem(page, root) {
       }
       async getFile() {
         const stat = await callFileSystem({ op: "stat", path: this.relativePath });
-        const response = await fetch(
-          `/__rustyera_test_file?path=${encodeURIComponent(this.relativePath)}`,
-        );
-        if (response.status === 404)
-          throw new DOMException(`File not found: ${this.relativePath}`, "NotFoundError");
-        if (!response.ok) throw new Error(`cannot read test file: HTTP ${response.status}`);
-        return new File([await response.blob()], this.name, { lastModified: stat.lastModified });
+        const loadBytes = async () => {
+          const response = await fetch(
+            `/__rustyera_test_file?path=${encodeURIComponent(this.relativePath)}`,
+          );
+          if (response.status === 404)
+            throw new DOMException(`File not found: ${this.relativePath}`, "NotFoundError");
+          if (!response.ok) throw new Error(`cannot read test file: HTTP ${response.status}`);
+          return new Uint8Array(await response.arrayBuffer());
+        };
+        const file = new File([], this.name, { lastModified: stat.lastModified });
+        Object.defineProperties(file, {
+          size: { value: stat.size },
+          arrayBuffer: { value: async () => (await loadBytes()).buffer },
+          text: { value: async () => new TextDecoder().decode(await loadBytes()) },
+          slice: {
+            value: (start = 0, end = stat.size) => ({
+              arrayBuffer: async () => (await loadBytes()).slice(start, end).buffer,
+            }),
+          },
+        });
+        return file;
       }
       async createWritable() {
         let data = new Uint8Array();

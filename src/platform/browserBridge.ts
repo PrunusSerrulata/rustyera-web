@@ -108,17 +108,18 @@ export class BrowserBridge implements FrontendBridge {
     // structured-cloned into IndexedDB. Production handles continue to be persisted normally.
     if (picked.persistHandle && import.meta.env.VITE_RUSTYERA_TEST !== "1")
       await database.handles.put({ key: "last-project", handle });
-    this.project = new BrowserProject(handle, 1, picked.projectName, !picked.persistHandle);
+    const project = new BrowserProject(handle, 1, picked.projectName);
     const started = performance.now();
     const sourcesReady = picked.manifest != null;
     const manifest =
       picked.manifest ??
-      (await this.project.scanQuick((completed, total) =>
+      (await project.scanQuick((completed, total) =>
         this.projectProgressListener?.({ stage: "scanning", completed, total }),
       ));
-    if (picked.manifest) this.project.useImportedManifest(picked.manifest);
+    if (picked.manifest) project.useImportedManifest(picked.manifest);
     const quickScanMs = sourcesReady ? 0 : performance.now() - started;
-    const loaded = await this.loadSourceProject(manifest, sourcesReady);
+    const loaded = await this.loadSourceProject(project, manifest, sourcesReady);
+    this.project = project;
     return {
       submittedAtMs,
       quickScanMs,
@@ -199,7 +200,7 @@ export class BrowserBridge implements FrontendBridge {
         this.projectProgressListener?.({ stage: "scanning", completed, total }),
       ));
     const quickScanMs = sourcesReady ? 0 : performance.now() - started;
-    const loaded = await this.loadSourceProject(manifest, sourcesReady);
+    const loaded = await this.loadSourceProject(this.project, manifest, sourcesReady);
     return {
       submittedAtMs,
       quickScanMs,
@@ -221,6 +222,7 @@ export class BrowserBridge implements FrontendBridge {
   }
 
   private async loadSourceProject(
+    project: BrowserProject,
     manifest: BrowserManifest,
     sourcesReady: boolean,
   ): Promise<{
@@ -229,7 +231,6 @@ export class BrowserBridge implements FrontendBridge {
     submitMs: number;
     cacheImported: boolean;
   }> {
-    const project = this.requireProject();
     const cacheStarted = performance.now();
     this.projectProgressListener?.({ stage: "loading_cache", completed: 0, total: 0 });
     const cache = await project.readCompiledCache((completed, total) =>

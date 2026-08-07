@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { blake3 } from "@noble/hashes/blake3.js";
 
 const pickBrowserDirectory = vi.hoisted(() => vi.fn());
 const pickBrowserFile = vi.hoisted(() => vi.fn());
@@ -11,6 +12,7 @@ vi.mock("@/platform/database", () => ({
 }));
 
 import { BrowserBridge } from "@/platform/browserBridge";
+import { overlayBrowserDirectory } from "@/platform/browserDirectoryOverlay";
 import { BrowserProject } from "@/platform/browserProject";
 
 class MemoryFileHandle {
@@ -275,6 +277,80 @@ describe("browser startup bridge", () => {
     await expect(bridge.openProjectFile()).rejects.toThrow("invalid project file");
 
     expect(bridge.projectName()).toBe("active");
+  });
+
+  it("keeps the active portable project when a replacement fails submission", async () => {
+    const active = new MemoryDirectoryHandle("active-storage");
+    const broken = new MemoryDirectoryHandle("broken-storage");
+    const manifest = { project_revision: 1, files: [] };
+    pickBrowserDirectory
+      .mockResolvedValueOnce({
+        handle: active,
+        persistHandle: false,
+        projectName: "active",
+        manifest,
+      })
+      .mockResolvedValueOnce({
+        handle: broken,
+        persistHandle: false,
+        projectName: "broken",
+        manifest,
+      });
+    let submissions = 0;
+    respond = (method) => {
+      if (method === "loadProjectBinary" && submissions++ > 0) {
+        throw new Error("project submission failed");
+      }
+      return 1n;
+    };
+    const bridge = new BrowserBridge();
+
+    await bridge.openProject();
+    await expect(bridge.openProject()).rejects.toThrow("project submission failed");
+
+    expect(bridge.projectName()).toBe("active");
+  });
+
+  it("restarts a portable project from its copy-on-write configuration overlay", async () => {
+    const root = new MemoryDirectoryHandle("game-storage");
+    const originalText = "FontSize:18\n";
+    const originalBytes = new TextEncoder().encode(originalText);
+    const source = new File([], "emuera.config");
+    Object.defineProperties(source, {
+      size: { value: originalBytes.byteLength },
+      arrayBuffer: { value: async () => originalBytes.buffer.slice(0) },
+      text: { value: async () => originalText },
+    });
+    const handle = overlayBrowserDirectory(root as any, [{ path: "emuera.config", file: source }]);
+    pickBrowserDirectory.mockResolvedValue({
+      handle,
+      persistHandle: false,
+      projectName: "game",
+      manifest: {
+        project_revision: 1,
+        files: [
+          {
+            relative_path: "emuera.config",
+            category: "configuration",
+            payload: { type: "utf8", value: originalText },
+            content_hash: blake3(originalBytes),
+          },
+        ],
+      },
+    });
+    const bridge = new BrowserBridge();
+
+    await bridge.openProject();
+    await bridge.writeProjectConfiguration(blake3(originalBytes), "FontSize:20\n");
+    await bridge.restartProject();
+
+    const restart = requests
+      .filter((request) => request.message.method === "loadProjectBinary")
+      .at(-1);
+    expect(new TextDecoder().decode(restart?.message.args[0] as Uint8Array)).toContain(
+      "FontSize:20\n",
+    );
+    expect(await source.text()).toBe(originalText);
   });
 });
 

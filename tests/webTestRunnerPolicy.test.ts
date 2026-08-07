@@ -30,6 +30,19 @@ describe("browser game runner progress policy", () => {
     );
   });
 
+  it("forces native-browser startup measurements to use empty OPFS and cold telemetry", () => {
+    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+
+    expect(runner).toContain('compatibilityStage = "clearing OPFS for cold startup"');
+    expect(runner).toContain("await root.removeEntry(name, { recursive: true })");
+    expect(runner).toContain("opfsReset.remaining?.length");
+    expect(runner).toContain('entry.name === ".rustyera"');
+    expect(runner).toContain("assertColdStartup(observed.startupTelemetry)");
+    expect(runner).toContain('telemetry?.scenario !== "cold"');
+    expect(runner).toContain("telemetry.cacheHit !== false");
+    expect(runner).toContain('telemetry.outcome !== "success"');
+  });
+
   it("starts delayed captures on an absolute five-second cadence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

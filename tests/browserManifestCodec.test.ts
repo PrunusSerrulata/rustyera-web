@@ -27,4 +27,31 @@ describe("browser manifest codec", () => {
       true,
     );
   });
+
+  it("writes UTF-8 text directly with exact scalar and replacement lengths", async () => {
+    const text = "ASCII/あ/😀/\ud800/end";
+    const hash = new Uint8Array(32).fill(7);
+
+    const encoded = await encodeBrowserManifest({
+      project_revision: 1,
+      files: [
+        {
+          relative_path: "ERB/日本語.erb",
+          category: "erb",
+          payload: { type: "utf8", value: text },
+          content_hash: hash,
+        },
+      ],
+    });
+
+    const view = new DataView(encoded.buffer);
+    const pathBytes = view.getUint32(21, true);
+    const payloadBytes = Number(view.getBigUint64(26, true));
+    const payloadOffset = 35 + pathBytes;
+    expect(payloadBytes).toBe(new TextEncoder().encode(text).byteLength);
+    expect(
+      new TextDecoder().decode(encoded.subarray(payloadOffset, payloadOffset + payloadBytes)),
+    ).toBe(new TextDecoder().decode(new TextEncoder().encode(text)));
+    expect(encoded.subarray(payloadOffset + payloadBytes)).toEqual(hash);
+  });
 });

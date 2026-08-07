@@ -35,6 +35,7 @@ const project = path.resolve(
     : "../emuera.em/emuera-reference-cli/tests/fixture",
 );
 const checkTooltip = process.argv.includes("--check-tooltip");
+const startupOnly = process.argv.includes("--startup-only");
 const files = await collectFiles(project);
 if (projectIndex < 0) {
   const oracle = files.find((entry) => entry.path.toLowerCase() === "erb/oracle.erb");
@@ -79,83 +80,137 @@ try {
   void snapshotMonitor.failure.catch(async () => {
     await browser?.deleteSession().catch(() => undefined);
   });
+  compatibilityStage = "clearing OPFS for cold startup";
+  const opfsReset = await browser.executeAsync(async (done) => {
+    try {
+      if (typeof navigator.storage.getDirectory !== "function") {
+        done({ ok: false, error: "OPFS is unavailable" });
+        return;
+      }
+      const root = await navigator.storage.getDirectory();
+      const removed = [];
+      for await (const [name] of root.entries()) {
+        removed.push(name);
+        await root.removeEntry(name, { recursive: true });
+      }
+      const remaining = [];
+      for await (const [name] of root.entries()) remaining.push(name);
+      done({ ok: remaining.length === 0, available: true, removed, remaining, cold: true });
+    } catch (error) {
+      done({
+        ok: false,
+        available: typeof navigator.storage.getDirectory === "function",
+        error: `${error?.name ?? "Error"}: ${error?.message ?? String(error)}`,
+      });
+    }
+  });
+  if (!opfsReset.ok || !opfsReset.cold || opfsReset.remaining?.length) {
+    throw new Error(`failed to clear OPFS for cold startup: ${JSON.stringify(opfsReset)}`);
+  }
+  console.log(JSON.stringify({ browser: browserName, type: "opfs-reset", ...opfsReset }));
   let minimized = false;
   compatibilityStage = "installing portable project picker";
-  const setup = await browser.executeAsync(
-    async (payload, done) => {
-      try {
-        const selected = payload.files.map((entry) => {
-          const raw = atob(entry.base64);
+  await browser.execute(() => {
+    window.__RUSTYERA_COMPAT_SELECTED__ = [];
+    window.__RUSTYERA_COMPAT_PAYLOADS__ = new Map();
+    window.__RUSTYERA_COMPAT_BATCH__ = 0;
+  });
+  const projectName = path.basename(project);
+  for (const batch of portableFileBatches(files)) {
+    await browser.execute(
+      (entries, selectedProjectName) => {
+        const selected = window.__RUSTYERA_COMPAT_SELECTED__;
+        const payloads = window.__RUSTYERA_COMPAT_PAYLOADS__;
+        for (const entry of entries) {
+          const chunks = payloads.get(entry.path) ?? [];
+          chunks.push(entry.base64);
+          if (!entry.final) {
+            payloads.set(entry.path, chunks);
+            continue;
+          }
+          payloads.delete(entry.path);
+          const raw = atob(chunks.join(""));
           const bytes = Uint8Array.from(raw, (character) => character.charCodeAt(0));
           const file = new File([bytes], entry.path.split("/").at(-1));
           Object.defineProperty(file, "webkitRelativePath", {
-            value: `${payload.projectName}/${entry.path}`,
+            value: `${selectedProjectName}/${entry.path}`,
           });
-          return file;
-        });
-        const nativeCreateElement = document.createElement;
-        const picker = {
-          fallback: false,
-          focusBeforeChange: false,
-          confirmationDelayMs: 50,
-          attempts: [],
-        };
-        Object.defineProperty(window, "showDirectoryPicker", {
-          configurable: true,
-          value: undefined,
-        });
-        document.createElement = function (tagName, options) {
-          const element = nativeCreateElement.call(this, tagName, options);
-          if (!(element instanceof HTMLInputElement)) return element;
+          selected.push(file);
+        }
+        window.__RUSTYERA_COMPAT_BATCH__ += 1;
+        document.documentElement.dataset.rustyeraTestFileBatch = `${window.__RUSTYERA_COMPAT_BATCH__}:${selected.length}:${payloads.size}`;
+      },
+      batch,
+      projectName,
+    );
+  }
+  const setup = await browser.executeAsync(async (projectName, done) => {
+    try {
+      const selected = window.__RUSTYERA_COMPAT_SELECTED__;
+      const nativeCreateElement = document.createElement;
+      const picker = {
+        fallback: false,
+        focusBeforeChange: false,
+        confirmationDelayMs: 50,
+        attempts: [],
+      };
+      Object.defineProperty(window, "showDirectoryPicker", {
+        configurable: true,
+        value: undefined,
+      });
+      document.createElement = function (tagName, options) {
+        const element = nativeCreateElement.call(this, tagName, options);
+        if (!(element instanceof HTMLInputElement)) return element;
 
-          const nativeClick = element.click.bind(element);
-          Object.defineProperty(element, "click", {
-            configurable: true,
-            value() {
-              // Safari does not consistently expose the directory flag through the same DOM
-              // property path as Firefox. The project fallback is uniquely a multi-file picker
-              // without an accept filter; traditional save pickers are single-file and filtered.
-              const isDirectoryPicker =
-                element.type === "file" && element.multiple && !element.accept;
-              picker.attempts.push({
-                accept: element.accept,
-                directoryAttribute: element.hasAttribute("webkitdirectory"),
-                directoryProperty: Boolean(element.webkitdirectory),
-                isDirectoryPicker,
-                multiple: element.multiple,
-                type: element.type,
+        const nativeClick = element.click.bind(element);
+        Object.defineProperty(element, "click", {
+          configurable: true,
+          value() {
+            // Safari does not consistently expose the directory flag through the same DOM
+            // property path as Firefox. The project fallback is uniquely a multi-file picker
+            // without an accept filter; traditional save pickers are single-file and filtered.
+            const isDirectoryPicker =
+              element.type === "file" && element.multiple && !element.accept;
+            picker.attempts.push({
+              accept: element.accept,
+              directoryAttribute: element.hasAttribute("webkitdirectory"),
+              directoryProperty: Boolean(element.webkitdirectory),
+              isDirectoryPicker,
+              multiple: element.multiple,
+              type: element.type,
+            });
+            if (!isDirectoryPicker) {
+              nativeClick();
+              return;
+            }
+            picker.fallback = true;
+            window.dispatchEvent(new Event("focus"));
+            picker.focusBeforeChange = true;
+            window.setTimeout(() => {
+              Object.defineProperty(element, "files", {
+                configurable: true,
+                value: selected,
               });
-              if (!isDirectoryPicker) {
-                nativeClick();
-                return;
-              }
-              picker.fallback = true;
-              window.dispatchEvent(new Event("focus"));
-              picker.focusBeforeChange = true;
-              window.setTimeout(() => {
-                Object.defineProperty(element, "files", {
-                  configurable: true,
-                  value: selected,
-                });
-                element.dispatchEvent(new Event("change", { bubbles: true }));
-                document.createElement = nativeCreateElement;
-              }, picker.confirmationDelayMs);
-            },
-          });
-          return element;
-        };
-        window.__RUSTYERA_COMPAT_PICKER__ = picker;
-        done({
-          ok: true,
-          projectName: payload.projectName,
-          opfs: typeof navigator.storage.getDirectory === "function",
+              element.dispatchEvent(new Event("change", { bubbles: true }));
+              document.createElement = nativeCreateElement;
+            }, picker.confirmationDelayMs);
+          },
         });
-      } catch (error) {
-        done({ ok: false, error: `${error?.name ?? "Error"}: ${error?.message ?? String(error)}` });
-      }
-    },
-    { projectName: path.basename(project), files },
-  );
+        return element;
+      };
+      window.__RUSTYERA_COMPAT_PICKER__ = picker;
+      delete document.documentElement.dataset.rustyeraTestFileBatch;
+      delete window.__RUSTYERA_COMPAT_BATCH__;
+      delete window.__RUSTYERA_COMPAT_PAYLOADS__;
+      done({
+        ok: true,
+        projectName,
+        opfs: typeof navigator.storage.getDirectory === "function",
+      });
+    } catch (error) {
+      done({ ok: false, error: `${error?.name ?? "Error"}: ${error?.message ?? String(error)}` });
+    }
+  }, projectName);
   if (!setup.ok) throw new Error(`browser project import failed: ${setup.error}`);
 
   await browser.execute(() => {
@@ -225,242 +280,265 @@ try {
       `project progress was incomplete (${projectProgressErrors.join(", ")}): ${JSON.stringify(projectProgress)}`,
     );
   }
-  const clickButton = async (label) => {
-    compatibilityStage = `clicking ${label}`;
-    const button = await browser.$(`//button[normalize-space(.)=${JSON.stringify(label)}]`);
-    await button.waitForClickable({ timeout: 30_000 });
-    await button.click();
-  };
-  await clickButton("文件");
-  await clickButton("设置…");
-  compatibilityStage = "checking font settings";
-  const settingsDialog = await browser.$("section[aria-label='RustyEra Web · 设置']");
-  await settingsDialog.waitForDisplayed({ timeout: 30_000 });
-  await clickButton("显示");
-  const gameFont = await settingsDialog.$("#setting-FontName");
-  await gameFont.setValue("Manually Entered Font");
-  const fontAccess = await browser.execute(() => {
-    const input = document.querySelector("#setting-FontName");
-    const status = document.querySelector(".font-access-status");
-    return {
-      inputTag: input?.tagName.toLowerCase(),
-      inputType: input?.getAttribute("type"),
-      list: input?.getAttribute("list"),
-      value: input instanceof HTMLInputElement ? input.value : null,
-      status: status?.getAttribute("data-state"),
-      statusText: status?.textContent?.trim(),
-      options: [...document.querySelectorAll("#available-game-fonts option")].map((option) =>
-        option.getAttribute("value"),
-      ),
+  if (startupOnly) {
+    compatibilityStage = "collecting cold-start report";
+    const observed = await collectCompatibilityReport(browser);
+    assertColdStartup(observed.startupTelemetry);
+    console.log(
+      JSON.stringify({
+        browser: browserName,
+        browserVersion: browser.capabilities.browserVersion,
+        minimized,
+        projectName: setup.projectName,
+        opfs: setup.opfs,
+        opfsReset,
+        projectProgress,
+        startupOnly: true,
+        ...observed,
+      }),
+    );
+  } else {
+    const clickButton = async (label) => {
+      compatibilityStage = `clicking ${label}`;
+      const button = await browser.$(`//button[normalize-space(.)=${JSON.stringify(label)}]`);
+      await button.waitForClickable({ timeout: 30_000 });
+      await button.click();
     };
-  });
-  if (
-    fontAccess.inputTag !== "input" ||
-    fontAccess.inputType !== "text" ||
-    fontAccess.list !== "available-game-fonts" ||
-    fontAccess.value !== "Manually Entered Font" ||
-    fontAccess.status !== "unsupported" ||
-    fontAccess.options.length !== 0
-  ) {
-    throw new Error(`font picker fallback mismatch: ${JSON.stringify(fontAccess)}`);
-  }
-  await clickButton("取消");
-  const safariSaveWaitId =
-    browserName === "safari"
-      ? await browser.execute(() => window.__RUSTYERA_TEST__?.snapshot().wait?.wait_id ?? null)
-      : null;
-  await clickButton("[ 0] ----");
-  compatibilityStage = "waiting for in-game save";
-  await browser.waitUntil(
-    () =>
-      browser.execute(
-        (activeBrowser, previousWaitId) => {
-          const state = window.__RUSTYERA_TEST__?.snapshot();
-          return (
-            state?.phase === "waiting_input" &&
-            state.canInteract &&
-            (activeBrowser !== "safari" || state.wait?.wait_id !== previousWaitId) &&
-            !state.logs.some((entry) =>
-              String(entry.message).includes("text save lacks unique code"),
-            )
-          );
-        },
-        browserName,
-        safariSaveWaitId,
-      ),
-    { timeout: 30_000, interval: 100, timeoutMsg: "in-game save did not complete" },
-  );
-  await clickButton("文件");
-  await clickButton("导出存档…");
-  await (await browser.$("section[aria-label='导出存档']")).waitForDisplayed({ timeout: 30_000 });
-  await clickButton("导出");
-  compatibilityStage = "receiving exported save";
-  const gameSave = await browser.executeAsync(async (done) => {
-    try {
-      done({ ok: true, download: await window.__RUSTYERA_TEST__.takeDownload(30_000) });
-    } catch (error) {
-      done({ ok: false, error: `${error?.name ?? "Error"}: ${error?.message ?? String(error)}` });
-    }
-  });
-  if (!gameSave.ok) throw new Error(`in-game save export failed: ${gameSave.error}`);
-  if (
-    gameSave.download.name !== "save00.sav" ||
-    gameSave.download.bytes.length === 0 ||
-    JSON.stringify(gameSave.download.bytes.slice(0, 4)) !== JSON.stringify([0xef, 0xbb, 0xbf, 0x34])
-  ) {
-    throw new Error(`in-game save is empty or malformed: ${JSON.stringify(gameSave.download)}`);
-  }
-  await browser.execute((bytes) => {
-    const nativeInputClick = HTMLInputElement.prototype.click;
-    HTMLInputElement.prototype.click = function () {
-      if (this.type !== "file" || this.webkitdirectory || !this.accept.includes(".sav")) {
-        nativeInputClick.call(this);
-        return;
-      }
-      const file = new File([Uint8Array.from(bytes)], "generated.sav", {
-        type: "application/octet-stream",
-      });
-      Object.defineProperty(this, "files", { configurable: true, value: [file] });
-      this.dispatchEvent(new Event("change", { bubbles: true }));
-      HTMLInputElement.prototype.click = nativeInputClick;
-    };
-  }, gameSave.download.bytes);
-  await clickButton("文件");
-  await clickButton("导入存档…");
-  await (await browser.$("section[aria-label='导入存档']")).waitForDisplayed({ timeout: 30_000 });
-  await clickButton("选择 .sav 文件…");
-  compatibilityStage = "waiting for imported save selection";
-  await browser.waitUntil(
-    async () =>
-      (await browser.$("section[aria-label='导入存档']").getText()).includes("generated.sav"),
-    { timeout: 30_000, interval: 100, timeoutMsg: "traditional save file was not selected" },
-  );
-  const importSlot = await browser.$("section[aria-label='导入存档'] select");
-  await importSlot.selectByVisibleText("槽位 01（空）");
-  await clickButton("导入");
-  compatibilityStage = "waiting for save import";
-  const imported = await browser
-    .waitUntil(
-      () =>
-        browser.execute(() => {
-          const transfer = window.__RUSTYERA_TEST__?.snapshot().saveTransfer;
-          return transfer?.mode == null && !transfer.busy && !transfer.error;
-        }),
-      {
-        timeout: 30_000,
-        interval: 100,
-        timeoutMsg: "traditional save was not imported",
-      },
-    )
-    .then(() => true)
-    .catch(() => false);
-  if (!imported) {
-    const diagnosis = await browser.execute(() => ({
-      status: document.querySelector(".runtime-status")?.textContent,
-      dialog: document.querySelector("section[aria-label='导入存档']")?.textContent,
-      selectedSlot: document.querySelector("section[aria-label='导入存档'] select")?.value,
-      state: window.__RUSTYERA_TEST__?.snapshot(),
-    }));
-    throw new Error(`traditional save was not imported: ${JSON.stringify(diagnosis)}`);
-  }
-  await clickButton("文件");
-  await clickButton("导出存档…");
-  await (await browser.$("section[aria-label='导出存档']")).waitForDisplayed({ timeout: 30_000 });
-  const exportSlot = await browser.$("section[aria-label='导出存档'] select");
-  await exportSlot.selectByVisibleText("槽位 01（已有存档）");
-  await clickButton("导出");
-  compatibilityStage = "receiving round-trip save";
-  await browser.waitUntil(
-    () => browser.execute(() => window.__RUSTYERA_TEST_DOWNLOADS__?.[0]?.name === "save01.sav"),
-    { timeout: 10_000, interval: 100, timeoutMsg: "round-trip save download was not produced" },
-  );
-  const exportedSave = await browser.execute(() => {
-    const download = window.__RUSTYERA_TEST_DOWNLOADS__?.shift();
-    if (!download) return null;
-    let hash = 0x811c9dc5;
-    for (const byte of download.bytes) {
-      hash ^= byte;
-      hash = Math.imul(hash, 0x01000193);
-    }
-    return {
-      name: download.name,
-      byteLength: download.bytes.length,
-      signature: (hash >>> 0).toString(16).padStart(8, "0"),
-    };
-  });
-  if (!exportedSave) throw new Error("traditional save export produced no download");
-  const saveTransfer = {
-    inGameSave: true,
-    imported: true,
-    exportedName: exportedSave.name,
-    roundTrip: exportedSave.signature === byteSignature(gameSave.download.bytes),
-    byteLength: exportedSave.byteLength,
-  };
-  if (saveTransfer.exportedName !== "save01.sav" || !saveTransfer.roundTrip) {
-    throw new Error(`traditional save round trip mismatch: ${JSON.stringify(saveTransfer)}`);
-  }
-  let tooltip;
-  if (checkTooltip) {
-    const target = await browser.$("button[data-era-tooltip]");
-    await target.waitForDisplayed({ timeout: 20_000 });
-    await target.moveTo();
-    const floating = await browser.$(".game-tooltip");
-    await floating.waitForDisplayed({ timeout: 20_000 });
-    tooltip = await browser.execute(() => {
-      const element = document.querySelector(".game-tooltip");
-      if (!(element instanceof HTMLElement)) return null;
-      const style = getComputedStyle(element);
+    await clickButton("文件");
+    await clickButton("设置…");
+    compatibilityStage = "checking font settings";
+    const settingsDialog = await browser.$("section[aria-label='RustyEra Web · 设置']");
+    await settingsDialog.waitForDisplayed({ timeout: 30_000 });
+    await clickButton("显示");
+    const gameFont = await settingsDialog.$("#setting-FontName");
+    await gameFont.setValue("Manually Entered Font");
+    const fontAccess = await browser.execute(() => {
+      const input = document.querySelector("#setting-FontName");
+      const status = document.querySelector(".font-access-status");
       return {
-        text: element.textContent?.trim(),
-        role: element.getAttribute("role"),
-        color: style.color,
-        backgroundColor: style.backgroundColor,
-        fontFamily: style.fontFamily,
-        fontSize: style.fontSize,
-        visible: element.getClientRects().length > 0,
+        inputTag: input?.tagName.toLowerCase(),
+        inputType: input?.getAttribute("type"),
+        list: input?.getAttribute("list"),
+        value: input instanceof HTMLInputElement ? input.value : null,
+        status: status?.getAttribute("data-state"),
+        statusText: status?.textContent?.trim(),
+        options: [...document.querySelectorAll("#available-game-fonts option")].map((option) =>
+          option.getAttribute("value"),
+        ),
       };
     });
     if (
-      !tooltip?.visible ||
-      tooltip.text !== "button tip\nsecond line" ||
-      tooltip.role !== "tooltip"
+      fontAccess.inputTag !== "input" ||
+      fontAccess.inputType !== "text" ||
+      fontAccess.list !== "available-game-fonts" ||
+      fontAccess.value !== "Manually Entered Font" ||
+      fontAccess.status !== "unsupported" ||
+      fontAccess.options.length !== 0
     ) {
-      throw new Error(`tooltip rendering mismatch: ${JSON.stringify(tooltip)}`);
+      throw new Error(`font picker fallback mismatch: ${JSON.stringify(fontAccess)}`);
     }
-  }
-  compatibilityStage = "collecting final compatibility report";
-  const observed = await browser.execute(() => ({
-    userAgent: navigator.userAgent,
-    status: document.querySelector(".runtime-status")?.textContent,
-    output: document.querySelector(".game-viewport")?.textContent,
-    picker: window.__RUSTYERA_COMPAT_PICKER__,
-  }));
-  if (!observed.picker?.fallback || !observed.picker.focusBeforeChange) {
-    throw new Error(
-      `portable directory picker was not exercised: ${JSON.stringify(observed.picker)}`,
+    await clickButton("取消");
+    const safariSaveWaitId =
+      browserName === "safari"
+        ? await browser.execute(() => window.__RUSTYERA_TEST__?.snapshot().wait?.wait_id ?? null)
+        : null;
+    await clickButton("[ 0] ----");
+    compatibilityStage = "waiting for in-game save";
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          (activeBrowser, previousWaitId) => {
+            const state = window.__RUSTYERA_TEST__?.snapshot();
+            return (
+              state?.phase === "waiting_input" &&
+              state.canInteract &&
+              (activeBrowser !== "safari" || state.wait?.wait_id !== previousWaitId) &&
+              !state.logs.some((entry) =>
+                String(entry.message).includes("text save lacks unique code"),
+              )
+            );
+          },
+          browserName,
+          safariSaveWaitId,
+        ),
+      { timeout: 30_000, interval: 100, timeoutMsg: "in-game save did not complete" },
     );
-  }
-  if (browserName === "safari") {
-    compatibilityStage = "minimizing Safari automation window";
-    minimized = await browser
-      .minimizeWindow()
+    await clickButton("文件");
+    await clickButton("导出存档…");
+    await (await browser.$("section[aria-label='导出存档']")).waitForDisplayed({ timeout: 30_000 });
+    await clickButton("导出");
+    compatibilityStage = "receiving exported save";
+    const gameSave = await browser.executeAsync(async (done) => {
+      try {
+        done({ ok: true, download: await window.__RUSTYERA_TEST__.takeDownload(30_000) });
+      } catch (error) {
+        done({ ok: false, error: `${error?.name ?? "Error"}: ${error?.message ?? String(error)}` });
+      }
+    });
+    if (!gameSave.ok) throw new Error(`in-game save export failed: ${gameSave.error}`);
+    if (
+      gameSave.download.name !== "save00.sav" ||
+      gameSave.download.bytes.length === 0 ||
+      JSON.stringify(gameSave.download.bytes.slice(0, 4)) !==
+        JSON.stringify([0xef, 0xbb, 0xbf, 0x34])
+    ) {
+      throw new Error(`in-game save is empty or malformed: ${JSON.stringify(gameSave.download)}`);
+    }
+    await browser.execute((bytes) => {
+      const nativeInputClick = HTMLInputElement.prototype.click;
+      HTMLInputElement.prototype.click = function () {
+        if (this.type !== "file" || this.webkitdirectory || !this.accept.includes(".sav")) {
+          nativeInputClick.call(this);
+          return;
+        }
+        const file = new File([Uint8Array.from(bytes)], "generated.sav", {
+          type: "application/octet-stream",
+        });
+        Object.defineProperty(this, "files", { configurable: true, value: [file] });
+        this.dispatchEvent(new Event("change", { bubbles: true }));
+        HTMLInputElement.prototype.click = nativeInputClick;
+      };
+    }, gameSave.download.bytes);
+    await clickButton("文件");
+    await clickButton("导入存档…");
+    await (await browser.$("section[aria-label='导入存档']")).waitForDisplayed({ timeout: 30_000 });
+    await clickButton("选择 .sav 文件…");
+    compatibilityStage = "waiting for imported save selection";
+    await browser.waitUntil(
+      async () =>
+        (await browser.$("section[aria-label='导入存档']").getText()).includes("generated.sav"),
+      { timeout: 30_000, interval: 100, timeoutMsg: "traditional save file was not selected" },
+    );
+    const importSlot = await browser.$("section[aria-label='导入存档'] select");
+    await importSlot.selectByVisibleText("槽位 01（空）");
+    await clickButton("导入");
+    compatibilityStage = "waiting for save import";
+    const imported = await browser
+      .waitUntil(
+        () =>
+          browser.execute(() => {
+            const transfer = window.__RUSTYERA_TEST__?.snapshot().saveTransfer;
+            return transfer?.mode == null && !transfer.busy && !transfer.error;
+          }),
+        {
+          timeout: 30_000,
+          interval: 100,
+          timeoutMsg: "traditional save was not imported",
+        },
+      )
       .then(() => true)
       .catch(() => false);
+    if (!imported) {
+      const diagnosis = await browser.execute(() => ({
+        status: document.querySelector(".runtime-status")?.textContent,
+        dialog: document.querySelector("section[aria-label='导入存档']")?.textContent,
+        selectedSlot: document.querySelector("section[aria-label='导入存档'] select")?.value,
+        state: window.__RUSTYERA_TEST__?.snapshot(),
+      }));
+      throw new Error(`traditional save was not imported: ${JSON.stringify(diagnosis)}`);
+    }
+    await clickButton("文件");
+    await clickButton("导出存档…");
+    await (await browser.$("section[aria-label='导出存档']")).waitForDisplayed({ timeout: 30_000 });
+    const exportSlot = await browser.$("section[aria-label='导出存档'] select");
+    await exportSlot.selectByVisibleText("槽位 01（已有存档）");
+    await clickButton("导出");
+    compatibilityStage = "receiving round-trip save";
+    await browser.waitUntil(
+      () => browser.execute(() => window.__RUSTYERA_TEST_DOWNLOADS__?.[0]?.name === "save01.sav"),
+      { timeout: 10_000, interval: 100, timeoutMsg: "round-trip save download was not produced" },
+    );
+    const exportedSave = await browser.execute(() => {
+      const download = window.__RUSTYERA_TEST_DOWNLOADS__?.shift();
+      if (!download) return null;
+      let hash = 0x811c9dc5;
+      for (const byte of download.bytes) {
+        hash ^= byte;
+        hash = Math.imul(hash, 0x01000193);
+      }
+      return {
+        name: download.name,
+        byteLength: download.bytes.length,
+        signature: (hash >>> 0).toString(16).padStart(8, "0"),
+      };
+    });
+    if (!exportedSave) throw new Error("traditional save export produced no download");
+    const saveTransfer = {
+      inGameSave: true,
+      imported: true,
+      exportedName: exportedSave.name,
+      roundTrip: exportedSave.signature === byteSignature(gameSave.download.bytes),
+      byteLength: exportedSave.byteLength,
+    };
+    if (saveTransfer.exportedName !== "save01.sav" || !saveTransfer.roundTrip) {
+      throw new Error(`traditional save round trip mismatch: ${JSON.stringify(saveTransfer)}`);
+    }
+    let tooltip;
+    if (checkTooltip) {
+      const target = await browser.$("button[data-era-tooltip]");
+      await target.waitForDisplayed({ timeout: 20_000 });
+      await target.moveTo();
+      const floating = await browser.$(".game-tooltip");
+      await floating.waitForDisplayed({ timeout: 20_000 });
+      tooltip = await browser.execute(() => {
+        const element = document.querySelector(".game-tooltip");
+        if (!(element instanceof HTMLElement)) return null;
+        const style = getComputedStyle(element);
+        return {
+          text: element.textContent?.trim(),
+          role: element.getAttribute("role"),
+          color: style.color,
+          backgroundColor: style.backgroundColor,
+          fontFamily: style.fontFamily,
+          fontSize: style.fontSize,
+          visible: element.getClientRects().length > 0,
+        };
+      });
+      if (
+        !tooltip?.visible ||
+        tooltip.text !== "button tip\nsecond line" ||
+        tooltip.role !== "tooltip"
+      ) {
+        throw new Error(`tooltip rendering mismatch: ${JSON.stringify(tooltip)}`);
+      }
+    }
+    compatibilityStage = "collecting final compatibility report";
+    const observed = await browser.execute(() => ({
+      userAgent: navigator.userAgent,
+      status: document.querySelector(".runtime-status")?.textContent,
+      output: document.querySelector(".game-viewport")?.textContent,
+      picker: window.__RUSTYERA_COMPAT_PICKER__,
+      startupTelemetry: window.__RUSTYERA_TEST__?.snapshot().startupTelemetry,
+    }));
+    assertColdStartup(observed.startupTelemetry);
+    if (!observed.picker?.fallback || !observed.picker.focusBeforeChange) {
+      throw new Error(
+        `portable directory picker was not exercised: ${JSON.stringify(observed.picker)}`,
+      );
+    }
+    if (browserName === "safari") {
+      compatibilityStage = "minimizing Safari automation window";
+      minimized = await browser
+        .minimizeWindow()
+        .then(() => true)
+        .catch(() => false);
+    }
+    console.log(
+      JSON.stringify({
+        browser: browserName,
+        browserVersion: browser.capabilities.browserVersion,
+        minimized,
+        projectName: setup.projectName,
+        opfs: setup.opfs,
+        opfsReset,
+        projectProgress,
+        fontAccess,
+        saveTransfer,
+        tooltip,
+        ...observed,
+      }),
+    );
   }
-  console.log(
-    JSON.stringify({
-      browser: browserName,
-      browserVersion: browser.capabilities.browserVersion,
-      minimized,
-      projectName: setup.projectName,
-      opfs: setup.opfs,
-      projectProgress,
-      fontAccess,
-      saveTransfer,
-      tooltip,
-      ...observed,
-    }),
-  );
 } catch (error) {
   runError = error;
 } finally {
@@ -482,6 +560,7 @@ async function collectFiles(root) {
 
   async function walk(directory, prefix, target) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (!prefix && entry.name === ".rustyera") continue;
       const relative = `${prefix}${entry.name}`;
       const absolute = path.join(directory, entry.name);
       if (entry.isDirectory()) await walk(absolute, `${relative}/`, target);
@@ -489,6 +568,50 @@ async function collectFiles(root) {
         target.push({ path: relative, base64: (await readFile(absolute)).toString("base64") });
       }
     }
+  }
+}
+
+function* portableFileBatches(
+  files,
+  maximumEncodedBytes = 512 * 1024,
+  maximumChunkBytes = 256 * 1024,
+) {
+  let batch = [];
+  let encodedBytes = 0;
+  for (const file of files) {
+    const total = file.base64.length;
+    for (let offset = 0; offset < Math.max(1, total); offset += maximumChunkBytes) {
+      const base64 = file.base64.slice(offset, offset + maximumChunkBytes);
+      const chunkBytes = file.path.length + base64.length;
+      if (batch.length && encodedBytes + chunkBytes > maximumEncodedBytes) {
+        yield batch;
+        batch = [];
+        encodedBytes = 0;
+      }
+      batch.push({ path: file.path, base64, final: offset + base64.length >= total });
+      encodedBytes += chunkBytes;
+    }
+  }
+  if (batch.length) yield batch;
+}
+
+async function collectCompatibilityReport(browser) {
+  return browser.execute(() => ({
+    userAgent: navigator.userAgent,
+    status: document.querySelector(".runtime-status")?.textContent,
+    output: document.querySelector(".game-viewport")?.textContent,
+    picker: window.__RUSTYERA_COMPAT_PICKER__,
+    startupTelemetry: window.__RUSTYERA_TEST__?.snapshot().startupTelemetry,
+  }));
+}
+
+function assertColdStartup(telemetry) {
+  if (
+    telemetry?.scenario !== "cold" ||
+    telemetry.cacheHit !== false ||
+    telemetry.outcome !== "success"
+  ) {
+    throw new Error(`startup was not a successful cold load: ${JSON.stringify(telemetry)}`);
   }
 }
 

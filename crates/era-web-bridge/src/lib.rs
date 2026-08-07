@@ -230,7 +230,14 @@ impl WebSession {
     /// Returns an error if an input digest is malformed or the request cannot be queued.
     pub fn load_project(&mut self, manifest: ProjectManifest) -> Result<u64, String> {
         let identity = project_identity(&manifest)?;
-        self.load_project_request(identity, Some(manifest), None)
+        self.runtime
+            .stage_project_manifest(manifest)
+            .map_err(|error| error.to_string())?;
+        let result = self.load_project_request(identity, None, None);
+        if result.is_err() {
+            self.runtime.clear_staged_project_manifest();
+        }
+        result
     }
 
     /// Decode and validate the manifest embedded in a self-contained project file.
@@ -739,6 +746,46 @@ mod tests {
                 0xa7, 0x0e, 0x07, 0xec,
             ]
         );
+    }
+
+    #[test]
+    fn owned_project_manifest_uses_a_lightweight_load_envelope() {
+        let mut session = WebSession::new(WebSessionOptions {
+            maximum_envelope_bytes: 1024 * 1024,
+            ..WebSessionOptions::default()
+        })
+        .unwrap();
+        session.pump(RuntimeDriveBudget::default()).unwrap();
+        let source = format!(";{}\n@SYSTEM_TITLE\nRETURN\n", "x".repeat(2 * 1024 * 1024));
+        let manifest = ProjectManifest {
+            project_revision: 1,
+            files: vec![SubmittedFile {
+                relative_path: "ERB/main.erb".into(),
+                category: FileCategory::Erb,
+                payload: FilePayload::Utf8(source.clone()),
+                content_hash: Some(ProtocolBytes::new(
+                    blake3::hash(source.as_bytes()).as_bytes().to_vec(),
+                )),
+            }],
+        };
+
+        assert!(session.load_project(manifest).is_ok());
+    }
+
+    #[test]
+    fn failed_lightweight_load_submission_rolls_back_the_owned_manifest() {
+        let mut session = WebSession::new(WebSessionOptions::default()).unwrap();
+        session.pump(RuntimeDriveBudget::default()).unwrap();
+        let manifest = ProjectManifest {
+            project_revision: 1,
+            files: Vec::new(),
+        };
+        let original_maximum_envelope_bytes = session.wire_limits.maximum_envelope_bytes;
+        session.wire_limits.maximum_envelope_bytes = 1;
+        assert!(session.load_project(manifest.clone()).is_err());
+
+        session.wire_limits.maximum_envelope_bytes = original_maximum_envelope_bytes;
+        assert!(session.load_project(manifest).is_ok());
     }
 
     fn batch(

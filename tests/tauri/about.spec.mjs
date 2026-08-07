@@ -15,7 +15,7 @@ describe("Tauri help menu", () => {
     const aboutText = await dialog.getText();
     assert.match(aboutText, /PrunusSerrulata/);
     assert.match(aboutText, /前端版本0\.2\.1-tauri/);
-    assert.match(aboutText, /core 版本0\.2\.0 \(608366eb\)/);
+    assert.match(aboutText, /core 版本0\.2\.0 \(2b0117bd\)/);
     assert.match(aboutText, /GPL-3\.0-only/);
     await dialog.$("button=确定").click();
 

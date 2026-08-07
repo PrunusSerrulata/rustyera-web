@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { blake3 } from "@noble/hashes/blake3.js";
 
 import {
   importBrowserDirectory,
   pickBrowserDirectory,
   pickBrowserFile,
-  removeImportedProjectSources,
   selectedProjectFiles,
 } from "@/platform/browserDirectory";
 import { BrowserProject } from "@/platform/browserProject";
@@ -53,6 +53,8 @@ class MemoryDirectoryHandle {
   ): Promise<MemoryDirectoryHandle> {
     const child = this.children.get(name);
     if (child instanceof MemoryDirectoryHandle) return child;
+    if (child instanceof MemoryFileHandle)
+      throw new DOMException("wrong kind", "TypeMismatchError");
     if (!options?.create) throw new DOMException("missing", "NotFoundError");
     const created = new MemoryDirectoryHandle(name);
     this.children.set(name, created);
@@ -62,6 +64,8 @@ class MemoryDirectoryHandle {
   async getFileHandle(name: string, options?: { create?: boolean }): Promise<MemoryFileHandle> {
     const child = this.children.get(name);
     if (child instanceof MemoryFileHandle) return child;
+    if (child instanceof MemoryDirectoryHandle)
+      throw new DOMException("wrong kind", "TypeMismatchError");
     if (!options?.create) throw new DOMException("missing", "NotFoundError");
     const created = new MemoryFileHandle(name);
     this.children.set(name, created);
@@ -78,12 +82,28 @@ class MemoryDirectoryHandle {
   }
 }
 
+async function importedStorageProject(
+  storage: MemoryDirectoryHandle,
+): Promise<MemoryDirectoryHandle> {
+  const imports = await storage.getDirectoryHandle(".rustyera-imports");
+  for await (const [, handle] of imports.entries()) return handle as MemoryDirectoryHandle;
+  throw new Error("imported project storage was not created");
+}
+
 function projectFile(path: string, contents = ""): File {
   const file = new File([], path.split("/").at(-1)!);
   const bytes = new TextEncoder().encode(contents);
   Object.defineProperties(file, {
     webkitRelativePath: { value: path },
+    size: { value: bytes.byteLength },
     arrayBuffer: { value: async () => bytes.buffer.slice(0) },
+    text: { value: async () => new TextDecoder().decode(bytes) },
+    slice: {
+      value: (start = 0, end = bytes.byteLength) => {
+        const chunk = bytes.slice(start, end);
+        return { arrayBuffer: async () => chunk.buffer.slice(0) } as Blob;
+      },
+    },
   });
   return file;
 }
@@ -148,17 +168,19 @@ describe("portable browser directory selection", () => {
     expect(progress).toHaveBeenCalledWith("scanning", 0, 0);
   });
 
-  it("removes OPFS source copies after a project file has been built", async () => {
+  it("keeps selected source files out of OPFS while exposing them through the project view", async () => {
     const storage = new MemoryDirectoryHandle("root");
     const picked = await importBrowserDirectory(
       [projectFile("game/ERB/main.erb", "@SYSTEM_TITLE\nRETURN\n")],
       storage as any,
     );
 
-    await removeImportedProjectSources(picked.handle);
-
+    const stored = await importedStorageProject(storage);
+    await expect(stored.getDirectoryHandle("ERB")).rejects.toMatchObject({
+      name: "NotFoundError",
+    });
     const erb = await (picked.handle as any).getDirectoryHandle("ERB");
-    await expect(erb.getFileHandle("main.erb")).rejects.toMatchObject({ name: "NotFoundError" });
+    await expect(erb.getFileHandle("main.erb")).resolves.toBeDefined();
     await expect((picked.handle as any).getDirectoryHandle(".rustyera")).resolves.toBeDefined();
   });
 
@@ -177,7 +199,7 @@ describe("portable browser directory selection", () => {
         payload: { type: "utf8", value: "@SYSTEM_TITLE\nRETURN\n" },
       }),
     ]);
-    expect((picked.handle as unknown as MemoryDirectoryHandle).entriesCalls).toBe(1);
+    expect((await importedStorageProject(storage)).entriesCalls).toBe(1);
   });
 
   it("returns the same manifest as scanning the final imported directory", async () => {
@@ -203,6 +225,77 @@ describe("portable browser directory selection", () => {
         payload: { type: "utf8", value: "@OLD\nRETURN\n" },
       }),
     ]);
+  });
+
+  it("removes legacy OPFS source copies before overlaying a new selection", async () => {
+    const storage = new MemoryDirectoryHandle("root");
+    await importBrowserDirectory(
+      [projectFile("game/ERB/initial.erb", "@INITIAL\nRETURN\n")],
+      storage as unknown as FileSystemDirectoryHandle,
+    );
+    const stored = await importedStorageProject(storage);
+    const erb = await stored.getDirectoryHandle("ERB", { create: true });
+    const legacy = await erb.getFileHandle("main.erb", { create: true });
+    await (await legacy.createWritable()).write(new TextEncoder().encode("@OLD\nRETURN\n"));
+    const privateDirectory = await stored.getDirectoryHandle(".rustyera");
+    const sourceManifest = await privateDirectory.getFileHandle("imported-sources.json");
+    await (
+      await sourceManifest.createWritable()
+    ).write(new TextEncoder().encode('["ERB/main.erb"]'));
+
+    const picked = await importBrowserDirectory(
+      [projectFile("game/ERB/main.erb", "@NEW\nRETURN\n")],
+      storage as unknown as FileSystemDirectoryHandle,
+    );
+
+    expect(picked.manifest?.files[0].payload).toEqual({
+      type: "utf8",
+      value: "@NEW\nRETURN\n",
+    });
+    await expect(erb.getFileHandle("main.erb")).rejects.toMatchObject({ name: "NotFoundError" });
+  });
+
+  it("reads selected resources lazily and copies configuration writes into OPFS", async () => {
+    const storage = new MemoryDirectoryHandle("root");
+    const configuration = projectFile("game/emuera.config", "FontSize:18\n");
+    const picked = await importBrowserDirectory(
+      [configuration, projectFile("game/resources/title.png", "image-bytes")],
+      storage as unknown as FileSystemDirectoryHandle,
+    );
+    const project = new BrowserProject(picked.handle, 1, picked.projectName);
+    project.useImportedManifest(picked.manifest!);
+
+    await expect(
+      project.readResourcePrefix("RESOURCES/TITLE.PNG", 5).then((bytes) => [...bytes]),
+    ).resolves.toEqual([...new TextEncoder().encode("image")]);
+    await project.writeConfiguration(
+      blake3(new TextEncoder().encode("FontSize:18\n")),
+      "FontSize:20\n",
+    );
+
+    expect(await configuration.text()).toBe("FontSize:18\n");
+    const rescanned = await project.scan();
+    expect(rescanned.files.find((file) => file.relative_path === "emuera.config")?.payload).toEqual(
+      {
+        type: "utf8",
+        value: "FontSize:20\n",
+      },
+    );
+  });
+
+  it("lets an existing OPFS entry win over a conflicting selected directory", async () => {
+    const storage = new MemoryDirectoryHandle("root");
+    const picked = await importBrowserDirectory(
+      [projectFile("game/resources/title.png", "image-bytes")],
+      storage as unknown as FileSystemDirectoryHandle,
+    );
+    const stored = await importedStorageProject(storage);
+    const conflict = await stored.getFileHandle("resources", { create: true });
+    await (await conflict.createWritable()).write(new TextEncoder().encode("runtime-owned"));
+
+    await expect(picked.handle.getDirectoryHandle("resources")).rejects.toMatchObject({
+      name: "TypeMismatchError",
+    });
   });
 
   it("returns no directory when either browser picker is cancelled", async () => {
@@ -276,12 +369,14 @@ describe("portable browser directory selection", () => {
     await writer.write(new TextEncoder().encode("browser"));
     await writer.close();
 
-    await importBrowserDirectory(
+    const second = await importBrowserDirectory(
       [projectFile("game/ERB/new.erb", "new"), projectFile("game/sav/save01.dat", "original")],
       storage as unknown as FileSystemDirectoryHandle,
     );
 
-    const scripts = await project.getDirectoryHandle("ERB");
+    const scripts = await (second.handle as unknown as MemoryDirectoryHandle).getDirectoryHandle(
+      "ERB",
+    );
     await expect(scripts.getFileHandle("old.erb")).rejects.toMatchObject({ name: "NotFoundError" });
     expect(
       await (await scripts.getFileHandle("new.erb")).getFile().then((file) => file.text()),

@@ -1,6 +1,10 @@
 import { blake3 } from "@noble/hashes/blake3.js";
 import { runBounded, scanBrowserProjectFile } from "@/platform/browserProject";
 import type { BrowserManifest, ScannedFile } from "@/platform/browserProject";
+import {
+  overlayBrowserDirectory,
+  type PortableBrowserFile,
+} from "@/platform/browserDirectoryOverlay";
 
 export interface PickedBrowserDirectory {
   handle: FileSystemDirectoryHandle;
@@ -67,10 +71,6 @@ export async function importBrowserDirectory(
   const project = await imports.getDirectoryHandle(projectKey, { create: true });
   const privateDirectory = await project.getDirectoryHandle(".rustyera", { create: true });
   const previousSources = await readSourceManifest(privateDirectory);
-  const nextSources = files
-    .filter(({ path }) => !isRuntimeStoragePath(path))
-    .map(({ path }) => path);
-  const nextSourceSet = new Set(nextSources);
   const topLevel = new Set(
     files
       .map(({ path }) => path.split("/", 1)[0]?.toLocaleLowerCase())
@@ -80,29 +80,29 @@ export async function importBrowserDirectory(
     if (handle.kind === "directory") topLevel.add(name.toLocaleLowerCase());
   }
   const scannedFiles = new Map<string, ScannedFile>();
+  const portableFiles: PortableBrowserFile[] = [];
   progress?.("importing", 0, files.length);
 
   for (const path of previousSources) {
-    if (!nextSourceSet.has(path)) await removeFile(project, path);
+    await removeFile(project, path);
   }
   await runBounded(
     files.map(({ path, file }) => async () => {
-      const preserveRuntimeFile = isRuntimeStoragePath(path) && (await fileExists(project, path));
-      const bytes = preserveRuntimeFile
-        ? await readFile(project, path)
-        : new Uint8Array(await file.arrayBuffer());
-      if (!preserveRuntimeFile) await writeFile(project, path, bytes);
+      const runtimeStorage = isRuntimeStoragePath(path);
+      const preserveRuntimeFile = runtimeStorage && (await fileExists(project, path));
+      const bytes = preserveRuntimeFile ? await readFile(project, path) : await fileBytes(file);
+      if (runtimeStorage) {
+        if (!preserveRuntimeFile) await writeFile(project, path, bytes);
+      } else {
+        portableFiles.push({ path, file });
+      }
       const scanned = scanBrowserProjectFile(path, bytes, topLevel);
       if (scanned) scannedFiles.set(scanned.relative_path, scanned);
     }),
     8,
     (completed, total) => progress?.("importing", completed, total),
   );
-  await writeFile(
-    privateDirectory,
-    SOURCE_MANIFEST,
-    new TextEncoder().encode(JSON.stringify(nextSources)),
-  );
+  await writeFile(privateDirectory, SOURCE_MANIFEST, new TextEncoder().encode("[]"));
   const manifest = {
     project_revision: 1,
     files: [...scannedFiles.values()].sort((left, right) =>
@@ -110,20 +110,15 @@ export async function importBrowserDirectory(
     ),
   };
   return {
-    handle: project,
+    handle: overlayBrowserDirectory(project, portableFiles),
     persistHandle: false,
     projectName,
     manifest,
   };
 }
 
-export async function removeImportedProjectSources(
-  project: FileSystemDirectoryHandle,
-): Promise<void> {
-  const privateDirectory = await project.getDirectoryHandle(".rustyera", { create: true });
-  const sources = await readSourceManifest(privateDirectory);
-  for (const path of sources) await removeFile(project, path);
-  await writeFile(privateDirectory, SOURCE_MANIFEST, new TextEncoder().encode("[]"));
+async function fileBytes(file: File): Promise<Uint8Array> {
+  return new Uint8Array(await file.arrayBuffer());
 }
 
 export function selectedProjectFiles(selectedFiles: Iterable<File>): {

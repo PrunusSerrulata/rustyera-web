@@ -19,7 +19,7 @@ const CATEGORY_CODES: Record<string, number> = {
 interface EncodedFile {
   source: ScannedFile;
   path: Uint8Array;
-  payload: Uint8Array;
+  payloadBytes: number;
 }
 
 export async function encodeBrowserManifest(
@@ -35,17 +35,19 @@ export async function encodeBrowserManifest(
   for (let index = 0; index < manifest.files.length; index += 1) {
     const source = manifest.files[index];
     const path = encoder.encode(source.relative_path);
-    const payload =
-      source.payload.type === "utf8" ? encoder.encode(source.payload.value) : source.payload.value;
+    const payloadBytes =
+      source.payload.type === "utf8"
+        ? utf8ByteLength(source.payload.value)
+        : source.payload.value.byteLength;
     if (!(source.category in CATEGORY_CODES))
       throw new Error(`未知项目文件类别：${source.category}`);
     if (source.content_hash.byteLength !== 32) throw new Error("项目文件内容哈希必须为 32 字节");
     totalBytes = checkedAdd(
       totalBytes,
-      RECORD_HEADER_BYTES + path.byteLength + payload.byteLength + source.content_hash.byteLength,
+      RECORD_HEADER_BYTES + path.byteLength + payloadBytes + source.content_hash.byteLength,
     );
-    encoded.push({ source, path, payload });
-    bytesSinceYield += path.byteLength + payload.byteLength;
+    encoded.push({ source, path, payloadBytes });
+    bytesSinceYield += path.byteLength + payloadBytes;
     report(
       manifest.files.length === 0
         ? PREPARE_PROGRESS
@@ -69,20 +71,35 @@ export async function encodeBrowserManifest(
   const copyTotal = totalBytes - HEADER_BYTES;
   const copyState = { copied: 0, yieldedAt: 0 };
   for (let index = 0; index < encoded.length; index += 1) {
-    const { source, path, payload } = encoded[index];
+    const { source, path, payloadBytes } = encoded[index];
     view.setUint8(offset, CATEGORY_CODES[source.category]);
     offset += 1;
     view.setUint32(offset, path.byteLength, true);
     offset += 4;
     view.setUint8(offset, source.payload.type === "utf8" ? 0 : 1);
     offset += 1;
-    view.setBigUint64(offset, BigInt(payload.byteLength), true);
+    view.setBigUint64(offset, BigInt(payloadBytes), true);
     offset += 8;
     view.setUint8(offset, source.content_hash.byteLength);
     offset += 1;
     copyState.copied += RECORD_HEADER_BYTES;
     offset = await copyBytes(output, path, offset, copyState, copyTotal, report);
-    offset = await copyBytes(output, payload, offset, copyState, copyTotal, report);
+    if (source.payload.type === "utf8") {
+      const target = output.subarray(offset, offset + payloadBytes);
+      const result = encoder.encodeInto(source.payload.value, target);
+      if (result.read !== source.payload.value.length || result.written !== payloadBytes) {
+        throw new Error("项目文本 UTF-8 编码长度不一致");
+      }
+      offset += payloadBytes;
+      copyState.copied += payloadBytes;
+      reportCopyProgress(copyState.copied, copyTotal, report);
+      if (copyState.copied - copyState.yieldedAt >= BYTES_PER_YIELD) {
+        copyState.yieldedAt = copyState.copied;
+        await yieldToMainThread();
+      }
+    } else {
+      offset = await copyBytes(output, source.payload.value, offset, copyState, copyTotal, report);
+    }
     offset = await copyBytes(output, source.content_hash, offset, copyState, copyTotal, report);
   }
   report(PROGRESS_TOTAL);
@@ -105,18 +122,47 @@ async function copyBytes(
     sourceOffset += chunkLength;
     outputOffset += chunkLength;
     state.copied += chunkLength;
-    report(
-      PREPARE_PROGRESS +
-        (total === 0
-          ? PROGRESS_TOTAL - PREPARE_PROGRESS
-          : Math.floor((state.copied * (PROGRESS_TOTAL - PREPARE_PROGRESS)) / total)),
-    );
+    reportCopyProgress(state.copied, total, report);
     if (state.copied - state.yieldedAt >= BYTES_PER_YIELD) {
       state.yieldedAt = state.copied;
       await yieldToMainThread();
     }
   }
   return outputOffset;
+}
+
+function reportCopyProgress(
+  totalCopied: number,
+  total: number,
+  report: (completed: number) => void,
+) {
+  report(
+    PREPARE_PROGRESS +
+      (total === 0
+        ? PROGRESS_TOTAL - PREPARE_PROGRESS
+        : Math.floor((totalCopied * (PROGRESS_TOTAL - PREPARE_PROGRESS)) / total)),
+  );
+}
+
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x7f) bytes += 1;
+    else if (code <= 0x7ff) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
 }
 
 function progressReporter(

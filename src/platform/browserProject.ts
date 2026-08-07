@@ -60,6 +60,7 @@ interface PendingBrowserSnapshot {
 export class BrowserProject {
   private readonly files = new Map<string, FileSystemFileHandle>();
   private readonly embeddedResources = new Map<string, Uint8Array>();
+  private readonly canonicalPaths = new Map<string, string>();
   private usesEmbeddedManifest = false;
   private manifestValue?: BrowserManifest;
   private pendingSnapshot?: PendingBrowserSnapshot;
@@ -94,6 +95,10 @@ export class BrowserProject {
 
   useImportedManifest(manifest: BrowserManifest): void {
     this.importedSnapshot = true;
+    this.canonicalPaths.clear();
+    for (const file of manifest.files) {
+      this.canonicalPaths.set(file.relative_path.toLocaleLowerCase(), file.relative_path);
+    }
     this.manifestValue = manifest;
   }
 
@@ -345,22 +350,30 @@ export class BrowserProject {
 
   async readResource(relativePath: string): Promise<Uint8Array> {
     const normalized = safePath(relativePath);
-    const embedded = this.embeddedResources.get(normalized.toLocaleLowerCase());
+    const key = normalized.toLocaleLowerCase();
+    const embedded = this.embeddedResources.get(key);
     if (embedded) return new Uint8Array(embedded);
     const handle =
-      this.files.get(normalized.toLocaleLowerCase()) ??
-      (await optionalFileHandle(this.root, normalized.split("/")));
+      this.files.get(key) ??
+      (await optionalFileHandle(
+        this.root,
+        (this.canonicalPaths.get(key) ?? normalized).split("/"),
+      ));
     if (!handle) throw new Error(`未知资源：${relativePath}`);
     return new Uint8Array(await (await handle.getFile()).arrayBuffer());
   }
 
   async readResourcePrefix(relativePath: string, maximumBytes: number): Promise<Uint8Array> {
     const normalized = safePath(relativePath);
-    const embedded = this.embeddedResources.get(normalized.toLocaleLowerCase());
+    const key = normalized.toLocaleLowerCase();
+    const embedded = this.embeddedResources.get(key);
     if (embedded) return embedded.slice(0, maximumBytes);
     const handle =
-      this.files.get(normalized.toLocaleLowerCase()) ??
-      (await optionalFileHandle(this.root, normalized.split("/")));
+      this.files.get(key) ??
+      (await optionalFileHandle(
+        this.root,
+        (this.canonicalPaths.get(key) ?? normalized).split("/"),
+      ));
     if (!handle) throw new Error(`未知资源：${relativePath}`);
     const file = await handle.getFile();
     return new Uint8Array(await file.slice(0, maximumBytes).arrayBuffer());
