@@ -1,6 +1,6 @@
-# RustyEra Vue frontend
+# RustyEra Web frontend
 
-`era-web` is one Vue 3 application with two runtime hosts:
+`rustyera-web` is one Vue 3 application with two runtime hosts:
 
 - Tauri 2 runs `era-runtime` natively on Windows, macOS, and Linux.
 - Desktop Chromium, Firefox, and Safari run the same Rust bridge as WebAssembly in a dedicated Web
@@ -13,7 +13,7 @@ configuration I/O plus the runtime transport.
 ## Development
 
 Node.js 24 and the Rust workspace toolchain are supported. Runtime and protocol crates are pinned
-to the exact [rustyera-core](https://github.com/PrunusSerrulata/rustyera) commit recorded in
+to the exact [rustyera-core](https://github.com/PrunusSerrulata/rustyera-core) commit recorded in
 `rustyera-core.rev`; `npm run check:core-rev` rejects drift. Install the frontend dependencies and
 build the WebAssembly package before browser development:
 
@@ -56,6 +56,13 @@ npm run build:wasm
 npm run test:e2e
 ```
 
+Native Tauri checks use the test-only desktop binary, real Rust commands, the platform WebView,
+and WebdriverIO. Pass an Era project directory explicitly:
+
+```sh
+npm run test:tauri -- --project /path/to/era-project
+```
+
 Deterministic game-flow tests use the real Vue UI and browser WASM worker:
 
 ```sh
@@ -76,6 +83,11 @@ Firefox runs headless. Safari requires **Allow remote automation** in its develo
 runner minimizes its separate automation window when supported. The native-browser runner imports
 the short reference fixture into OPFS, starts the real WASM worker, and reports the browser version,
 compile status, and visible output.
+
+Both hosts can open source directories or self-contained `.reraproj` files, export compiled project
+files and VM snapshots, and edit the runtime-provided project configuration. Directory-backed
+projects persist writable configuration changes; project-file sessions accept only settings that
+can take effect immediately without rewriting the source archive.
 
 The Playwright wrapper stores Chromium in the fixed local directory `.playwright-browsers` under
 this frontend. The directory is ignored by Git and survives ordinary `npm ci` runs, so subsequent
