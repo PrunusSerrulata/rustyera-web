@@ -161,10 +161,14 @@ describe("game viewport", () => {
     const wrapper = shallowMount(GameViewport);
     const viewport = wrapper.get<HTMLElement>("main").element;
     const setScrollTop = vi.fn();
-    Object.defineProperty(viewport, "scrollTop", {
-      configurable: true,
-      get: () => 25,
-      set: setScrollTop,
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 50 },
+      scrollHeight: { configurable: true, value: 100 },
+      scrollTop: {
+        configurable: true,
+        get: () => 25,
+        set: setScrollTop,
+      },
     });
     scrollToIndex.mockClear();
 
@@ -177,6 +181,43 @@ describe("game viewport", () => {
     expect(wrapper.findComponent(DisplayLine).props("line")).toEqual(store.presentation.lines[1]);
     expect(scrollToIndex).not.toHaveBeenCalled();
     expect(setScrollTop).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("keeps an equal-length dynamic tail pinned when it refreshes at the bottom", async () => {
+    store.presentation.lines = [
+      { line_id: 1, alignment: "left", runs: [] },
+      { line_id: 2, alignment: "left", runs: [{ type: "text", text: "frame 1" }] },
+    ];
+    virtualState.items = [{ index: 1, key: "1:2", start: 13 }];
+    const wrapper = shallowMount(GameViewport);
+    const viewport = wrapper.get<HTMLElement>("main").element;
+    let scrollTop = 50;
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 50 },
+      scrollHeight: {
+        configurable: true,
+        get: () => (scrollToIndex.mock.calls.length ? 106.5 : 100),
+      },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+    scrollToIndex.mockClear();
+
+    store.presentation.lines = [
+      store.presentation.lines[0],
+      { line_id: 3, alignment: "left", runs: [{ type: "text", text: "frame 2" }] },
+    ];
+    await nextTick();
+    await flushPromises();
+
+    expect(scrollToIndex).toHaveBeenCalledTimes(2);
+    expect(scrollTop).toBe(106.5);
     wrapper.unmount();
   });
 

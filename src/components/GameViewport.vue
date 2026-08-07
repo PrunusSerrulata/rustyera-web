@@ -45,8 +45,12 @@ const historyBottomInset = computed(() =>
 );
 
 watch(
-  () => store.presentation.historyRevision,
-  async () => {
+  () => [store.presentation.historyRevision, store.presentation.lines.at(-1)?.line_id] as const,
+  async ([historyRevision], [previousHistoryRevision]) => {
+    // Equal-length dynamic-map refreshes replace the tail with new line IDs without
+    // counting as new history. Keep following them only when the old frame was at bottom;
+    // an intentionally scrolled-back viewport must remain untouched.
+    if (historyRevision === previousHistoryRevision && !isAtBottom()) return;
     await nextTick();
     goBottom();
     // Dynamic rows are measured only after the first scroll makes the tail
@@ -58,6 +62,12 @@ watch(
     if (viewport.value) viewport.value.scrollTop = viewport.value.scrollHeight;
   },
 );
+
+function isAtBottom(): boolean {
+  if (!viewport.value) return false;
+  const maximumScrollTop = Math.max(0, viewport.value.scrollHeight - viewport.value.clientHeight);
+  return maximumScrollTop - viewport.value.scrollTop <= 1;
+}
 
 function goBottom(): void {
   if (!store.presentation.lines.length) return;
