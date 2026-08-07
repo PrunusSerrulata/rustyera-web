@@ -968,7 +968,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
         (operation.type === "set_input_wait" && operation.input_wait != null),
     );
     const shouldStage =
-      stagedPresentation != null || presentation.redraw?.enabled === false || disablesRedraw;
+      stagedPresentation != null ||
+      (presentation.redraw?.enabled === false && presentation.inputWait == null) ||
+      disablesRedraw;
     const target = shouldStage ? stagePresentation() : presentation;
     applyDelta(target, delta);
     if (target !== stagedPresentation) return true;

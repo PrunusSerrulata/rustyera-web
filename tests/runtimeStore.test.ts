@@ -1887,6 +1887,54 @@ describe("runtime store session lifecycle", () => {
     expect(store.presentation.historyRevision).toBe(historyRevision);
     expect(store.canInteract).toBe(true);
   });
+
+  it("publishes hot-setting deltas at an existing redraw-disabled input wait", async () => {
+    const wait = {
+      kind: "integer_value",
+      wait_id: 12,
+      submission_token: { epoch: 2, id: 12 },
+    };
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          runtimeEvent("presentation_snapshot", {
+            revision: 1,
+            title: "settings wait",
+            history: { logical_lines: [] },
+            input_wait: wait,
+            redraw: { enabled: false },
+            settings: { line_height: 18_000 },
+          }),
+          runtimeEvent("wait_changed", { type: "opened", value: wait }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("presentation_delta", {
+            base_revision: 1,
+            new_revision: 2,
+            operations: [{ type: "set_settings", settings: { line_height: 19_000 } }],
+          }),
+        ],
+      });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.canInteract).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(store.presentation.revision).toBe(2);
+    expect(store.presentation.settings.line_height).toBe(19_000);
+    expect(store.presentation.inputWait).toEqual(wait);
+    expect(store.canInteract).toBe(true);
+    expect(store.promptPlaceholder).toBe("输入内容；Enter 提交");
+  });
 });
 
 async function runningBrowserStore() {
