@@ -1,6 +1,14 @@
 /* global document, getComputedStyle, window */
 
+import path from "node:path";
+
 const SNAPSHOT_INTERVAL_MS = 5_000;
+
+export function resolveTauriBinary(repository, release, platform = process.platform) {
+  const profile = release ? "release" : "debug";
+  const executable = `era-web-tauri${platform === "win32" ? ".exe" : ""}`;
+  return path.resolve(repository, "../target", profile, executable);
+}
 
 export async function captureCompleteTauriSnapshot(browser) {
   return browser.execute(() => {

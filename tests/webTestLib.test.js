@@ -6,8 +6,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   browserProjectProgressErrors,
   compareObservations,
+  injectInGameSaveFlow,
   isolatedProject,
   loadScenario,
+  nativeFirefoxCapabilities,
   resolveLocator,
   runtimeProgressDiagnostic,
   runtimeProgressSignature,
@@ -16,6 +18,27 @@ import {
 } from "../scripts/web-test-lib.mjs";
 
 describe("web game test scenario", () => {
+  it.each(["\n", "\r\n"])("injects the save flow using the fixture's %j newline", (newline) => {
+    const source = `@SYSTEM_TITLE${newline}PRINTL ORACLE_READY${newline}RETURN${newline}`;
+
+    expect(injectInGameSaveFlow(source)).toBe(
+      `@SYSTEM_TITLE${newline}PRINTL ORACLE_READY${newline}SAVEGAME${newline}RETURN${newline}${newline}@SAVEINFO${newline}SAVEDATA_TEXT = "browser game save"${newline}RETURN${newline}`,
+    );
+  });
+
+  it.each(["win32", "linux"])("lets WebDriver discover Firefox on %s", (platform) => {
+    expect(nativeFirefoxCapabilities(platform)["moz:firefoxOptions"]).toEqual({
+      args: ["-headless"],
+    });
+  });
+
+  it("uses the native Firefox application path on macOS", () => {
+    expect(nativeFirefoxCapabilities("darwin")["moz:firefoxOptions"]).toEqual({
+      args: ["-headless"],
+      binary: "/Applications/Firefox.app/Contents/MacOS/firefox",
+    });
+  });
+
   it("accepts coalesced cold-start progress once runtime preparation completes", () => {
     expect(
       browserProjectProgressErrors({

@@ -1,10 +1,13 @@
 /* global document, structuredClone, window */
 
+import path from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   assertSnapshotProgress,
   captureCompleteTauriSnapshot,
+  resolveTauriBinary,
   snapshotProgressSignature,
   startTauriSessionMonitor,
 } from "../scripts/tauri-test-support.mjs";
@@ -15,6 +18,20 @@ afterEach(() => {
 });
 
 describe("Tauri end-to-end test support", () => {
+  it.each([
+    ["win32", "era-web-tauri.exe"],
+    ["linux", "era-web-tauri"],
+    ["darwin", "era-web-tauri"],
+  ])("resolves the native binary name on %s", (platform, executable) => {
+    const debugBinary = resolveTauriBinary("/workspace/rustyera-web", false, platform);
+    const releaseBinary = resolveTauriBinary("/workspace/rustyera-web", true, platform);
+
+    expect(path.basename(debugBinary)).toBe(executable);
+    expect(path.basename(path.dirname(debugBinary))).toBe("debug");
+    expect(path.basename(releaseBinary)).toBe(executable);
+    expect(path.basename(path.dirname(releaseBinary))).toBe("release");
+  });
+
   it("captures every element with attributes, text, value, visibility, and runtime state", async () => {
     document.body.innerHTML =
       '<main data-stage="title"><input value="0"><progress value="2" max="3"></progress><span>era萝乐娜</span></main>';

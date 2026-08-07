@@ -153,10 +153,23 @@ export async function isolatedProject(source, options = {}) {
 }
 
 export function injectInGameSaveFlow(source) {
-  const marker = "PRINTL ORACLE_READY\n";
-  if (!source.includes(marker)) throw new Error("save-flow fixture lacks ORACLE_READY marker");
+  const marker = /PRINTL ORACLE_READY(\r\n|\n)/.exec(source);
+  if (!marker) throw new Error("save-flow fixture lacks ORACLE_READY marker");
   if (source.includes("@SAVEINFO")) throw new Error("save-flow fixture already defines SAVEINFO");
-  return `${source.replace(marker, `${marker}SAVEGAME\n`)}\n@SAVEINFO\nSAVEDATA_TEXT = "browser game save"\nRETURN\n`;
+  const newline = marker[1];
+  return `${source.replace(marker[0], `${marker[0]}SAVEGAME${newline}`)}${newline}@SAVEINFO${newline}SAVEDATA_TEXT = "browser game save"${newline}RETURN${newline}`;
+}
+
+export function nativeFirefoxCapabilities(platform = process.platform) {
+  const options = { args: ["-headless"] };
+  if (platform === "darwin") {
+    options.binary = "/Applications/Firefox.app/Contents/MacOS/firefox";
+  }
+  return {
+    browserName: "firefox",
+    "wdio:enforceWebDriverClassic": true,
+    "moz:firefoxOptions": options,
+  };
 }
 
 export async function installRemoteFileSystem(page, root) {

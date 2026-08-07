@@ -13,6 +13,7 @@ import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs";
 import {
   browserProjectProgressErrors,
   injectInGameSaveFlow,
+  nativeFirefoxCapabilities,
   runtimeProgressDiagnostic,
   runtimeProgressSignature,
   terminalRuntimeRejection,
@@ -63,14 +64,7 @@ try {
     logLevel: "warn",
     capabilities:
       browserName === "firefox"
-        ? {
-            browserName: "firefox",
-            "wdio:enforceWebDriverClassic": true,
-            "moz:firefoxOptions": {
-              binary: "/Applications/Firefox.app/Contents/MacOS/firefox",
-              args: ["-headless"],
-            },
-          }
+        ? nativeFirefoxCapabilities()
         : {
             browserName: "safari",
             "wdio:enforceWebDriverClassic": true,

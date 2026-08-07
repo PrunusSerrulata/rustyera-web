@@ -15,6 +15,12 @@ export interface CompleteSnapshotMonitorOptions {
 
 export function snapshotProgressSignature(snapshot: unknown): string;
 
+export function resolveTauriBinary(
+  repository: string,
+  release: boolean,
+  platform?: NodeJS.Platform,
+): string;
+
 export function startCompleteSnapshotMonitor(
   browser: { execute(script: () => unknown): Promise<unknown> },
   options?: CompleteSnapshotMonitorOptions,

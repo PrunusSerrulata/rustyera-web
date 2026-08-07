@@ -5,9 +5,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import Mocha from "mocha";
-import { cleanupWdioSession, createTauriCapabilities, startWdioSession } from "@wdio/tauri-service";
 
-import { startTauriSessionMonitor } from "./tauri-test-support.mjs";
+import { resolveTauriBinary, startTauriSessionMonitor } from "./tauri-test-support.mjs";
 
 const repository = fileURLToPath(new URL("..", import.meta.url));
 const taskDeadline = Date.now() + 60 * 60 * 1_000;
@@ -82,6 +81,10 @@ if (specProfile?.copyProject) {
 
 const environment = {
   ...process.env,
+  // WebdriverIO's bundled Undici dispatcher is incompatible with Node 26 when
+  // it creates the local Tauri WebDriver session. Select Node's native fetch
+  // before importing the service so the choice is cross-platform and stable.
+  WDIO_USE_NATIVE_FETCH: "1",
   VITE_RUSTYERA_TEST: "1",
   VITE_RUSTYERA_TAURI_TEST: "1",
   VITE_RUSTYERA_TEST_PROJECT: project,
@@ -122,7 +125,9 @@ await run(
   () => deadlineDiagnostic(),
 );
 Object.assign(process.env, environment);
-const binary = path.resolve(repository, `../target/${release ? "release" : "debug"}/era-web-tauri`);
+const { cleanupWdioSession, createTauriCapabilities, startWdioSession } =
+  await import("@wdio/tauri-service");
+const binary = resolveTauriBinary(repository, release);
 const capabilities = createTauriCapabilities(binary, {
   driverProvider: "embedded",
   logLevel: "info",
@@ -167,7 +172,7 @@ try {
         .sort()
         .map((name) => path.resolve(repository, "tests/tauri", name));
   activeStage = `running Tauri specs: ${specs.map((spec) => path.basename(spec)).join(", ")}`;
-  const mocha = new Mocha({ reporter: "spec", timeout: 300_000 });
+  const mocha = new Mocha({ reporter: "spec", timeout: 300_000, bail: true });
   for (const spec of specs) mocha.addFile(spec);
   await mocha.loadFilesAsync();
   let runner;

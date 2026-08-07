@@ -32,9 +32,9 @@ projectSmoke("Tauri real-project startup", () => {
     assert.match(state.output.join("\n"), /\[0\].+\n\[1\]/);
     const lineMetrics = await gameLineMetrics();
     assert.ok(lineMetrics, "the main viewport did not render a body line");
-    assert.equal(lineMetrics.fontSize, "18px");
-    assert.equal(lineMetrics.lineHeight, "19px");
-    assert.equal(lineMetrics.minHeight, "19px");
+    assert.equal(lineMetrics.fontSize, "16px");
+    assert.equal(lineMetrics.lineHeight, "16px");
+    assert.equal(lineMetrics.minHeight, "16px");
     assert.equal(lineMetrics.marginTop, "0px");
     assert.equal(lineMetrics.marginBottom, "0px");
     console.log(

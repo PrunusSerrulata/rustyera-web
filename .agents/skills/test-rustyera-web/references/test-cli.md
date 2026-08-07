@@ -3,13 +3,18 @@
 ## Browser matrix boundary
 
 `npm run test:game` owns deterministic scenario actions, canonical observations, trace capture, and
-Emuera comparison in Chromium. A browser/WASM acceptance also runs the installed native Firefox and
-Safari through the real Vue UI, OPFS project import, and WASM worker:
+Emuera comparison in Chromium. A browser/WASM acceptance also runs installed native Firefox on
+every supported host and native Safari only on macOS through the real Vue UI, OPFS project import,
+and WASM worker:
 
 ```sh
 npm run test:browser-compat -- --browser firefox
+# macOS only
 npm run test:browser-compat -- --browser safari
 ```
+
+When the host OS is not macOS, do not launch or require Safari; report Safari as not applicable
+rather than skipped, passed, or failed. Do not use WebKit as a substitute.
 
 Every `npm run test:game` and native-browser command must run outside the filesystem sandbox from
 its first attempt with `sandbox_permissions=require_escalated`; explain that browser automation and
@@ -33,10 +38,10 @@ instead of waiting for the overall compile timeout or leaving a native file shee
 
 The native compatibility runner uses the short reference fixture and WebdriverIO. It must report the
 actual browser version/UA, OPFS availability, compile completion, and reference output. Firefox runs
-headless. Safari requires **Allow remote automation** and uses a separate minimized window when the
-driver supports minimization. Do not use Playwright Firefox or WebKit as substitutes for the
-installed applications. A missing browser, disabled Safari automation, empty output, or browser
-crash is an infrastructure failure, not a skip.
+headless. On macOS, Safari requires **Allow remote automation** and uses a separate minimized window
+when the driver supports minimization. Do not use Playwright Firefox or WebKit as substitutes for
+the installed applications. A missing required browser, disabled Safari automation on macOS, empty
+output, or browser crash is an infrastructure failure, not a skip.
 
 ## Scenario schema
 

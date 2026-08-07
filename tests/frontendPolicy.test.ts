@@ -58,6 +58,21 @@ describe("frontend host and image-line policy", () => {
     expect(runner).not.toMatch(/VITE_RUSTYERA_TAURI_[A-Z_]+:[\s\S]*?\?\s*"1"\s*:\s*"0"/);
   });
 
+  it("selects native fetch before loading the Tauri WebDriver service", () => {
+    const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
+    const environmentIndex = runner.indexOf("Object.assign(process.env, environment)");
+    const serviceImportIndex = runner.indexOf('await import("@wdio/tauri-service")');
+
+    expect(runner).toContain('WDIO_USE_NATIVE_FETCH: "1"');
+    expect(environmentIndex).toBeGreaterThanOrEqual(0);
+    expect(serviceImportIndex).toBeGreaterThan(environmentIndex);
+  });
+
+  it("stops the Tauri suite at its first failing spec", () => {
+    const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
+    expect(runner).toContain('new Mocha({ reporter: "spec", timeout: 300_000, bail: true })');
+  });
+
   it("builds the release Tauri binary without a Windows console", () => {
     const entrypoint = readFileSync(resolve("src-tauri/src/main.rs"), "utf8");
     expect(entrypoint).toMatch(

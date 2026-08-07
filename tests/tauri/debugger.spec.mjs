@@ -126,8 +126,13 @@ describe("Tauri debugger with the real eraTW project", () => {
     await closeDialog("变量查看器");
     await openDebugMenu();
     await button("开启单步运行").click();
-    await browser.waitUntil(async () => (await snapshot())?.debug.singleStepEnabled === true);
-    const promptPlaceholder = await $(".prompt-bar input").getAttribute("placeholder");
+    const promptInput = await $(".prompt-bar input");
+    await browser.waitUntil(
+      async () =>
+        /^单步暂停：.+:\d+（F10 继续）$/.test(await promptInput.getAttribute("placeholder")),
+      { timeout: 20_000, timeoutMsg: "single-step pause did not expose its source location" },
+    );
+    const promptPlaceholder = await promptInput.getAttribute("placeholder");
     assert.match(promptPlaceholder, /^单步暂停：.+:\d+（F10 继续）$/);
 
     await openDebugMenu();
@@ -168,6 +173,17 @@ describe("Tauri debugger with the real eraTW project", () => {
         return state?.phase === "waiting_input" && state.canInteract;
       },
       { timeout: 20_000, timeoutMsg: "runtime did not resume after disabling single-step mode" },
+    );
+    await openDebugMenu();
+    await button("禁用调试").click();
+    await browser.waitUntil(
+      async () => {
+        const state = await snapshot();
+        return (
+          state?.debug.enabled === false && state.phase === "waiting_input" && state.canInteract
+        );
+      },
+      { timeout: 20_000, timeoutMsg: "runtime did not release the debug grant" },
     );
 
     console.log(

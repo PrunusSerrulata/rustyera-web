@@ -1,4 +1,4 @@
 interface:
   display_name: "Test RustyEra Web"
   short_description: "Test RustyEra across browsers, WASM, and Tauri"
-  default_prompt: "Use $test-rustyera-web to run the Chromium, Firefox, and Safari WASM matrix and report every result."
+  default_prompt: "Use $test-rustyera-web to run the platform-appropriate Chromium, Firefox, and macOS-only Safari WASM matrix and report every result."
