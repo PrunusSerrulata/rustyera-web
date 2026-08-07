@@ -14,6 +14,8 @@ import { loadBrowserProjectFile } from "../src/platform/browserProjectFile";
 
 class SaveFileHandle {
   readonly kind = "file";
+  private lastModified = 1;
+  reads = 0;
 
   constructor(
     readonly name: string,
@@ -21,9 +23,20 @@ class SaveFileHandle {
   ) {}
 
   async getFile(): Promise<File> {
+    this.reads += 1;
     const bytes = new Uint8Array(this.bytes);
-    const file = new File([], this.name);
-    Object.defineProperty(file, "arrayBuffer", { value: async () => bytes.buffer.slice(0) });
+    const file = new File([], this.name, { lastModified: this.lastModified });
+    Object.defineProperties(file, {
+      size: { value: bytes.byteLength },
+      arrayBuffer: { value: async () => bytes.buffer.slice(0) },
+      text: { value: async () => new TextDecoder().decode(bytes) },
+      slice: {
+        value: (start = 0, end = bytes.byteLength) => {
+          const chunk = bytes.slice(start, end);
+          return { arrayBuffer: async () => chunk.buffer.slice(0) } as Blob;
+        },
+      },
+    });
     return file;
   }
 
@@ -31,10 +44,15 @@ class SaveFileHandle {
     return {
       write: async (bytes: Uint8Array) => {
         this.bytes = new Uint8Array(bytes);
+        this.lastModified += 1;
       },
       close: async () => {},
       abort: async () => {},
     };
+  }
+
+  replacePreservingMetadata(bytes: Uint8Array): void {
+    this.bytes = new Uint8Array(bytes);
   }
 }
 
@@ -64,6 +82,19 @@ class SaveDirectoryHandle {
 
   async *entries() {
     yield* this.children.entries();
+  }
+
+  async removeEntry(name: string) {
+    if (!this.children.delete(name)) throw new DOMException("missing", "NotFoundError");
+  }
+}
+
+class FailingIndexDirectoryHandle extends SaveDirectoryHandle {
+  override async getDirectoryHandle(name: string, options?: { create?: boolean }) {
+    if (name === ".rustyera" && options?.create) {
+      throw new DOMException("quota", "QuotaExceededError");
+    }
+    return super.getDirectoryHandle(name, options);
   }
 }
 
@@ -114,6 +145,126 @@ describe("browser resource manifest normalization", () => {
 });
 
 describe("browser project reads", () => {
+  it("reuses a persistent stat index for warm project identity scans", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const erb = await root.getDirectoryHandle("ERB", { create: true });
+    const source = await erb.getFileHandle("main.erb", { create: true });
+    await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
+
+    const cold = await new BrowserProject(root as any, 1, "game", true).scanQuick();
+    const warm = await new BrowserProject(root as any, 1, "game", true).scanQuick();
+
+    expect(cold.files[0].payload).toEqual({ type: "utf8", value: "@MAIN\nRETURN\n" });
+    expect(warm.files[0].payload).toEqual({ type: "utf8", value: "" });
+    expect(warm.files[0].content_hash).toEqual(cold.files[0].content_hash);
+  });
+
+  it("never trusts size and mtime identities from a user-controlled directory", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const source = await root.getFileHandle("main.erb", { create: true });
+    await (await source.createWritable()).write(new TextEncoder().encode("@ONE\nRETURN\n"));
+    const first = await new BrowserProject(root as any).scanQuick();
+    source.replacePreservingMetadata(new TextEncoder().encode("@TWO\nRETURN\n"));
+
+    const second = await new BrowserProject(root as any).scanQuick();
+
+    expect(second.files[0].content_hash).not.toEqual(first.files[0].content_hash);
+    expect(second.files[0].payload).toEqual({ type: "utf8", value: "@TWO\nRETURN\n" });
+  });
+
+  it("materializes a warm identity snapshot with its original directory classification", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const erb = await root.getDirectoryHandle("ERB", { create: true });
+    const source = await erb.getFileHandle("main.erb", { create: true });
+    await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
+    await new BrowserProject(root as any, 1, "game", true).scanQuick();
+    const project = new BrowserProject(root as any, 1, "game", true);
+    await project.scanQuick();
+
+    const materialized = await project.materialize();
+
+    expect(materialized.files).toHaveLength(1);
+    expect(materialized.files[0]).toMatchObject({
+      relative_path: "ERB/main.erb",
+      category: "erb",
+      payload: { type: "utf8", value: "@MAIN\nRETURN\n" },
+    });
+  });
+
+  it("rescans instead of mixing a quick snapshot with added or changed files", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const first = await root.getFileHandle("one.erb", { create: true });
+    await (await first.createWritable()).write(new TextEncoder().encode("@ONE\nRETURN\n"));
+    const project = new BrowserProject(root as any, 1, "game", true);
+    await project.scanQuick();
+    const second = await root.getFileHandle("two.erb", { create: true });
+    await (await second.createWritable()).write(new TextEncoder().encode("@TWO\nRETURN\n"));
+
+    const materialized = await project.materialize();
+
+    expect(materialized.files.map((file) => file.relative_path)).toEqual(["one.erb", "two.erb"]);
+    expect(materialized.files.every((file) => file.payload.value.length > 0)).toBe(true);
+  });
+
+  it("treats a corrupt source index as a disposable cold-scan cache", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const source = await root.getFileHandle("main.erb", { create: true });
+    await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
+    const privateDirectory = await root.getDirectoryHandle(".rustyera", { create: true });
+    const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
+    const index = await cacheDirectory.getFileHandle("source-index-v1.json", { create: true });
+    await (await index.createWritable()).write(new TextEncoder().encode("{broken"));
+
+    const manifest = await new BrowserProject(root as any, 1, "game", true).scanQuick();
+
+    expect(manifest.files[0].payload).toEqual({ type: "utf8", value: "@MAIN\nRETURN\n" });
+  });
+
+  it("keeps startup functional when the disposable source index cannot be written", async () => {
+    const root = new FailingIndexDirectoryHandle("game");
+    const source = await root.getFileHandle("main.erb", { create: true });
+    await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
+
+    const manifest = await new BrowserProject(root as any, 1, "game", true).scanQuick();
+
+    expect(manifest.files[0].payload).toEqual({ type: "utf8", value: "@MAIN\nRETURN\n" });
+  });
+
+  it("refreshes trusted index entries after edits and deletions", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const first = await root.getFileHandle("one.erb", { create: true });
+    const second = await root.getFileHandle("two.erb", { create: true });
+    await (await first.createWritable()).write(new TextEncoder().encode("@ONE\nRETURN\n"));
+    await (await second.createWritable()).write(new TextEncoder().encode("@TWO\nRETURN\n"));
+    await new BrowserProject(root as any, 1, "game", true).scanQuick();
+    await (await first.createWritable()).write(new TextEncoder().encode("@NEW\nRETURN\n"));
+    await root.removeEntry("two.erb");
+
+    const refreshed = await new BrowserProject(root as any, 1, "game", true).scanQuick();
+
+    expect(refreshed.files).toHaveLength(1);
+    expect(refreshed.files[0]).toMatchObject({
+      relative_path: "one.erb",
+      payload: { type: "utf8", value: "@NEW\nRETURN\n" },
+    });
+  });
+
+  it("serves warm-indexed resources by normalized case-insensitive path", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const resources = await root.getDirectoryHandle("resources", { create: true });
+    const handle = await resources.getFileHandle("e\u0301.png", { create: true });
+    await (await handle.createWritable()).write(Uint8Array.of(4, 5, 6));
+    await new BrowserProject(root as any, 1, "game", true).scanQuick();
+    const project = new BrowserProject(root as any, 1, "game", true);
+    const manifest = await project.scanQuick();
+
+    expect(manifest.files[0].payload).toEqual({ type: "bytes", value: new Uint8Array() });
+    await expect(project.readResource("RESOURCES/É.PNG")).resolves.toEqual(Uint8Array.of(4, 5, 6));
+    await expect(project.readResourcePrefix("resources/é.png", 2)).resolves.toEqual(
+      Uint8Array.of(4, 5),
+    );
+  });
+
   it("atomically updates a root emuera.config after checking its normalized digest", async () => {
     const root = new SaveDirectoryHandle("game");
     const handle = await root.getFileHandle("emuera.config", { create: true });

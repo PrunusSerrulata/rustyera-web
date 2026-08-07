@@ -169,7 +169,7 @@ impl WasmRuntime {
         let identity = project_identity(&manifest).map_err(js_error)?;
         to_js(
             self.inner
-                .load_project_with_compiled_cache(identity, &cache.to_vec())
+                .load_project_with_compiled_cache(identity, cache.to_vec())
                 .map_err(js_error)?,
         )
     }

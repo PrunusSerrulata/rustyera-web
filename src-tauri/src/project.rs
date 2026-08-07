@@ -717,21 +717,20 @@ fn read_file(root: &Path, path: &Path, category: FileCategory) -> Result<Submitt
         .nfc()
         .collect::<String>();
     let bytes = fs::read(path).map_err(|error| format!("cannot read {relative_path}: {error}"))?;
-    let (payload, normalized) = if category == FileCategory::Resource {
-        (FilePayload::Bytes(ProtocolBytes::new(bytes.clone())), bytes)
+    let (payload, content_hash) = if category == FileCategory::Resource {
+        let content_hash = blake3::hash(&bytes);
+        (FilePayload::Bytes(ProtocolBytes::new(bytes)), content_hash)
     } else {
         let text = decode_project_text(&bytes)
             .ok_or_else(|| format!("{relative_path} is not valid UTF-8, Windows-31J, or GBK"))?;
-        let normalized = text.as_bytes().to_vec();
-        (FilePayload::Utf8(text), normalized)
+        let content_hash = blake3::hash(text.as_bytes());
+        (FilePayload::Utf8(text), content_hash)
     };
     Ok(SubmittedFile {
         relative_path,
         category,
         payload,
-        content_hash: Some(ProtocolBytes::new(
-            blake3::hash(&normalized).as_bytes().to_vec(),
-        )),
+        content_hash: Some(ProtocolBytes::new(content_hash.as_bytes().to_vec())),
     })
 }
 

@@ -198,7 +198,7 @@ async fn open_project(
         let submit_started = Instant::now();
         let cache_imported = if let Some(cache) = cache {
             if with_session(&state, |session| {
-                session.load_project_with_compiled_cache(identity, &cache)
+                session.load_project_with_compiled_cache(identity, cache)
             })
             .is_ok()
             {
@@ -245,7 +245,7 @@ async fn open_project_file(
         let mut host = ProjectHost::from_project_file(&path, &bytes)?;
         let identity = host.identity();
         with_session(&state, |session| {
-            session.load_project_with_compiled_cache(identity, &bytes)
+            session.load_project_with_compiled_cache(identity, bytes)
         })?;
         let submit_ms = started.elapsed().as_secs_f64() * 1000.0;
         let storage_key = blake3::hash(path.to_string_lossy().as_bytes()).to_hex();

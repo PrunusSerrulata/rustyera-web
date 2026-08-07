@@ -108,21 +108,22 @@ export class BrowserBridge implements FrontendBridge {
     // structured-cloned into IndexedDB. Production handles continue to be persisted normally.
     if (picked.persistHandle && import.meta.env.VITE_RUSTYERA_TEST !== "1")
       await database.handles.put({ key: "last-project", handle });
-    this.project = new BrowserProject(handle, 1, picked.projectName);
+    this.project = new BrowserProject(handle, 1, picked.projectName, !picked.persistHandle);
     const started = performance.now();
+    const sourcesReady = picked.manifest != null;
     const manifest =
       picked.manifest ??
-      (await this.project.scan((completed, total) =>
+      (await this.project.scanQuick((completed, total) =>
         this.projectProgressListener?.({ stage: "scanning", completed, total }),
       ));
     if (picked.manifest) this.project.useImportedManifest(picked.manifest);
-    const sourceReadMs = performance.now() - started;
-    const loaded = await this.loadSourceProject(manifest);
+    const quickScanMs = sourcesReady ? 0 : performance.now() - started;
+    const loaded = await this.loadSourceProject(manifest, sourcesReady);
     return {
       submittedAtMs,
-      quickScanMs: 0,
+      quickScanMs,
       cacheReadMs: loaded.cacheReadMs,
-      sourceReadMs,
+      sourceReadMs: loaded.sourceReadMs,
       submitMs: loaded.submitMs,
       cacheImported: loaded.cacheImported,
     } satisfies ProjectOpenMetrics;
@@ -191,18 +192,19 @@ export class BrowserBridge implements FrontendBridge {
     }
     const started = performance.now();
     const imported = this.project.importedManifest();
+    const sourcesReady = imported != null;
     const manifest =
       imported ??
-      (await this.project.scan((completed, total) =>
+      (await this.project.scanQuick((completed, total) =>
         this.projectProgressListener?.({ stage: "scanning", completed, total }),
       ));
-    const sourceReadMs = performance.now() - started;
-    const loaded = await this.loadSourceProject(manifest);
+    const quickScanMs = sourcesReady ? 0 : performance.now() - started;
+    const loaded = await this.loadSourceProject(manifest, sourcesReady);
     return {
       submittedAtMs,
-      quickScanMs: 0,
+      quickScanMs,
       cacheReadMs: loaded.cacheReadMs,
-      sourceReadMs,
+      sourceReadMs: loaded.sourceReadMs,
       submitMs: loaded.submitMs,
       cacheImported: loaded.cacheImported,
     };
@@ -218,8 +220,12 @@ export class BrowserBridge implements FrontendBridge {
     });
   }
 
-  private async loadSourceProject(manifest: BrowserManifest): Promise<{
+  private async loadSourceProject(
+    manifest: BrowserManifest,
+    sourcesReady: boolean,
+  ): Promise<{
     cacheReadMs: number;
+    sourceReadMs: number;
     submitMs: number;
     cacheImported: boolean;
   }> {
@@ -233,6 +239,7 @@ export class BrowserBridge implements FrontendBridge {
     const cacheReadMs = performance.now() - cacheStarted;
     const submitStarted = performance.now();
     let cacheImported = false;
+    let sourceReadMs = 0;
     if (cache) {
       try {
         await this.worker.callWithTransfer(
@@ -242,14 +249,23 @@ export class BrowserBridge implements FrontendBridge {
         );
         cacheImported = true;
       } catch {
-        await this.submitSourceManifest(manifest);
+        const sourceStarted = performance.now();
+        const sourceManifest = sourcesReady
+          ? manifest
+          : await project.materialize(this.scanProgress);
+        sourceReadMs = performance.now() - sourceStarted;
+        await this.submitSourceManifest(sourceManifest);
       }
     } else {
-      await this.submitSourceManifest(manifest);
+      const sourceStarted = performance.now();
+      const sourceManifest = sourcesReady ? manifest : await project.materialize(this.scanProgress);
+      sourceReadMs = performance.now() - sourceStarted;
+      await this.submitSourceManifest(sourceManifest);
     }
     return {
       cacheReadMs,
-      submitMs: performance.now() - submitStarted,
+      sourceReadMs,
+      submitMs: performance.now() - submitStarted - sourceReadMs,
       cacheImported,
     };
   }
@@ -260,12 +276,11 @@ export class BrowserBridge implements FrontendBridge {
     if (embedded) {
       throw new Error("项目文件与当前 runtime 不兼容，无法回退到外部源码");
     }
-    await this.submitSourceManifest(
-      await this.project.scan((completed, total) =>
-        this.projectProgressListener?.({ stage: "scanning", completed, total }),
-      ),
-    );
+    await this.submitSourceManifest(await this.project.materialize(this.scanProgress));
   }
+
+  private readonly scanProgress = (completed: number, total: number) =>
+    this.projectProgressListener?.({ stage: "scanning", completed, total });
 
   private async submitSourceManifest(manifest: BrowserManifest): Promise<void> {
     const encoded = await encodeBrowserManifest(manifest, (completed, total) =>

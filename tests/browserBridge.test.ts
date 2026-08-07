@@ -15,6 +15,7 @@ import { BrowserProject } from "@/platform/browserProject";
 
 class MemoryFileHandle {
   readonly kind = "file";
+  private lastModified = 1;
 
   constructor(
     readonly name: string,
@@ -23,8 +24,18 @@ class MemoryFileHandle {
 
   async getFile(): Promise<File> {
     const bytes = new Uint8Array(this.bytes);
-    const file = new File([], this.name);
-    Object.defineProperty(file, "arrayBuffer", { value: async () => bytes.buffer.slice(0) });
+    const file = new File([], this.name, { lastModified: this.lastModified });
+    Object.defineProperties(file, {
+      size: { value: bytes.byteLength },
+      arrayBuffer: { value: async () => bytes.buffer.slice(0) },
+      text: { value: async () => new TextDecoder().decode(bytes) },
+      slice: {
+        value: (start = 0, end = bytes.byteLength) => {
+          const chunk = bytes.slice(start, end);
+          return { arrayBuffer: async () => chunk.buffer.slice(0) } as Blob;
+        },
+      },
+    });
     return file;
   }
 
@@ -32,6 +43,7 @@ class MemoryFileHandle {
     return {
       write: async (bytes: Uint8Array) => {
         this.bytes = new Uint8Array(bytes);
+        this.lastModified += 1;
       },
       close: async () => {},
       abort: async () => {},

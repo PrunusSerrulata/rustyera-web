@@ -15,6 +15,8 @@ const RESOURCE_SUFFIXES = new Set([
   "m4a",
   "flac",
 ]);
+const SOURCE_INDEX_VERSION = 1;
+const SOURCE_INDEX_NAME = "source-index-v1.json";
 
 export interface ScannedFile {
   relative_path: string;
@@ -35,11 +37,32 @@ export interface BrowserManifest {
 
 export type FileScanProgress = (completed: number, total: number) => void;
 
+interface BrowserSourceIndexEntry {
+  category: string;
+  signature: string;
+  hash: string;
+  size: number;
+}
+
+interface PendingBrowserFile {
+  relativePath: string;
+  category: string;
+  handle: FileSystemFileHandle;
+  signature: string;
+  prepared?: ScannedFile;
+}
+
+interface PendingBrowserSnapshot {
+  files: PendingBrowserFile[];
+  topLevel: Set<string>;
+}
+
 export class BrowserProject {
   private readonly files = new Map<string, FileSystemFileHandle>();
   private readonly embeddedResources = new Map<string, Uint8Array>();
   private usesEmbeddedManifest = false;
   private manifestValue?: BrowserManifest;
+  private pendingSnapshot?: PendingBrowserSnapshot;
   private packagedFile?: File;
   private importedSnapshot = false;
 
@@ -47,6 +70,7 @@ export class BrowserProject {
     readonly root: FileSystemDirectoryHandle,
     private revision = 1,
     readonly name = root.name,
+    private readonly sourceIndexTrusted = false,
   ) {}
 
   useEmbeddedManifest(manifest: BrowserManifest): void {
@@ -118,7 +142,9 @@ export class BrowserProject {
     progress?.(0, 0);
     const topLevel = new Set<string>();
     for await (const [name, handle] of this.root.entries()) {
-      if (handle.kind === "directory") topLevel.add(name.toLocaleLowerCase());
+      if (handle.kind === "directory" && name.toLocaleLowerCase() !== ".rustyera") {
+        topLevel.add(name.toLocaleLowerCase());
+      }
     }
     const files: ScannedFile[] = [];
     const reads: Array<() => Promise<void>> = [];
@@ -128,6 +154,143 @@ export class BrowserProject {
     files.sort((left, right) =>
       left.relative_path.localeCompare(right.relative_path, undefined, { sensitivity: "base" }),
     );
+    this.manifestValue = { project_revision: this.revision, files };
+    this.pendingSnapshot = undefined;
+    return this.manifestValue;
+  }
+
+  async scanQuick(progress?: FileScanProgress): Promise<BrowserManifest> {
+    this.files.clear();
+    progress?.(0, 0);
+    const topLevel = new Set<string>();
+    for await (const [name, handle] of this.root.entries()) {
+      if (handle.kind === "directory" && name.toLocaleLowerCase() !== ".rustyera") {
+        topLevel.add(name.toLocaleLowerCase());
+      }
+    }
+    const candidates: Array<{
+      relativePath: string;
+      category: string;
+      handle: FileSystemFileHandle;
+    }> = [];
+    await this.walkHandles(this.root, "", topLevel, candidates);
+    candidates.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
+    // File.size/lastModified is only a safe identity shortcut for the app-owned imported copy.
+    // A user-controlled directory can preserve both values while replacing its contents.
+    const previous = this.sourceIndexTrusted ? await this.readSourceIndex() : {};
+    const pending = new Array<PendingBrowserFile>(candidates.length);
+    const files = new Array<ScannedFile>(candidates.length);
+    const indexEntries = new Array<[string, BrowserSourceIndexEntry]>(candidates.length);
+    progress?.(0, candidates.length);
+    await runBounded(
+      candidates.map((candidate, index) => async () => {
+        const file = await candidate.handle.getFile();
+        const signature = `${file.size}:${file.lastModified}`;
+        const prior = previous[candidate.relativePath];
+        let scanned: ScannedFile;
+        let prepared: ScannedFile | undefined;
+        if (
+          isBrowserSourceIndexEntry(prior) &&
+          prior.category === candidate.category &&
+          prior.signature === signature &&
+          prior.size === file.size &&
+          /^[0-9a-f]{64}$/i.test(prior.hash)
+        ) {
+          scanned = {
+            relative_path: candidate.relativePath,
+            category: candidate.category,
+            payload: emptyPayload(candidate.category),
+            content_hash: decodeHex(prior.hash),
+          };
+        } else {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          prepared = scanBrowserProjectFile(candidate.relativePath, bytes, topLevel);
+          if (!prepared) throw new Error(`无法分类项目文件：${candidate.relativePath}`);
+          scanned = prepared;
+        }
+        files[index] = scanned;
+        pending[index] = { ...candidate, signature, prepared };
+        indexEntries[index] = [
+          candidate.relativePath,
+          {
+            category: candidate.category,
+            signature,
+            hash: hex(scanned.content_hash),
+            size: file.size,
+          },
+        ];
+      }),
+      8,
+      progress,
+    );
+    const next = Object.fromEntries(indexEntries);
+    if (this.sourceIndexTrusted && !sourceIndexesEqual(previous, next)) {
+      await this.writeSourceIndex(next).catch(() => undefined);
+    }
+    files.sort(compareScannedFiles);
+    pending.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
+    this.pendingSnapshot = { files: pending, topLevel };
+    this.manifestValue = { project_revision: this.revision, files };
+    return this.manifestValue;
+  }
+
+  async materialize(progress?: FileScanProgress): Promise<BrowserManifest> {
+    const snapshot = this.pendingSnapshot;
+    if (!snapshot) return this.manifestValue ?? this.scan(progress);
+    this.files.clear();
+    const topLevel = new Set<string>();
+    for await (const [name, handle] of this.root.entries()) {
+      if (handle.kind === "directory" && name.toLocaleLowerCase() !== ".rustyera") {
+        topLevel.add(name.toLocaleLowerCase());
+      }
+    }
+    const current: Array<{
+      relativePath: string;
+      category: string;
+      handle: FileSystemFileHandle;
+    }> = [];
+    await this.walkHandles(this.root, "", topLevel, current);
+    current.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
+    if (
+      !equalStringSets(snapshot.topLevel, topLevel) ||
+      current.length !== snapshot.files.length ||
+      current.some(
+        (entry, index) =>
+          entry.relativePath !== snapshot.files[index]?.relativePath ||
+          entry.category !== snapshot.files[index]?.category,
+      )
+    ) {
+      return this.scan(progress);
+    }
+    const currentFiles = await Promise.all(current.map((entry) => entry.handle.getFile()));
+    if (
+      currentFiles.some(
+        (file, index) => `${file.size}:${file.lastModified}` !== snapshot.files[index]?.signature,
+      )
+    ) {
+      return this.scan(progress);
+    }
+    const files = new Array<ScannedFile>(snapshot.files.length);
+    progress?.(0, snapshot.files.length);
+    await runBounded(
+      snapshot.files.map((pending, index) => async () => {
+        if (pending.prepared) {
+          files[index] = pending.prepared;
+          return;
+        }
+        const entry = current[index];
+        const bytes = new Uint8Array(await currentFiles[index].arrayBuffer());
+        const scanned = scanBrowserProjectFile(entry.relativePath, bytes, topLevel);
+        if (!scanned || scanned.category !== entry.category) {
+          throw new Error(`项目文件在读取期间发生变化：${entry.relativePath}`);
+        }
+        files[index] = scanned;
+      }),
+      8,
+      progress,
+    );
+    files.sort(compareScannedFiles);
+    this.pendingSnapshot = undefined;
     this.manifestValue = { project_revision: this.revision, files };
     return this.manifestValue;
   }
@@ -332,6 +495,65 @@ export class BrowserProject {
     }
   }
 
+  private async walkHandles(
+    directory: FileSystemDirectoryHandle,
+    prefix: string,
+    topLevel: Set<string>,
+    output: Array<{
+      relativePath: string;
+      category: string;
+      handle: FileSystemFileHandle;
+    }>,
+  ): Promise<void> {
+    for await (const [name, handle] of directory.entries()) {
+      if (name.toLocaleLowerCase() === ".rustyera") continue;
+      const relativePath = `${prefix}${name}`.normalize("NFC");
+      if (handle.kind === "directory") {
+        await this.walkHandles(handle, `${relativePath}/`, topLevel, output);
+        continue;
+      }
+      const category = classify(relativePath, topLevel);
+      if (!category) continue;
+      this.files.set(relativePath.toLocaleLowerCase(), handle);
+      output.push({ relativePath, category, handle });
+    }
+  }
+
+  private async readSourceIndex(): Promise<Record<string, BrowserSourceIndexEntry>> {
+    try {
+      const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
+      const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
+      const handle = await cacheDirectory.getFileHandle(SOURCE_INDEX_NAME);
+      const value = JSON.parse(await (await handle.getFile()).text()) as {
+        version?: unknown;
+        files?: unknown;
+      };
+      return value.version === SOURCE_INDEX_VERSION && isRecord(value.files)
+        ? (value.files as Record<string, BrowserSourceIndexEntry>)
+        : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private async writeSourceIndex(files: Record<string, BrowserSourceIndexEntry>): Promise<void> {
+    const privateDirectory = await this.root.getDirectoryHandle(".rustyera", { create: true });
+    const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
+    const handle = await cacheDirectory.getFileHandle(SOURCE_INDEX_NAME, { create: true });
+    const writer = await handle.createWritable({ keepExistingData: false });
+    try {
+      await writer.write(
+        new TextEncoder().encode(
+          JSON.stringify({ version: SOURCE_INDEX_VERSION, files }),
+        ) as FileSystemWriteChunkType,
+      );
+      await writer.close();
+    } catch (error) {
+      await writer.abort().catch(() => undefined);
+      throw error;
+    }
+  }
+
   private async namespace(namespace: string): Promise<FileSystemDirectoryHandle> {
     if (namespace === "resource") return this.root;
     return this.root.getDirectoryHandle(storageDirectoryName(namespace), { create: true });
@@ -377,6 +599,68 @@ export function cacheIdentityManifest(manifest: BrowserManifest): BrowserManifes
           : { type: "utf8", value: "" },
     })),
   };
+}
+
+function emptyPayload(category: string): ScannedFile["payload"] {
+  return category === "resource"
+    ? { type: "bytes", value: new Uint8Array() }
+    : { type: "utf8", value: "" };
+}
+
+function compareScannedFiles(left: ScannedFile, right: ScannedFile): number {
+  return comparePaths(left.relative_path, right.relative_path);
+}
+
+function comparePaths(left: string, right: string): number {
+  return left.localeCompare(right, undefined, { sensitivity: "base" });
+}
+
+function decodeHex(value: string): Uint8Array {
+  return Uint8Array.from({ length: value.length / 2 }, (_, index) =>
+    Number.parseInt(value.slice(index * 2, index * 2 + 2), 16),
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isBrowserSourceIndexEntry(value: unknown): value is BrowserSourceIndexEntry {
+  return (
+    isRecord(value) &&
+    typeof value.category === "string" &&
+    typeof value.signature === "string" &&
+    typeof value.hash === "string" &&
+    /^[0-9a-f]{64}$/i.test(value.hash) &&
+    typeof value.size === "number" &&
+    Number.isSafeInteger(value.size) &&
+    value.size >= 0
+  );
+}
+
+function sourceIndexesEqual(
+  left: Record<string, BrowserSourceIndexEntry>,
+  right: Record<string, BrowserSourceIndexEntry>,
+): boolean {
+  const leftEntries = Object.entries(left);
+  const rightEntries = Object.entries(right);
+  return (
+    leftEntries.length === rightEntries.length &&
+    rightEntries.every(([path, entry]) => {
+      const previous = left[path];
+      return (
+        isBrowserSourceIndexEntry(previous) &&
+        previous.category === entry.category &&
+        previous.signature === entry.signature &&
+        previous.hash.toLocaleLowerCase() === entry.hash.toLocaleLowerCase() &&
+        previous.size === entry.size
+      );
+    })
+  );
+}
+
+function equalStringSets(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  return left.size === right.size && [...left].every((value) => right.has(value));
 }
 
 export function scanBrowserProjectFile(
