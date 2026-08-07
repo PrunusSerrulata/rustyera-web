@@ -12,9 +12,9 @@ describe("AboutDialog", () => {
 
     expect(document.body.textContent).toContain("PrunusSerrulata");
     expect(document.body.textContent).toContain("前端版本");
-    expect(document.body.textContent).toContain("0.1.0-alpha.1-wasm");
+    expect(document.body.textContent).toContain("0.2.0-wasm");
     expect(document.body.textContent).toContain("core 版本");
-    expect(document.body.textContent).toContain("0.1.0-alpha.1 (f5e6c2f7)");
+    expect(document.body.textContent).toContain("0.2.0 (1b8be8fb)");
     expect(document.body.textContent).toContain("GPL-3.0-only");
 
     document.body.querySelector<HTMLButtonElement>("button.primary")!.click();
@@ -30,7 +30,7 @@ describe("AboutDialog", () => {
       props: { open: true },
     });
 
-    expect(document.body.textContent).toContain("0.1.0-alpha.1-tauri");
+    expect(document.body.textContent).toContain("0.2.0-tauri");
 
     wrapper.unmount();
     delete window.__TAURI_INTERNALS__;

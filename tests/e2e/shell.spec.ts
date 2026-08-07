@@ -17,7 +17,7 @@ test("shared shell exposes menus and the unified settings dialog", async ({ page
   const about = page.getByRole("dialog", { name: "关于 RustyEra" });
   await expect(about).toBeVisible();
   await expect(about.getByText("PrunusSerrulata")).toBeVisible();
-  await expect(about.getByText("0.1.0-alpha.1 (f5e6c2f7)")).toBeVisible();
+  await expect(about.getByText("0.2.0 (1b8be8fb)")).toBeVisible();
   await expect(about.getByText("GPL-3.0-only")).toBeVisible();
   await about.getByRole("button", { name: "确定" }).click();
   await expect(about).toBeHidden();
