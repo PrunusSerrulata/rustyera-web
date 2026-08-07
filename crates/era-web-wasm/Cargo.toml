@@ -1,6 +1,6 @@
 [package]
 name = "era-web-wasm"
-version = "0.2.0-wasm"
+version = "0.2.1-wasm"
 edition.workspace = true
 license.workspace = true
 
