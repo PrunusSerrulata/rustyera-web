@@ -53,6 +53,19 @@ describe("frontend host and image-line policy", () => {
     );
   });
 
+  it("keeps the native window dark before the Vue frontend paints", () => {
+    const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
+    const productionConfig = JSON.parse(readFileSync(resolve("src-tauri/tauri.conf.json"), "utf8"));
+    const webdriverConfig = JSON.parse(
+      readFileSync(resolve("src-tauri/tauri.webdriver.conf.json"), "utf8"),
+    );
+
+    expect(stylesheet).toMatch(/:root\s*\{[^}]*background:\s*#101114;/s);
+    expect(productionConfig.app.windows[0].backgroundColor).toBe("#101114");
+    // The WebDriver config replaces the complete windows array during Tauri's JSON merge.
+    expect(webdriverConfig.app.windows[0].backgroundColor).toBe("#101114");
+  });
+
   it("does not enable project-specific Tauri specs during the default suite", () => {
     const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
     expect(runner).not.toMatch(/VITE_RUSTYERA_TAURI_[A-Z_]+:[\s\S]*?\?\s*"1"\s*:\s*"0"/);
