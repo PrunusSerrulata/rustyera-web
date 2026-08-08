@@ -4,13 +4,23 @@ interface ActiveChannel {
   source: AudioBufferSourceNode;
   gain: GainNode;
   identity: string;
+  channelId: number;
+  resourceId: string;
+  recoverable: boolean;
 }
 
 interface PendingChannel {
   identity: string;
   state: any;
   token: symbol;
+  channelId: number;
+  recoverable: boolean;
 }
+
+export type AudioPlaybackEvent = "started" | "ended";
+
+const SOUND_CHANNEL_ID = 0;
+const SOUND_VOICE_COUNT = 10;
 
 export class AudioEngine {
   private context?: AudioContext;
@@ -18,12 +28,14 @@ export class AudioEngine {
   private readonly channels = new Map<number, ActiveChannel>();
   private readonly pending = new Map<number, PendingChannel>();
   private readonly buffers = new Map<string, Promise<AudioBuffer>>();
+  private readonly groupVolumes = new Map<number, number>();
   private effectSequence = 0;
 
   constructor(
     private readonly bridge: FrontendBridge,
     private preferences: Preferences,
     private readonly reportError: (error: unknown) => void = () => undefined,
+    private readonly observePlayback?: (event: AudioPlaybackEvent, resourceId: string) => void,
   ) {}
 
   async unlock(): Promise<boolean> {
@@ -53,21 +65,28 @@ export class AudioEngine {
         active.gain.gain.value = Number(state.volume_millionths) / 1_000_000;
       }
     }
-    for (const channel of this.channels.keys()) if (!retained.has(channel)) this.stop(channel);
-    for (const channel of this.pending.keys()) if (!retained.has(channel)) this.stop(channel);
+    for (const [playbackId, active] of this.channels)
+      if (active.recoverable && !retained.has(playbackId)) this.stop(playbackId);
+    for (const [playbackId, pending] of this.pending)
+      if (pending.recoverable && !retained.has(playbackId)) this.stop(playbackId);
     return Promise.resolve();
   }
 
   applyEffect(effect: any): Promise<void> {
-    if (effect.action === "stop") this.stop(effect.channel_id);
+    const channelId = Number(effect.channel_id);
+    if (effect.action === "stop") this.stopGroup(channelId);
     else if (effect.action === "set_volume") {
-      const active = this.channels.get(effect.channel_id);
-      if (active) active.gain.gain.value = Number(effect.volume_millionths) / 1_000_000;
-      const pending = this.pending.get(effect.channel_id);
-      if (pending)
-        pending.state = { ...pending.state, volume_millionths: effect.volume_millionths };
+      this.setGroupVolume(channelId, effect.volume_millionths);
     } else if (effect.resource_id) {
-      this.play({ ...effect, playing: true }, `effect:${++this.effectSequence}`);
+      const state = {
+        ...effect,
+        channel_id: channelId,
+        playing: true,
+        volume_millionths: this.groupVolumes.get(channelId) ?? effect.volume_millionths,
+      };
+      const identity = `effect:${++this.effectSequence}`;
+      if (channelId === SOUND_CHANNEL_ID) this.playSound(state, identity);
+      else this.play(state, identity);
     }
     return Promise.resolve();
   }
@@ -88,20 +107,43 @@ export class AudioEngine {
     return this.context;
   }
 
-  private play(state: any, identity: string): void {
-    this.stop(state.channel_id);
-    const token = Symbol("audio playback");
-    const pending = { identity, state, token };
-    this.pending.set(state.channel_id, pending);
-    setTimeout(() => this.loadPending(state.channel_id, token), 0);
+  private playSound(state: any, identity: string): void {
+    let playbackId = -1;
+    for (let slot = 0; slot < SOUND_VOICE_COUNT; slot += 1) {
+      const candidate = -(slot + 1);
+      if (!this.channels.has(candidate) && !this.pending.has(candidate)) {
+        playbackId = candidate;
+        break;
+      }
+    }
+    this.play(state, identity, playbackId, false);
   }
 
-  private loadPending(channelId: number, token: symbol): void {
-    const scheduled = this.pending.get(channelId);
+  private play(
+    state: any,
+    identity: string,
+    playbackId = state.channel_id,
+    recoverable = true,
+  ): void {
+    this.stop(playbackId);
+    const token = Symbol("audio playback");
+    const pending = {
+      identity,
+      state,
+      token,
+      channelId: Number(state.channel_id),
+      recoverable,
+    };
+    this.pending.set(playbackId, pending);
+    setTimeout(() => this.loadPending(playbackId, token), 0);
+  }
+
+  private loadPending(playbackId: number, token: symbol): void {
+    const scheduled = this.pending.get(playbackId);
     if (scheduled?.token !== token) return;
     void this.load(scheduled.state.resource_id)
       .then((buffer) => {
-        const current = this.pending.get(channelId);
+        const current = this.pending.get(playbackId);
         if (current?.token !== token) return;
         const latest = current.state;
         const context = this.audioContext();
@@ -110,35 +152,76 @@ export class AudioEngine {
         source.buffer = buffer;
         source.loop = latest.repeat_count < 0;
         gain.gain.value = Number(latest.volume_millionths) / 1_000_000;
-        source.connect(gain).connect(this.master!);
-        source.start();
         source.onended = () => {
-          if (this.channels.get(latest.channel_id)?.source === source)
-            this.channels.delete(latest.channel_id);
+          const ended = this.releaseActive(playbackId, source);
+          if (ended) this.observePlayback?.("ended", ended.resourceId);
         };
-        this.pending.delete(latest.channel_id);
-        this.channels.set(latest.channel_id, {
+        this.channels.set(playbackId, {
           source,
           gain,
           identity: current.identity,
+          channelId: current.channelId,
+          resourceId: latest.resource_id,
+          recoverable: current.recoverable,
         });
+        try {
+          source.connect(gain).connect(this.master!);
+          source.start();
+        } catch (error) {
+          this.releaseActive(playbackId, source);
+          throw error;
+        }
+        this.pending.delete(playbackId);
+        this.observePlayback?.("started", latest.resource_id);
       })
       .catch((error) => {
-        if (this.pending.get(channelId)?.token !== token) return;
-        this.pending.delete(channelId);
+        if (this.pending.get(playbackId)?.token !== token) return;
+        this.pending.delete(playbackId);
         this.reportError(error);
       });
   }
 
-  private stop(channelId: number): void {
-    this.pending.delete(channelId);
-    const active = this.channels.get(channelId);
+  private stop(playbackId: number): void {
+    this.pending.delete(playbackId);
+    const active = this.channels.get(playbackId);
     if (!active) return;
     active.source.onended = null;
-    active.source.stop();
+    try {
+      active.source.stop();
+    } finally {
+      this.releaseActive(playbackId, active.source);
+      this.observePlayback?.("ended", active.resourceId);
+    }
+  }
+
+  private releaseActive(
+    playbackId: number,
+    source: AudioBufferSourceNode,
+  ): ActiveChannel | undefined {
+    const active = this.channels.get(playbackId);
+    if (active?.source !== source) return undefined;
+    this.channels.delete(playbackId);
+    active.source.onended = null;
     active.source.disconnect();
     active.gain.disconnect();
-    this.channels.delete(channelId);
+    return active;
+  }
+
+  private stopGroup(channelId: number): void {
+    for (const [playbackId, active] of this.channels)
+      if (active.channelId === channelId) this.stop(playbackId);
+    for (const [playbackId, pending] of this.pending)
+      if (pending.channelId === channelId) this.stop(playbackId);
+  }
+
+  private setGroupVolume(channelId: number, volumeMillionths: number): void {
+    this.groupVolumes.set(channelId, Number(volumeMillionths));
+    const volume = Number(volumeMillionths) / 1_000_000;
+    for (const active of this.channels.values())
+      if (active.channelId === channelId) active.gain.gain.value = volume;
+    for (const pending of this.pending.values())
+      if (pending.channelId === channelId)
+        pending.state = { ...pending.state, volume_millionths: volumeMillionths };
   }
 
   private load(resourceId: string): Promise<AudioBuffer> {

@@ -92,6 +92,14 @@
       }
     },
     {
+      "type": "assert_state",
+      "expect": {
+        "audioPlayback": {
+          "sound/故事的开始.mp3": { "starts": 1, "active": 1 }
+        }
+      }
+    },
+    {
       "type": "advance_enter_waits_until",
       "maximum": 1600,
       "settle_auto_enter": false,
@@ -104,8 +112,11 @@
       "type": "assert_state",
       "expect": {
         "audio": {
-          "0": { "resourceId": "sound/SE_开门.mp3", "playing": true },
           "1": { "resourceId": "sound/萝乐娜的工房.mp3", "playing": true }
+        },
+        "audioPlayback": {
+          "sound/故事的开始.mp3": { "starts": 1 },
+          "sound/SE_开门.mp3": { "starts": 1 }
         }
       }
     },
@@ -160,6 +171,15 @@
         "visible": true,
         "inside": { "tolerance": 2 },
         "bottom_aligned_within": 2
+      }
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "audioPlayback": {
+          "sound/SE_开门.mp3": { "starts": 2 },
+          "sound/SE_敲门.mp3": { "starts": 1 }
+        }
       }
     }
   ],

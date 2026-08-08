@@ -55,6 +55,7 @@ export function installWebTestControl(pinia: Pinia): void {
           { resourceId: channel.resource_id, playing: channel.playing },
         ]),
       ),
+      audioPlayback: store.testAudioPlaybackState(),
       fault: store.fault,
       logs: store.logs.slice(-100),
       debug: {

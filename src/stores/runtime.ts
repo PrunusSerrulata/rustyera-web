@@ -232,8 +232,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const traditionalSaveTransferError = ref("");
   const traditionalSaveOverwriteSlot = ref<number | null>(null);
   const heldKeys = new Set<number>();
-  const audio = new AudioEngine(bridge, preferences.value, (error) =>
-    log("warning", `音频播放失败：${String(error)}`),
+  const testAudioPlayback = new Map<string, { starts: number; active: number }>();
+  const audio = new AudioEngine(
+    bridge,
+    preferences.value,
+    (error) => log("warning", `音频播放失败：${String(error)}`),
+    import.meta.env.VITE_RUSTYERA_TEST === "1" ? recordTestAudioPlayback : undefined,
   );
   bridge.setProjectProgressListener(handleProjectProgress);
   let compiledCacheTimer: number | undefined;
@@ -1348,6 +1352,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
         .cancelProjectFileExport()
         .catch((error) => log("warning", `清理项目文件导出失败：${String(error)}`));
     Object.assign(presentation, emptyPresentation());
+    void audio.synchronize([]);
+    testAudioPlayback.clear();
     stagedPresentation = undefined;
     stagedPresentationReady = false;
     presentationStaged.value = false;
@@ -1515,6 +1521,23 @@ export const useRuntimeStore = defineStore("runtime", () => {
       importKind,
       importBytes: importBytes?.length ?? 0,
     };
+  }
+
+  function recordTestAudioPlayback(event: "started" | "ended", resourceId: string): void {
+    const current = testAudioPlayback.get(resourceId) ?? { starts: 0, active: 0 };
+    if (event === "started") {
+      current.starts += 1;
+      current.active += 1;
+    } else {
+      current.active = Math.max(0, current.active - 1);
+    }
+    testAudioPlayback.set(resourceId, current);
+  }
+
+  function testAudioPlaybackState(): Record<string, { starts: number; active: number }> {
+    return Object.fromEntries(
+      [...testAudioPlayback.entries()].sort(([left], [right]) => left.localeCompare(right)),
+    );
   }
 
   async function openTraditionalSaveDialog(mode: "export" | "import"): Promise<void> {
@@ -2872,5 +2895,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
     configureTestRun,
     restoreState,
     testTransferState,
+    testAudioPlaybackState,
   };
 });
