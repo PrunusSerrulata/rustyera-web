@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { plainLine } from "@/core/presentation";
+import { decodeServicePayload, encodeServicePayload } from "@/core/serviceCodec";
 import {
   defaultPreferences,
   type Preferences,
@@ -135,6 +136,61 @@ describe("runtime store session lifecycle", () => {
 
     expect(bridge.submitRuntime).not.toHaveBeenCalled();
     expect(store.canExportDiagnosis).toBe(false);
+  });
+
+  it("decodes canvas image dimensions through the negotiated service ABI", async () => {
+    const png = new Uint8Array(24);
+    png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    new DataView(png.buffer).setUint32(8, 13);
+    png.set([0x49, 0x48, 0x44, 0x52], 12);
+    new DataView(png.buffer).setUint32(16, 320);
+    new DataView(png.buffer).setUint32(20, 180);
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "service_request",
+          {
+            request_id: 7,
+            kind: "canvas",
+            operation: "decode_canvas_image",
+            payload: [...encodeServicePayload(new Map([[0, png]]))],
+          },
+          41,
+        ),
+        runtimeEvent(
+          "service_request",
+          {
+            request_id: 8,
+            kind: "canvas",
+            operation: "decode_canvas_image",
+            payload: [...encodeServicePayload(new Map([[0, Uint8Array.of(1, 2, 3)]]))],
+          },
+          42,
+        ),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+
+    const responses = bridge.submitRuntime.mock.calls
+      .map((call) => call as unknown as [message: any, correlationId?: number])
+      .filter(([message]) => message.type === "service_response");
+    expect(responses).toHaveLength(2);
+    const [readyCall, errorCall] = responses;
+    if (!readyCall || !errorCall) throw new Error("canvas service responses were not submitted");
+    expect(readyCall[1]).toBe(41);
+    const ready = readyCall[0].value.result;
+    expect(ready.type).toBe("ready");
+    expect(decodeServicePayload(ready.payload)).toEqual(
+      new Map<number, unknown>([
+        [0, 320],
+        [1, 180],
+      ]),
+    );
+    expect(errorCall[1]).toBe(42);
+    expect(errorCall[0].value.result).toMatchObject({ type: "error" });
   });
 
   it("uses isolated default preferences in end-to-end test builds", async () => {

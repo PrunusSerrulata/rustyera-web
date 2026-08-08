@@ -22,6 +22,7 @@ import {
   sourceLineStepCommand,
 } from "@/core/debug";
 import { preferredRuntimeLocales, resolveGameTextStyle } from "@/core/gameText";
+import { decodeImageMetadata } from "@/core/imageMetadata";
 import { MessageSkipController } from "@/core/messageSkip";
 import {
   at,
@@ -229,7 +230,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const traditionalSaveTransferError = ref("");
   const traditionalSaveOverwriteSlot = ref<number | null>(null);
   const heldKeys = new Set<number>();
-  const audio = new AudioEngine(bridge, preferences.value);
+  const audio = new AudioEngine(bridge, preferences.value, (error) =>
+    log("warning", `音频播放失败：${String(error)}`),
+  );
   bridge.setProjectProgressListener(handleProjectProgress);
   let compiledCacheTimer: number | undefined;
   let exportState: ExportState | undefined;
@@ -1086,6 +1089,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
             ((pixel[3] << 24) | (pixel[0] << 16) | (pixel[1] << 8) | pixel[2]) >>> 0,
           ]);
           bitmap.close();
+          break;
+        }
+        case "canvas/decode_canvas_image": {
+          const metadata = decodeImageMetadata(at(query, 0) as Uint8Array);
+          response = mapOf([0, metadata.width], [1, metadata.height]);
           break;
         }
         case "presentation_query/get_display_line": {

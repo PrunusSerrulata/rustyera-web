@@ -11,6 +11,7 @@
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod image_metadata;
 mod ipc;
 mod project;
 mod storage;
@@ -21,16 +22,24 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use era_debug_protocol::DebugMessage;
+use era_protocol::{ProtocolBytes, decode_canonical, encode_canonical};
 use era_runtime::{
     ProjectProgress, ProjectProgressReporter, ProjectProgressStage, RuntimeDriveBudget,
 };
-use era_runtime_protocol::{RuntimeMessage, StorageRequest, StorageResponse};
+use era_runtime_protocol::{
+    DECODE_CANVAS_IMAGE_OPERATION, DecodeCanvasImageRequest, DecodeCanvasImageResponse,
+    IMAGE_METADATA_OPERATION, ImageMetadataRequest, ImageMetadataResponse, RuntimeMessage,
+    ServiceKind, ServiceRequest, ServiceResponse, ServiceResult, StorageRequest, StorageResponse,
+};
 use era_web_bridge::{FRONTEND_PUMP_MAXIMUM_QUIET_SLICES, WebSession, WebSessionOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::ipc::{decode_value as decode_ipc_value, encode_value as encode_ipc_value};
+use crate::ipc::{
+    decode_value as decode_ipc_value, encode_pump_response as encode_ipc_response,
+    encode_value as encode_ipc_value,
+};
 use crate::project::ProjectHost;
 use crate::storage::StorageHost;
 
@@ -97,7 +106,7 @@ async fn create_session(
     app: AppHandle,
     state: State<'_, AppState>,
     options: WebSessionOptions,
-) -> Result<Value, String> {
+) -> Result<tauri::ipc::Response, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut session = WebSession::new(options)?;
@@ -109,7 +118,7 @@ async fn create_session(
         )));
         let initial = session.pump(RuntimeDriveBudget::default())?;
         *state.session.lock().map_err(lock_error)? = Some(session);
-        encode_ipc_value(&initial)
+        encode_ipc_response(&initial)
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
@@ -154,22 +163,74 @@ async fn submit_debug(
 }
 
 #[tauri::command]
-async fn pump(state: State<'_, AppState>) -> Result<Value, String> {
+async fn pump(state: State<'_, AppState>) -> Result<tauri::ipc::Response, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let batch = with_session(&state, |session| {
-            session.pump_quiet(
-                RuntimeDriveBudget {
-                    maximum_vm_instructions: 100_000,
-                    maximum_runtime_transitions: 1024,
-                },
+        let mut session_guard = state.session.lock().map_err(lock_error)?;
+        let session = session_guard
+            .as_mut()
+            .ok_or_else(|| "runtime session has not been created".to_owned())?;
+        let mut storage_guard = state.storage.lock().map_err(lock_error)?;
+        let project_guard = state.project.lock().map_err(lock_error)?;
+        let budget = RuntimeDriveBudget {
+            maximum_vm_instructions: 100_000,
+            maximum_runtime_transitions: 1024,
+        };
+        let batch = if let Some(storage) = storage_guard.as_mut() {
+            session.pump_with_native_host(
+                budget,
                 FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
-            )
-        })?;
-        encode_ipc_value(&batch)
+                1024,
+                |request| storage.handle(request),
+                |request| native_service(request, project_guard.as_ref()),
+            )?
+        } else {
+            session.pump_quiet(budget, FRONTEND_PUMP_MAXIMUM_QUIET_SLICES)?
+        };
+        encode_ipc_response(&batch)
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+fn native_service(
+    request: ServiceRequest,
+    project: Option<&ProjectHost>,
+) -> Option<ServiceResponse> {
+    let payload = match (request.kind, request.operation.as_str()) {
+        (ServiceKind::Canvas, DECODE_CANVAS_IMAGE_OPERATION) => {
+            let decoded: DecodeCanvasImageRequest =
+                decode_canonical(request.payload.as_slice()).ok()?;
+            let metadata = image_metadata::decode(decoded.encoded.as_slice())?;
+            encode_canonical(&DecodeCanvasImageResponse {
+                width: metadata.width,
+                height: metadata.height,
+            })
+            .ok()?
+        }
+        (ServiceKind::Image, IMAGE_METADATA_OPERATION) => {
+            let decoded: ImageMetadataRequest =
+                decode_canonical(request.payload.as_slice()).ok()?;
+            let bytes = project?
+                .read_resource_prefix(&decoded.resource_id, 1024 * 1024)
+                .ok()?;
+            let metadata = image_metadata::decode(&bytes)?;
+            encode_canonical(&ImageMetadataResponse {
+                width: metadata.width,
+                height: metadata.height,
+                format: metadata.format.into(),
+                animated: metadata.animated,
+            })
+            .ok()?
+        }
+        _ => return None,
+    };
+    Some(ServiceResponse {
+        request_id: request.request_id,
+        result: ServiceResult::Ready {
+            payload: ProtocolBytes::new(payload),
+        },
+    })
 }
 
 #[tauri::command]
@@ -634,6 +695,43 @@ fn with_session<T>(
 
 fn lock_error<T>(error: std::sync::PoisonError<T>) -> String {
     format!("frontend state lock was poisoned: {error}")
+}
+
+#[cfg(test)]
+mod native_service_tests {
+    use era_protocol::ProtocolVersion;
+
+    use super::*;
+
+    #[test]
+    fn native_canvas_service_reads_png_dimensions() {
+        let mut png = vec![0; 24];
+        png[..8].copy_from_slice(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+        png[12..16].copy_from_slice(b"IHDR");
+        png[16..20].copy_from_slice(&320_u32.to_be_bytes());
+        png[20..24].copy_from_slice(&180_u32.to_be_bytes());
+        let payload = encode_canonical(&DecodeCanvasImageRequest {
+            encoded: ProtocolBytes::new(png),
+        })
+        .unwrap();
+        let response = native_service(
+            ServiceRequest {
+                request_id: 7,
+                kind: ServiceKind::Canvas,
+                operation: DECODE_CANVAS_IMAGE_OPERATION.into(),
+                operation_version: ProtocolVersion::new(1, 0),
+                payload: ProtocolBytes::new(payload),
+                deadline_ns: None,
+            },
+            None,
+        )
+        .unwrap();
+        let ServiceResult::Ready { payload } = response.result else {
+            panic!("expected native PNG response")
+        };
+        let decoded: DecodeCanvasImageResponse = decode_canonical(payload.as_slice()).unwrap();
+        assert_eq!((decoded.width, decoded.height), (320, 180));
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

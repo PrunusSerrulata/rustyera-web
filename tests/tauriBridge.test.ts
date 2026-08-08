@@ -268,7 +268,7 @@ describe("Tauri lossless integer transport", () => {
   });
 
   it("restores unsafe protocol integers from pump responses", async () => {
-    invoke.mockResolvedValue({
+    const response = {
       state: "output_ready",
       vmInstructions: 0,
       runtimeTransitions: 1,
@@ -287,7 +287,8 @@ describe("Tauri lossless integer transport", () => {
           },
         },
       ],
-    });
+    };
+    invoke.mockResolvedValue(new TextEncoder().encode(JSON.stringify(response)).buffer);
 
     const batch = await new TauriBridge().pump();
 

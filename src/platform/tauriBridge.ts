@@ -42,6 +42,20 @@ function decodeIpcValue<T>(value: unknown): T {
   return value as T;
 }
 
+function decodeIpcResponse<T>(value: unknown): T {
+  const isArrayBuffer = Object.prototype.toString.call(value) === "[object ArrayBuffer]";
+  if (isArrayBuffer || ArrayBuffer.isView(value)) {
+    let bytes: Uint8Array;
+    if (isArrayBuffer) bytes = new Uint8Array(value as ArrayBuffer);
+    else {
+      const view = value as ArrayBufferView;
+      bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    }
+    return decodeIpcValue(JSON.parse(new TextDecoder().decode(bytes)));
+  }
+  return decodeIpcValue(value);
+}
+
 function encodeIpcValue(value: unknown): unknown {
   if (typeof value === "bigint") return { [IPC_INTEGER_TAG]: value.toString() };
   if (ArrayBuffer.isView(value)) return value;
@@ -72,7 +86,7 @@ export class TauriBridge implements FrontendBridge {
   }
 
   async createSession(options: SessionOptions): Promise<PumpBatch> {
-    return decodeIpcValue(await invoke("create_session", { options }));
+    return decodeIpcResponse(await invoke("create_session", { options }));
   }
 
   async submitRuntime(
@@ -100,7 +114,7 @@ export class TauriBridge implements FrontendBridge {
   }
 
   async pump(): Promise<PumpBatch> {
-    return decodeIpcValue(await invoke("pump"));
+    return decodeIpcResponse(await invoke("pump"));
   }
 
   async openProject(

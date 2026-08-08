@@ -15,7 +15,7 @@ use era_runtime_protocol::{
     ClientCapabilities, ClientHello, ConfigurationClientProfile, InputModality, ProjectIdentity,
     ProjectLoadRequest, ProjectManifest, RUNTIME_PROTOCOL_VERSION, RuntimeFeature, RuntimeLimits,
     RuntimeMessage, SequenceAcknowledgement, ServerHello, ServiceCapability, ServiceKind,
-    StorageCapabilities,
+    ServiceRequest, ServiceResponse, StorageCapabilities, StorageRequest, StorageResponse,
 };
 use erabasic_vm::VmConfig;
 use serde::{Deserialize, Serialize};
@@ -394,6 +394,51 @@ impl WebSession {
         coalesce_quiet_pumps(|| self.pump(budget), maximum_slices)
     }
 
+    /// Drive the runtime while satisfying selected external requests inside a native host boundary.
+    ///
+    /// Large saves and runs of small graphics reads remain native bytes instead of crossing a
+    /// `WebView` IPC boundary twice. Non-storage events retain their order in the returned batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same runtime and projection errors as [`Self::pump`].
+    pub fn pump_with_native_host(
+        &mut self,
+        budget: RuntimeDriveBudget,
+        maximum_quiet_slices: usize,
+        maximum_external_requests: usize,
+        mut handle_storage: impl FnMut(StorageRequest) -> StorageResponse,
+        mut handle_service: impl FnMut(ServiceRequest) -> Option<ServiceResponse>,
+    ) -> Result<PumpBatch, String> {
+        let mut combined: Option<PumpBatch> = None;
+        let mut handled = 0usize;
+        loop {
+            let mut batch = self.pump_quiet(budget, maximum_quiet_slices)?;
+            let (visible, completions) = extract_native_events(
+                std::mem::take(&mut batch.events),
+                maximum_external_requests.saturating_sub(handled),
+                &mut handle_storage,
+                &mut handle_service,
+            )?;
+            batch.events = visible;
+            merge_pump_batch(&mut combined, batch);
+            if completions.is_empty() {
+                return combined.ok_or_else(|| "native host pump produced no batch".into());
+            }
+            for completion in completions {
+                self.submit_runtime(&completion.message, completion.correlation_id)?;
+                handled = handled.saturating_add(1);
+            }
+            if handled == maximum_external_requests {
+                let Some(result) = combined.as_mut() else {
+                    return Err("native host pump produced no batch".into());
+                };
+                result.state = WebDriveState::MoreWork;
+                return combined.ok_or_else(|| "native host pump produced no batch".into());
+            }
+        }
+    }
+
     #[must_use]
     pub const fn is_negotiated(&self) -> bool {
         self.session.is_some() && self.epoch.is_some()
@@ -404,6 +449,76 @@ impl WebSession {
         self.next_message_id = self.next_message_id.saturating_add(1);
         value
     }
+}
+
+struct NativeCompletion {
+    message: RuntimeMessage,
+    correlation_id: Option<u64>,
+}
+
+fn merge_pump_batch(combined: &mut Option<PumpBatch>, batch: PumpBatch) {
+    if let Some(result) = combined {
+        result.state = batch.state;
+        result.vm_instructions = result.vm_instructions.saturating_add(batch.vm_instructions);
+        result.runtime_transitions = result
+            .runtime_transitions
+            .saturating_add(batch.runtime_transitions);
+        result.events.extend(batch.events);
+    } else {
+        *combined = Some(batch);
+    }
+}
+
+fn extract_native_events(
+    events: Vec<WebEvent>,
+    allowance: usize,
+    mut handle_storage: impl FnMut(StorageRequest) -> StorageResponse,
+    mut handle_service: impl FnMut(ServiceRequest) -> Option<ServiceResponse>,
+) -> Result<(Vec<WebEvent>, Vec<NativeCompletion>), String> {
+    let mut completions = Vec::new();
+    let mut visible = Vec::with_capacity(events.len());
+    for event in events {
+        if event.channel != WebChannel::Runtime || completions.len() >= allowance {
+            visible.push(event);
+            continue;
+        }
+        match event
+            .message
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("storage_request") => {
+                let correlation_id = event.correlation_id;
+                let message: RuntimeMessage =
+                    serde_json::from_value(event.message).map_err(|error| error.to_string())?;
+                let RuntimeMessage::StorageRequest(request) = message else {
+                    return Err("storage request projection decoded to another message".into());
+                };
+                completions.push(NativeCompletion {
+                    message: RuntimeMessage::StorageResponse(handle_storage(request)),
+                    correlation_id,
+                });
+            }
+            Some("service_request") => {
+                let correlation_id = event.correlation_id;
+                let message: RuntimeMessage = serde_json::from_value(event.message.clone())
+                    .map_err(|error| error.to_string())?;
+                let RuntimeMessage::ServiceRequest(request) = message else {
+                    return Err("service request projection decoded to another message".into());
+                };
+                if let Some(response) = handle_service(request) {
+                    completions.push(NativeCompletion {
+                        message: RuntimeMessage::ServiceResponse(response),
+                        correlation_id,
+                    });
+                } else {
+                    visible.push(event);
+                }
+            }
+            _ => visible.push(event),
+        }
+    }
+    Ok((visible, completions))
 }
 
 fn coalesce_quiet_pumps(
@@ -496,6 +611,7 @@ fn client_hello(options: WebSessionOptions, limits: RuntimeLimits) -> ClientHell
         (ServiceKind::InputState, "get_key_state"),
         (ServiceKind::Image, "image_metadata"),
         (ServiceKind::Image, "image_pixel"),
+        (ServiceKind::Canvas, "decode_canvas_image"),
         (ServiceKind::PresentationQuery, "get_display_line"),
         (ServiceKind::PresentationQuery, "html_get_printed_str"),
         (ServiceKind::PresentationQuery, "serialize_physical_history"),
@@ -619,6 +735,125 @@ mod tests {
                     == Some("server_hello")
         }));
         assert!(session.is_negotiated());
+    }
+
+    #[test]
+    fn client_advertises_canvas_image_decode() {
+        let hello = client_hello(
+            WebSessionOptions::default(),
+            RuntimeLimits {
+                maximum_envelope_bytes: DEFAULT_ENVELOPE_BYTES,
+                maximum_payload_bytes: DEFAULT_ENVELOPE_BYTES - 1024 * 1024,
+                maximum_pending_requests: 128,
+                maximum_journal_entries: 4096,
+                maximum_drive_instructions: 1_000_000,
+                maximum_transfer_bytes: DEFAULT_ENVELOPE_BYTES - 1024 * 1024,
+            },
+        );
+        assert!(hello.capabilities.services.iter().any(|capability| {
+            capability.kind == ServiceKind::Canvas && capability.operation == "decode_canvas_image"
+        }));
+    }
+
+    #[test]
+    fn native_storage_partition_honors_zero_and_exact_limits() {
+        let mut calls = 0;
+        let events = vec![test_event("before"), storage_event(1), test_event("after")];
+        let (visible, responses) = extract_native_events(
+            events,
+            0,
+            |_| {
+                calls += 1;
+                unreachable!("zero storage allowance must not invoke the host")
+            },
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(calls, 0);
+        assert!(responses.is_empty());
+        assert_eq!(
+            event_types(&visible),
+            ["before", "storage_request", "after"]
+        );
+
+        let events = vec![
+            test_event("before"),
+            storage_event(1),
+            test_event("middle"),
+            storage_event(2),
+            test_event("after"),
+        ];
+        let (visible, responses) = extract_native_events(
+            events,
+            1,
+            |request| {
+                calls += 1;
+                StorageResponse {
+                    request_id: request.request_id,
+                    result: era_runtime_protocol::StorageResult::Error {
+                        error: era_runtime_protocol::FrontendIoError {
+                            kind: era_runtime_protocol::FrontendIoErrorKind::NotFound,
+                            message: "fixture".into(),
+                            platform_code: None,
+                        },
+                    },
+                }
+            },
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(responses.len(), 1);
+        assert!(matches!(
+            &responses[0].message,
+            RuntimeMessage::StorageResponse(response) if response.request_id == 1
+        ));
+        assert_eq!(
+            event_types(&visible),
+            ["before", "middle", "storage_request", "after"]
+        );
+    }
+
+    #[test]
+    fn native_storage_pump_preserves_visible_event_order_across_rounds() {
+        let mut combined = None;
+        merge_pump_batch(
+            &mut combined,
+            batch(
+                WebDriveState::OutputReady,
+                10,
+                1,
+                vec![test_event("before_storage")],
+            ),
+        );
+        merge_pump_batch(
+            &mut combined,
+            batch(
+                WebDriveState::Idle,
+                20,
+                2,
+                vec![test_event("after_storage")],
+            ),
+        );
+        let combined = combined.unwrap();
+        assert_eq!(
+            event_types(&combined.events),
+            ["before_storage", "after_storage"]
+        );
+        assert_eq!(combined.vm_instructions, 30);
+        assert_eq!(combined.runtime_transitions, 3);
+        assert_eq!(combined.state, WebDriveState::Idle);
+
+        let mut saturated = Some(batch(
+            WebDriveState::MoreWork,
+            u64::MAX,
+            u32::MAX,
+            Vec::new(),
+        ));
+        merge_pump_batch(&mut saturated, batch(WebDriveState::Idle, 1, 1, Vec::new()));
+        let saturated = saturated.unwrap();
+        assert_eq!(saturated.vm_instructions, u64::MAX);
+        assert_eq!(saturated.runtime_transitions, u32::MAX);
     }
 
     #[test]
@@ -811,5 +1046,31 @@ mod tests {
             epoch: Some(1),
             message: serde_json::json!({ "type": message_type }),
         }
+    }
+
+    fn storage_event(request_id: u64) -> WebEvent {
+        WebEvent {
+            channel: WebChannel::Runtime,
+            sequence: request_id,
+            message_id: request_id,
+            correlation_id: Some(request_id + 10),
+            epoch: Some(1),
+            message: serde_json::to_value(RuntimeMessage::StorageRequest(StorageRequest {
+                request_id,
+                namespace: era_runtime_protocol::StorageNamespace::Save,
+                relative_path: format!("save{request_id:02}.sav"),
+                operation: era_runtime_protocol::StorageOperation::Read,
+                idempotency_key: String::new(),
+                deadline_ns: None,
+            }))
+            .unwrap(),
+        }
+    }
+
+    fn event_types(events: &[WebEvent]) -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|event| event.message.get("type")?.as_str())
+            .collect()
     }
 }
