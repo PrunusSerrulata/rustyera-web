@@ -15,6 +15,14 @@
     { "type": "input", "value": 999 },
     { "type": "input", "value": 9 },
     {
+      "type": "assert_state",
+      "expect": {
+        "audio": {
+          "1": { "resourceId": "sound/坠落吧星光.mp3", "playing": true }
+        }
+      }
+    },
+    {
       "type": "assert_layout",
       "locator": { "css": ".media-visual.media-sprite" },
       "relative_to": { "text": "era萝乐娜", "exact": true },
@@ -36,11 +44,25 @@
         "inside": { "tolerance": 0 }
       }
     },
-    { "type": "input", "value": 0, "message_skip": true },
+    { "type": "input", "value": 0, "auto_enter": false },
+    {
+      "type": "assert_state",
+      "expect": {
+        "audio": {
+          "1": { "resourceId": "sound/王宫的入口.mp3", "playing": true }
+        }
+      }
+    },
+    {
+      "type": "click",
+      "locator": { "css": ".game-viewport" },
+      "button": "right",
+      "auto_enter": false
+    },
     {
       "type": "advance_enter_waits_until",
       "maximum": 1100,
-      "auto_enter": false,
+      "settle_auto_enter": false,
       "until": {
         "output_tail_contains": "亚斯特丽德的工房",
         "tail_lines": 40,
@@ -72,10 +94,19 @@
     {
       "type": "advance_enter_waits_until",
       "maximum": 1600,
-      "auto_enter": false,
+      "settle_auto_enter": false,
       "until": {
         "output_tail_contains": "师傅还没回来啊",
         "tail_lines": 60
+      }
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "audio": {
+          "0": { "resourceId": "sound/SE_开门.mp3", "playing": true },
+          "1": { "resourceId": "sound/萝乐娜的工房.mp3", "playing": true }
+        }
       }
     },
     {
@@ -103,7 +134,7 @@
     {
       "type": "advance_enter_waits_until",
       "maximum": 400,
-      "auto_enter": false,
+      "settle_auto_enter": false,
       "until": {
         "output_tail_contains": "抱歉，请问您是",
         "tail_lines": 60

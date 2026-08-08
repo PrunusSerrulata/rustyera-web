@@ -81,8 +81,8 @@ Relative paths resolve from the scenario, never from the caller's working direct
 An action has `type`:
 
 - `input`: `value`; fills `.prompt-bar input` and clicks the submit button.
-- `click`: `locator`; set `advances_game: true` and `semantic_input` when it advances a compared
-  game.
+- `click`: `locator`, optional `button` (`left`, `middle`, or `right`, default `left`); set
+  `advances_game: true` and `semantic_input` when it advances a compared game.
 - `hover`: `locator`; moves the pointer over an element without advancing the game.
 - `scroll_key`: `locator`, optional `key` (default `PageUp`) and `settle_ms` (default 50); focuses
   the locator and scrolls it through Playwright's real keyboard input.
@@ -121,8 +121,10 @@ An action has `type`:
   `until.locator` is visible. When both are present, both must match; use that form to avoid stopping
   on an intermediate fade frame whose canonical text is already present. Set `auto_enter: false` on
   the preceding action and this action when layout must be inspected at the matched screen instead
-  of after the runner's normal automatic Enter handling. Deadline waits are observed until the
-  runtime advances them; the runner must not click through them.
+  of after the runner's normal automatic Enter handling. When the action must click Enter internally
+  but stop automatic Enter handling after reaching its target, set `settle_auto_enter: false` instead.
+  Deadline waits are observed until the runtime advances them; the runner must not click through
+  them.
 - `assert_state`: an `expect` subset of the serialized frontend snapshot.
 
 Set `allow_fault: true` on an action only when the scenario intentionally enters or operates on

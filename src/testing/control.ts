@@ -49,6 +49,12 @@ export function installWebTestControl(pinia: Pinia): void {
       historyRevision: store.presentation.historyRevision,
       output: store.presentation.lines.map(plainLine),
       htmlIsland: store.presentation.htmlIsland,
+      audio: Object.fromEntries(
+        store.presentation.audio.map((channel: any) => [
+          String(channel.channel_id),
+          { resourceId: channel.resource_id, playing: channel.playing },
+        ]),
+      ),
       fault: store.fault,
       logs: store.logs.slice(-100),
       debug: {

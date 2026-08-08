@@ -433,7 +433,7 @@ async function execute(args) {
           "advance_enter_waits_until",
         ].includes(action.type)
       ) {
-        current = await observe(action.auto_enter !== false);
+        current = await observe(action.settle_auto_enter ?? action.auto_enter !== false);
         if (current.rust.fault && action.allow_fault !== true)
           return fail("runtime_fault", 1, { fault: current.rust.fault });
         if (current.comparison && !current.comparison.equal) return fail("difference", 1);
@@ -489,7 +489,7 @@ async function execute(args) {
           "advance_enter_waits_until",
         ].includes(action.type)
       ) {
-        current = await observe(action.auto_enter !== false);
+        current = await observe(action.settle_auto_enter ?? action.auto_enter !== false);
         if (current.rust.fault && action.allow_fault !== true)
           return fail("runtime_fault", 1, { fault: current.rust.fault });
         if (current.comparison && !current.comparison.equal) return fail("difference", 1);

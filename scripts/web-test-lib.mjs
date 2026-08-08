@@ -467,7 +467,7 @@ export async function runAction(page, action) {
     const beforeWaitId = runtimeInput
       ? await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot().wait?.wait_id)
       : undefined;
-    await locator.click();
+    await locator.click({ button: action.button ?? "left" });
     if (beforeWaitId != null)
       await page.waitForFunction((waitId) => {
         const snapshot = window.__RUSTYERA_TEST__.snapshot();

@@ -265,6 +265,26 @@ describe("browser project reads", () => {
     );
   });
 
+  it("indexes Emuera sound-directory audio and serves it lazily", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const sound = await root.getDirectoryHandle("sound", { create: true });
+    const handle = await sound.getFileHandle("主题.mp3", { create: true });
+    await (await handle.createWritable()).write(Uint8Array.of(4, 5, 6));
+    await new BrowserProject(root as any, 1, "game", true).scanQuick();
+    const project = new BrowserProject(root as any, 1, "game", true);
+
+    const manifest = await project.scanQuick();
+
+    expect(manifest.files).toMatchObject([
+      {
+        relative_path: "sound/主题.mp3",
+        category: "resource",
+        payload: { type: "bytes", value: new Uint8Array() },
+      },
+    ]);
+    await expect(project.readResource("SOUND/主题.MP3")).resolves.toEqual(Uint8Array.of(4, 5, 6));
+  });
+
   it("atomically updates a root emuera.config after checking its normalized digest", async () => {
     const root = new SaveDirectoryHandle("game");
     const handle = await root.getFileHandle("emuera.config", { create: true });

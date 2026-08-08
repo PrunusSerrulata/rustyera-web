@@ -15,6 +15,7 @@ const RESOURCE_SUFFIXES = new Set([
   "m4a",
   "flac",
 ]);
+const AUDIO_SUFFIXES = new Set(["wav", "mp3", "ogg", "opus", "aac", "m4a", "flac"]);
 const SOURCE_INDEX_VERSION = 1;
 const SOURCE_INDEX_NAME = "source-index-v1.json";
 
@@ -789,6 +790,7 @@ function classify(path: string, roots: ReadonlySet<string>): string | undefined 
     if (suffix === "csv") return "resource_manifest";
     return RESOURCE_SUFFIXES.has(suffix) ? "resource" : undefined;
   }
+  if (first === "sound") return AUDIO_SUFFIXES.has(suffix) ? "resource" : undefined;
   if ((suffix === "erb" || suffix === "erh") && roots.has("erb") && first !== "erb") return;
   if (suffix === "csv" && roots.has("csv") && first !== "csv") return;
   if (suffix === "config" && roots.has("csv") && parts.length > 1 && first !== "csv") return;

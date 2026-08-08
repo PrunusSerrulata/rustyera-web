@@ -10,7 +10,7 @@ only for lifecycle setup and observation:
   services before opening the project.
 - `waitForStableObservation(timeoutMs)`: wait for a stable input or terminal state.
 - `snapshot()`: return a serializable projection containing phase, epoch, wait, full canonical
-  presentation text/HTML island, status, fault/log tail, and debugger state.
+  presentation text/HTML island and audio channels, status, fault/log tail, and debugger state.
 - `inspect(watches)`: pause through debug protocol v4, read named/indexed variables, then continue
   if the call initiated the pause.
 

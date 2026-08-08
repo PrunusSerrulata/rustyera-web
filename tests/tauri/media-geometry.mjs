@@ -1,6 +1,6 @@
 export async function establishReferenceWindow(width, height) {
   const deviceScale = await browser.execute(() => window.devicePixelRatio || 1);
-  await browser.setWindowSize(width * deviceScale, height * deviceScale);
+  await browser.setWindowSize(Math.round(width * deviceScale), Math.round(height * deviceScale));
   await browser.pause(250);
 }
 

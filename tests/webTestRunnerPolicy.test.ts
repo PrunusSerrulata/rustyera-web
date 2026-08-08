@@ -19,6 +19,7 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain("snapshotMonitor.failure");
     expect(runner).not.toContain("OBSERVATION_REPORT_MS");
     expect(runner).not.toContain("OBSERVATION_STALL_MS");
+    expect(runner).toContain("action.settle_auto_enter ?? action.auto_enter !== false");
   });
 
   it("sets the repository browser path before importing Playwright", () => {
@@ -41,6 +42,12 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain('telemetry?.scenario !== "cold"');
     expect(runner).toContain("telemetry.cacheHit !== false");
     expect(runner).toContain('telemetry.outcome !== "success"');
+  });
+
+  it("uses the requested mouse button for visible UI click actions", () => {
+    const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+
+    expect(runner).toContain('locator.click({ button: action.button ?? "left" })');
   });
 
   it("starts delayed captures on an absolute five-second cadence", async () => {

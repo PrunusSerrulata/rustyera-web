@@ -21,6 +21,7 @@ use walkdir::{DirEntry, WalkDir};
 const RESOURCE_SUFFIXES: &[&str] = &[
     "bmp", "gif", "jpeg", "jpg", "png", "webp", "wav", "mp3", "ogg", "opus", "aac", "m4a", "flac",
 ];
+const AUDIO_SUFFIXES: &[&str] = &["wav", "mp3", "ogg", "opus", "aac", "m4a", "flac"];
 const SOURCE_INDEX_VERSION: u32 = 1;
 const COMPILED_CACHE_NAME: &str = "compiled-project.reraproj";
 
@@ -699,6 +700,11 @@ fn classify(
             None
         });
     }
+    if first == "sound" {
+        return Ok(AUDIO_SUFFIXES
+            .contains(&extension.as_str())
+            .then_some(FileCategory::Resource));
+    }
     let category = match extension.as_str() {
         "csv" => FileCategory::Csv,
         "erh" => FileCategory::Erh,
@@ -789,6 +795,21 @@ mod tests {
                 Some(FileCategory::Resource)
             );
         }
+    }
+
+    #[test]
+    fn sound_directory_audio_is_classified_as_a_resource() {
+        let root = Path::new("/project");
+        let canonical = BTreeSet::new();
+
+        assert_eq!(
+            classify(root, &root.join("sound/theme.mp3"), &canonical).unwrap(),
+            Some(FileCategory::Resource)
+        );
+        assert_eq!(
+            classify(root, &root.join("sound/cover.png"), &canonical).unwrap(),
+            None
+        );
     }
 
     #[test]
