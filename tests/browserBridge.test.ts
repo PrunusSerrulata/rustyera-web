@@ -17,6 +17,7 @@ import { BrowserProject } from "@/platform/browserProject";
 
 class MemoryFileHandle {
   readonly kind = "file";
+  readonly abort = vi.fn(async () => {});
   private lastModified = 1;
 
   constructor(
@@ -48,7 +49,7 @@ class MemoryFileHandle {
         this.lastModified += 1;
       },
       close: async () => {},
-      abort: async () => {},
+      abort: this.abort,
     };
   }
 }
@@ -187,6 +188,25 @@ describe("browser startup bridge", () => {
     ).toHaveLength(2);
     expect(scan).not.toHaveBeenCalled();
     scan.mockRestore();
+  });
+
+  it("aborts an incomplete compiled-cache writer", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    pickBrowserDirectory.mockResolvedValue({
+      handle: root,
+      persistHandle: false,
+      projectName: "game",
+      manifest: { project_revision: 1, files: [] },
+    });
+    const bridge = new BrowserBridge();
+    await bridge.openProject();
+
+    await bridge.writeCompiledCacheChunk(Uint8Array.of(1, 2, 3), true, false);
+    const cache = await (await root.getDirectoryHandle(".rustyera")).getDirectoryHandle("cache");
+    const file = await cache.getFileHandle("compiled-project.reraproj");
+    await bridge.cancelCompiledCacheExport();
+
+    expect(file.abort).toHaveBeenCalledOnce();
   });
 
   it("transfers a packaged file once, retains it for restart, and does not copy it to OPFS", async () => {

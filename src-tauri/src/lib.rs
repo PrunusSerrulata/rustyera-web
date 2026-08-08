@@ -607,6 +607,16 @@ fn write_compiled_cache_chunk_inner(
     )
 }
 
+#[tauri::command]
+fn cancel_compiled_cache_export(state: State<'_, AppState>) -> Result<(), String> {
+    cancel_compiled_cache_export_inner(&state)
+}
+
+fn cancel_compiled_cache_export_inner(state: &AppState) -> Result<(), String> {
+    state.cache_writer.lock().map_err(lock_error)?.take();
+    Ok(())
+}
+
 fn write_atomic_file_chunk(
     slot: &Mutex<Option<AtomicFileWriter>>,
     target: Option<PathBuf>,
@@ -769,6 +779,7 @@ pub fn run() {
             write_export_chunk,
             cancel_export,
             write_compiled_cache_chunk,
+            cancel_compiled_cache_export,
             read_import,
         ])
         .run(tauri::generate_context!())
@@ -801,6 +812,27 @@ mod tests {
             b"firstsecond"
         );
         assert!(state.cache_writer.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn cancelled_compiled_cache_drops_its_temporary_writer() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join("ERB")).unwrap();
+        fs::write(directory.path().join("ERB/test.erb"), "@TEST\nRETURN").unwrap();
+        let state = AppState::default();
+        *state.project.lock().unwrap() =
+            Some(ProjectHost::scan_quick(directory.path(), 1).unwrap());
+
+        write_compiled_cache_chunk_inner(&state, b"partial", true, false).unwrap();
+        cancel_compiled_cache_export_inner(&state).unwrap();
+
+        assert!(state.cache_writer.lock().unwrap().is_none());
+        assert!(
+            !directory
+                .path()
+                .join(".rustyera/cache/compiled-project.reraproj")
+                .exists()
+        );
     }
 
     #[test]

@@ -347,6 +347,10 @@ export class TauriBridge implements FrontendBridge {
     await invoke("write_compiled_cache_chunk", { bytes: [...bytes], reset, complete });
   }
 
+  async cancelCompiledCacheExport(): Promise<void> {
+    await invoke("cancel_compiled_cache_export");
+  }
+
   async close(): Promise<void> {
     if (this.progressUnlisten) (await this.progressUnlisten)();
     await getCurrentWindow().close();

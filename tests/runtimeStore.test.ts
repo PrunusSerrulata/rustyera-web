@@ -70,6 +70,7 @@ const bridge = vi.hoisted(() => ({
   },
   saveDiagnosis: vi.fn(),
   writeCompiledCacheChunk: vi.fn(),
+  cancelCompiledCacheExport: vi.fn(),
   close: vi.fn(),
 }));
 
@@ -103,6 +104,8 @@ describe("runtime store session lifecycle", () => {
     bridge.traditionalSaves.inspect.mockResolvedValue({ description: "valid" });
     bridge.traditionalSaves.writeSlot.mockResolvedValue(undefined);
     bridge.saveDiagnosis.mockResolvedValue(true);
+    bridge.writeCompiledCacheChunk.mockResolvedValue(undefined);
+    bridge.cancelCompiledCacheExport.mockResolvedValue(undefined);
     bridge.listFonts.mockResolvedValue({ kind: "ready", fonts: [] });
     bridge.savePreferences.mockImplementation(async (value: Preferences) => value);
     bridge.projectConfigurationWritable.mockReturnValue(true);
@@ -904,6 +907,86 @@ describe("runtime store session lifecycle", () => {
       undefined,
     );
     expect(bridge.writeProjectFileChunk).toHaveBeenCalledWith(Uint8Array.of(1, 2, 3), true, true);
+  });
+
+  it("publishes input waits while the compiled cache is still being persisted", async () => {
+    const cacheWrite = deferred<void>();
+    const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
+
+    expect(bridge.writeCompiledCacheChunk).toHaveBeenCalledOnce();
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) =>
+          (message as { type?: string }).type === "state_export_chunk_request",
+      ),
+    ).toHaveLength(1);
+    expect(store.canInteract).toBe(true);
+    await store.skip();
+    expect(bridge.submitRuntime).toHaveBeenLastCalledWith(
+      {
+        type: "input",
+        value: expect.objectContaining({
+          wait_id: 17,
+          token: { epoch: 2, id: 5 },
+          intent: { type: "enter" },
+          message_skip: true,
+        }),
+      },
+      undefined,
+    );
+
+    cacheWrite.resolve();
+    await flushMicrotasks();
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) =>
+          (message as { type?: string }).type === "state_export_chunk_request",
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("cancels a pending compiled-cache writer before restarting the project", async () => {
+    const cacheWrite = deferred<void>();
+    const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
+
+    const restarting = store.restart();
+    await flushMicrotasks();
+
+    expect(bridge.cancelCompiledCacheExport).not.toHaveBeenCalled();
+    expect(bridge.createSession).toHaveBeenCalledOnce();
+
+    cacheWrite.resolve();
+    await restarting;
+
+    expect(bridge.cancelCompiledCacheExport).toHaveBeenCalledOnce();
+    expect(bridge.createSession).toHaveBeenCalledTimes(2);
+    expect(bridge.cancelCompiledCacheExport.mock.invocationCallOrder[0]).toBeLessThan(
+      bridge.createSession.mock.invocationCallOrder[1]!,
+    );
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) =>
+          (message as { type?: string }).type === "state_export_chunk_request",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("cleans up a rejected compiled-cache write without requesting another chunk", async () => {
+    const cacheWrite = deferred<void>();
+    const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
+
+    cacheWrite.reject(undefined);
+    await flushMicrotasks();
+
+    expect(bridge.cancelCompiledCacheExport).toHaveBeenCalledOnce();
+    expect(store.testTransferState().export).toBeNull();
+    expect(store.logs.at(-1)?.message).toContain("项目文件生成失败");
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) =>
+          (message as { type?: string }).type === "state_export_chunk_request",
+      ),
+    ).toHaveLength(1);
   });
 
   it("exports the TUI-compatible diagnosis archive while locking game interaction", async () => {
@@ -2006,6 +2089,70 @@ async function runningBrowserStore() {
   return store;
 }
 
+async function storeWithPendingCompiledCacheWrite(write: Promise<void>) {
+  stubRunningAudioContext();
+  bridge.writeCompiledCacheChunk.mockReturnValueOnce(write);
+  bridge.openProject.mockResolvedValue({
+    submittedAtMs: 0,
+    quickScanMs: 1,
+    cacheReadMs: 0,
+    sourceReadMs: 1,
+    submitMs: 1,
+    cacheImported: false,
+  });
+  let reportSent = false;
+  let readySent = false;
+  let chunkSent = false;
+  bridge.pump.mockImplementation(async () => {
+    if (!reportSent) {
+      reportSent = true;
+      return {
+        ...emptyBatch(),
+        events: [runtimeEvent("project_load_report", { success: true, diagnostics: [] })],
+      };
+    }
+    const commands = bridge.submitRuntime.mock.calls.map(
+      ([message]: unknown[]) => (message as { type?: string }).type,
+    );
+    if (!readySent && commands.includes("state_export_request")) {
+      readySent = true;
+      return {
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_export_ready", {
+            result: { type: "ready", transfer: { transfer_id: 7, total_bytes: 6 } },
+          }),
+        ],
+      };
+    }
+    if (!chunkSent && commands.includes("state_export_chunk_request")) {
+      chunkSent = true;
+      return {
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2, 3], complete: false }),
+          runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          runtimeEvent("wait_changed", {
+            type: "opened",
+            value: {
+              kind: "enter_key",
+              wait_id: 17,
+              submission_token: { epoch: 2, id: 5 },
+            },
+          }),
+        ],
+      };
+    }
+    return emptyBatch();
+  });
+  const store = useRuntimeStore();
+
+  await store.openProject();
+  await vi.advanceTimersByTimeAsync(1_100);
+  expect(bridge.writeCompiledCacheChunk).toHaveBeenCalledOnce();
+  return store;
+}
+
 function runtimeEvent(type: string, value: unknown, correlationId?: number, epoch?: number) {
   return {
     channel: "runtime" as const,
@@ -2015,6 +2162,24 @@ function runtimeEvent(type: string, value: unknown, correlationId?: number, epoc
     epoch,
     message: { type, value },
   };
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((fulfilled, rejected) => {
+    resolve = fulfilled;
+    reject = rejected;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushMicrotasks(): Promise<void> {
+  for (let index = 0; index < 4; index += 1) await Promise.resolve();
 }
 
 function projectConfigurationReport(revision: number, digestByte: number, fontSize: string) {

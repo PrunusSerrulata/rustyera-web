@@ -251,6 +251,9 @@ export async function installRemoteFileSystem(page, root) {
             data = value instanceof Uint8Array ? value : new Uint8Array(await value.arrayBuffer());
           },
           close: () => callFileSystem({ op: "write", path: this.relativePath, data: [...data] }),
+          abort: async () => {
+            data = new Uint8Array();
+          },
         };
       }
       queryPermission = async () => "granted";

@@ -517,6 +517,12 @@ export class BrowserBridge implements FrontendBridge {
     }
   }
 
+  async cancelCompiledCacheExport(): Promise<void> {
+    const writer = this.cacheWriter;
+    this.cacheWriter = undefined;
+    await writer?.abort();
+  }
+
   async close(): Promise<void> {
     this.worker.close();
   }

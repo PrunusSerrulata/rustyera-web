@@ -83,6 +83,8 @@ interface ExportState {
   received: number;
   descriptor?: any;
   requestMessageId?: string;
+  hostWrite?: Promise<void>;
+  hostWriteFailure?: { error: unknown };
 }
 
 interface DiagnosisState {
@@ -545,20 +547,25 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function recreateSessionForProjectSelection(): Promise<void> {
     runtimePump.setTransitioning(true);
-    clearSessionTimers();
-    resetMessageSkip();
-    resetSessionState();
-    status.value = "正在创建新的 Runtime session…";
-    unlockAudioFromUserGesture();
-    await audio
-      .synchronize([])
-      .catch((error) => log("warning", `更换项目时停止音频失败：${String(error)}`));
-    await runtimePump.waitUntilIdle();
-    // A pump already in flight may have projected stale events after the immediate clear.
-    resetSessionState();
-    const batch = await bridge.createSession(sessionOptions());
-    runtimePump.setReady(true);
-    await handleBatch(batch);
+    try {
+      clearSessionTimers();
+      resetMessageSkip();
+      resetSessionState(true);
+      status.value = "正在创建新的 Runtime session…";
+      unlockAudioFromUserGesture();
+      await audio
+        .synchronize([])
+        .catch((error) => log("warning", `更换项目时停止音频失败：${String(error)}`));
+      await runtimePump.waitUntilIdle();
+      await cancelCompiledCacheExport();
+      resetSessionState();
+      const batch = await bridge.createSession(sessionOptions());
+      runtimePump.setReady(true);
+      await handleBatch(batch);
+    } catch (error) {
+      runtimePump.setTransitioning(false);
+      throw error;
+    }
   }
 
   function unlockAudioFromUserGesture(): void {
@@ -1290,14 +1297,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
     beginStartupTelemetry(performance.now(), activeProjectSelection);
     beginProjectLoad("正在创建新的 Runtime session…");
     runtimePump.setTransitioning(true);
-    clearSessionTimers();
-    await runtimePump.waitUntilIdle();
-    resetMessageSkip();
-    await audio
-      .synchronize([])
-      .catch((error) => log("warning", `重新开始时停止音频失败：${String(error)}`));
-    resetSessionState();
     try {
+      clearSessionTimers();
+      resetSessionState(true);
+      await runtimePump.waitUntilIdle();
+      await cancelCompiledCacheExport();
+      resetMessageSkip();
+      await audio
+        .synchronize([])
+        .catch((error) => log("warning", `重新开始时停止音频失败：${String(error)}`));
+      resetSessionState();
       const batch = await bridge.createSession(sessionOptions());
       runtimePump.setReady(true);
       await handleBatch(batch);
@@ -1329,7 +1338,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await send({ type: "return_to_title", value: {} });
   }
 
-  function resetSessionState(): void {
+  function resetSessionState(preserveCompiledCacheExport = false): void {
+    const compiledCacheExport =
+      preserveCompiledCacheExport && exportState?.kind === "compiled_cache"
+        ? exportState
+        : undefined;
     if (exportState?.kind === "project_file")
       void bridge
         .cancelProjectFileExport()
@@ -1360,7 +1373,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     debugFrames.value = [];
     debugVariableValues.value = {};
     prompt.value = "";
-    exportState = undefined;
+    exportState = compiledCacheExport;
     diagnosisState = undefined;
     projectTitleCaptured = false;
     diagnosisExporting.value = false;
@@ -1705,32 +1718,85 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function handleExportChunk(chunk: any): Promise<void> {
-    if (!exportState?.descriptor || Number(chunk.offset) !== exportState.received) return;
+    const activeExport = exportState;
+    if (!activeExport?.descriptor || Number(chunk.offset) !== activeExport.received) return;
     const bytes = Uint8Array.from(chunk.data, (value: number | bigint) => Number(value));
-    const reset = exportState.received === 0;
-    exportState.received += bytes.length;
+    const reset = activeExport.received === 0;
+    activeExport.received += bytes.length;
     try {
-      if (exportState.kind === "compiled_cache") {
-        await bridge.writeCompiledCacheChunk(bytes, reset, chunk.complete);
-      } else if (exportState.kind === "project_file") {
+      if (activeExport.kind === "compiled_cache") {
+        enqueueCompiledCacheWrite(activeExport, bytes, reset, chunk.complete);
+      } else if (activeExport.kind === "project_file") {
         await bridge.writeProjectFileChunk(bytes, reset, chunk.complete);
-      } else if (exportState.buffer) {
-        exportState.buffer.set(bytes, Number(chunk.offset));
+      } else if (activeExport.buffer) {
+        activeExport.buffer.set(bytes, Number(chunk.offset));
       } else {
-        exportState.chunks.push(bytes);
+        activeExport.chunks.push(bytes);
       }
     } catch (error) {
-      if (exportState.kind === "project_file") await bridge.cancelProjectFileExport();
+      if (activeExport.kind === "project_file") await bridge.cancelProjectFileExport();
       exportState = undefined;
       throw error;
     }
-    if (!chunk.complete) await requestExportChunk();
-    else await finishExportTransfer();
+    if (activeExport.kind === "compiled_cache") {
+      continueCompiledCacheExport(activeExport, chunk.complete);
+    } else if (!chunk.complete) await requestExportChunk();
+    else await finishExportTransfer(activeExport);
   }
 
-  async function finishExportTransfer(): Promise<void> {
-    if (!exportState) return;
-    const completed = exportState;
+  function enqueueCompiledCacheWrite(
+    activeExport: ExportState,
+    bytes: Uint8Array,
+    reset: boolean,
+    complete: boolean,
+  ): void {
+    activeExport.hostWrite = (activeExport.hostWrite ?? Promise.resolve()).then(async () => {
+      if (activeExport.hostWriteFailure) return;
+      try {
+        await bridge.writeCompiledCacheChunk(bytes, reset, complete);
+      } catch (error) {
+        activeExport.hostWriteFailure = { error };
+      }
+    });
+  }
+
+  function continueCompiledCacheExport(activeExport: ExportState, complete: boolean): void {
+    void (async () => {
+      await activeExport.hostWrite;
+      if (exportState !== activeExport) return;
+      if (activeExport.hostWriteFailure) throw activeExport.hostWriteFailure.error;
+      if (complete) await finishExportTransfer(activeExport);
+      else await requestExportChunk();
+    })().catch((error) => {
+      void failCompiledCacheExport(activeExport, error);
+    });
+  }
+
+  async function failCompiledCacheExport(activeExport: ExportState, error: unknown): Promise<void> {
+    if (exportState !== activeExport) return;
+    exportState = undefined;
+    try {
+      await bridge.cancelCompiledCacheExport();
+    } catch (cancelError) {
+      log("warning", `清理项目文件缓存失败：${String(cancelError)}`);
+    }
+    log("warning", `项目文件生成失败：${String(error)}`);
+  }
+
+  async function cancelCompiledCacheExport(): Promise<void> {
+    const activeExport = exportState?.kind === "compiled_cache" ? exportState : undefined;
+    if (activeExport) {
+      exportState = undefined;
+      await activeExport.hostWrite;
+    }
+    await bridge.cancelCompiledCacheExport();
+  }
+
+  async function finishExportTransfer(completed = exportState): Promise<void> {
+    if (!completed) return;
+    await completed.hostWrite;
+    if (exportState !== completed) return;
+    if (completed.hostWriteFailure) throw completed.hostWriteFailure.error;
     const result =
       completed.kind === "compiled_cache"
         ? new Uint8Array()

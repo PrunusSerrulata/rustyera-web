@@ -55,6 +55,14 @@ describe("Tauri project restart", () => {
     await expect(new TauriBridge().restartProject()).rejects.toThrow("没有打开的项目");
   });
 
+  it("forwards compiled-cache cancellation to the native host", async () => {
+    invoke.mockResolvedValue(undefined);
+
+    await new TauriBridge().cancelCompiledCacheExport();
+
+    expect(invoke).toHaveBeenCalledWith("cancel_compiled_cache_export");
+  });
+
   it("keeps the previous project when opening a replacement fails", async () => {
     open.mockResolvedValueOnce("/game/old").mockResolvedValueOnce("/game/broken");
     invoke

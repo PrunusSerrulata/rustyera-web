@@ -142,6 +142,7 @@ export interface FrontendBridge {
     input: import("@/core/diagnosis").DiagnosisArchiveInput,
   ): Promise<boolean>;
   writeCompiledCacheChunk(bytes: Uint8Array, reset: boolean, complete: boolean): Promise<void>;
+  cancelCompiledCacheExport(): Promise<void>;
   close(): Promise<void>;
 }
 
