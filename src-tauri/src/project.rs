@@ -3,6 +3,8 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
 #[cfg(not(unix))]
 use std::time::UNIX_EPOCH;
 
@@ -328,27 +330,42 @@ impl ProjectHost {
                 progress(0, self.indexed_files.len());
             }
             let total = self.indexed_files.len();
-            let mut files = Vec::with_capacity(total);
-            for (index, indexed) in self.indexed_files.iter_mut().enumerate() {
-                let path = indexed
-                    .source_path
-                    .clone()
-                    .unwrap_or_else(|| self.root.join(&indexed.relative_path));
-                let signature_matches = indexed.source_signature.is_some_and(|expected| {
-                    fs::metadata(&path)
-                        .is_ok_and(|metadata| metadata_signature(&metadata) == expected)
-                });
-                let file = if signature_matches {
-                    indexed
-                        .pending_file
-                        .take()
-                        .map_or_else(|| read_file(&self.root, &path, indexed.category), Ok)?
-                } else {
-                    read_file(&self.root, &path, indexed.category)?
-                };
-                files.push(file);
-                report_scan_progress(progress, index + 1, total);
-            }
+            let worker_count = thread::available_parallelism()
+                .map_or(1, std::num::NonZero::get)
+                .min(8)
+                .min(total.max(1));
+            let chunk_size = total.max(1).div_ceil(worker_count);
+            let root = &self.root;
+            let indexed_files = &mut self.indexed_files;
+            let files = thread::scope(|scope| -> Result<Vec<SubmittedFile>, String> {
+                let (sender, receiver) = mpsc::channel();
+                for (chunk_index, chunk) in indexed_files.chunks_mut(chunk_size).enumerate() {
+                    let sender = sender.clone();
+                    scope.spawn(move || {
+                        let base = chunk_index.saturating_mul(chunk_size);
+                        for (offset, indexed) in chunk.iter_mut().enumerate() {
+                            let result = materialize_indexed_file(root, indexed);
+                            if sender.send((base + offset, result)).is_err() {
+                                break;
+                            }
+                        }
+                    });
+                }
+                drop(sender);
+
+                let mut ordered = (0..total).map(|_| None).collect::<Vec<_>>();
+                for completed in 1..=total {
+                    let (index, file) = receiver
+                        .recv()
+                        .map_err(|error| format!("project file reader stopped early: {error}"))?;
+                    ordered[index] = Some(file?);
+                    report_scan_progress(progress, completed, total);
+                }
+                ordered
+                    .into_iter()
+                    .map(|file| file.ok_or_else(|| "project file reader omitted an entry".into()))
+                    .collect()
+            })?;
             let manifest = ProjectManifest {
                 project_revision: self.revision,
                 files,
@@ -734,6 +751,27 @@ fn read_file(root: &Path, path: &Path, category: FileCategory) -> Result<Submitt
     })
 }
 
+fn materialize_indexed_file(
+    root: &Path,
+    indexed: &mut IndexedFile,
+) -> Result<SubmittedFile, String> {
+    let path = indexed
+        .source_path
+        .clone()
+        .unwrap_or_else(|| root.join(&indexed.relative_path));
+    let signature_matches = indexed.source_signature.is_some_and(|expected| {
+        fs::metadata(&path).is_ok_and(|metadata| metadata_signature(&metadata) == expected)
+    });
+    if signature_matches {
+        indexed
+            .pending_file
+            .take()
+            .map_or_else(|| read_file(root, &path, indexed.category), Ok)
+    } else {
+        read_file(root, &path, indexed.category)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -834,6 +872,38 @@ mod tests {
         let observed = observed.into_inner();
         assert_eq!(observed[..2], [(0, 0), (0, 2)]);
         assert_eq!(observed.last(), Some(&(2, 2)));
+    }
+
+    #[test]
+    fn indexed_materialization_preserves_order_and_reports_each_file() {
+        let directory = tempfile::tempdir().unwrap();
+        for index in (0..16).rev() {
+            fs::write(
+                directory.path().join(format!("source-{index:02}.erb")),
+                format!("@FUNCTION_{index}\nRETURN\n"),
+            )
+            .unwrap();
+        }
+        ProjectHost::scan_quick(directory.path(), 1).unwrap();
+        let mut indexed = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+        let observed = RefCell::new(Vec::new());
+        let progress = |completed, total| observed.borrow_mut().push((completed, total));
+
+        let manifest = indexed
+            .take_manifest_with_progress(Some(&progress))
+            .unwrap();
+
+        let paths = manifest
+            .files
+            .iter()
+            .map(|file| file.relative_path.as_str())
+            .collect::<Vec<_>>();
+        assert!(paths.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(observed.borrow().last(), Some(&(16, 16)));
+        assert_eq!(
+            era_web_bridge::project_identity(&manifest).unwrap(),
+            indexed.identity()
+        );
     }
 
     #[test]
