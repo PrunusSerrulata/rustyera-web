@@ -1467,12 +1467,12 @@ describe("runtime store session lifecycle", () => {
     });
 
     await store.enableDebug();
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(16);
 
     expect(bridge.submitRuntime).toHaveBeenCalledWith(
       {
         type: "advance_time",
-        value: { monotonic_time_ns: 1_000_000 },
+        value: { monotonic_time_ns: 17_000_000 },
       },
       undefined,
     );

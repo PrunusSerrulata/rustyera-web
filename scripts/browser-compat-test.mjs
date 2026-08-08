@@ -36,6 +36,7 @@ const project = path.resolve(
 );
 const checkTooltip = process.argv.includes("--check-tooltip");
 const startupOnly = process.argv.includes("--startup-only");
+const cacheInputSmoke = process.argv.includes("--cache-input-smoke");
 const files = await collectFiles(project);
 if (projectIndex < 0) {
   const oracle = files.find((entry) => entry.path.toLowerCase() === "erb/oracle.erb");
@@ -280,7 +281,9 @@ try {
       `project progress was incomplete (${projectProgressErrors.join(", ")}): ${JSON.stringify(projectProgress)}`,
     );
   }
-  if (startupOnly) {
+  if (cacheInputSmoke) {
+    await runCacheInputSmoke(browser, browserName, projectProgress, setup, opfsReset);
+  } else if (startupOnly) {
     compatibilityStage = "collecting cold-start report";
     const observed = await collectCompatibilityReport(browser);
     assertColdStartup(observed.startupTelemetry);
@@ -549,6 +552,105 @@ try {
   }
   await browser?.deleteSession().catch(() => {});
   await server?.close().catch(() => {});
+}
+
+async function runCacheInputSmoke(
+  activeBrowser,
+  activeBrowserName,
+  projectProgress,
+  setup,
+  opfsReset,
+) {
+  compatibilityStage = "waiting for compiled cache generation";
+  await activeBrowser.waitUntil(
+    () =>
+      activeBrowser.execute(() => {
+        const state = window.__RUSTYERA_TEST__?.snapshot();
+        return state?.canInteract && state.transfer?.export?.name === "compiled-project.reraproj";
+      }),
+    { timeout: 30_000, interval: 50, timeoutMsg: "compiled cache generation did not start" },
+  );
+  const titleWaitId = await activeBrowser.execute(
+    () => window.__RUSTYERA_TEST__?.snapshot().wait?.wait_id ?? null,
+  );
+  compatibilityStage = "clicking the new-game button during compiled cache generation";
+  const newGame = await activeBrowser.$(".game-viewport .game-button");
+  await newGame.waitForClickable({ timeout: 30_000 });
+  await newGame.click();
+  compatibilityStage = "waiting for the opening text during compiled cache generation";
+  await activeBrowser.waitUntil(
+    () =>
+      activeBrowser.execute((previousWaitId) => {
+        const state = window.__RUSTYERA_TEST__?.snapshot();
+        return (
+          state?.canInteract &&
+          state.wait?.wait_id !== previousWaitId &&
+          state.output.some((line) => String(line).includes("亚兰德"))
+        );
+      }, titleWaitId),
+    { timeout: 60_000, interval: 50, timeoutMsg: "opening text did not accept new-game input" },
+  );
+  const openingWaitId = await activeBrowser.execute(
+    () => window.__RUSTYERA_TEST__?.snapshot().wait?.wait_id ?? null,
+  );
+  compatibilityStage = "right-clicking the opening text during compiled cache generation";
+  const viewport = await activeBrowser.$(".game-viewport");
+  await viewport.click({ button: "right" });
+  compatibilityStage = "waiting for the scene-boundary wait after compiled cache input";
+  await activeBrowser.waitUntil(
+    () =>
+      activeBrowser.execute((previousWaitId) => {
+        const state = window.__RUSTYERA_TEST__?.snapshot();
+        return state?.canInteract && state.wait?.wait_id !== previousWaitId;
+      }, openingWaitId),
+    { timeout: 60_000, interval: 50, timeoutMsg: "opening scene did not reach its boundary" },
+  );
+  const reachedWorkshop = await activeBrowser.execute(() =>
+    window.__RUSTYERA_TEST__
+      ?.snapshot()
+      .output.some((line) => String(line).includes("亚斯特丽德的工房")),
+  );
+  if (!reachedWorkshop) {
+    compatibilityStage = "continuing the scene-boundary wait during compiled cache generation";
+    await viewport.click();
+  }
+  compatibilityStage = "waiting for the workshop after compiled cache input";
+  await activeBrowser.waitUntil(
+    () =>
+      activeBrowser.execute(() => {
+        const state = window.__RUSTYERA_TEST__?.snapshot();
+        return (
+          state?.canInteract &&
+          state.output.some((line) => String(line).includes("亚斯特丽德的工房"))
+        );
+      }),
+    { timeout: 60_000, interval: 50, timeoutMsg: "opening text was not skipped to the workshop" },
+  );
+  const observed = await collectCompatibilityReport(activeBrowser);
+  const inputFailures = await activeBrowser.execute(
+    () =>
+      window.__RUSTYERA_TEST__
+        ?.snapshot()
+        .logs.filter((entry) =>
+          /input wait identity is stale|no input is pending|input was rejected/.test(
+            String(entry.message),
+          ),
+        ) ?? [],
+  );
+  if (inputFailures.length > 0)
+    throw new Error(`compiled cache input was rejected: ${JSON.stringify(inputFailures)}`);
+  console.log(
+    JSON.stringify({
+      browser: activeBrowserName,
+      browserVersion: activeBrowser.capabilities.browserVersion,
+      cacheInputSmoke: true,
+      projectName: setup.projectName,
+      opfs: setup.opfs,
+      opfsReset,
+      projectProgress,
+      ...observed,
+    }),
+  );
 }
 if (snapshotMonitorError) throw snapshotMonitorError;
 if (runError) throw runError;

@@ -213,6 +213,7 @@ mod tests {
             state: WebDriveState::OutputReady,
             vm_instructions: MAXIMUM_SAFE_JAVASCRIPT_INTEGER + 1,
             runtime_transitions: 1,
+            cooperative_background_work: false,
             events: vec![WebEvent {
                 channel: WebChannel::Runtime,
                 sequence: 2,

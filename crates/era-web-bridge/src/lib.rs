@@ -81,6 +81,7 @@ pub struct PumpBatch {
     pub state: WebDriveState,
     pub vm_instructions: u64,
     pub runtime_transitions: u32,
+    pub cooperative_background_work: bool,
     pub events: Vec<WebEvent>,
 }
 
@@ -373,6 +374,7 @@ impl WebSession {
             state: report.state.into(),
             vm_instructions: report.vm_instructions,
             runtime_transitions: report.runtime_transitions,
+            cooperative_background_work: report.cooperative_background_work,
             events,
         })
     }
@@ -463,6 +465,7 @@ fn merge_pump_batch(combined: &mut Option<PumpBatch>, batch: PumpBatch) {
         result.runtime_transitions = result
             .runtime_transitions
             .saturating_add(batch.runtime_transitions);
+        result.cooperative_background_work |= batch.cooperative_background_work;
         result.events.extend(batch.events);
     } else {
         *combined = Some(batch);
@@ -529,6 +532,7 @@ fn coalesce_quiet_pumps(
     let mut combined = pump()?;
     for _ in 1..maximum_slices {
         if !combined.events.is_empty()
+            || combined.cooperative_background_work
             || !matches!(
                 combined.state,
                 WebDriveState::MoreWork | WebDriveState::OutputReady
@@ -544,6 +548,7 @@ fn coalesce_quiet_pumps(
         combined.runtime_transitions = combined
             .runtime_transitions
             .saturating_add(next.runtime_transitions);
+        combined.cooperative_background_work |= next.cooperative_background_work;
         combined.events.append(&mut next.events);
     }
     Ok(combined)
@@ -911,6 +916,24 @@ mod tests {
     }
 
     #[test]
+    fn quiet_pump_returns_after_one_cooperative_background_quantum() {
+        let mut calls = 0;
+        let combined = coalesce_quiet_pumps(
+            || {
+                calls += 1;
+                let mut result = batch(WebDriveState::MoreWork, 0, 0, vec![]);
+                result.cooperative_background_work = true;
+                Ok(result)
+            },
+            16,
+        )
+        .unwrap();
+
+        assert_eq!(calls, 1);
+        assert!(combined.cooperative_background_work);
+    }
+
+    #[test]
     fn quiet_pump_does_not_continue_terminal_or_blocked_states() {
         for state in [
             WebDriveState::Idle,
@@ -1033,6 +1056,7 @@ mod tests {
             state,
             vm_instructions,
             runtime_transitions,
+            cooperative_background_work: false,
             events,
         }
     }

@@ -14,6 +14,7 @@ export interface PumpBatch {
   state: "idle" | "more_work" | "output_ready" | "stopped" | "faulted";
   vmInstructions: number | bigint;
   runtimeTransitions: number;
+  cooperativeBackgroundWork?: boolean;
   events: WebEvent[];
 }
 
