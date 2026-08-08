@@ -23,7 +23,7 @@ import {
 } from "@/core/debug";
 import { preferredRuntimeLocales, resolveGameTextStyle } from "@/core/gameText";
 import { decodeImageMetadata } from "@/core/imageMetadata";
-import { MessageSkipController } from "@/core/messageSkip";
+import { isMessageSkipWait } from "@/core/messageSkip";
 import {
   at,
   concatenateChunks,
@@ -93,6 +93,24 @@ interface DiagnosisState {
   logs: string;
   exportedAt: Date;
   snapshot?: Uint8Array;
+}
+
+interface PendingGameInput {
+  waitIdentity: string;
+  waitId: string;
+  messageId?: string;
+  waitKind: string;
+  intent: any;
+  messageSkip: boolean;
+  waitClosed?: boolean;
+  retryPending?: boolean;
+  retryError?: string;
+  staleRetries: number;
+}
+
+interface PendingInputUndo {
+  tokenIdentity: string;
+  messageId?: string;
 }
 
 interface PendingConfigurationBase {
@@ -278,7 +296,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
       reject?: (error: Error) => void;
     }
   >();
-  const messageSkip = new MessageSkipController();
+  const pendingGameInput = ref<PendingGameInput>();
+  const pendingInputUndo = ref<PendingInputUndo>();
+  const pendingProjectionMessages = new Set<string>();
   const runtimePump = new RuntimePumpCoordinator(bridge, {
     handleBatch,
     advanceTimedWait,
@@ -333,6 +353,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     () =>
       !presentationStaged.value &&
       presentation.inputWait != null &&
+      pendingGameInput.value == null &&
+      pendingInputUndo.value == null &&
       phase.value !== "debug_paused" &&
       !fault.value &&
       !diagnosisExporting.value &&
@@ -553,7 +575,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimePump.setTransitioning(true);
     try {
       clearSessionTimers();
-      resetMessageSkip();
       resetSessionState(true);
       status.value = "正在创建新的 Runtime session…";
       unlockAudioFromUserGesture();
@@ -631,7 +652,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } else if (debugPauseWanted) {
       await requestPendingDebugPause();
     }
-    await continueMessageSkip();
+    await settlePendingGameInput();
   }
 
   async function handleRuntime(
@@ -748,7 +769,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         phase.value = value.phase;
         runtimeEpoch.value = value.epoch ?? runtimeEpoch.value;
         batchMediaDirty = projectPresentationSnapshot(value.presentation) || batchMediaDirty;
-        inputUndo.value = value.input_undo ?? null;
+        applyInputUndo(value.input_undo ?? null);
         updateProjectConfiguration(value.configuration);
         captureProjectTitle(currentPresentation());
         break;
@@ -824,12 +845,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
       }
       case "wait_changed":
         if (value.type === "opened" || value.type === "updated") {
+          if (
+            pendingGameInput.value &&
+            pendingGameInput.value.waitIdentity !== inputWaitIdentity(value.value)
+          )
+            pendingGameInput.value.waitClosed = true;
           currentPresentation().inputWait = value.value;
           if (stagedPresentation) stagedPresentationReady = true;
-        } else if (value.type === "closed") currentPresentation().inputWait = null;
+        } else if (value.type === "closed") {
+          currentPresentation().inputWait = null;
+          if (pendingGameInput.value) pendingGameInput.value.waitClosed = true;
+        }
         break;
       case "input_undo_state_changed":
-        inputUndo.value = value;
+        applyInputUndo(value);
         break;
       case "effect_batch":
         await handleEffects(value.effects ?? []);
@@ -884,10 +913,34 @@ export const useRuntimeStore = defineStore("runtime", () => {
         if (!isRecoverableStaleDebugLog(value.message))
           log(value.level ?? "info", value.message, true);
         break;
-      case "command_rejected":
+      case "command_rejected": {
         if (String(correlationId) === startupStartMessageId)
           failStartupTelemetry(value.message ?? "Runtime rejected startup");
-        log("warning", value.message ?? "Runtime 拒绝了命令", true);
+        const correlation = String(correlationId);
+        const staleProjection =
+          pendingProjectionMessages.delete(correlation) &&
+          [
+            "projection environment revision is not newer",
+            "projection observation does not match the canonical presentation",
+          ].includes(String(value.message ?? ""));
+        const rejectedInput =
+          pendingGameInput.value?.messageId === correlation ? pendingGameInput.value : undefined;
+        const staleInput =
+          rejectedInput != null &&
+          ["input wait identity is stale", "no input is pending"].includes(
+            String(value.message ?? ""),
+          );
+        const willRetryInput =
+          staleInput && rejectedInput != null && rejectedInput.staleRetries === 0;
+        if (willRetryInput) {
+          rejectedInput.messageId = undefined;
+          rejectedInput.retryPending = true;
+          rejectedInput.waitClosed = false;
+          rejectedInput.retryError = String(value.message ?? "Runtime 拒绝了输入");
+        } else if (rejectedInput) pendingGameInput.value = undefined;
+        if (pendingInputUndo.value?.messageId === correlation) pendingInputUndo.value = undefined;
+        if (!staleProjection && !willRetryInput)
+          log("warning", value.message ?? "Runtime 拒绝了命令", true);
         rejectPendingConfiguration(correlationId, value.message ?? "Runtime 拒绝了命令");
         if (
           exportState?.requestMessageId === String(correlationId) &&
@@ -904,6 +957,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           }
         }
         break;
+      }
       case "exit_requested":
         if (value.reason === "restart") await restart();
         else await shutdown();
@@ -1229,7 +1283,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function skip(): Promise<void> {
     const wait = currentPresentation().inputWait;
-    if (canInteract.value && messageSkip.start(wait)) {
+    if (canInteract.value && isMessageSkipWait(wait)) {
       await submitIntent({ type: "enter" }, true);
     }
   }
@@ -1241,30 +1295,91 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function submitIntent(intent: any, messageSkip: boolean): Promise<void> {
-    if (diagnosisExporting.value) return;
+    if (diagnosisExporting.value || pendingGameInput.value || pendingInputUndo.value) return;
     const wait = currentPresentation().inputWait;
     if (!wait) return;
-    if (!messageSkip) resetMessageSkip();
-    await send({
-      type: "input",
-      value: {
-        wait_id: wait.wait_id,
-        token: wait.submission_token,
-        monotonic_time_ns: sampleMonotonicTime(),
-        intent,
-        message_skip: messageSkip,
-      },
-    });
+    const waitIdentity = inputWaitIdentity(wait);
+    pendingGameInput.value = {
+      waitIdentity,
+      waitId: String(wait.wait_id),
+      waitKind: String(wait.kind),
+      intent,
+      messageSkip,
+      staleRetries: 0,
+    };
+    try {
+      const messageId = await send({
+        type: "input",
+        value: {
+          wait_id: wait.wait_id,
+          token: wait.submission_token,
+          monotonic_time_ns: sampleMonotonicTime(),
+          intent,
+          message_skip: messageSkip,
+        },
+      });
+      if (pendingGameInput.value?.waitIdentity === waitIdentity)
+        pendingGameInput.value.messageId = String(messageId);
+    } catch (error) {
+      if (pendingGameInput.value?.waitIdentity === waitIdentity) pendingGameInput.value = undefined;
+      throw error;
+    }
     if (singleStepEnabled.value && !debugStopToken(debugStop.value)) await pauseDebug();
   }
 
-  async function continueMessageSkip(): Promise<void> {
+  async function settlePendingGameInput(): Promise<void> {
+    const pending = pendingGameInput.value;
+    if (!pending) return;
+    if (!pending.retryPending) {
+      if (pending.waitClosed) pendingGameInput.value = undefined;
+      return;
+    }
     const wait = currentPresentation().inputWait;
-    if (messageSkip.continue(wait)) await submitIntent({ type: "enter" }, true);
+    if (!wait) {
+      if (phase.value === "running") return;
+      pendingGameInput.value = undefined;
+      log("warning", pending.retryError ?? "Runtime 拒绝了输入", true);
+      return;
+    }
+    const waitIdentity = inputWaitIdentity(wait);
+    if (waitIdentity === pending.waitIdentity) return;
+    if (String(wait.kind) !== pending.waitKind) {
+      pendingGameInput.value = undefined;
+      log("warning", pending.retryError ?? "Runtime 拒绝了输入", true);
+      return;
+    }
+    pending.waitIdentity = waitIdentity;
+    pending.waitId = String(wait.wait_id);
+    pending.waitClosed = false;
+    pending.retryPending = false;
+    pending.retryError = undefined;
+    pending.staleRetries = 1;
+    try {
+      const messageId = await send({
+        type: "input",
+        value: {
+          wait_id: wait.wait_id,
+          token: wait.submission_token,
+          monotonic_time_ns: sampleMonotonicTime(),
+          intent: pending.intent,
+          message_skip: pending.messageSkip,
+        },
+      });
+      if (pendingGameInput.value === pending) pending.messageId = String(messageId);
+    } catch (error) {
+      if (pendingGameInput.value === pending) pendingGameInput.value = undefined;
+      throw error;
+    }
   }
 
   async function advanceTimedWait(): Promise<void> {
-    if (currentPresentation().inputWait?.deadline_ns == null) return;
+    const wait = currentPresentation().inputWait;
+    if (
+      wait?.deadline_ns == null ||
+      pendingGameInput.value != null ||
+      pendingInputUndo.value != null
+    )
+      return;
     const now = sampleMonotonicTime();
     if (lastTimeAdvanceNs != null && now - lastTimeAdvanceNs < TIME_ADVANCE_INTERVAL_NS) return;
     lastTimeAdvanceNs = now;
@@ -1280,13 +1395,21 @@ export const useRuntimeStore = defineStore("runtime", () => {
     );
   }
 
-  function resetMessageSkip(): void {
-    messageSkip.cancel();
-  }
-
   async function undo(): Promise<void> {
-    if (!diagnosisExporting.value && inputUndo.value?.token)
-      await send({ type: "input_undo_request", value: { token: inputUndo.value.token } });
+    const token = inputUndo.value?.token;
+    if (diagnosisExporting.value || !token || pendingGameInput.value || pendingInputUndo.value)
+      return;
+    const tokenIdentity = interactionTokenIdentity(token);
+    pendingInputUndo.value = { tokenIdentity };
+    try {
+      const messageId = await send({ type: "input_undo_request", value: { token } });
+      if (pendingInputUndo.value?.tokenIdentity === tokenIdentity)
+        pendingInputUndo.value.messageId = String(messageId);
+    } catch (error) {
+      if (pendingInputUndo.value?.tokenIdentity === tokenIdentity)
+        pendingInputUndo.value = undefined;
+      throw error;
+    }
   }
 
   async function restart(): Promise<void> {
@@ -1306,7 +1429,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
       resetSessionState(true);
       await runtimePump.waitUntilIdle();
       await cancelCompiledCacheExport();
-      resetMessageSkip();
       await audio
         .synchronize([])
         .catch((error) => log("warning", `重新开始时停止音频失败：${String(error)}`));
@@ -1338,7 +1460,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function returnToTitle(): Promise<void> {
     if (diagnosisExporting.value) return;
-    resetMessageSkip();
     await send({ type: "return_to_title", value: {} });
   }
 
@@ -1379,6 +1500,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     debugFrames.value = [];
     debugVariableValues.value = {};
     prompt.value = "";
+    pendingGameInput.value = undefined;
+    pendingInputUndo.value = undefined;
+    pendingProjectionMessages.clear();
     exportState = compiledCacheExport;
     diagnosisState = undefined;
     projectTitleCaptured = false;
@@ -2479,7 +2603,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (!measurement) return;
     viewportMeasurement.value = measurement;
     if (!runtimePump.ready) return;
-    await send({
+    const messageId = await send({
       type: "projection_observation",
       value: {
         environment_revision: nextEnvironmentRevision,
@@ -2498,6 +2622,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
         },
       },
     });
+    if (pendingProjectionMessages.size >= 256) pendingProjectionMessages.clear();
+    pendingProjectionMessages.add(String(messageId));
   }
 
   function viewportChrome(measurement: GameViewportMeasurement | undefined): {
@@ -2561,6 +2687,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (startupStart) startupStartMessageId = String(messageId);
     schedulePump(0);
     return messageId;
+  }
+
+  function inputWaitIdentity(wait: any): string {
+    return `${String(wait.wait_id)}:${String(wait.submission_token?.epoch)}:${String(wait.submission_token?.id)}`;
+  }
+
+  function interactionTokenIdentity(token: any): string {
+    return `${String(token?.epoch)}:${String(token?.id)}`;
+  }
+
+  function applyInputUndo(value: any): void {
+    const nextIdentity = value?.token ? interactionTokenIdentity(value.token) : undefined;
+    if (pendingInputUndo.value?.tokenIdentity !== nextIdentity) pendingInputUndo.value = undefined;
+    inputUndo.value = value;
   }
 
   async function waitUntil(

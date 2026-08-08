@@ -945,6 +945,345 @@ describe("runtime store session lifecycle", () => {
     ).toHaveLength(2);
   });
 
+  it("allows only one in-flight submission for every active input wait", async () => {
+    const wait = {
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    };
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+        runtimeEvent("presentation_snapshot", {
+          revision: 1,
+          title: "input gate",
+          history: { logical_lines: [] },
+          input_wait: wait,
+        }),
+        runtimeEvent("wait_changed", { type: "opened", value: wait }),
+      ],
+    });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+    bridge.submitRuntime.mockClear();
+
+    store.prompt = "412";
+    const first = store.submitText();
+    const duplicateText = store.submitText();
+    const duplicateButton = store.activate({ epoch: 2, id: 99 });
+    await Promise.all([first, duplicateText, duplicateButton]);
+
+    const inputs = bridge.submitRuntime.mock.calls.filter(
+      ([message]: unknown[]) => (message as { type?: string }).type === "input",
+    );
+    expect(inputs).toHaveLength(1);
+    expect((inputs[0] as unknown[] | undefined)?.[0]).toMatchObject({
+      value: {
+        wait_id: 17,
+        token: { epoch: 2, id: 5 },
+        intent: { type: "commit_text", value: "412" },
+      },
+    });
+    expect(store.canInteract).toBe(false);
+  });
+
+  it("shares the active-wait lock across text, buttons, left click, and right click", async () => {
+    const store = await storeWithInputWait({
+      kind: "enter_key",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    await Promise.all([
+      store.continueFromViewport(),
+      store.skip(),
+      store.submitText(),
+      store.activate({ epoch: 2, id: 99 }),
+    ]);
+
+    const inputs = bridge.submitRuntime.mock.calls.filter(
+      ([message]: unknown[]) => (message as { type?: string }).type === "input",
+    );
+    expect(inputs).toHaveLength(1);
+    expect((inputs[0] as unknown[] | undefined)?.[0]).toMatchObject({
+      value: { wait_id: 17, intent: { type: "enter" }, message_skip: false },
+    });
+  });
+
+  it("releases the input lock when a wait closes or is updated to a new identity", async () => {
+    const store = await storeWithInputWait({
+      kind: "enter_key",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    await store.continueFromViewport();
+    expect(store.canInteract).toBe(false);
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("wait_changed", { type: "closed", value: null })],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+
+    const nextWait = {
+      kind: "enter_key",
+      wait_id: 18,
+      submission_token: { epoch: 2, id: 6 },
+    };
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("wait_changed", { type: "opened", value: nextWait })],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.canInteract).toBe(true);
+
+    await store.continueFromViewport();
+    expect(store.canInteract).toBe(false);
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("wait_changed", {
+          type: "updated",
+          value: {
+            ...nextWait,
+            wait_id: 19,
+            submission_token: { epoch: 2, id: 7 },
+          },
+        }),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.canInteract).toBe(true);
+  });
+
+  it("unlocks a rejected wait, isolates late rejections, and accepts the next wait", async () => {
+    let nextMessageId = 10;
+    bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    });
+    bridge.submitRuntime.mockClear();
+    store.prompt = "1";
+    await store.submitText();
+    expect(store.canInteract).toBe(false);
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("command_rejected", { message: "invalid input" }, 10)],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.canInteract).toBe(true);
+    await store.submitText();
+
+    const nextWait = {
+      kind: "integer_value",
+      wait_id: 18,
+      submission_token: { epoch: 2, id: 6 },
+    };
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("wait_changed", { type: "opened", value: nextWait }),
+        runtimeEvent("command_rejected", { message: "late old rejection" }, 10),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.canInteract).toBe(true);
+    store.prompt = "2";
+    await store.submitText();
+
+    const inputs = bridge.submitRuntime.mock.calls.filter(
+      ([message]: unknown[]) => (message as { type?: string }).type === "input",
+    );
+    expect(inputs.map((call: unknown[]) => (call[0] as any).value.wait_id)).toEqual([17, 17, 18]);
+  });
+
+  it("unlocks the active wait after a transport submission failure", async () => {
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    });
+    bridge.submitRuntime.mockReset();
+    bridge.submitRuntime.mockRejectedValueOnce(new Error("transport failed"));
+    store.prompt = "1";
+
+    await expect(store.submitText()).rejects.toThrow("transport failed");
+    expect(store.canInteract).toBe(true);
+    bridge.submitRuntime.mockResolvedValueOnce(11);
+    await store.submitText();
+    expect(store.canInteract).toBe(false);
+  });
+
+  it("retries one correlated timed-wait race on the next wait of the same kind", async () => {
+    let nextMessageId = 10;
+    bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+      deadline_ns: 1_000_000_000,
+    });
+    bridge.submitRuntime.mockClear();
+    store.prompt = "412";
+    await store.submitText();
+
+    const nextWait = {
+      kind: "integer_value",
+      wait_id: 18,
+      submission_token: { epoch: 2, id: 6 },
+      deadline_ns: 1_100_000_000,
+    };
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("wait_changed", { type: "opened", value: nextWait }),
+        runtimeEvent("command_rejected", { message: "input wait identity is stale" }, 10),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+
+    const inputs = bridge.submitRuntime.mock.calls.filter(
+      ([message]: unknown[]) => (message as { type?: string }).type === "input",
+    );
+    expect(inputs.map((call: unknown[]) => (call[0] as any).value.wait_id)).toEqual([17, 18]);
+    expect((inputs[1] as unknown[] | undefined)?.[0]).toMatchObject({
+      value: { intent: { type: "commit_text", value: "412" }, message_skip: false },
+    });
+    expect(store.logs.some((entry) => entry.message.includes("input wait identity is stale"))).toBe(
+      false,
+    );
+    expect(store.canInteract).toBe(false);
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("command_rejected", { message: "input wait identity is stale" }, 11)],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "input",
+      ),
+    ).toHaveLength(2);
+    expect(store.logs.some((entry) => entry.message.includes("input wait identity is stale"))).toBe(
+      true,
+    );
+    expect(store.canInteract).toBe(true);
+  });
+
+  it("does not advance a timed wait beside input and resumes timing after rejection", async () => {
+    let nextMessageId = 20;
+    bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+      deadline_ns: 1_000_000_000,
+    });
+    nextMessageId = 20;
+    bridge.submitRuntime.mockClear();
+    store.prompt = "1";
+    await store.submitText();
+    await vi.advanceTimersByTimeAsync(64);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "advance_time",
+      ),
+    ).toHaveLength(0);
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("command_rejected", { message: "invalid input" }, 20)],
+    });
+    await vi.advanceTimersByTimeAsync(64);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "advance_time",
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("serializes undo with active-wait input and unlocks it on rejection", async () => {
+    let nextMessageId = 30;
+    bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
+    const store = await storeWithInputWait(
+      {
+        kind: "integer_value",
+        wait_id: 17,
+        submission_token: { epoch: 2, id: 5 },
+      },
+      [runtimeEvent("input_undo_state_changed", { token: { epoch: 2, id: 9 } })],
+    );
+    bridge.submitRuntime.mockClear();
+
+    await Promise.all([store.undo(), store.undo(), store.submitText()]);
+    expect(bridge.submitRuntime.mock.calls.map((call: unknown[]) => (call[0] as any).type)).toEqual(
+      ["input_undo_request"],
+    );
+    expect(store.canInteract).toBe(false);
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("command_rejected", { message: "undo rejected" }, 30)],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.canInteract).toBe(true);
+    store.prompt = "2";
+    await store.submitText();
+    expect(bridge.submitRuntime).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "input" }),
+      undefined,
+    );
+  });
+
+  it("filters only correlated stale projection rejections", async () => {
+    let nextMessageId = 40;
+    bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
+    bridge.pump.mockResolvedValueOnce(emptyBatch()).mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "command_rejected",
+          { message: "projection observation does not match the canonical presentation" },
+          40,
+        ),
+        runtimeEvent("command_rejected", { message: "input wait identity is stale" }, 999),
+        runtimeEvent(
+          "command_rejected",
+          { message: "projection observation does not match the canonical presentation" },
+          998,
+        ),
+      ],
+    });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await store.projectViewport({
+      width: 100,
+      height: 80,
+      lineColumns: 20,
+      chromeWidth: 0,
+      chromeHeight: 0,
+    });
+    await vi.advanceTimersByTimeAsync(32);
+
+    expect(store.logs.some((entry) => entry.message.includes("input wait identity is stale"))).toBe(
+      true,
+    );
+    expect(
+      store.logs.filter((entry) =>
+        entry.message.includes("projection observation does not match the canonical presentation"),
+      ),
+    ).toHaveLength(1);
+  });
+
   it("cancels a pending compiled-cache writer before restarting the project", async () => {
     const cacheWrite = deferred<void>();
     const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
@@ -2150,6 +2489,31 @@ async function storeWithPendingCompiledCacheWrite(write: Promise<void>) {
   await store.openProject();
   await vi.advanceTimersByTimeAsync(1_100);
   expect(bridge.writeCompiledCacheChunk).toHaveBeenCalledOnce();
+  return store;
+}
+
+async function storeWithInputWait(
+  wait: Record<string, unknown>,
+  extraEvents: ReturnType<typeof runtimeEvent>[] = [],
+) {
+  bridge.pump.mockResolvedValueOnce({
+    ...emptyBatch(),
+    events: [
+      runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+      runtimeEvent("presentation_snapshot", {
+        revision: 1,
+        title: "input gate",
+        history: { logical_lines: [] },
+        input_wait: wait,
+      }),
+      runtimeEvent("wait_changed", { type: "opened", value: wait }),
+      ...extraEvents,
+    ],
+  });
+  const store = useRuntimeStore();
+  store.projectOpen = true;
+  await store.enableDebug();
+  await vi.advanceTimersByTimeAsync(0);
   return store;
 }
 

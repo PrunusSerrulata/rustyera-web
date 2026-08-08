@@ -31,10 +31,18 @@ describe("runtime pump coordinator", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("projects each batch, advances timed waits, and continues pumping", async () => {
-    const handleBatch = vi.fn(async () => {});
-    const advanceTimedWait = vi.fn(async () => {});
-    const pump = vi.fn(async () => batch());
+  it("samples timed waits at the next drive boundary before projecting its batch", async () => {
+    const order: string[] = [];
+    const handleBatch = vi.fn(async () => {
+      order.push("batch");
+    });
+    const advanceTimedWait = vi.fn(async () => {
+      order.push("time");
+    });
+    const pump = vi.fn(async () => {
+      order.push("pump");
+      return batch();
+    });
     const coordinator = createCoordinator({ pump, handleBatch, advanceTimedWait });
     coordinator.setReady(true);
 
@@ -44,6 +52,7 @@ describe("runtime pump coordinator", () => {
     expect(pump).toHaveBeenCalledOnce();
     expect(handleBatch).toHaveBeenCalledWith(batch());
     expect(advanceTimedWait).toHaveBeenCalledOnce();
+    expect(order).toEqual(["time", "pump", "batch"]);
     expect(coordinator.pumping).toBe(false);
     expect(vi.getTimerCount()).toBe(1);
     coordinator.clearTimer();

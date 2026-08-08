@@ -62,9 +62,12 @@ export class RuntimePumpCoordinator {
     if (this.pumping || this.transitioning) return;
     this.#pumping.value = true;
     try {
+      // Queue the timer at the next drive boundary. Input already submitted for the visible
+      // wait is therefore ordered first, and input submitted while this request is in flight is
+      // present for the runtime's timer/input arbitration in the same pump.
+      await this.callbacks.advanceTimedWait();
       const batch = await this.bridge.pump();
       await this.callbacks.handleBatch(batch);
-      await this.callbacks.advanceTimedWait();
       this.schedule(batch.state === "more_work" || batch.state === "output_ready" ? 0 : 16);
     } catch (error) {
       this.callbacks.handleError(error);
