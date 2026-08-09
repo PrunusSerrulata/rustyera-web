@@ -122,7 +122,8 @@ describe("portable browser directory selection", () => {
     vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
     const progress = vi.fn();
     const submitted = vi.fn();
-    const selection = pickBrowserDirectory(progress, submitted);
+    const prepareAfterSelection = vi.fn(async () => {});
+    const selection = pickBrowserDirectory(progress, submitted, prepareAfterSelection);
     const input = document.querySelector<HTMLInputElement>('input[type="file"]');
     expect(input?.webkitdirectory).toBe(true);
     const settled = vi.fn();
@@ -132,14 +133,19 @@ describe("portable browser directory selection", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(settled).not.toHaveBeenCalled();
+    expect(prepareAfterSelection).not.toHaveBeenCalled();
     expect(progress).not.toHaveBeenCalled();
     expect(input?.isConnected).toBe(true);
     Object.defineProperty(input, "files", { value: [projectFile("game/ERB/main.erb")] });
     input!.dispatchEvent(new Event("change"));
 
     await expect(selection).resolves.toMatchObject({ projectName: "game", persistHandle: false });
+    expect(prepareAfterSelection).toHaveBeenCalledOnce();
     expect(submitted).toHaveBeenCalledOnce();
     expect(submitted.mock.invocationCallOrder[0]).toBeLessThan(
+      prepareAfterSelection.mock.invocationCallOrder[0],
+    );
+    expect(prepareAfterSelection.mock.invocationCallOrder[0]).toBeLessThan(
       progress.mock.invocationCallOrder[0],
     );
     expect(progress.mock.calls[0]).toEqual(["importing", 0, 0]);
@@ -150,19 +156,29 @@ describe("portable browser directory selection", () => {
     const handle = new MemoryDirectoryHandle("game");
     const progress = vi.fn();
     const submitted = vi.fn();
+    const requestPermission = vi.fn(async () => "granted" as PermissionState);
+    Object.assign(handle, { requestPermission });
+    const prepareAfterSelection = vi.fn(async () => {});
     vi.stubGlobal(
       "showDirectoryPicker",
       vi.fn(async () => handle),
     );
 
-    await expect(pickBrowserDirectory(progress, submitted)).resolves.toMatchObject({
-      handle,
-      persistHandle: true,
-    });
+    await expect(
+      pickBrowserDirectory(progress, submitted, prepareAfterSelection),
+    ).resolves.toMatchObject({ handle, persistHandle: true });
 
     expect(progress).toHaveBeenCalledOnce();
+    expect(requestPermission).toHaveBeenCalledWith({ mode: "readwrite" });
+    expect(prepareAfterSelection).toHaveBeenCalledOnce();
     expect(submitted).toHaveBeenCalledOnce();
     expect(submitted.mock.invocationCallOrder[0]).toBeLessThan(
+      requestPermission.mock.invocationCallOrder[0],
+    );
+    expect(requestPermission.mock.invocationCallOrder[0]).toBeLessThan(
+      prepareAfterSelection.mock.invocationCallOrder[0],
+    );
+    expect(prepareAfterSelection.mock.invocationCallOrder[0]).toBeLessThan(
       progress.mock.invocationCallOrder[0],
     );
     expect(progress).toHaveBeenCalledWith("scanning", 0, 0);
@@ -313,6 +329,28 @@ describe("portable browser directory selection", () => {
       .dispatchEvent(new Event("cancel"));
 
     await expect(selection).resolves.toBeUndefined();
+  });
+
+  it("does not import selected directory files when session preparation fails", async () => {
+    const storage = new MemoryDirectoryHandle("root");
+    vi.stubGlobal("showDirectoryPicker", undefined);
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    const progress = vi.fn();
+    const submitted = vi.fn();
+    const selection = pickBrowserDirectory(progress, submitted, async () => {
+      throw new Error("session failed");
+    });
+    const input = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { value: [projectFile("game/ERB/main.erb")] });
+
+    input.dispatchEvent(new Event("change"));
+
+    await expect(selection).rejects.toThrow("session failed");
+    expect(submitted).toHaveBeenCalledOnce();
+    expect(progress).not.toHaveBeenCalled();
+    await expect(storage.getDirectoryHandle(".rustyera-imports")).rejects.toMatchObject({
+      name: "NotFoundError",
+    });
   });
 
   it("settles a cancelled snapshot file selection", async () => {

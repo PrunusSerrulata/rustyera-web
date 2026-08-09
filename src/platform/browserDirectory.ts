@@ -1,4 +1,5 @@
 import { blake3 } from "@noble/hashes/blake3.js";
+import type { ProjectSelectionPreparation } from "@/core/types";
 import { runBounded, scanBrowserProjectFile } from "@/platform/browserProject";
 import type { BrowserManifest, ScannedFile } from "@/platform/browserProject";
 import {
@@ -26,20 +27,26 @@ const SOURCE_MANIFEST = "imported-sources.json";
 export async function pickBrowserDirectory(
   progress?: BrowserDirectoryProgress,
   submitted?: BrowserDirectorySubmitted,
+  prepareAfterSelection?: ProjectSelectionPreparation,
 ): Promise<PickedBrowserDirectory | undefined> {
   if (window.showDirectoryPicker) {
+    let handle: FileSystemDirectoryHandle;
     try {
-      const handle = await window.showDirectoryPicker({ mode: "readwrite" });
-      submitted?.();
-      progress?.("scanning", 0, 0);
-      return {
-        handle,
-        persistHandle: true,
-      };
+      handle = await window.showDirectoryPicker({ mode: "readwrite" });
     } catch (error) {
       if (isPickerCancellation(error)) return undefined;
       throw error;
     }
+    submitted?.();
+    const permission = await handle.requestPermission?.({ mode: "readwrite" });
+    if (permission && permission !== "granted")
+      throw new Error("运行完整游戏需要项目目录的读写权限。");
+    await prepareAfterSelection?.();
+    progress?.("scanning", 0, 0);
+    return {
+      handle,
+      persistHandle: true,
+    };
   }
   if (!navigator.storage.getDirectory) {
     throw new Error("此浏览器无法创建项目存储空间，请更新 Firefox 或 Safari 后重试。");
@@ -48,6 +55,7 @@ export async function pickBrowserDirectory(
   const files = await pickDirectoryFiles();
   if (!files) return undefined;
   submitted?.();
+  await prepareAfterSelection?.();
   progress?.("importing", 0, 0);
   const storageRoot = await navigator.storage.getDirectory();
   return importBrowserDirectory(files, storageRoot, progress);

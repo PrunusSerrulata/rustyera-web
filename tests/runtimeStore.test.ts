@@ -7,6 +7,7 @@ import { decodeServicePayload, encodeServicePayload } from "@/core/serviceCodec"
 import {
   defaultPreferences,
   type Preferences,
+  type ProjectOpenMetrics,
   type ProjectProgress,
   type SystemFontQueryResult,
 } from "@/core/types";
@@ -78,6 +79,18 @@ const bridge = vi.hoisted(() => ({
 vi.mock("@/platform", () => ({ platformBridge: () => bridge }));
 
 import { useRuntimeStore } from "@/stores/runtime";
+
+function mockProjectSelection(
+  metrics: ProjectOpenMetrics | undefined,
+  method: "openProject" | "openProjectFile" = "openProject",
+): void {
+  bridge[method].mockImplementation(async (onSubmitted, prepareAfterSelection) => {
+    if (!metrics) return undefined;
+    onSubmitted?.(performance.now());
+    await prepareAfterSelection?.();
+    return metrics;
+  });
+}
 
 describe("runtime store session lifecycle", () => {
   beforeEach(() => {
@@ -1731,7 +1744,7 @@ describe("runtime store session lifecycle", () => {
 
   it("starts a test new game with the configured deterministic seed", async () => {
     vi.stubEnv("VITE_RUSTYERA_TEST", "1");
-    bridge.openProject.mockResolvedValue({
+    mockProjectSelection({
       submittedAtMs: 0,
       quickScanMs: 1,
       cacheReadMs: 0,
@@ -1808,7 +1821,7 @@ describe("runtime store session lifecycle", () => {
 
   it("imports a traditional save before starting the test runtime", async () => {
     vi.stubEnv("VITE_RUSTYERA_TEST", "1");
-    bridge.openProject.mockResolvedValue({
+    mockProjectSelection({
       submittedAtMs: 0,
       quickScanMs: 1,
       cacheReadMs: 0,
@@ -1953,18 +1966,24 @@ describe("runtime store session lifecycle", () => {
         createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn() }));
       },
     );
-    bridge.openProject.mockImplementation(async (onSubmitted?: (submittedAtMs: number) => void) => {
-      onSubmitted?.(performance.now());
-      bridge.projectProgressListener?.({ stage: "scanning", completed: 3, total: 4 });
-      return {
-        submittedAtMs: 0,
-        quickScanMs: 1,
-        cacheReadMs: 2,
-        sourceReadMs: 3,
-        submitMs: 4,
-        cacheImported: true,
-      };
-    });
+    bridge.openProject.mockImplementation(
+      async (
+        onSubmitted?: (submittedAtMs: number) => void,
+        prepareAfterSelection?: () => Promise<void>,
+      ) => {
+        onSubmitted?.(performance.now());
+        await prepareAfterSelection?.();
+        bridge.projectProgressListener?.({ stage: "scanning", completed: 3, total: 4 });
+        return {
+          submittedAtMs: 0,
+          quickScanMs: 1,
+          cacheReadMs: 2,
+          sourceReadMs: 3,
+          submitMs: 4,
+          cacheImported: true,
+        };
+      },
+    );
     const store = useRuntimeStore();
     store.projectOpen = true;
     store.presentation.lines.push({ id: "old-line", runs: [] } as any);
@@ -2046,10 +2065,16 @@ describe("runtime store session lifecycle", () => {
 
   it("terminates startup telemetry when a bridge fails after submission", async () => {
     stubRunningAudioContext();
-    bridge.openProject.mockImplementation(async (onSubmitted?: (submittedAtMs: number) => void) => {
-      onSubmitted?.(performance.now());
-      throw new Error("scan failed");
-    });
+    bridge.openProject.mockImplementation(
+      async (
+        onSubmitted?: (submittedAtMs: number) => void,
+        prepareAfterSelection?: () => Promise<void>,
+      ) => {
+        onSubmitted?.(performance.now());
+        await prepareAfterSelection?.();
+        throw new Error("scan failed");
+      },
+    );
     const store = useRuntimeStore();
 
     await store.openProject();
@@ -2072,7 +2097,7 @@ describe("runtime store session lifecycle", () => {
         createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn() }));
       },
     );
-    bridge.openProject.mockResolvedValue({
+    mockProjectSelection({
       submittedAtMs: performance.now(),
       quickScanMs: 1,
       cacheReadMs: 0,
@@ -2091,7 +2116,7 @@ describe("runtime store session lifecycle", () => {
 
   it("does not create a startup attempt when project selection is cancelled", async () => {
     stubRunningAudioContext();
-    bridge.openProject.mockResolvedValue(undefined);
+    mockProjectSelection(undefined);
     const store = useRuntimeStore();
 
     await store.openProject();
@@ -2099,19 +2124,94 @@ describe("runtime store session lifecycle", () => {
     expect(store.startupTelemetry).toBeUndefined();
   });
 
+  it.each([
+    ["directory", "openProject", "openProject"],
+    ["file", "openProjectFile", "openProjectFile"],
+  ] as const)(
+    "opens the %s picker before session preparation",
+    async (_selection, storeMethod, bridgeMethod) => {
+      stubRunningAudioContext();
+      let confirmSelection!: () => void;
+      const selected = new Promise<void>((resolve) => {
+        confirmSelection = resolve;
+      });
+      bridge[bridgeMethod].mockImplementation(async (onSubmitted, prepareAfterSelection) => {
+        await selected;
+        onSubmitted?.(performance.now());
+        await prepareAfterSelection?.();
+        return {
+          submittedAtMs: performance.now(),
+          quickScanMs: 1,
+          cacheReadMs: 0,
+          sourceReadMs: 1,
+          submitMs: 1,
+          cacheImported: false,
+        };
+      });
+      const store = useRuntimeStore();
+
+      const opening = store[storeMethod]();
+
+      expect(bridge[bridgeMethod]).toHaveBeenCalledOnce();
+      expect(bridge.createSession).not.toHaveBeenCalled();
+
+      confirmSelection();
+      await opening;
+
+      expect(bridge.createSession).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("keeps the current project when replacement selection is cancelled", async () => {
+    stubRunningAudioContext();
+    mockProjectSelection(undefined);
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+
+    await store.openProject();
+    await store.confirmOpenProject();
+
+    expect(bridge.createSession).not.toHaveBeenCalled();
+    expect(store.projectOpen).toBe(true);
+    expect(store.status).toBe("已取消打开项目");
+  });
+
+  it("does not overwrite the previous project telemetry when the picker fails", async () => {
+    stubRunningAudioContext();
+    const store = useRuntimeStore();
+    const previousTelemetry = {
+      scenario: "warm",
+      selection: "directory",
+      outcome: "loading",
+    } as any;
+    store.startupTelemetry = previousTelemetry;
+    bridge.openProject.mockRejectedValue(new Error("picker failed"));
+
+    await store.openProject();
+
+    expect(store.startupTelemetry).toEqual(previousTelemetry);
+    expect(store.status).toBe("Error: picker failed");
+  });
+
   it("classifies a rejected cache followed by source submission as cold", async () => {
     stubRunningAudioContext();
-    bridge.openProject.mockImplementation(async (onSubmitted?: (submittedAtMs: number) => void) => {
-      onSubmitted?.(performance.now());
-      return {
-        submittedAtMs: performance.now(),
-        quickScanMs: 1,
-        cacheReadMs: 2,
-        sourceReadMs: 0,
-        submitMs: 3,
-        cacheImported: true,
-      };
-    });
+    bridge.openProject.mockImplementation(
+      async (
+        onSubmitted?: (submittedAtMs: number) => void,
+        prepareAfterSelection?: () => Promise<void>,
+      ) => {
+        onSubmitted?.(performance.now());
+        await prepareAfterSelection?.();
+        return {
+          submittedAtMs: performance.now(),
+          quickScanMs: 1,
+          cacheReadMs: 2,
+          sourceReadMs: 0,
+          submitMs: 3,
+          cacheImported: true,
+        };
+      },
+    );
     bridge.pump
       .mockResolvedValueOnce({
         ...emptyBatch(),
@@ -2146,17 +2246,23 @@ describe("runtime store session lifecycle", () => {
 
   it("fails the active attempt when Runtime rejects its Start command", async () => {
     stubRunningAudioContext();
-    bridge.openProject.mockImplementation(async (onSubmitted?: (submittedAtMs: number) => void) => {
-      onSubmitted?.(performance.now());
-      return {
-        submittedAtMs: performance.now(),
-        quickScanMs: 1,
-        cacheReadMs: 0,
-        sourceReadMs: 1,
-        submitMs: 1,
-        cacheImported: false,
-      };
-    });
+    bridge.openProject.mockImplementation(
+      async (
+        onSubmitted?: (submittedAtMs: number) => void,
+        prepareAfterSelection?: () => Promise<void>,
+      ) => {
+        onSubmitted?.(performance.now());
+        await prepareAfterSelection?.();
+        return {
+          submittedAtMs: performance.now(),
+          quickScanMs: 1,
+          cacheReadMs: 0,
+          sourceReadMs: 1,
+          submitMs: 1,
+          cacheImported: false,
+        };
+      },
+    );
     bridge.pump
       .mockResolvedValueOnce({
         ...emptyBatch(),
@@ -2196,16 +2302,18 @@ describe("runtime store session lifecycle", () => {
       submitMs: number;
       cacheImported: boolean;
     }) => void;
-    bridge.openProject.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveOpenProject = resolve;
-        }),
-    );
+    bridge.openProject.mockImplementation(async (onSubmitted, prepareAfterSelection) => {
+      onSubmitted?.(performance.now());
+      await prepareAfterSelection?.();
+      return new Promise((resolve) => {
+        resolveOpenProject = resolve;
+      });
+    });
     const store = useRuntimeStore();
 
     const opening = store.openProject();
     await vi.waitFor(() => expect(bridge.openProject).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(resolveOpenProject).toBeTypeOf("function"));
     expect(store.projectLoading).toBe(false);
 
     bridge.projectProgressListener?.({ stage: "importing", completed: 12, total: 40 });
@@ -2748,7 +2856,7 @@ async function runningBrowserStore() {
 async function storeWithPendingCompiledCacheWrite(write: Promise<void>) {
   stubRunningAudioContext();
   bridge.writeCompiledCacheChunk.mockReturnValueOnce(write);
-  bridge.openProject.mockResolvedValue({
+  mockProjectSelection({
     submittedAtMs: 0,
     quickScanMs: 1,
     cacheReadMs: 0,

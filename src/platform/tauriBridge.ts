@@ -13,6 +13,7 @@ import type {
   Preferences,
   ProjectProgress,
   ProjectOpenMetrics,
+  ProjectSelectionPreparation,
   ProjectSubmittedListener,
   ProjectConfigurationEntry,
   PumpBatch,
@@ -119,11 +120,13 @@ export class TauriBridge implements FrontendBridge {
 
   async openProject(
     onSubmitted?: ProjectSubmittedListener,
+    prepareAfterSelection?: ProjectSelectionPreparation,
   ): Promise<ProjectOpenMetrics | undefined> {
     const testProject = import.meta.env.VITE_RUSTYERA_TEST_PROJECT;
     if (import.meta.env.VITE_RUSTYERA_TEST === "1" && testProject) {
       const submittedAtMs = performance.now();
       onSubmitted?.(submittedAtMs);
+      await prepareAfterSelection?.();
       const metrics = await invoke<HostProjectOpenMetrics>("open_project", { path: testProject });
       this.projectPath = testProject;
       this.projectIsFile = false;
@@ -133,6 +136,7 @@ export class TauriBridge implements FrontendBridge {
     if (typeof path !== "string") return undefined;
     const submittedAtMs = performance.now();
     onSubmitted?.(submittedAtMs);
+    await prepareAfterSelection?.();
     this.projectProgressListener?.({ stage: "scanning", completed: 0, total: 0 });
     if (this.progressUnlisten) await this.progressUnlisten;
     const metrics = await invoke<HostProjectOpenMetrics>("open_project", { path });
@@ -143,11 +147,13 @@ export class TauriBridge implements FrontendBridge {
 
   async openProjectFile(
     onSubmitted?: ProjectSubmittedListener,
+    prepareAfterSelection?: ProjectSelectionPreparation,
   ): Promise<ProjectOpenMetrics | undefined> {
     const testProjectFile = import.meta.env.VITE_RUSTYERA_TEST_PROJECT_FILE;
     if (import.meta.env.VITE_RUSTYERA_TEST === "1" && testProjectFile) {
       const submittedAtMs = performance.now();
       onSubmitted?.(submittedAtMs);
+      await prepareAfterSelection?.();
       const metrics = await invoke<HostProjectOpenMetrics>("open_project_file", {
         path: testProjectFile,
       });
@@ -164,6 +170,7 @@ export class TauriBridge implements FrontendBridge {
     if (typeof path !== "string") return undefined;
     const submittedAtMs = performance.now();
     onSubmitted?.(submittedAtMs);
+    await prepareAfterSelection?.();
     const metrics = await invoke<HostProjectOpenMetrics>("open_project_file", { path });
     this.projectPath = path;
     this.projectIsFile = true;

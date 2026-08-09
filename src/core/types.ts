@@ -55,6 +55,7 @@ export interface ProjectOpenMetrics {
 }
 
 export type ProjectSubmittedListener = (submittedAtMs: number) => void;
+export type ProjectSelectionPreparation = () => Promise<void>;
 
 export type ProjectProgressStage =
   | "importing"
@@ -109,8 +110,14 @@ export interface FrontendBridge {
   submitDebug(message: DebugMessage, correlationId?: number | bigint): Promise<number | bigint>;
   pump(): Promise<PumpBatch>;
   setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void;
-  openProject(onSubmitted?: ProjectSubmittedListener): Promise<ProjectOpenMetrics | undefined>;
-  openProjectFile(onSubmitted?: ProjectSubmittedListener): Promise<ProjectOpenMetrics | undefined>;
+  openProject(
+    onSubmitted?: ProjectSubmittedListener,
+    prepareAfterSelection?: ProjectSelectionPreparation,
+  ): Promise<ProjectOpenMetrics | undefined>;
+  openProjectFile(
+    onSubmitted?: ProjectSubmittedListener,
+    prepareAfterSelection?: ProjectSelectionPreparation,
+  ): Promise<ProjectOpenMetrics | undefined>;
   restartProject(onSubmitted?: ProjectSubmittedListener): Promise<ProjectOpenMetrics>;
   submitProjectSource(): Promise<void>;
   reloadProject(): Promise<void>;

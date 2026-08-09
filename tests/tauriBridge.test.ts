@@ -129,24 +129,62 @@ describe("Tauri project restart", () => {
     expect(progress).toHaveBeenCalledWith({ stage: "compiling", completed: 9, total: 10 });
   });
 
-  it("starts progress after the directory picker returns and before native scanning", async () => {
-    open.mockResolvedValue("/game/eraTW");
-    invoke.mockResolvedValue({
-      quickScanMs: 1,
-      cacheReadMs: 2,
-      sourceReadMs: 3,
-      submitMs: 4,
-      cacheImported: false,
-    });
-    const progress = vi.fn();
-    const bridge = new TauriBridge();
-    bridge.setProjectProgressListener(progress);
+  it.each([
+    ["directory", "openProject", "/game/eraTW"],
+    ["file", "openProjectFile", "/game/eraTW.reraproj"],
+  ] as const)(
+    "submits and prepares the selected %s before native I/O",
+    async (_kind, method, path) => {
+      open.mockResolvedValue(path);
+      invoke.mockResolvedValue({
+        quickScanMs: 1,
+        cacheReadMs: 2,
+        sourceReadMs: 3,
+        submitMs: 4,
+        cacheImported: false,
+      });
+      const submitted = vi.fn();
+      const prepareAfterSelection = vi.fn(async () => {});
+      const progress = vi.fn();
+      const bridge = new TauriBridge();
+      bridge.setProjectProgressListener(progress);
 
-    await bridge.openProject();
+      await bridge[method](submitted, prepareAfterSelection);
 
-    expect(progress).toHaveBeenCalledWith({ stage: "scanning", completed: 0, total: 0 });
-    expect(progress.mock.invocationCallOrder[0]).toBeLessThan(invoke.mock.invocationCallOrder[0]);
-  });
+      expect(open.mock.invocationCallOrder[0]).toBeLessThan(submitted.mock.invocationCallOrder[0]);
+      expect(submitted.mock.invocationCallOrder[0]).toBeLessThan(
+        prepareAfterSelection.mock.invocationCallOrder[0],
+      );
+      expect(prepareAfterSelection.mock.invocationCallOrder[0]).toBeLessThan(
+        invoke.mock.invocationCallOrder[0],
+      );
+      if (method === "openProject") {
+        expect(progress).toHaveBeenCalledWith({ stage: "scanning", completed: 0, total: 0 });
+        expect(progress.mock.invocationCallOrder[0]).toBeLessThan(
+          invoke.mock.invocationCallOrder[0],
+        );
+      } else expect(progress).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["directory", "openProject", "/game/eraTW"],
+    ["file", "openProjectFile", "/game/eraTW.reraproj"],
+  ] as const)(
+    "does not read the selected %s when session preparation fails",
+    async (_kind, method, path) => {
+      open.mockResolvedValue(path);
+      const bridge = new TauriBridge();
+
+      await expect(
+        bridge[method](undefined, async () => {
+          throw new Error("session failed");
+        }),
+      ).rejects.toThrow("session failed");
+
+      expect(invoke).not.toHaveBeenCalled();
+    },
+  );
 
   it("applies native window settings from applicable project configuration", async () => {
     const entry = (code: string, value: string) => ({

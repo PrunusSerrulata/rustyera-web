@@ -4,6 +4,7 @@ import type {
   Preferences,
   ProjectProgress,
   ProjectOpenMetrics,
+  ProjectSelectionPreparation,
   ProjectSubmittedListener,
   PumpBatch,
   RuntimeMessage,
@@ -86,6 +87,7 @@ export class BrowserBridge implements FrontendBridge {
 
   async openProject(
     onSubmitted?: ProjectSubmittedListener,
+    prepareAfterSelection?: ProjectSelectionPreparation,
   ): Promise<ProjectOpenMetrics | undefined> {
     let submittedAtMs = 0;
     const picked = await pickBrowserDirectory(
@@ -94,6 +96,7 @@ export class BrowserBridge implements FrontendBridge {
         submittedAtMs = performance.now();
         onSubmitted?.(submittedAtMs);
       },
+      prepareAfterSelection,
     );
     if (!picked) return undefined;
     if (submittedAtMs === 0) {
@@ -101,9 +104,6 @@ export class BrowserBridge implements FrontendBridge {
       onSubmitted?.(submittedAtMs);
     }
     const handle = picked.handle;
-    const permission = await handle.requestPermission?.({ mode: "readwrite" });
-    if (permission && permission !== "granted")
-      throw new Error("运行完整游戏需要项目目录的读写权限。");
     // Playwright supplies an RPC-backed FileSystemDirectoryHandle which intentionally cannot be
     // structured-cloned into IndexedDB. Production handles continue to be persisted normally.
     if (picked.persistHandle && import.meta.env.VITE_RUSTYERA_TEST !== "1")
@@ -132,11 +132,13 @@ export class BrowserBridge implements FrontendBridge {
 
   async openProjectFile(
     onSubmitted?: ProjectSubmittedListener,
+    prepareAfterSelection?: ProjectSelectionPreparation,
   ): Promise<ProjectOpenMetrics | undefined> {
     const file = await pickBrowserFile(".reraproj,application/octet-stream");
     if (!file) return undefined;
     const submittedAtMs = performance.now();
     onSubmitted?.(submittedAtMs);
+    await prepareAfterSelection?.();
     const started = performance.now();
     const bytes = await readProjectFile(file, (completed, total) =>
       this.projectProgressListener?.({ stage: "scanning", completed, total }),

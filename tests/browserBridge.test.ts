@@ -244,6 +244,45 @@ describe("browser startup bridge", () => {
     });
   });
 
+  it("submits and prepares a selected project file before reading it", async () => {
+    const storage = new MemoryDirectoryHandle("storage");
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    const file = new File([Uint8Array.of(1, 2, 3)], "game.reraproj");
+    pickBrowserFile.mockResolvedValue(file);
+    respond = (method) => {
+      if (method === "loadProjectFile")
+        return { storageKey: "selected-key", manifest: { project_revision: 1, files: [] } };
+      return 1n;
+    };
+    const submitted = vi.fn();
+    const prepareAfterSelection = vi.fn(async () => {
+      expect(submitted).toHaveBeenCalledOnce();
+      expect(requests).toHaveLength(0);
+    });
+
+    await new BrowserBridge().openProjectFile(submitted, prepareAfterSelection);
+
+    expect(submitted.mock.invocationCallOrder[0]).toBeLessThan(
+      prepareAfterSelection.mock.invocationCallOrder[0],
+    );
+    expect(requests[0]?.message.method).toBe("loadProjectFile");
+  });
+
+  it("does not read a selected project file when session preparation fails", async () => {
+    const file = new File([Uint8Array.of(1, 2, 3)], "game.reraproj");
+    const slice = vi.spyOn(file, "slice");
+    pickBrowserFile.mockResolvedValue(file);
+
+    await expect(
+      new BrowserBridge().openProjectFile(undefined, async () => {
+        throw new Error("session failed");
+      }),
+    ).rejects.toThrow("session failed");
+
+    expect(slice).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(0);
+  });
+
   it("reads large packaged projects in visible chunks before transferring them", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });

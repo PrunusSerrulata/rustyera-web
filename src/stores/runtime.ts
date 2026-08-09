@@ -550,21 +550,25 @@ export const useRuntimeStore = defineStore("runtime", () => {
   ): Promise<void> {
     projectSelecting.value = true;
     acceptingProjectProgress = true;
+    unlockAudioFromUserGesture();
+    let currentSessionReplaced = false;
+    let selectionSubmitted = false;
     try {
-      if (replaceCurrent) await recreateSessionForProjectSelection();
-      else {
-        unlockAudioFromUserGesture();
-        await ensureSession();
-      }
-      status.value = "正在读取项目…";
-      startupTelemetry.value = undefined;
-      const onSubmitted = (submittedAtMs: number) =>
+      const prepareAfterSelection = async () => {
+        if (replaceCurrent) {
+          currentSessionReplaced = true;
+          await recreateSessionForProjectSelection();
+        } else await ensureSession();
+        status.value = "正在读取项目…";
+      };
+      const onSubmitted = (submittedAtMs: number) => {
+        selectionSubmitted = true;
         beginStartupTelemetry(submittedAtMs, selection);
+      };
       const metrics = await (selection === "file"
-        ? bridge.openProjectFile(onSubmitted)
-        : bridge.openProject(onSubmitted));
+        ? bridge.openProjectFile(onSubmitted, prepareAfterSelection)
+        : bridge.openProject(onSubmitted, prepareAfterSelection));
       if (!metrics) {
-        if (replaceCurrent) projectOpen.value = false;
         finishProjectLoad();
         status.value = "已取消打开项目";
         return;
@@ -581,14 +585,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
       continueProjectBuildProgress(metrics.cacheImported);
       schedulePump(0);
     } catch (error) {
-      failStartupTelemetry(error);
-      if (replaceCurrent) projectOpen.value = false;
+      if (selectionSubmitted) failStartupTelemetry(error);
+      if (currentSessionReplaced) projectOpen.value = false;
       finishProjectLoad();
       status.value = String(error);
       log("error", status.value);
     } finally {
       projectSelecting.value = false;
-      if (replaceCurrent) {
+      if (currentSessionReplaced) {
         runtimePump.setTransitioning(false);
         schedulePump(0);
       }
