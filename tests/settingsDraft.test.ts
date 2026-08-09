@@ -6,6 +6,17 @@ import { projectSettingsTabs, type SettingsField } from "@/core/settings";
 import type { ProjectConfigurationEntry } from "@/core/types";
 
 describe("settings draft domain", () => {
+  it("adds exactly the three requested project settings", () => {
+    const fields = projectSettingsTabs
+      .flatMap((tab) => tab.groups)
+      .find((group) => group.title === "声音与文本显示")?.fields;
+    expect(fields?.map((field) => field.code)).toEqual([
+      "AudioVolume",
+      "ReplaceFullWidthSpaces",
+      "CharacterWidthMode",
+    ]);
+  });
+
   it("describes FocusColor as the selected text color", () => {
     const focusColor = projectSettingsTabs
       .flatMap((tab) => tab.groups)

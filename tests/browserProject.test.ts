@@ -285,32 +285,43 @@ describe("browser project reads", () => {
     await expect(project.readResource("SOUND/主题.MP3")).resolves.toEqual(Uint8Array.of(4, 5, 6));
   });
 
-  it("atomically updates a root emuera.config after checking its normalized digest", async () => {
+  it("atomically updates a root reraconfig.toml after checking its normalized digest", async () => {
     const root = new SaveDirectoryHandle("game");
-    const handle = await root.getFileHandle("emuera.config", { create: true });
-    await (await handle.createWritable()).write(new TextEncoder().encode("フォントサイズ:12\n"));
+    const handle = await root.getFileHandle("reraconfig.toml", { create: true });
+    await (
+      await handle.createWritable()
+    ).write(new TextEncoder().encode("[display]\r\nfont_size = 12\r\n"));
     const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
     project.useImportedManifest({ project_revision: 1, files: [] });
     const { blake3 } = await import("@noble/hashes/blake3.js");
-    const digest = blake3(new TextEncoder().encode("フォントサイズ:12\n"));
+    const digest = blake3(new TextEncoder().encode("[display]\nfont_size = 12\n"));
 
-    await project.writeConfiguration(digest, "フォントサイズ:18\n");
+    await project.writeConfiguration(digest, "[display]\nfont_size = 18\n");
 
     expect(
       new TextDecoder().decode(new Uint8Array(await (await handle.getFile()).arrayBuffer())),
-    ).toBe("フォントサイズ:18\n");
-    await expect(project.writeConfiguration(digest, "フォントサイズ:20\n")).rejects.toThrow(
+    ).toBe("[display]\nfont_size = 18\n");
+    await expect(project.writeConfiguration(digest, "[display]\nfont_size = 20\n")).rejects.toThrow(
       "已被其他程序修改",
     );
+  });
+
+  it("treats repeated first-time writes as idempotent and rejects non-UTF-8 TOML", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const contents = "[meta]\nschema_version = 1\n";
+    await project.writeConfiguration(new Uint8Array(), contents);
+    await project.writeConfiguration(new Uint8Array(), contents.replaceAll("\n", "\r\n"));
+    expect(() => decodeProjectSource(Uint8Array.of(0x81), "reraconfig.toml")).toThrow("UTF-8");
   });
 
   it("keeps configuration embedded in packaged projects read-only", async () => {
     const project = new BrowserProject(new SaveDirectoryHandle("storage") as any, 1, "game");
     project.useEmbeddedManifest({ project_revision: 1, files: [] });
 
-    await expect(project.writeConfiguration(new Uint8Array(), "FontSize:18\n")).rejects.toThrow(
-      "只读",
-    );
+    await expect(
+      project.writeConfiguration(new Uint8Array(), "[text]\nfont_size = 18\n"),
+    ).rejects.toThrow("只读");
   });
 
   it("reuses the selected packaged file without copying it into browser storage", async () => {

@@ -105,11 +105,11 @@ describe("Tauri project restart", () => {
     expect(bridge.projectConfigurationWritable()).toBe(false);
     await bridge.openProject();
     expect(bridge.projectConfigurationWritable()).toBe(true);
-    await bridge.writeProjectConfiguration(Uint8Array.of(1, 2), "FontSize:18\n");
+    await bridge.writeProjectConfiguration(Uint8Array.of(1, 2), "[text]\nfont_size = 18\n");
 
     expect(invoke).toHaveBeenLastCalledWith("write_project_configuration", {
       expectedDigest: [1, 2],
-      contents: "FontSize:18\n",
+      contents: "[text]\nfont_size = 18\n",
     });
   });
 

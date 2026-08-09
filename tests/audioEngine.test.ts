@@ -6,6 +6,18 @@ import { defaultPreferences, type FrontendBridge } from "@/core/types";
 describe("audio engine scheduling", () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it("combines the hot game volume with the existing master volume", async () => {
+    const audio = stubAudioContext(sourceNode());
+    const preferences = { ...defaultPreferences(), masterVolume: 0.8 };
+    const engine = new AudioEngine({} as FrontendBridge, preferences);
+    engine.setGameVolume(0.5);
+    await engine.unlock();
+    expect(audio.gains[0]?.gain.value).toBeCloseTo(0.4);
+
+    engine.setGameVolume(0.2);
+    expect(audio.gains[0]?.gain.value).toBeCloseTo(0.16);
+  });
+
   it("does not block the runtime while a resource is loading", async () => {
     const resource = deferred<Uint8Array>();
     const source = sourceNode();

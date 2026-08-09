@@ -225,6 +225,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const projectConfiguration = ref<ProjectConfigurationSnapshot | null>(null);
   let pendingConfigurationUpdate: PendingConfigurationUpdate | undefined;
   const configurationProfileValid = ref(true);
+  const configurationMigrationFailed = ref(false);
   const viewportMeasurement = ref<GameViewportMeasurement>();
   const previewPreferences = ref<Preferences | null>(null);
   const {
@@ -348,7 +349,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const configurationReadOnly = computed(
     () =>
       projectConfiguration.value != null &&
-      (!bridge.projectConfigurationWritable() || !configurationProfileValid.value),
+      (!bridge.projectConfigurationWritable() ||
+        !configurationProfileValid.value ||
+        configurationMigrationFailed.value),
   );
   const configurationSessionOnly = computed(
     () =>
@@ -361,6 +364,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   );
   const useMenu = computed(() => configurationBoolean("UseMenu", true));
   const useMouse = computed(() => configurationBoolean("UseMouse", true));
+  const replaceFullWidthSpaces = computed(() =>
+    configurationBoolean("ReplaceFullWidthSpaces", false),
+  );
   const scrollHeight = computed(() => {
     const value = Number(configurationValue("ScrollHeight") ?? 1);
     return Number.isSafeInteger(value) ? Math.max(1, value) : 1;
@@ -727,6 +733,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           })),
         );
         updateProjectConfiguration(value.configuration);
+        await persistGeneratedConfiguration();
         if (value.success) {
           if (projectConfiguration.value) {
             try {
@@ -815,6 +822,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         batchMediaDirty = projectPresentationSnapshot(value.presentation) || batchMediaDirty;
         applyInputUndo(value.input_undo ?? null);
         updateProjectConfiguration(value.configuration);
+        await persistGeneratedConfiguration();
         captureProjectTitle(currentPresentation());
         break;
       case "configuration_update_prepared": {
@@ -1115,13 +1123,32 @@ export const useRuntimeStore = defineStore("runtime", () => {
   function updateProjectConfiguration(value: unknown): void {
     if (value == null) {
       projectConfiguration.value = null;
+      configurationMigrationFailed.value = false;
+      audio.setGameVolume(1);
       return;
     }
     try {
       projectConfiguration.value = parseProjectConfiguration(value);
+      if (projectConfiguration.value.generated_source == null)
+        configurationMigrationFailed.value = false;
+      const volume = Number(configurationValue("AudioVolume") ?? 100);
+      audio.setGameVolume(Number.isFinite(volume) ? volume / 100 : 1);
     } catch (error) {
       projectConfiguration.value = null;
       log("error", `项目配置响应无效：${String(error)}`);
+    }
+  }
+
+  async function persistGeneratedConfiguration(): Promise<void> {
+    const source = projectConfiguration.value?.generated_source;
+    if (source == null || !bridge.projectConfigurationWritable()) return;
+    try {
+      await bridge.writeProjectConfiguration(new Uint8Array(), source);
+      configurationMigrationFailed.value = false;
+    } catch (error) {
+      configurationMigrationFailed.value = true;
+      log("error", `迁移 reraconfig.toml 失败：${String(error)}`);
+      throw error;
     }
   }
 
@@ -3053,6 +3080,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     viewportMeasurement,
     useMenu,
     useMouse,
+    replaceFullWidthSpaces,
     scrollHeight,
     effectivePreferences,
     gameTextStyle,

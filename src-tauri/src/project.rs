@@ -271,26 +271,41 @@ impl ProjectHost {
         contents: &str,
     ) -> Result<(), String> {
         if self.packaged {
-            return Err("项目文件中的 emuera.config 为只读".into());
+            return Err("项目文件中的 reraconfig.toml 为只读".into());
         }
         let relative_path = self
             .indexed_files
             .iter()
-            .find(|file| file.relative_path.eq_ignore_ascii_case("emuera.config"))
-            .map_or("emuera.config", |file| file.relative_path.as_str());
+            .find(|file| file.relative_path.eq_ignore_ascii_case("reraconfig.toml"))
+            .map_or("reraconfig.toml", |file| file.relative_path.as_str());
         let target = self.root.join(relative_path);
         let current_digest = match normalized_file_bytes(&target, FileCategory::Configuration) {
-            Ok(bytes) => blake3::hash(&bytes).as_bytes().to_vec(),
+            Ok(bytes) => {
+                let text = String::from_utf8(bytes)
+                    .map_err(|_| "reraconfig.toml is not valid UTF-8".to_owned())?;
+                blake3::hash(normalize_configuration_text(&text).as_bytes())
+                    .as_bytes()
+                    .to_vec()
+            }
             Err(_) if !target.exists() => Vec::new(),
             Err(error) => return Err(error),
         };
+        let requested_digest = blake3::hash(
+            contents
+                .replace("\r\n", "\n")
+                .replace('\r', "\n")
+                .as_bytes(),
+        );
+        if expected_digest.is_empty() && current_digest == requested_digest.as_bytes() {
+            return Ok(());
+        }
         if current_digest != expected_digest {
-            return Err("emuera.config 已被其他程序修改，请重新打开偏好设置".into());
+            return Err("reraconfig.toml 已被其他程序修改，请重新打开偏好设置".into());
         }
         let mut temporary = tempfile::NamedTempFile::new_in(&self.root)
             .map_err(|error| format!("cannot create temporary configuration file: {error}"))?;
         temporary
-            .write_all(contents.as_bytes())
+            .write_all(native_configuration_contents(contents).as_bytes())
             .map_err(|error| format!("cannot write configuration file: {error}"))?;
         temporary
             .as_file()
@@ -572,9 +587,21 @@ fn normalized_file_bytes(path: &Path, category: FileCategory) -> Result<Vec<u8>,
     if category == FileCategory::Resource {
         return Ok(bytes);
     }
-    decode_project_text(&bytes)
+    decode_text_for_path(path, &bytes)
         .map(String::into_bytes)
         .ok_or_else(|| format!("{} is not valid UTF-8, Windows-31J, or GBK", path.display()))
+}
+
+fn decode_text_for_path(path: &Path, bytes: &[u8]) -> Option<String> {
+    if path
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("reraconfig.toml"))
+    {
+        return std::str::from_utf8(bytes)
+            .ok()
+            .map(|text| text.strip_prefix('\u{feff}').unwrap_or(text).to_owned());
+    }
+    decode_project_text(bytes)
 }
 
 fn decode_project_text(bytes: &[u8]) -> Option<String> {
@@ -691,6 +718,13 @@ fn classify(
         .extension()
         .map(|value| value.to_string_lossy().to_lowercase())
         .unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if matches!(name.as_str(), "reraconfig.toml" | "setting.json") {
+        return Ok(Some(FileCategory::Configuration));
+    }
     if first == "resources" {
         return Ok(if extension == "csv" {
             Some(FileCategory::ResourceManifest)
@@ -731,6 +765,22 @@ fn classify(
     Ok(Some(category))
 }
 
+fn normalize_configuration_text(text: &str) -> String {
+    text.trim_start_matches('\u{feff}')
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+}
+
+fn native_configuration_contents(contents: &str) -> String {
+    let normalized = contents.replace("\r\n", "\n").replace('\r', "\n");
+    #[cfg(windows)]
+    {
+        return normalized.replace('\n', "\r\n");
+    }
+    #[cfg(not(windows))]
+    normalized
+}
+
 fn read_file(root: &Path, path: &Path, category: FileCategory) -> Result<SubmittedFile, String> {
     let relative_path = path
         .strip_prefix(root)
@@ -744,8 +794,13 @@ fn read_file(root: &Path, path: &Path, category: FileCategory) -> Result<Submitt
         let content_hash = blake3::hash(&bytes);
         (FilePayload::Bytes(ProtocolBytes::new(bytes)), content_hash)
     } else {
-        let text = decode_project_text(&bytes)
-            .ok_or_else(|| format!("{relative_path} is not valid UTF-8, Windows-31J, or GBK"))?;
+        let text = decode_text_for_path(path, &bytes).ok_or_else(|| {
+            if relative_path.eq_ignore_ascii_case("reraconfig.toml") {
+                format!("{relative_path} is not valid UTF-8")
+            } else {
+                format!("{relative_path} is not valid UTF-8, Windows-31J, or GBK")
+            }
+        })?;
         let content_hash = blake3::hash(text.as_bytes());
         (FilePayload::Utf8(text), content_hash)
     };
@@ -947,21 +1002,37 @@ mod tests {
     #[test]
     fn configuration_write_checks_digest_and_atomically_replaces_root_file() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("emuera.config");
-        fs::write(&path, "フォントサイズ:12\n").unwrap();
+        let path = directory.path().join("reraconfig.toml");
+        fs::write(&path, "[display]\r\nfont_size = 12\r\n").unwrap();
         let project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
-        let digest = blake3::hash("フォントサイズ:12\n".as_bytes());
+        let digest = blake3::hash("[display]\nfont_size = 12\n".as_bytes());
 
         project
-            .write_configuration(digest.as_bytes(), "フォントサイズ:18\n")
+            .write_configuration(digest.as_bytes(), "[display]\nfont_size = 18\n")
             .unwrap();
 
-        assert_eq!(fs::read_to_string(path).unwrap(), "フォントサイズ:18\n");
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "[display]\nfont_size = 18\n"
+        );
+        project
+            .write_configuration(&[], "[display]\r\nfont_size = 18\r\n")
+            .unwrap();
         assert!(
             project
-                .write_configuration(digest.as_bytes(), "フォントサイズ:20\n")
+                .write_configuration(digest.as_bytes(), "[display]\nfont_size = 20\n")
                 .unwrap_err()
                 .contains("其他程序修改")
         );
+    }
+
+    #[test]
+    fn reraconfig_requires_strict_utf8() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("reraconfig.toml"), [0x81]).unwrap();
+        let Err(error) = ProjectHost::scan_quick(directory.path(), 1) else {
+            panic!("non-UTF-8 reraconfig.toml must be rejected during the initial scan");
+        };
+        assert!(error.contains("valid UTF-8"));
     }
 }

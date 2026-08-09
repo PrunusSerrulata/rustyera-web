@@ -40,6 +40,7 @@ describe("project configuration protocol", () => {
       },
     ],
     restart_pending: false,
+    generated_source: null,
   };
 
   it("parses snapshots and filters settings by client applicability", () => {

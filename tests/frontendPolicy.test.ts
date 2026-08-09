@@ -2,7 +2,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { mount } from "@vue/test-utils";
+import { nextTick, reactive } from "vue";
 import { describe, expect, it, vi } from "vitest";
+
+const runtimeTextPolicy = vi.hoisted(() => ({ replaceFullWidthSpaces: false }));
+const reactiveRuntimeTextPolicy = reactive(runtimeTextPolicy);
 
 vi.mock("@/stores/runtime", () => ({
   useRuntimeStore: () => ({
@@ -15,6 +19,9 @@ vi.mock("@/stores/runtime", () => ({
       settings: { line_height: 18_000 },
       resources: { sprites: [], canvases: [] },
     },
+    get replaceFullWidthSpaces() {
+      return reactiveRuntimeTextPolicy.replaceFullWidthSpaces;
+    },
   }),
 }));
 
@@ -22,6 +29,25 @@ import HtmlNode from "@/components/HtmlNode.vue";
 import RunRenderer from "@/components/RunRenderer.vue";
 
 describe("frontend host and image-line policy", () => {
+  it("hotly replaces full-width spaces in ordinary and HTML text without changing source", async () => {
+    const run = { type: "text", text: "A　B", style: {} };
+    const node = { type: "text", text: "C　D" };
+    reactiveRuntimeTextPolicy.replaceFullWidthSpaces = false;
+    const ordinary = mount(RunRenderer, { props: { run } });
+    const html = mount(HtmlNode, { props: { node }, global: { stubs: { MediaImage: true } } });
+    expect(ordinary.element.textContent).toBe("A　B");
+    expect(html.element.textContent).toBe("C　D");
+
+    reactiveRuntimeTextPolicy.replaceFullWidthSpaces = true;
+    ordinary.vm.$forceUpdate();
+    html.vm.$forceUpdate();
+    await nextTick();
+    expect(ordinary.element.textContent).toBe("A  B");
+    expect(html.element.textContent).toBe("C  D");
+    expect(run.text).toBe("A　B");
+    expect(node.text).toBe("C　D");
+  });
+
   it("grants both Tauri hosts the window permissions used by the frontend", () => {
     const windowPermissions = [
       "core:window:allow-close",

@@ -46,6 +46,11 @@ const textLayoutStyle = computed(() =>
       }
     : undefined,
 );
+const renderedText = computed(() =>
+  store.replaceFullWidthSpaces
+    ? String(props.run.text ?? "").replaceAll("　", "  ")
+    : props.run.text,
+);
 
 function rgba(color: any): string {
   return `rgba(${color.red}, ${color.green}, ${color.blue}, ${Number(color.alpha) / 255})`;
@@ -58,7 +63,7 @@ function rgba(color: any): string {
     :class="{ 'text-layout': run.type === 'text_layout' }"
     :data-columns="run.type === 'text_layout' ? run.columns : undefined"
     :style="[textStyle, textLayoutStyle]"
-    >{{ run.text }}</span
+    >{{ renderedText }}</span
   >
   <button
     v-else-if="run.type === 'button'"

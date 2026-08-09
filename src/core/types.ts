@@ -201,6 +201,7 @@ export interface ProjectConfigurationSnapshot {
   source_digest: Uint8Array;
   entries: ProjectConfigurationEntry[];
   restart_pending: boolean;
+  generated_source: string | null;
 }
 
 export interface ProjectConfigurationChange {

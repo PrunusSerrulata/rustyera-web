@@ -62,6 +62,23 @@ export const projectSettingsTabs: SettingsTab[] = [
           integer("PrintCLength", "项目字符宽度", 1),
         ],
       },
+      {
+        title: "声音与文本显示",
+        fields: [
+          integer("AudioVolume", "游戏音量（%）", 0, 100),
+          yesNo("ReplaceFullWidthSpaces", "以两个半角空格替代全角空格"),
+          {
+            code: "CharacterWidthMode",
+            label: "字符列宽计算模式",
+            control: "enum",
+            options: [
+              { value: "AUTOMATIC", label: "自动" },
+              { value: "AMBIGUOUS_NARROW", label: "模糊字符按窄字符" },
+              { value: "AMBIGUOUS_WIDE", label: "模糊字符按宽字符" },
+            ],
+          },
+        ],
+      },
     ],
   },
   {

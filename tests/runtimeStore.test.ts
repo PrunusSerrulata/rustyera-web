@@ -362,7 +362,7 @@ describe("runtime store session lifecycle", () => {
     expect(store.logs.at(-1)?.message).toContain("duplicate 10049");
   });
 
-  it("exposes applicable emuera.config entries and asks Runtime to validate changes", async () => {
+  it("exposes applicable reraconfig entries and asks Runtime to validate changes", async () => {
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
       events: [
@@ -468,6 +468,31 @@ describe("runtime store session lifecycle", () => {
     );
   });
 
+  it("persists a generated reraconfig with the absent-file precondition", async () => {
+    const generated = "[meta]\nschema_version = 1\n";
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", {
+          success: true,
+          diagnostics: [],
+          configuration: {
+            project_revision: 1,
+            source_digest: blake3(new TextEncoder().encode(generated)),
+            entries: [],
+            restart_pending: false,
+            generated_source: generated,
+          },
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+    await store.enableDebug();
+
+    expect(bridge.writeProjectConfiguration).toHaveBeenCalledWith(new Uint8Array(), generated);
+    expect(store.configurationReadOnly).toBe(false);
+  });
+
   it("continues loading when the host cannot apply a native window setting", async () => {
     bridge.applyProjectConfiguration.mockRejectedValueOnce(new Error("window unavailable"));
     bridge.createSession.mockResolvedValueOnce({
@@ -570,9 +595,9 @@ describe("runtime store session lifecycle", () => {
             {
               project_revision: 3,
               expected_source_digest: new Uint8Array(32).fill(7),
-              contents: "フォントサイズ:18\n",
+              contents: "[text]\nfont_size = 18\n",
               restart_required: false,
-              prepared_source_digest: blake3(new TextEncoder().encode("フォントサイズ:18\n")),
+              prepared_source_digest: blake3(new TextEncoder().encode("[text]\nfont_size = 18\n")),
             },
             21,
           ),
@@ -586,8 +611,9 @@ describe("runtime store session lifecycle", () => {
             {
               configuration: {
                 project_revision: 3,
-                source_digest: blake3(new TextEncoder().encode("フォントサイズ:18\n")),
+                source_digest: blake3(new TextEncoder().encode("[text]\nfont_size = 18\n")),
                 restart_pending: false,
+                generated_source: null,
                 entries: [
                   {
                     code: "FontSize",
@@ -615,7 +641,7 @@ describe("runtime store session lifecycle", () => {
 
     expect(bridge.writeProjectConfiguration).toHaveBeenCalledWith(
       new Uint8Array(32).fill(7),
-      "フォントサイズ:18\n",
+      "[text]\nfont_size = 18\n",
     );
     expect(bridge.submitRuntime).toHaveBeenCalledWith(
       {
@@ -654,6 +680,7 @@ describe("runtime store session lifecycle", () => {
       project_revision: 3,
       source_digest: new Uint8Array(32).fill(digestByte),
       restart_pending: false,
+      generated_source: null,
       entries: [
         {
           code: "FontName",
@@ -802,7 +829,7 @@ describe("runtime store session lifecycle", () => {
 
     const saving = store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "18" }]);
     await Promise.resolve();
-    const contents = "フォントサイズ:18\n";
+    const contents = "[text]\nfont_size = 18\n";
     bridge.pump
       .mockResolvedValueOnce({
         ...emptyBatch(),
@@ -858,6 +885,7 @@ describe("runtime store session lifecycle", () => {
             project_revision: 7,
             source_digest: new Uint8Array(32).fill(8),
             restart_pending: false,
+            generated_source: null,
             entries: [
               {
                 code: "AutoSave",
@@ -920,7 +948,7 @@ describe("runtime store session lifecycle", () => {
     bridge.applyProjectConfiguration.mockClear();
     const saving = store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "18" }]);
     await Promise.resolve();
-    const contents = "フォントサイズ:18\n";
+    const contents = "[text]\nfont_size = 18\n";
     bridge.pump
       .mockResolvedValueOnce({
         ...emptyBatch(),
@@ -976,7 +1004,7 @@ describe("runtime store session lifecycle", () => {
       { code: "FontSize", value: "18" },
     ]);
     await Promise.resolve();
-    const contents = "フォントサイズ:18\n";
+    const contents = "[text]\nfont_size = 18\n";
     bridge.pump
       .mockResolvedValueOnce({
         ...emptyBatch(),
@@ -3164,6 +3192,7 @@ function projectConfigurationReport(revision: number, digestByte: number, fontSi
       project_revision: revision,
       source_digest: new Uint8Array(32).fill(digestByte),
       restart_pending: false,
+      generated_source: null,
       entries: [
         {
           code: "FontSize",

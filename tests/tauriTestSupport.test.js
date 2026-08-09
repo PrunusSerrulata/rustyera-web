@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assertSnapshotProgress,
   captureCompleteTauriSnapshot,
+  nextSnapshotStallState,
   resolveTauriBinary,
   snapshotProgressSignature,
   startTauriSessionMonitor,
@@ -68,6 +69,26 @@ describe("Tauri end-to-end test support", () => {
     expect(() =>
       assertSnapshotProgress(snapshot, { ...snapshot, runtime: { phase: "running" } }),
     ).not.toThrow();
+  });
+
+  it("allows a bounded identical window only while the compiled project cache is growing", () => {
+    const snapshot = {
+      document: [{ tag: "main" }],
+      runtime: {
+        phase: "waiting_input",
+        status: "正在后台生成项目文件…",
+        transfer: { export: { name: "compiled-project.reraproj", received: 15_728_640 } },
+      },
+    };
+
+    const stableSince = nextSnapshotStallState(snapshot, structuredClone(snapshot), undefined, 10);
+    expect(stableSince).toBe(10);
+    expect(nextSnapshotStallState(snapshot, structuredClone(snapshot), stableSince, 129, 120)).toBe(
+      10,
+    );
+    expect(() =>
+      nextSnapshotStallState(snapshot, structuredClone(snapshot), stableSince, 130, 120),
+    ).toThrow(/project cache generation stalled/);
   });
 
   it("ignores log timestamps but preserves observable runtime changes", () => {

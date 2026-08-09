@@ -28,6 +28,7 @@ export class AudioEngine {
   private readonly pending = new Map<number, PendingChannel>();
   private readonly buffers = new Map<string, Promise<AudioBuffer>>();
   private readonly groupVolumes = new Map<number, number>();
+  private gameVolume = 1;
 
   constructor(
     private readonly bridge: FrontendBridge,
@@ -44,7 +45,12 @@ export class AudioEngine {
 
   setPreferences(preferences: Preferences): void {
     this.preferences = preferences;
-    if (this.master) this.master.gain.value = preferences.masterVolume;
+    this.applyMasterVolume();
+  }
+
+  setGameVolume(volume: number): void {
+    this.gameVolume = Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 1;
+    this.applyMasterVolume();
   }
 
   synchronize(states: any[]): Promise<void> {
@@ -93,10 +99,14 @@ export class AudioEngine {
     if (!this.context) {
       this.context = new AudioContext();
       this.master = this.context.createGain();
-      this.master.gain.value = this.preferences.masterVolume;
+      this.applyMasterVolume();
       this.master.connect(this.context.destination);
     }
     return this.context;
+  }
+
+  private applyMasterVolume(): void {
+    if (this.master) this.master.gain.value = this.preferences.masterVolume * this.gameVolume;
   }
 
   private playSound(state: any): void {

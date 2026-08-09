@@ -1,6 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { blake3 } from "@noble/hashes/blake3.js";
-
 import {
   importBrowserDirectory,
   pickBrowserDirectory,
@@ -284,19 +282,22 @@ describe("portable browser directory selection", () => {
     await expect(
       project.readResourcePrefix("RESOURCES/TITLE.PNG", 5).then((bytes) => [...bytes]),
     ).resolves.toEqual([...new TextEncoder().encode("image")]);
-    await project.writeConfiguration(
-      blake3(new TextEncoder().encode("FontSize:18\n")),
-      "FontSize:20\n",
-    );
+    await project.writeConfiguration(new Uint8Array(), "[text]\nfont_size = 20\n");
 
     expect(await configuration.text()).toBe("FontSize:18\n");
     const rescanned = await project.scan();
     expect(rescanned.files.find((file) => file.relative_path === "emuera.config")?.payload).toEqual(
       {
         type: "utf8",
-        value: "FontSize:20\n",
+        value: "FontSize:18\n",
       },
     );
+    expect(
+      rescanned.files.find((file) => file.relative_path === "reraconfig.toml")?.payload,
+    ).toEqual({
+      type: "utf8",
+      value: "[text]\nfont_size = 20\n",
+    });
   });
 
   it("lets an existing OPFS entry win over a conflicting selected directory", async () => {

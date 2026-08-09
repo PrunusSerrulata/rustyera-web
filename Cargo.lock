@@ -867,6 +867,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "era-config"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml_edit 0.25.13+spec-1.1.0",
+]
+
+[[package]]
 name = "era-debug-protocol"
 version = "0.3.0"
 dependencies = [
@@ -889,6 +898,7 @@ name = "era-runtime"
 version = "0.3.0"
 dependencies = [
  "blake3",
+ "era-config",
  "era-debug-protocol",
  "era-protocol",
  "era-runtime-protocol",
@@ -897,7 +907,6 @@ dependencies = [
  "erabasic-ast",
  "erabasic-bytecode",
  "erabasic-compiler",
- "erabasic-config",
  "erabasic-csv",
  "erabasic-data",
  "erabasic-hir",
@@ -1036,13 +1045,6 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "erabasic-config"
-version = "0.3.0"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -4335,6 +4337,7 @@ dependencies = [
  "indexmap 2.14.0",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.4",
 ]
 

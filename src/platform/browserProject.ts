@@ -116,27 +116,32 @@ export class BrowserProject {
   }
 
   async writeConfiguration(expectedDigest: Uint8Array, contents: string): Promise<void> {
-    if (!this.configurationWritable()) throw new Error("项目文件中的 emuera.config 为只读");
+    if (!this.configurationWritable()) throw new Error("项目文件中的 reraconfig.toml 为只读");
     let handle =
-      this.files.get("emuera.config") ?? (await optionalFileHandle(this.root, ["emuera.config"]));
+      this.files.get("reraconfig.toml") ??
+      (await optionalFileHandle(this.root, ["reraconfig.toml"]));
     let currentDigest = new Uint8Array();
     if (handle) {
       const file = await handle.getFile();
-      const text = decodeProjectSource(new Uint8Array(await file.arrayBuffer()), "emuera.config");
-      currentDigest = blake3(new TextEncoder().encode(text));
+      const text = decodeProjectSource(new Uint8Array(await file.arrayBuffer()), "reraconfig.toml");
+      currentDigest = blake3(new TextEncoder().encode(normalizeLineEndings(text)));
     }
+    const requestedDigest = blake3(new TextEncoder().encode(normalizeLineEndings(contents)));
+    if (expectedDigest.length === 0 && equalBytes(currentDigest, requestedDigest)) return;
     if (!equalBytes(currentDigest, expectedDigest))
-      throw new Error("emuera.config 已被其他程序修改，请重新打开设置窗口");
-    handle ??= await this.root.getFileHandle("emuera.config", { create: true });
+      throw new Error("reraconfig.toml 已被其他程序修改，请重新打开设置窗口");
+    handle ??= await this.root.getFileHandle("reraconfig.toml", { create: true });
     const writer = await handle.createWritable({ keepExistingData: false });
     try {
-      await writer.write(new TextEncoder().encode(contents) as FileSystemWriteChunkType);
+      await writer.write(
+        new TextEncoder().encode(nativeLineEndings(contents)) as FileSystemWriteChunkType,
+      );
       await writer.close();
     } catch (error) {
       await writer.abort().catch(() => undefined);
       throw error;
     }
-    this.files.set("emuera.config", handle);
+    this.files.set("reraconfig.toml", handle);
     this.manifestValue = undefined;
   }
 
@@ -739,6 +744,13 @@ export async function runBounded(
 }
 
 export function decodeProjectSource(bytes: Uint8Array, relativePath: string): string {
+  if (relativePath.replaceAll("\\", "/").toLocaleLowerCase() === "reraconfig.toml") {
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes).replace(/^\uFEFF/, "");
+    } catch {
+      throw new Error("reraconfig.toml 不是有效的 UTF-8 文件");
+    }
+  }
   for (const encoding of ["utf-8", "shift_jis", "gbk"]) {
     try {
       return new TextDecoder(encoding, { fatal: true }).decode(bytes).replace(/^\uFEFF/, "");
@@ -786,6 +798,8 @@ function classify(path: string, roots: ReadonlySet<string>): string | undefined 
   const parts = path.split("/");
   const first = parts[0].toLocaleLowerCase();
   const suffix = parts.at(-1)?.split(".").at(-1)?.toLocaleLowerCase() ?? "";
+  const name = parts.at(-1)?.toLocaleLowerCase() ?? "";
+  if (name === "reraconfig.toml" || name === "setting.json") return "configuration";
   if (first === "resources") {
     if (suffix === "csv") return "resource_manifest";
     return RESOURCE_SUFFIXES.has(suffix) ? "resource" : undefined;
@@ -801,6 +815,17 @@ function classify(path: string, roots: ReadonlySet<string>): string | undefined 
     config: "configuration",
   };
   return categories[suffix];
+}
+
+function normalizeLineEndings(contents: string): string {
+  return contents.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+}
+
+function nativeLineEndings(contents: string): string {
+  const normalized = normalizeLineEndings(contents);
+  const windows =
+    /^win/i.test(navigator.platform ?? "") || /\bwindows(?: nt)?\b/i.test(navigator.userAgent);
+  return windows ? normalized.replaceAll("\n", "\r\n") : normalized;
 }
 
 function safePath(path: string): string {

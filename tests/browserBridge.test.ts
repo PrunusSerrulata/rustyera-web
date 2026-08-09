@@ -400,14 +400,14 @@ describe("browser startup bridge", () => {
     const bridge = new BrowserBridge();
 
     await bridge.openProject();
-    await bridge.writeProjectConfiguration(blake3(originalBytes), "FontSize:20\n");
+    await bridge.writeProjectConfiguration(new Uint8Array(), "[text]\nfont_size = 20\n");
     await bridge.restartProject();
 
     const restart = requests
       .filter((request) => request.message.method === "loadProjectBinary")
       .at(-1);
     expect(new TextDecoder().decode(restart?.message.args[0] as Uint8Array)).toContain(
-      "FontSize:20\n",
+      "font_size = 20",
     );
     expect(await source.text()).toBe(originalText);
   });

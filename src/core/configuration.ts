@@ -28,7 +28,15 @@ export function parseProjectConfiguration(value: unknown): ProjectConfigurationS
     source_digest: digest,
     entries: value.entries.map(parseEntry),
     restart_pending: value.restart_pending == null ? false : booleanField(value, "restart_pending"),
+    generated_source:
+      value.generated_source == null ? null : stringField(value, "generated_source"),
   };
+}
+
+function stringField(value: Record<string, unknown>, field: string): string {
+  const result = value[field];
+  if (typeof result !== "string") throw new Error(`项目配置 ${field} 字段无效`);
+  return result;
 }
 
 export function parsePreparedConfiguration(value: unknown): PreparedProjectConfiguration {

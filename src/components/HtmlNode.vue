@@ -209,7 +209,8 @@ function positionedMediaHeight(node: any): number | undefined {
 }
 
 function textSegments(value: unknown): Array<{ text: string; space: boolean; width?: string }> {
-  return String(value ?? "")
+  const text = String(value ?? "");
+  return (store.replaceFullWidthSpaces ? text.replaceAll("　", "  ") : text)
     .split(/( +)/)
     .filter(Boolean)
     .map((text) => ({
