@@ -10,6 +10,22 @@
   "actions": [
     { "type": "input", "value": 120 },
     {
+      "type": "scroll_key",
+      "locator": { "css": ".game-viewport" },
+      "key": "PageUp"
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-button:has-text('[120] - 搬家')" },
+      "fields": ["count", "enabled"],
+      "expect": { "count": 1, "enabled": false }
+    },
+    {
+      "type": "scroll_key",
+      "locator": { "css": ".game-viewport" },
+      "key": "End"
+    },
+    {
       "type": "assert_dom",
       "locator": { "text": "■博麗神社", "exact": true, "nth": -1 },
       "fields": ["count", "visible"],
@@ -47,9 +63,33 @@
         }
       ],
       "expect": {
-        "stable": ["lines.square_grid"],
+        "stable": [
+          "lines.square_grid.left",
+          "lines.square_grid.right",
+          "lines.square_grid.left_spread",
+          "lines.square_grid.right_spread",
+          "lines.square_grid.rows",
+          "lines.square_grid.edge_rows",
+          "lines.square_grid.interior_left",
+          "lines.square_grid.interior_spread",
+          "lines.square_grid.interior_rows",
+          "lines.square_grid.interior_counts",
+          "lines.square_grid.aligned"
+        ],
         "changes": ["runtime.presentation_revision", "lines.content_signature"]
       }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-button:has-text('[2000] 博麗神社')" },
+      "fields": ["count", "visible", "enabled"],
+      "expect": { "count": 1, "visible": true, "enabled": true }
+    },
+    {
+      "type": "click",
+      "locator": { "css": ".game-button:has-text('[2000] 博麗神社')" },
+      "advances_game": true,
+      "semantic_input": 2000
     }
   ],
   "limits": {

@@ -1,4 +1,4 @@
-import type { DisplayLine, TooltipSettings } from "@/core/types";
+import type { DisplayLine, InteractionToken, TooltipSettings } from "@/core/types";
 
 export interface PresentationState {
   revision: number;
@@ -13,7 +13,8 @@ export interface PresentationState {
   resources: any;
   htmlIsland: any[];
   redraw: any;
-  buttonGeneration: number;
+  buttonGeneration: number | null;
+  retiredButtonTokens: Set<string>;
 }
 
 export function emptyPresentation(): PresentationState {
@@ -30,7 +31,8 @@ export function emptyPresentation(): PresentationState {
     resources: { sprites: [], canvases: [], animation_timer_ms: 0 },
     htmlIsland: [],
     redraw: { enabled: true },
-    buttonGeneration: 0,
+    buttonGeneration: null,
+    retiredButtonTokens: new Set(),
   };
 }
 
@@ -50,6 +52,11 @@ export function applySnapshot(state: PresentationState, snapshot: any): void {
   state.resources = snapshot.resources ?? { sprites: [], canvases: [], animation_timer_ms: 0 };
   state.htmlIsland = snapshot.html_island ?? [];
   state.redraw = snapshot.redraw ?? { enabled: true };
+  // The snapshot owns each button's enabled state but does not expose the
+  // current BREAKBUTTON generation. Do not filter later partial updates with
+  // generation knowledge from before this authoritative resynchronization.
+  state.buttonGeneration = null;
+  for (const line of state.lines) disableRetiredButtonsInLine(line, state.retiredButtonTokens);
 }
 
 export function defaultTooltipSettings(): TooltipSettings {
@@ -75,6 +82,7 @@ export function applyDelta(state: PresentationState, delta: any): void {
   for (const operation of delta.operations ?? []) {
     switch (operation.type) {
       case "append_line":
+        prepareLine(state, operation.line);
         state.lines.push(operation.line);
         break;
       case "delete_lines":
@@ -101,6 +109,7 @@ export function applyDelta(state: PresentationState, delta: any): void {
       case "replace_line": {
         const index = state.lines.findIndex((line) => line.line_id === operation.line_id);
         if (index >= 0) {
+          prepareLine(state, operation.line);
           existingLineChanged ||= lineContentChanged(state.lines[index], operation.line);
           state.lines[index] = operation.line;
         }
@@ -179,15 +188,97 @@ function stableContent(value: any): string {
 }
 
 function disableOldButtons(lines: DisplayLine[], generation: number): void {
-  const visit = (runs: any[]) => {
-    for (const run of runs) {
-      if (run.type === "button") {
-        if (run.generation !== generation) run.enabled = false;
-        visit(run.runs);
-      } else if (run.type === "column_cell") visit(run.content);
+  for (const line of lines) disableOldButtonsInLine(line, generation);
+}
+
+function prepareLine(state: PresentationState, line: DisplayLine): void {
+  disableOldButtonsInLine(line, state.buttonGeneration);
+  disableRetiredButtonsInLine(line, state.retiredButtonTokens);
+}
+
+function disableOldButtonsInLine(line: DisplayLine, generation: number | null): void {
+  if (generation == null) return;
+  visitRuns(line.runs, (interaction) => {
+    if (interaction.enabled && interaction.generation !== generation) interaction.enabled = false;
+  });
+}
+
+function visitRuns(runs: any[], visitInteraction: (interaction: any) => void): void {
+  for (const run of runs) {
+    if (run.type === "button") {
+      visitInteraction(run);
+      visitRuns(run.runs ?? [], visitInteraction);
+    } else if (run.type === "column_cell") {
+      visitRuns(run.content ?? [], visitInteraction);
+    } else if (run.type === "html_document") {
+      visitHtmlNodes(run.document?.nodes ?? [], visitInteraction);
     }
-  };
-  for (const line of lines) visit(line.runs);
+  }
+}
+
+function visitHtmlNodes(nodes: any[], visitInteraction: (interaction: any) => void): void {
+  for (const node of nodes) {
+    if (node.interaction) visitInteraction(node.interaction);
+    visitHtmlNodes(node.children ?? [], visitInteraction);
+  }
+}
+
+function interactionIdentity(interaction: any): string {
+  const token = interaction.token ?? interaction;
+  return `${String(token.epoch)}:${String(token.id)}`;
+}
+
+function disableRetiredButtonsInLine(line: DisplayLine, tokens: Set<string>): void {
+  if (!tokens.size) return;
+  visitRuns(line.runs, (interaction) => {
+    if (interaction.enabled && tokens.has(interactionIdentity(interaction)))
+      interaction.enabled = false;
+  });
+}
+
+export function retireEnabledButtons(state: PresentationState): string[] {
+  const retired: string[] = [];
+  for (const line of state.lines) {
+    visitRuns(line.runs, (interaction) => {
+      if (!interaction.enabled) return;
+      const identity = interactionIdentity(interaction);
+      state.retiredButtonTokens.add(identity);
+      interaction.enabled = false;
+      retired.push(identity);
+    });
+  }
+  return retired;
+}
+
+export function restoreButtons(state: PresentationState, tokens: string[]): void {
+  if (!tokens.length) return;
+  const restored = new Set(tokens);
+  for (const token of restored) state.retiredButtonTokens.delete(token);
+  for (const line of state.lines) {
+    visitRuns(line.runs, (interaction) => {
+      if (
+        !interaction.enabled &&
+        restored.has(interactionIdentity(interaction)) &&
+        (state.buttonGeneration == null || interaction.generation === state.buttonGeneration)
+      )
+        interaction.enabled = true;
+    });
+  }
+}
+
+export function hasEnabledButton(lines: DisplayLine[], token: InteractionToken): boolean {
+  let found = false;
+  for (const line of lines) {
+    visitRuns(line.runs, (interaction) => {
+      const interactionToken = interaction.token ?? interaction;
+      found ||=
+        interaction.enabled === true &&
+        interactionToken.epoch === token.epoch &&
+        interactionToken.id === token.id;
+    });
+    if (found) return true;
+  }
+  return false;
 }
 
 export function plainRun(run: any): string {

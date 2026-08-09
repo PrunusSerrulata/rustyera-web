@@ -4,8 +4,11 @@ import {
   applyDelta,
   applySnapshot,
   emptyPresentation,
+  hasEnabledButton,
   plainLine,
   printedHtmlLine,
+  restoreButtons,
+  retireEnabledButtons,
 } from "@/core/presentation";
 import type { DisplayLine } from "@/core/types";
 
@@ -83,6 +86,158 @@ describe("presentation projection", () => {
       operations: [{ type: "set_title", title: "changed" }],
     });
     expect(state.historyRevision).toBe(0);
+  });
+
+  it("retires regular and HTML history buttons without disabling current partial updates", () => {
+    const state = emptyPresentation();
+    const button = (id: number, generation: number) => ({
+      type: "button",
+      runs: [{ type: "text", text: String(id), style: {} }],
+      token: { epoch: 1, id },
+      enabled: true,
+      generation,
+    });
+    const htmlButton = (id: number, generation: number) => ({
+      type: "html_document",
+      document: {
+        nodes: [
+          {
+            type: "element",
+            kind: "button",
+            interaction: { epoch: 1, id, enabled: true, generation },
+            children: [{ type: "text", text: String(id) }],
+          },
+        ],
+      },
+    });
+    const line = (lineId: number, runs: any[]) => ({
+      line_id: lineId,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs,
+    });
+    applySnapshot(state, {
+      revision: 1,
+      title: "buttons",
+      history: {
+        logical_lines: [
+          line(1, [button(1, 0), htmlButton(2, 0)]),
+          line(2, [button(20, 0), htmlButton(21, 0)]),
+        ],
+      },
+    });
+
+    applyDelta(state, {
+      base_revision: 1,
+      new_revision: 2,
+      operations: [
+        { type: "set_button_generation", generation: 1 },
+        {
+          type: "replace_line",
+          line_id: 2,
+          line: line(2, [button(3, 1), htmlButton(4, 1)]),
+        },
+        { type: "append_line", line: line(3, [button(5, 0), htmlButton(6, 0)]) },
+      ],
+    });
+
+    expect(hasEnabledButton(state.lines, { epoch: 1, id: 1 })).toBe(false);
+    expect(hasEnabledButton(state.lines, { epoch: 1, id: 2 })).toBe(false);
+    expect(hasEnabledButton(state.lines, { epoch: 1, id: 3 })).toBe(true);
+    expect(hasEnabledButton(state.lines, { epoch: 1, id: 4 })).toBe(true);
+    expect(hasEnabledButton(state.lines, { epoch: 1, id: 5 })).toBe(false);
+    expect(hasEnabledButton(state.lines, { epoch: 1, id: 6 })).toBe(false);
+  });
+
+  it("forgets local button generation after an authoritative snapshot", () => {
+    const state = emptyPresentation();
+    const line = (lineId: number, id: number, generation: number) => ({
+      line_id: lineId,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs: [
+        {
+          type: "button",
+          runs: [{ type: "text", text: String(id), style: {} }],
+          token: { epoch: 1, id },
+          enabled: true,
+          generation,
+        },
+      ],
+    });
+    applyDelta(state, {
+      base_revision: 0,
+      new_revision: 1,
+      operations: [{ type: "set_button_generation", generation: 1 }],
+    });
+    applySnapshot(state, {
+      revision: 2,
+      title: "resynchronized",
+      history: { logical_lines: [line(1, 7, 2)] },
+    });
+
+    applyDelta(state, {
+      base_revision: 2,
+      new_revision: 3,
+      operations: [
+        { type: "replace_line", line_id: 1, line: line(1, 8, 2) },
+        { type: "append_line", line: line(2, 9, 2) },
+      ],
+    });
+
+    expect(state.buttonGeneration).toBeNull();
+    expect(hasEnabledButton(state.lines, { epoch: 1, id: 8 })).toBe(true);
+    expect(hasEnabledButton(state.lines, { epoch: 1, id: 9 })).toBe(true);
+  });
+
+  it("retires submitted history while allowing later dynamic partial updates", () => {
+    const state = emptyPresentation();
+    const line = (lineId: number, id: number) => ({
+      line_id: lineId,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs: [
+        {
+          type: "button",
+          runs: [{ type: "text", text: String(id), style: {} }],
+          token: { epoch: 1, id },
+          enabled: true,
+          generation: 0,
+        },
+      ],
+    });
+    applySnapshot(state, {
+      revision: 1,
+      title: "menu",
+      history: { logical_lines: [line(1, 1)] },
+    });
+
+    const retired = retireEnabledButtons(state);
+    applyDelta(state, {
+      base_revision: 1,
+      new_revision: 2,
+      operations: [{ type: "append_line", line: line(2, 2) }],
+    });
+
+    expect(hasEnabledButton(state.lines, { epoch: 1, id: 1 })).toBe(false);
+    expect(hasEnabledButton(state.lines, { epoch: 1, id: 2 })).toBe(true);
+
+    applySnapshot(state, {
+      revision: 3,
+      title: "resynchronized",
+      history: { logical_lines: [line(1, 1), line(2, 2)] },
+    });
+    expect(hasEnabledButton(state.lines, { epoch: 1, id: 1 })).toBe(false);
+    expect(hasEnabledButton(state.lines, { epoch: 1, id: 2 })).toBe(true);
+
+    restoreButtons(state, retired);
+    expect(hasEnabledButton(state.lines, { epoch: 1, id: 1 })).toBe(true);
   });
 
   it("keeps an equal-length dynamic tail replacement at its current scroll position", () => {

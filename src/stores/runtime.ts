@@ -47,8 +47,11 @@ import {
   applyDelta,
   applySnapshot,
   emptyPresentation,
+  hasEnabledButton,
   plainLine,
   printedHtmlLine,
+  restoreButtons,
+  retireEnabledButtons,
   type PresentationState,
 } from "@/core/presentation";
 import { decodeServicePayload, encodeServicePayload } from "@/core/serviceCodec";
@@ -130,6 +133,7 @@ interface PendingGameInput {
   retryPending?: boolean;
   retryError?: string;
   staleRetries: number;
+  retiredButtonTokens: string[];
 }
 
 interface PendingInputUndo {
@@ -973,7 +977,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
           rejectedInput.retryPending = true;
           rejectedInput.waitClosed = false;
           rejectedInput.retryError = String(value.message ?? "Runtime 拒绝了输入");
-        } else if (rejectedInput) pendingGameInput.value = undefined;
+        } else if (rejectedInput) {
+          restoreButtons(currentPresentation(), rejectedInput.retiredButtonTokens);
+          pendingGameInput.value = undefined;
+        }
         if (pendingInputUndo.value?.messageId === correlation) pendingInputUndo.value = undefined;
         if (!staleProjection && !willRetryInput)
           log("warning", value.message ?? "Runtime 拒绝了命令", true);
@@ -1331,7 +1338,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function activate(token: InteractionToken): Promise<void> {
-    if (!canInteract.value) return;
+    if (!canInteract.value || !hasEnabledButton(currentPresentation().lines, token)) return;
     await submitIntent({ type: "activate", value: token }, false);
   }
 
@@ -1353,6 +1360,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const wait = currentPresentation().inputWait;
     if (!wait) return;
     const waitIdentity = inputWaitIdentity(wait);
+    const retiredButtonTokens = retireEnabledButtons(currentPresentation());
     pendingGameInput.value = {
       waitIdentity,
       waitId: String(wait.wait_id),
@@ -1360,6 +1368,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       intent,
       messageSkip,
       staleRetries: 0,
+      retiredButtonTokens,
     };
     try {
       const messageId = await send({
@@ -1375,7 +1384,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
       if (pendingGameInput.value?.waitIdentity === waitIdentity)
         pendingGameInput.value.messageId = String(messageId);
     } catch (error) {
-      if (pendingGameInput.value?.waitIdentity === waitIdentity) pendingGameInput.value = undefined;
+      if (pendingGameInput.value?.waitIdentity === waitIdentity) {
+        restoreButtons(currentPresentation(), retiredButtonTokens);
+        pendingGameInput.value = undefined;
+      }
       throw error;
     }
     if (singleStepEnabled.value && !debugStopToken(debugStop.value)) await pauseDebug();

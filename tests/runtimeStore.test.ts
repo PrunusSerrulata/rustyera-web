@@ -1164,6 +1164,65 @@ describe("runtime store session lifecycle", () => {
     expect(store.canInteract).toBe(false);
   });
 
+  it("submits only tokens that remain enabled in the current presentation", async () => {
+    const wait = {
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    };
+    const store = await storeWithInputWait(wait, [
+      runtimeEvent("presentation_delta", {
+        base_revision: 1,
+        new_revision: 2,
+        operations: [
+          {
+            type: "append_line",
+            line: {
+              line_id: 1,
+              temporary: false,
+              logical_line_start: true,
+              line_end: true,
+              alignment: "left",
+              runs: [
+                {
+                  type: "button",
+                  runs: [{ type: "text", text: "current", style: {} }],
+                  token: { epoch: 2, id: 6 },
+                  enabled: true,
+                  generation: 1,
+                },
+                {
+                  type: "button",
+                  runs: [{ type: "text", text: "expired", style: {} }],
+                  token: { epoch: 2, id: 7 },
+                  enabled: false,
+                  generation: 0,
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    ]);
+    bridge.submitRuntime.mockClear();
+
+    await store.activate({ epoch: 2, id: 7 });
+    expect(bridge.submitRuntime).not.toHaveBeenCalled();
+
+    await store.activate({ epoch: 2, id: 6 });
+    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "input",
+        value: expect.objectContaining({
+          wait_id: 17,
+          intent: { type: "activate", value: { epoch: 2, id: 6 } },
+        }),
+      }),
+      undefined,
+    );
+  });
+
   it("shares the active-wait lock across text, buttons, left click, and right click", async () => {
     const store = await storeWithInputWait({
       kind: "enter_key",
