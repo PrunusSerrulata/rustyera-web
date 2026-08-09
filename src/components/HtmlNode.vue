@@ -12,6 +12,7 @@ const tags: Record<string, string> = {
   italic: "em",
   underline: "u",
   strike: "s",
+  font: "span",
   paragraph: "p",
   no_break: "span",
   button: "button",
@@ -51,6 +52,42 @@ const spaceShapeStyle = computed(() => {
         height: `${store.gameTextStyle.fontSizePx}px`,
       };
 });
+const fontStyle = computed(() => {
+  const semantic = props.node.semantic;
+  if (semantic?.type !== "font") return null;
+  return {
+    color: `var(--game-interaction-foreground, ${
+      semantic.color == null ? "inherit" : htmlColor(semantic.color)
+    })`,
+    "--game-button-foreground":
+      semantic.button_color == null ? "var(--game-focus)" : htmlColor(semantic.button_color),
+    fontFamily:
+      store.effectivePreferences.fontFamilyOverride || !semantic.face
+        ? undefined
+        : `${semantic.face}, var(--game-font)`,
+  };
+});
+const layeredDivisionStyle = computed(() => {
+  const semantic = props.node.semantic;
+  if (
+    semantic?.type !== "division" ||
+    semantic.relative !== true ||
+    hasBoxModel(semantic.box_model)
+  )
+    return null;
+  const width = projectLength(semantic.width);
+  const height = projectLength(semantic.height);
+  if (width == null || height == null) return null;
+  const depth = Number(semantic.depth);
+  return {
+    left: `${projectLength(semantic.x) ?? 0}px`,
+    top: `${projectLength(semantic.y) ?? 0}px`,
+    width: `${Math.abs(width)}px`,
+    height: `${Math.abs(height)}px`,
+    zIndex: Number.isFinite(depth) ? depth : undefined,
+    backgroundColor: semantic.color == null ? undefined : htmlColor(semantic.color),
+  };
+});
 const positionedHeight = computed(() => positionedMediaHeight(props.node));
 const lockedPositionStyle = computed(() => {
   const semantic = props.node.semantic;
@@ -87,6 +124,19 @@ function projectLength(value: { unit?: string; value?: unknown } | undefined): n
         : raw
       : (raw * store.gameTextStyle.fontSizePx) / 100;
   return Number.isFinite(result) ? result : undefined;
+}
+
+function htmlColor(value: unknown): string {
+  const color = Number(value);
+  if (!Number.isFinite(color)) return "rgb(0, 0, 0)";
+  return `rgb(${(color >> 16) & 0xff}, ${(color >> 8) & 0xff}, ${color & 0xff})`;
+}
+
+function hasBoxModel(value: any): boolean {
+  if (!value) return false;
+  return [value.border, value.radius, value.margin, value.padding, value.border_colors].some(
+    (part) => part != null,
+  );
 }
 
 function positionedMediaHeight(node: any): number | undefined {
@@ -142,6 +192,11 @@ function textSegments(value: unknown): Array<{ text: string; space: boolean; wid
     :style="spaceShapeStyle"
   />
   <MediaImage v-else-if="imagePlacement" :placement="imagePlacement" />
+  <span v-else-if="layeredDivisionStyle" class="html-node html-division">
+    <span class="html-division-visual" :style="layeredDivisionStyle">
+      <HtmlNode v-for="(child, index) in node.children ?? []" :key="index" :node="child" />
+    </span>
+  </span>
   <component
     :is="tag"
     v-else
@@ -149,10 +204,11 @@ function textSegments(value: unknown): Array<{ text: string; space: boolean; wid
     :aria-description="tooltipTitle"
     class="html-node"
     :class="{
+      'html-font': fontStyle,
       'html-node-positioned': lockedPositionStyle,
       'html-positioned-media': lockedPositionStyle && hasPositionedMedia,
     }"
-    :style="lockedPositionStyle"
+    :style="[fontStyle, lockedPositionStyle]"
     :data-era-tooltip="tooltipTitle"
     @click="activate"
   >

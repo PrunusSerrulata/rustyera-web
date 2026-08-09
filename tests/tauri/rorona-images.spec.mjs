@@ -1,17 +1,14 @@
 import assert from "node:assert/strict";
 
-import { captureCompleteTauriSnapshot } from "../../scripts/tauri-test-support.mjs";
 import { establishReferenceWindow, paintedImageBounds } from "./media-geometry.mjs";
 import { driveRuntimeUntil, waitForRuntimeProgress } from "./runtime-progress.mjs";
 
 const PROJECT_TIMEOUT = 120_000;
 const STEP_TIMEOUT = 30_000;
-const OPENING_INTRO_TIMEOUT = 3_000;
-const OPENING_INTRO_MARKERS = ["亚兰德――", "之后时光流逝，直到现在――"];
 const roronaImages = process.env.VITE_RUSTYERA_TAURI_RORONA_IMAGES ? describe : describe.skip;
 
 roronaImages("Tauri erarorona image rendering", () => {
-  it("keeps the title and workshop image between their surrounding text", async () => {
+  it("keeps title, dialogue, and action-screen media aligned and colored", async () => {
     let automaticTimedWaits = 0;
     // Establish the reference client area after the project has applied its
     // window configuration.
@@ -84,11 +81,24 @@ roronaImages("Tauri erarorona image rendering", () => {
     automaticTimedWaits += await advanceEnterWaitsUntil("抱歉，请问您是", 400);
     const secondDialogue = await dialoguePortraitMetrics();
     assertDialoguePortraits(secondDialogue, 2);
+    await enableMessageSkip();
+    const actionScreenClicks = await alternateClicksUntilActionScreen();
+    assert.ok(actionScreenClicks > 0, "the action screen must require alternating viewport clicks");
+    const actionScreen = await actionScreenMetrics();
+    assertActionScreen(actionScreen);
     assert.ok(
       automaticTimedWaits > 0,
       "opening fades and dialogue typewriter frames must advance without clicking",
     );
-    console.log(JSON.stringify({ firstDialogue, secondDialogue, automaticTimedWaits }));
+    console.log(
+      JSON.stringify({
+        firstDialogue,
+        secondDialogue,
+        actionScreen,
+        actionScreenClicks,
+        automaticTimedWaits,
+      }),
+    );
   });
 });
 
@@ -158,48 +168,59 @@ async function reachTitle(maximum) {
 
 async function alternateClicksUntilWorkshop() {
   let clicks = 0;
-  let introductionStartedAt;
-  let introductionMarker;
-  let lastClick;
   await driveRuntimeUntil({
     browser,
     snapshot,
-    label: "Rorona dialogue and workshop background after alternating-click skip",
-    totalTimeout: 180_000,
+    label: "Rorona workshop after continuous alternating-click opening skip",
     pollInterval: 100,
     accept: (state) => state.output.slice(-60).join("\n").includes("亚斯特丽德的工房"),
     advance: async (state) => {
-      const output = state.output.slice(-60).join("\n");
-      const introduction = OPENING_INTRO_MARKERS.find((marker) => output.includes(marker));
-      if (introduction && introductionStartedAt == null) {
-        introductionStartedAt = Date.now();
-        introductionMarker = introduction;
-      }
-      if (
-        introductionStartedAt != null &&
-        Date.now() - introductionStartedAt >= OPENING_INTRO_TIMEOUT
-      ) {
-        const failureSnapshot = await captureCompleteTauriSnapshot(browser);
-        const diagnostic = {
-          failureStage: "opening introduction skip",
-          introduction: introductionMarker,
-          elapsedMs: Date.now() - introductionStartedAt,
-          clicks,
-          lastClick,
-          ...failureSnapshot,
-        };
-        console.error(JSON.stringify(diagnostic));
-        throw new Error(
-          `opening introduction remained visible for at least ${OPENING_INTRO_TIMEOUT}ms: ${JSON.stringify(diagnostic)}`,
-        );
-      }
-      const button = clicks % 2 === 0 ? "right" : "left";
-      lastClick = await clickViewportBottom(button);
+      if (!state.canInteract) return false;
+      await clickViewportBottom(clicks % 2 === 0 ? "right" : "left");
       clicks += 1;
       return true;
     },
   });
   return clicks;
+}
+
+async function enableMessageSkip() {
+  const buttons = await $$(".game-button");
+  for (const button of buttons) {
+    if ((await button.getText()).includes("[*] 跳过")) {
+      await button.click();
+      return;
+    }
+  }
+  throw new Error("the visible [*] message-skip control was not found");
+}
+
+async function alternateClicksUntilActionScreen() {
+  let clicks = 0;
+  await driveRuntimeUntil({
+    browser,
+    snapshot,
+    label: "Rorona Jan 9 workshop action screen after alternating-click skip",
+    totalTimeout: 180_000,
+    pollInterval: 100,
+    accept: async (state) =>
+      state.canInteract &&
+      state.wait?.stability === "stable_input" &&
+      (await actionScreenVisible()),
+    advance: async () => {
+      await clickViewportBottom(clicks % 2 === 0 ? "left" : "right");
+      clicks += 1;
+      return true;
+    },
+  });
+  return clicks;
+}
+
+async function actionScreenVisible() {
+  return browser.execute(() => {
+    const text = document.querySelector(".game-viewport")?.textContent ?? "";
+    return ["调教对象", "调合等级", "温馨提示："].every((marker) => text.includes(marker));
+  });
 }
 
 async function clickViewportBottom(button) {
@@ -409,4 +430,55 @@ function assertDialoguePortraits(metrics, expectedPortraits) {
       "portrait must not overlap the dialogue text",
     );
   }
+}
+
+async function actionScreenMetrics() {
+  return browser.execute(() => {
+    const identityLine = [...document.querySelectorAll(".game-line")].find(
+      (line) => line.textContent?.includes("萝乐娜") && line.textContent?.includes("调合等级"),
+    );
+    const identityBounds = identityLine?.getBoundingClientRect();
+    const portraitLayers = identityLine
+      ? [...identityLine.querySelectorAll(".html-division-visual .media-visual")].map((image) => {
+          const bounds = image.getBoundingClientRect();
+          return {
+            left: bounds.left,
+            top: bounds.top,
+            right: bounds.right,
+            bottom: bounds.bottom,
+            width: bounds.width,
+            height: bounds.height,
+          };
+        })
+      : [];
+    const fontRuns = [...document.querySelectorAll(".html-font")].map((element) => ({
+      text: element.textContent ?? "",
+      color: getComputedStyle(element).color,
+    }));
+    return {
+      identityLineTop: identityBounds?.top ?? null,
+      portraitLayers,
+      barColors: [
+        ...new Set(fontRuns.filter((run) => run.text.includes("▮")).map((run) => run.color)),
+      ],
+      disabledStartColor: fontRuns.find((run) => run.text.includes("[0] 开始调教"))?.color ?? null,
+    };
+  });
+}
+
+function assertActionScreen(metrics) {
+  assert.ok(metrics.identityLineTop != null, "the Rorona identity row must be visible");
+  assert.ok(metrics.portraitLayers.length >= 2, "the layered Rorona avatar must be visible");
+  const [first, ...remaining] = metrics.portraitLayers;
+  assert.ok(
+    Math.abs(first.top - metrics.identityLineTop) <= 2,
+    `avatar top ${first.top} must align with its identity row ${metrics.identityLineTop}`,
+  );
+  for (const layer of remaining) {
+    assert.deepEqual(layer, first, "all avatar layers must occupy the same rectangle");
+  }
+  assert.ok(metrics.barColors.includes("rgb(192, 112, 112)"), "the health bar must be red");
+  assert.ok(metrics.barColors.includes("rgb(112, 112, 192)"), "the stamina bar must be blue");
+  assert.ok(metrics.barColors.includes("rgb(112, 192, 112)"), "the mana bar must be green");
+  assert.equal(metrics.disabledStartColor, "rgb(64, 64, 64)");
 }

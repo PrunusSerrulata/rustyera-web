@@ -171,6 +171,128 @@ describe("frontend host and image-line policy", () => {
     wrapper.unmount();
   });
 
+  it("projects Era HTML normal and focused font colors", () => {
+    const font = mount(HtmlNode, {
+      props: {
+        node: {
+          type: "element",
+          kind: "font",
+          semantic: {
+            type: "font",
+            face: "ＭＳ ゴシック",
+            color: 0xc07070,
+            button_color: 0x70c070,
+          },
+          children: [{ type: "text", text: "▮▮" }],
+        },
+      },
+    }).get<HTMLElement>(".html-font");
+    expect(font.text()).toBe("▮▮");
+    expect(font.attributes("style")).toContain(
+      "color: var(--game-interaction-foreground, rgb(192, 112, 112))",
+    );
+    expect(font.attributes("style")).toContain("--game-button-foreground: rgb(112, 192, 112)");
+    expect(font.attributes("style")).toContain("font-family: ＭＳ ゴシック, var(--game-font)");
+
+    const inherited = mount(HtmlNode, {
+      props: {
+        node: {
+          type: "element",
+          kind: "font",
+          semantic: { type: "font", face: null, color: null, button_color: null },
+          children: [{ type: "text", text: "default" }],
+        },
+      },
+    }).get<HTMLElement>(".html-font");
+    expect(inherited.attributes("style")).toContain(
+      "color: var(--game-interaction-foreground, inherit)",
+    );
+    expect(inherited.attributes("style")).toContain("--game-button-foreground: var(--game-focus)");
+
+    const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
+    expect(stylesheet).toMatch(
+      /:is\(\.game-button, \.html-node:is\(button\)\):hover:not\(:disabled\) \.html-font\s*\{[^}]*--game-interaction-foreground:\s*var\(--game-button-foreground\);/s,
+    );
+  });
+
+  it("layers simple relative Era HTML divisions without advancing the row", () => {
+    const division = mount(HtmlNode, {
+      props: {
+        node: {
+          type: "element",
+          kind: "division",
+          semantic: {
+            type: "division",
+            x: { unit: "font_height_hundredths", value: 50 },
+            y: { unit: "pixels", value: 3 },
+            width: { unit: "font_height_hundredths", value: 400 },
+            height: { unit: "font_height_hundredths", value: 400 },
+            depth: 0,
+            color: 0x010203,
+            relative: true,
+            box_model: {},
+          },
+          children: [{ type: "text", text: "portrait" }],
+        },
+      },
+    });
+    expect(division.get(".html-division").text()).toBe("portrait");
+    expect(division.get(".html-division-visual").attributes("style")).toContain("left: 6px");
+    expect(division.get(".html-division-visual").attributes("style")).toContain("top: 3px");
+    expect(division.get(".html-division-visual").attributes("style")).toContain("width: 48px");
+    expect(division.get(".html-division-visual").attributes("style")).toContain("height: 48px");
+    expect(division.get(".html-division-visual").attributes("style")).toContain("z-index: 0");
+    expect(division.get(".html-division-visual").attributes("style")).toContain(
+      "background-color: rgb(1, 2, 3)",
+    );
+
+    for (const semantic of [
+      {
+        type: "division",
+        x: null,
+        y: null,
+        width: { unit: "pixels", value: 10 },
+        height: { unit: "pixels", value: 10 },
+        depth: 0,
+        color: null,
+        relative: false,
+        box_model: {},
+      },
+      {
+        type: "division",
+        x: null,
+        y: null,
+        width: { unit: "pixels", value: 10 },
+        height: { unit: "pixels", value: 10 },
+        depth: 0,
+        color: null,
+        relative: true,
+        box_model: { padding: [{ unit: "pixels", value: 1 }] },
+      },
+    ]) {
+      const unsupported = mount(HtmlNode, {
+        props: {
+          node: {
+            type: "element",
+            kind: "division",
+            semantic,
+            children: [{ type: "text", text: "fallback" }],
+          },
+        },
+      });
+      expect(unsupported.find(".html-division").exists()).toBe(false);
+      expect(unsupported.get("div.html-node").text()).toBe("fallback");
+    }
+
+    const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
+    expect(stylesheet).toMatch(
+      /\.html-division\s*\{[^}]*display:\s*inline-block;[^}]*position:\s*relative;[^}]*width:\s*0;[^}]*height:\s*0;/s,
+    );
+    expect(stylesheet).toMatch(
+      /\.html-division-visual\s*\{[^}]*position:\s*absolute;[^}]*overflow:\s*hidden;/s,
+    );
+  });
+
   it("falls back temporary runtime fonts to the configured game font", () => {
     const wrapper = mount(RunRenderer, {
       props: {

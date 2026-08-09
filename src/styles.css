@@ -325,6 +325,9 @@ select {
   background: var(--game-interaction-hover-background);
   color: var(--game-interaction-foreground);
 }
+:is(.game-button, .html-node:is(button)):hover:not(:disabled) .html-font {
+  --game-interaction-foreground: var(--game-button-foreground);
+}
 .game-viewport.mouse-disabled :is(.game-button, .html-node:is(button), [data-era-tooltip]) {
   pointer-events: none;
 }
@@ -377,6 +380,20 @@ select {
   overflow: hidden;
   font-size: 0;
   vertical-align: baseline;
+}
+.html-division {
+  display: inline-block;
+  position: relative;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  vertical-align: top;
+}
+.html-division-visual {
+  position: absolute;
+  display: block;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 .html-node.html-node-positioned {
   display: inline-block;
