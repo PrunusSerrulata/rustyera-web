@@ -34,6 +34,15 @@ const textStyle = computed(() => {
           : undefined,
   };
 });
+const textLayoutStyle = computed(() =>
+  props.run.type === "text_layout"
+    ? {
+        display: "inline-block",
+        width: `${Math.max(0, Number(props.run.columns) || 0)}ch`,
+        verticalAlign: "baseline",
+      }
+    : undefined,
+);
 
 function rgba(color: any): string {
   return `rgba(${color.red}, ${color.green}, ${color.blue}, ${Number(color.alpha) / 255})`;
@@ -41,7 +50,13 @@ function rgba(color: any): string {
 </script>
 
 <template>
-  <span v-if="run.type === 'text'" :style="textStyle">{{ run.text }}</span>
+  <span
+    v-if="run.type === 'text' || run.type === 'text_layout'"
+    :class="{ 'text-layout': run.type === 'text_layout' }"
+    :data-columns="run.type === 'text_layout' ? run.columns : undefined"
+    :style="[textStyle, textLayoutStyle]"
+    >{{ run.text }}</span
+  >
   <button
     v-else-if="run.type === 'button'"
     class="game-button"

@@ -8,8 +8,9 @@ describe("game text projection", () => {
     {
       runs: [
         {
-          type: "text",
+          type: "text_layout",
           text: "body",
+          columns: 4,
           style: { font_family: "Project Font", font_millipixels: 15_000 },
         },
       ],

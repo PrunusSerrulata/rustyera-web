@@ -458,6 +458,32 @@ export async function runAction(page, action) {
     }
     return { semanticInput: String(action.value ?? "") };
   }
+  if (action.type === "click_until_text") {
+    const maximum = Math.max(0, Number(action.maximum ?? 10));
+    const required = (action.until_text ?? []).map(String);
+    const forbidden = (action.until_not_text ?? []).map(String);
+    for (let attempt = 0; attempt <= maximum; attempt += 1) {
+      const target = resolveLocator(page, action.locator);
+      const value = (await target.textContent()) ?? "";
+      if (
+        required.every((text) => value.includes(text)) &&
+        forbidden.every((text) => !value.includes(text))
+      )
+        return { semanticInput: action.semantic_input, attempts: attempt, text: value };
+      if (attempt === maximum)
+        throw new Error(`click_until_text did not reach ${JSON.stringify(action)}`);
+      const beforeWaitId = await page.evaluate(
+        () => window.__RUSTYERA_TEST__.snapshot().wait?.wait_id,
+      );
+      await target.click();
+      if (beforeWaitId != null)
+        await page.waitForFunction((waitId) => {
+          const snapshot = window.__RUSTYERA_TEST__.snapshot();
+          return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
+        }, beforeWaitId);
+      await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+    }
+  }
   if (action.type === "sample_queries") return sampleQueries(page, action);
   const locator = action.locator ? resolveLocator(page, action.locator) : undefined;
   if (action.type === "click") {
@@ -785,6 +811,120 @@ async function queryLocator(locator, fields = ["count", "text", "visible", "enab
           bottom: box.bottom,
           width: box.width,
           height: box.height,
+        };
+      });
+    if (fields.includes("square_grid"))
+      result.square_grid = await locator.evaluateAll((elements) => {
+        const characterBoxes = (element, selectedCharacter) => {
+          const boxes = [];
+          const ownerDocument = element.ownerDocument;
+          const walker = ownerDocument.createTreeWalker(
+            element,
+            ownerDocument.defaultView.NodeFilter.SHOW_TEXT,
+          );
+          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            const text = node.nodeValue ?? "";
+            for (let index = 0; index < text.length; index += 1) {
+              const character = text[index];
+              if (character !== selectedCharacter) continue;
+              const range = ownerDocument.createRange();
+              range.setStart(node, index);
+              range.setEnd(node, index + 1);
+              const rect = range.getBoundingClientRect();
+              if (rect.width || rect.height) boxes.push(rect.left);
+            }
+          }
+          return boxes;
+        };
+        const tolerance = 1;
+        const rows = elements
+          .map((element) => ({
+            top: element.getBoundingClientRect().top,
+            squares: characterBoxes(element, "■"),
+          }))
+          .filter((row) => row.squares.length >= 2);
+        for (let topIndex = 0; topIndex < rows.length; topIndex += 1) {
+          const top = rows[topIndex];
+          for (let start = 0; start + 7 < top.squares.length; start += 1) {
+            const gap = top.squares[start + 1] - top.squares[start];
+            let end = start + 1;
+            while (
+              end + 1 < top.squares.length &&
+              Math.abs(top.squares[end + 1] - top.squares[end] - gap) <= tolerance
+            )
+              end += 1;
+            if (end - start + 1 < 8) continue;
+            const left = top.squares[start];
+            const right = top.squares[end];
+            for (let bottomIndex = topIndex + 2; bottomIndex < rows.length; bottomIndex += 1) {
+              const window = rows.slice(topIndex, bottomIndex + 1);
+              const edges = window.filter(
+                (row) =>
+                  row.squares.some((value) => Math.abs(value - left) <= tolerance) &&
+                  row.squares.some((value) => Math.abs(value - right) <= tolerance),
+              );
+              if (edges.length < window.length - 1) continue;
+              return {
+                aligned: true,
+                left: Math.round(left * 100) / 100,
+                right: Math.round(right * 100) / 100,
+                top: Math.round(top.top * 100) / 100,
+                bottom: Math.round(rows[bottomIndex].top * 100) / 100,
+                rows: window.length,
+              };
+            }
+          }
+        }
+        return { aligned: false };
+      });
+    if (fields.includes("dialog_border"))
+      result.dialog_border = await first.evaluate((element) => {
+        const characterBoxes = (subject) => {
+          const boxes = [];
+          const ownerDocument = subject.ownerDocument;
+          const walker = ownerDocument.createTreeWalker(
+            subject,
+            ownerDocument.defaultView.NodeFilter.SHOW_TEXT,
+          );
+          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            const text = node.nodeValue ?? "";
+            for (let index = 0; index < text.length; index += 1) {
+              const range = ownerDocument.createRange();
+              range.setStart(node, index);
+              range.setEnd(node, index + 1);
+              const rect = range.getBoundingClientRect();
+              if (rect.width || rect.height)
+                boxes.push({ character: text[index], left: rect.left });
+            }
+          }
+          return boxes;
+        };
+        const target = element.closest(".game-line") ?? element;
+        const parent = target.parentElement;
+        const lines = parent ? [...parent.querySelectorAll(":scope > .game-line")] : [target];
+        const index = Math.max(0, lines.indexOf(target));
+        const nearby = lines.slice(Math.max(0, index - 5), index + 6);
+        const borderCharacters = new Set(["│", "┃", "┐", "┘", "┤", "┓", "┛"]);
+        const rightEdges = nearby
+          .map((line) =>
+            characterBoxes(line)
+              .filter((box) => borderCharacters.has(box.character))
+              .map((box) => box.left)
+              .at(-1),
+          )
+          .filter((value) => value != null);
+        const targetEdge = characterBoxes(target)
+          .filter((box) => borderCharacters.has(box.character))
+          .map((box) => box.left)
+          .at(-1);
+        if (targetEdge == null || rightEdges.length < 2)
+          return { aligned: false, count: rightEdges.length };
+        const spread = Math.max(...rightEdges) - Math.min(...rightEdges);
+        return {
+          aligned: spread <= 1,
+          count: rightEdges.length,
+          right: Math.round(targetEdge * 100) / 100,
+          spread: Math.round(spread * 100) / 100,
         };
       });
     if (fields.includes("content_signature"))

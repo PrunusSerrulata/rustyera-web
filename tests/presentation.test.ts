@@ -53,6 +53,28 @@ describe("presentation projection", () => {
     expect(state.lines.map(plainLine)).toEqual(["new", "next"]);
   });
 
+  it("keeps runtime text advances out of plain and HTML service text", () => {
+    const line = {
+      line_id: 1,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs: [
+        {
+          type: "button",
+          runs: [{ type: "text_layout", text: "■", columns: 2, style: {} }],
+          value: { type: "integer", value: 1 },
+          enabled: true,
+        },
+        { type: "text_layout", text: "……", columns: 4, style: {} },
+      ],
+    } as unknown as DisplayLine;
+
+    expect(plainLine(line)).toBe("■……");
+    expect(printedHtmlLine(line)).toContain("<button value='1'>■</button>……");
+  });
+
   it("does not mark settings-only deltas as new game output", () => {
     const state = emptyPresentation();
     applyDelta(state, {

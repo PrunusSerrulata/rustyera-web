@@ -187,6 +187,27 @@ describe("frontend host and image-line policy", () => {
     );
   });
 
+  it("gives ambiguous glyphs and equivalent ASCII the same runtime-owned advance", () => {
+    const render = (text: string) =>
+      mount(RunRenderer, {
+        props: {
+          run: {
+            type: "text_layout",
+            text,
+            columns: 2,
+            style: {},
+          },
+        },
+      }).get("span");
+
+    const ambiguous = render("■");
+    const ascii = render("- ");
+    expect(ambiguous.classes()).toContain("text-layout");
+    expect(ambiguous.attributes("data-columns")).toBe("2");
+    expect(ambiguous.attributes("style")).toContain("width: 2ch");
+    expect(ascii.attributes("style")).toContain("width: 2ch");
+  });
+
   it("projects HTML space shapes before positioned images", () => {
     const wrapper = mount(HtmlNode, {
       props: {

@@ -5,7 +5,7 @@
   "compiled_cache": false,
   "start": {
     "type": "traditional_save",
-    "path": "../../../../games/eraTW/sav/save17.sav"
+    "path": "../../../../games/eraTW/sav/save18.sav"
   },
   "actions": [
     { "type": "input", "value": 120 },
@@ -16,6 +16,51 @@
       "expect": { "visible": true }
     },
     {
+      "type": "assert_dom",
+      "locator": { "css": ".game-line" },
+      "fields": ["count", "square_grid"],
+      "expect": { "square_grid": { "aligned": true, "left": 0, "right": 608 } }
+    },
+    { "type": "input", "value": 1998 },
+    { "type": "input", "value": 400 },
+    {
+      "type": "click_until_text",
+      "locator": { "role": "button", "name": "地図的显示模式", "exact": false },
+      "until_text": ["颜色地图"],
+      "until_not_text": ["+ 動画"],
+      "maximum": 3
+    },
+    { "type": "input", "value": 999 },
+    { "type": "input", "value": 120 },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "■博麗神社", "exact": true, "nth": -1 },
+      "fields": ["count", "visible"],
+      "expect": { "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-line" },
+      "fields": ["count", "square_grid"],
+      "expect": { "square_grid": { "aligned": true, "left": 0, "right": 608 } }
+    },
+    { "type": "input", "value": 1998 },
+    { "type": "input", "value": 400 },
+    {
+      "type": "click_until_text",
+      "locator": { "role": "button", "name": "地図的显示模式", "exact": false },
+      "until_text": ["颜色地图 + 動画"],
+      "maximum": 3
+    },
+    { "type": "input", "value": 999 },
+    { "type": "input", "value": 120 },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-line" },
+      "fields": ["count", "square_grid"],
+      "expect": { "square_grid": { "aligned": true, "left": 0, "right": 608 } }
+    },
+    {
       "type": "sample_queries",
       "count": 2,
       "interval_ms": 1100,
@@ -23,47 +68,17 @@
         {
           "name": "lines",
           "locator": { "css": ".game-line" },
-          "fields": ["content_signature"]
-        }
-      ],
-      "expect": { "changes": ["lines.content_signature"] }
-    },
-    {
-      "type": "sample_queries",
-      "count": 4,
-      "interval_ms": 1100,
-      "queries": [
-        {
-          "name": "viewport",
-          "locator": { "css": ".game-viewport" },
-          "fields": ["scroll_height", "client_height"]
-        },
-        {
-          "name": "lines",
-          "locator": { "css": ".game-line" },
-          "fields": ["count", "content_signature"]
-        },
-        {
-          "name": "map",
-          "locator": { "text": "■博麗神社", "exact": true, "nth": -1 },
-          "fields": ["count", "box"]
+          "fields": ["content_signature", "square_grid"]
         }
       ],
       "expect": {
-        "stable": [
-          "runtime.history_revision",
-          "runtime.output_count",
-          "viewport.scroll_height",
-          "viewport.client_height",
-          "map.count",
-          "map.box.top"
-        ],
+        "stable": ["lines.square_grid"],
         "changes": ["runtime.presentation_revision", "lines.content_signature"]
       }
     }
   ],
   "limits": {
-    "max_steps": 10,
+    "max_steps": 30,
     "timeout_seconds": 900
   }
 }

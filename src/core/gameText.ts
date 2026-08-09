@@ -43,7 +43,7 @@ function latestRuntimeTextStyle(lines: DisplayLine[]): TextStyle | undefined {
 function latestRunStyle(runs: any[]): TextStyle | undefined {
   for (let index = runs.length - 1; index >= 0; index -= 1) {
     const run = runs[index];
-    if (run.type === "text" && run.style) return run.style;
+    if (["text", "text_layout"].includes(run.type) && run.style) return run.style;
     if (run.type === "button") {
       const style = latestRunStyle(run.runs ?? []);
       if (style) return style;

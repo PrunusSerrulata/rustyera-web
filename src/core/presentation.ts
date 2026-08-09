@@ -153,7 +153,8 @@ function lineContentChanged(
 function runContentIdentity(run: any): string {
   switch (run?.type) {
     case "text":
-      return `text:${run.text}`;
+    case "text_layout":
+      return `text:${run.text}:${run.columns ?? "canonical"}`;
     case "button":
       return `button:${(run.runs ?? []).map(runContentIdentity).join("|")}`;
     case "image":
@@ -192,6 +193,7 @@ function disableOldButtons(lines: DisplayLine[], generation: number): void {
 export function plainRun(run: any): string {
   switch (run.type) {
     case "text":
+    case "text_layout":
       return run.text;
     case "button":
       return (run.runs ?? []).map(plainRun).join("");
@@ -219,7 +221,8 @@ export function printedHtmlLine(line: DisplayLine, lineHeight = 0): string {
 
 function printedHtmlRun(run: any, lineHeight: number): string {
   switch (run.type) {
-    case "text": {
+    case "text":
+    case "text_layout": {
       let value = escapeHtml(run.text ?? "");
       if (run.style?.strikeout) value = `<s>${value}</s>`;
       if (run.style?.underline) value = `<u>${value}</u>`;

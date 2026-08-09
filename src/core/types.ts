@@ -253,6 +253,7 @@ export interface TooltipSettings {
 
 export type DisplayRun =
   | { type: "text"; text: string; style: TextStyle }
+  | { type: "text_layout"; text: string; style: TextStyle; columns: number }
   | {
       type: "button";
       runs: DisplayRun[];

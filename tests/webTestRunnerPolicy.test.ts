@@ -83,6 +83,24 @@ describe("browser game runner progress policy", () => {
     expect(scenario).toContain('"font_size": "19px"');
   });
 
+  it("measures real map and dialogue glyph coordinates for text-layout regressions", () => {
+    const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const mapScenario = readFileSync(
+      resolve("tools/runtime-tester/scenarios/eratw-dynamic-map.json"),
+      "utf8",
+    );
+    const dialogueScenario = readFileSync(
+      resolve("tools/runtime-tester/scenarios/erarorona-log-inputs.json"),
+      "utf8",
+    );
+
+    expect(runner).toContain('fields.includes("square_grid")');
+    expect(runner).toContain('fields.includes("dialog_border")');
+    expect(runner).toContain('action.type === "click_until_text"');
+    expect(mapScenario).toContain('"square_grid"');
+    expect(dialogueScenario).toContain('"dialog_border"');
+  });
+
   it("starts delayed captures on an absolute five-second cadence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
