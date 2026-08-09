@@ -1014,6 +1014,162 @@ describe("runtime store session lifecycle", () => {
     });
   });
 
+  it("submits AnyKey once from a viewport left click", async () => {
+    const store = await storeWithInputWait({
+      kind: "any_key",
+      wait_id: 21,
+      submission_token: { epoch: 2, id: 8 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    await store.continueFromViewport();
+
+    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "input",
+        value: expect.objectContaining({
+          wait_id: 21,
+          intent: { type: "any_key", value: "\n" },
+          message_skip: false,
+        }),
+      }),
+      undefined,
+    );
+  });
+
+  it("starts continuous message skipping from an AnyKey viewport right click", async () => {
+    const store = await storeWithInputWait({
+      kind: "any_key",
+      wait_id: 22,
+      submission_token: { epoch: 2, id: 9 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    await store.skip();
+
+    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "input",
+        value: expect.objectContaining({
+          wait_id: 22,
+          intent: { type: "any_key", value: "\n" },
+          message_skip: true,
+        }),
+      }),
+      undefined,
+    );
+  });
+
+  it("submits one ordinary keyboard event for an AnyKey wait", async () => {
+    const store = useRuntimeStore();
+    await store.initialize();
+    await storeWithInputWait({
+      kind: "any_key",
+      wait_id: 23,
+      submission_token: { epoch: 2, id: 10 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: " ", code: "Space" }));
+    await flushMicrotasks();
+
+    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "input",
+        value: expect.objectContaining({
+          wait_id: 23,
+          intent: { type: "any_key", value: " " },
+          message_skip: false,
+        }),
+      }),
+      undefined,
+    );
+  });
+
+  it("shares one AnyKey input lock across keyboard, viewport, form, and button paths", async () => {
+    const store = useRuntimeStore();
+    await store.initialize();
+    await storeWithInputWait({
+      kind: "any_key",
+      wait_id: 24,
+      submission_token: { epoch: 2, id: 11 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "x", code: "KeyX" }));
+    await Promise.all([
+      store.continueFromViewport(),
+      store.skip(),
+      store.submitText(),
+      store.activate({ epoch: 2, id: 99 }),
+    ]);
+    await flushMicrotasks();
+
+    const inputs = bridge.submitRuntime.mock.calls.filter(
+      ([message]: unknown[]) => (message as { type?: string }).type === "input",
+    );
+    expect(inputs).toHaveLength(1);
+    expect((inputs[0] as unknown[] | undefined)?.[0]).toMatchObject({
+      value: {
+        wait_id: 24,
+        token: { epoch: 2, id: 11 },
+        intent: { type: "any_key", value: "x" },
+        message_skip: false,
+      },
+    });
+    expect(store.canInteract).toBe(false);
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("wait_changed", { type: "closed", value: null })],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.canInteract).toBe(false);
+
+    const nextWait = {
+      kind: "any_key",
+      wait_id: 25,
+      submission_token: { epoch: 2, id: 12 },
+    };
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("wait_changed", { type: "opened", value: nextWait })],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.canInteract).toBe(true);
+  });
+
+  it("ignores repeated, modified, and modifier-only keys for AnyKey waits", async () => {
+    const store = useRuntimeStore();
+    await store.initialize();
+    await storeWithInputWait({
+      kind: "any_key",
+      wait_id: 26,
+      submission_token: { epoch: 2, id: 13 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    for (const event of [
+      new KeyboardEvent("keydown", { key: "x", repeat: true }),
+      new KeyboardEvent("keydown", { key: "x", ctrlKey: true }),
+      new KeyboardEvent("keydown", { key: "x", altKey: true }),
+      new KeyboardEvent("keydown", { key: "x", metaKey: true }),
+      new KeyboardEvent("keydown", { key: "x", shiftKey: true }),
+      new KeyboardEvent("keydown", { key: "Control" }),
+      new KeyboardEvent("keydown", { key: "Alt" }),
+      new KeyboardEvent("keydown", { key: "Meta" }),
+      new KeyboardEvent("keydown", { key: "Shift" }),
+    ])
+      document.dispatchEvent(event);
+    await flushMicrotasks();
+
+    expect(bridge.submitRuntime).not.toHaveBeenCalled();
+    expect(store.canInteract).toBe(true);
+  });
+
   it("releases the input lock when a wait closes or is updated to a new identity", async () => {
     const store = await storeWithInputWait({
       kind: "enter_key",

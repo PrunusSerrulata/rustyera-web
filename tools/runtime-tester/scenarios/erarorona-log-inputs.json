@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/erarorona",
+  "mode": "fixed",
+  "compiled_cache": true,
+  "clean_saves": true,
+  "seed": 1126218542,
+  "clock": "2026-01-01T00:00:00Z",
+  "viewport": { "width": 1415, "height": 1056 },
+  "actions": [
+    { "type": "drain_void_waits", "maximum": 300 },
+    { "type": "input", "value": 0 },
+    { "type": "drain_void_waits", "maximum": 300 },
+    { "type": "input", "value": 0 },
+    { "type": "input", "value": 999 },
+    { "type": "input", "value": 9 },
+    { "type": "input", "value": 0, "auto_enter": false },
+    {
+      "type": "click",
+      "locator": { "css": ".game-viewport" },
+      "button": "right",
+      "auto_enter": false
+    },
+    {
+      "type": "advance_enter_waits_until",
+      "maximum": 1100,
+      "settle_auto_enter": false,
+      "until": {
+        "output_tail_contains": "亚斯特丽德的工房",
+        "tail_lines": 40,
+        "locator": { "css": ".media-visual.media-sprite" }
+      }
+    },
+    {
+      "type": "advance_enter_waits_until",
+      "maximum": 80,
+      "settle_auto_enter": false,
+      "until": { "output_tail_contains": "我回来了……", "tail_lines": 60 }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "[+] 日志", "exact": false },
+      "auto_enter": false
+    },
+    { "type": "assert_state", "expect": { "wait": { "kind": "any_key" } } },
+    {
+      "type": "press",
+      "locator": { "css": ".game-viewport" },
+      "key": "Space",
+      "auto_enter": false
+    },
+    {
+      "type": "advance_enter_waits_until",
+      "maximum": 0,
+      "settle_auto_enter": false,
+      "until": { "output_tail_contains": "我回来了……", "tail_lines": 60 }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "[+] 日志", "exact": false },
+      "auto_enter": false
+    },
+    { "type": "assert_state", "expect": { "wait": { "kind": "any_key" } } },
+    {
+      "type": "click",
+      "locator": { "css": ".game-viewport" },
+      "button": "left",
+      "auto_enter": false
+    },
+    {
+      "type": "advance_enter_waits_until",
+      "maximum": 0,
+      "settle_auto_enter": false,
+      "until": { "output_tail_contains": "我回来了……", "tail_lines": 60 }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "[+] 日志", "exact": false },
+      "auto_enter": false
+    },
+    { "type": "assert_state", "expect": { "wait": { "kind": "any_key" } } },
+    {
+      "type": "click",
+      "locator": { "css": ".game-viewport" },
+      "button": "right",
+      "auto_enter": false
+    },
+    {
+      "type": "advance_enter_waits_until",
+      "maximum": 0,
+      "settle_auto_enter": false,
+      "until": { "output_tail_contains": "暗之公会", "tail_lines": 60 }
+    }
+  ],
+  "limits": { "max_steps": 300, "timeout_seconds": 900 }
+}

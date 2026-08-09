@@ -74,22 +74,23 @@ function close(): void {
 
 function keydown(event: KeyboardEvent): void {
   if (event.key === "Escape") close();
-  if (event.key !== "Tab" || !panel.value) return;
-  const focusable = [
-    ...panel.value.querySelectorAll<HTMLElement>(
-      "button,input,select,textarea,[tabindex]:not([tabindex='-1'])",
-    ),
-  ].filter((item) => !item.hasAttribute("disabled"));
-  if (!focusable.length) return;
-  const first = focusable[0];
-  const last = focusable.at(-1)!;
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault();
-    first.focus();
+  if (event.key === "Tab" && panel.value) {
+    const focusable = [
+      ...panel.value.querySelectorAll<HTMLElement>(
+        "button,input,select,textarea,[tabindex]:not([tabindex='-1'])",
+      ),
+    ].filter((item) => !item.hasAttribute("disabled"));
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (event.shiftKey && first && last && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && first && last && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
+  event.stopPropagation();
 }
 
 function clamp(): void {

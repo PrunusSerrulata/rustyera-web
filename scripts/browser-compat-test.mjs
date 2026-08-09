@@ -37,6 +37,7 @@ const project = path.resolve(
 const checkTooltip = process.argv.includes("--check-tooltip");
 const startupOnly = process.argv.includes("--startup-only");
 const cacheInputSmoke = process.argv.includes("--cache-input-smoke");
+const logInputSmoke = process.argv.includes("--log-input-smoke");
 const files = await collectFiles(project);
 if (projectIndex < 0) {
   const oracle = files.find((entry) => entry.path.toLowerCase() === "erb/oracle.erb");
@@ -281,8 +282,9 @@ try {
       `project progress was incomplete (${projectProgressErrors.join(", ")}): ${JSON.stringify(projectProgress)}`,
     );
   }
-  if (cacheInputSmoke) {
+  if (cacheInputSmoke || logInputSmoke) {
     await runCacheInputSmoke(browser, browserName, projectProgress, setup, opfsReset);
+    if (logInputSmoke) await runLogInputSmoke(browser, browserName);
   } else if (startupOnly) {
     compatibilityStage = "collecting cold-start report";
     const observed = await collectCompatibilityReport(browser);
@@ -650,6 +652,117 @@ async function runCacheInputSmoke(
       projectProgress,
       ...observed,
     }),
+  );
+}
+
+async function runLogInputSmoke(activeBrowser, activeBrowserName) {
+  await advanceMessageWaitsUntil(activeBrowser, "我回来了……", 80);
+
+  let logWaitId = await openGameLog(activeBrowser);
+  compatibilityStage = "returning from the game log with an ordinary key";
+  await activeBrowser.keys(["Space"]);
+  await waitForReturnedDialogue(activeBrowser, logWaitId);
+
+  logWaitId = await openGameLog(activeBrowser);
+  compatibilityStage = "returning from the game log with a left viewport click";
+  await (await activeBrowser.$(".game-viewport")).click();
+  await waitForReturnedDialogue(activeBrowser, logWaitId);
+
+  logWaitId = await openGameLog(activeBrowser);
+  compatibilityStage = "skipping the current scene from the game log";
+  await (await activeBrowser.$(".game-viewport")).click({ button: "right" });
+  await activeBrowser.waitUntil(
+    () =>
+      activeBrowser.execute((previousWaitId) => {
+        const state = window.__RUSTYERA_TEST__?.snapshot();
+        return (
+          state?.canInteract &&
+          state.wait?.wait_id !== previousWaitId &&
+          state.wait?.stop_message_skip === true &&
+          state.output.some((line) => String(line).includes("暗之公会"))
+        );
+      }, logWaitId),
+    { timeout: 180_000, interval: 50, timeoutMsg: "game-log skip did not reach the dark guild" },
+  );
+  const result = await activeBrowser.execute(() => {
+    const state = window.__RUSTYERA_TEST__?.snapshot();
+    return {
+      fault: state?.fault,
+      wait: state?.wait,
+      inputFailures:
+        state?.logs.filter((entry) =>
+          /input wait identity is stale|no input is pending|input was rejected/.test(
+            String(entry.message),
+          ),
+        ) ?? [],
+    };
+  });
+  if (result.fault != null || result.inputFailures.length > 0) {
+    throw new Error(`game-log input failed: ${JSON.stringify(result)}`);
+  }
+  console.log(
+    JSON.stringify({
+      browser: activeBrowserName,
+      browserVersion: activeBrowser.capabilities.browserVersion,
+      logInputSmoke: true,
+      ...result,
+    }),
+  );
+}
+
+async function advanceMessageWaitsUntil(activeBrowser, expectedText, maximum) {
+  for (let attempt = 0; attempt <= maximum; attempt += 1) {
+    compatibilityStage = `advancing dialogue to ${expectedText}`;
+    const state = await activeBrowser.execute(() => window.__RUSTYERA_TEST__?.snapshot());
+    if (state?.canInteract && state.output.some((line) => String(line).includes(expectedText)))
+      return;
+    const waitId = state?.wait?.wait_id;
+    if (waitId == null) {
+      await activeBrowser.pause(16);
+      continue;
+    }
+    if (state.wait.deadline_ns == null) {
+      if (state.wait.kind === "string_value" && state.wait.one_input) {
+        await (await activeBrowser.$(".game-viewport .game-button")).click();
+      } else {
+        await (await activeBrowser.$(".prompt-bar button[type=submit]")).click();
+      }
+    }
+    await waitForChangedInput(activeBrowser, waitId);
+  }
+  throw new Error(`${expectedText} was not visible after ${maximum} message waits`);
+}
+
+async function openGameLog(activeBrowser) {
+  compatibilityStage = "opening the in-game message log";
+  const button = await activeBrowser.$("//button[contains(normalize-space(.), '[+] 日志')]");
+  await button.waitForClickable({ timeout: 30_000 });
+  await button.click();
+  await activeBrowser.waitUntil(
+    () =>
+      activeBrowser.execute(() => window.__RUSTYERA_TEST__?.snapshot().wait?.kind === "any_key"),
+    { timeout: 30_000, interval: 50, timeoutMsg: "game log did not expose an AnyKey wait" },
+  );
+  return activeBrowser.execute(() => window.__RUSTYERA_TEST__?.snapshot().wait.wait_id);
+}
+
+async function waitForReturnedDialogue(activeBrowser, previousWaitId) {
+  await waitForChangedInput(activeBrowser, previousWaitId);
+  const returned = await activeBrowser.execute(() => {
+    const state = window.__RUSTYERA_TEST__?.snapshot();
+    return state?.output.some((line) => String(line).includes("我回来了……"));
+  });
+  if (!returned) throw new Error("game-log continuation advanced past the current dialogue");
+}
+
+async function waitForChangedInput(activeBrowser, previousWaitId) {
+  await activeBrowser.waitUntil(
+    () =>
+      activeBrowser.execute((waitId) => {
+        const state = window.__RUSTYERA_TEST__?.snapshot();
+        return state?.fault != null || (state?.canInteract && state.wait?.wait_id !== waitId);
+      }, previousWaitId),
+    { timeout: 30_000, interval: 50, timeoutMsg: "game input did not advance" },
   );
 }
 if (snapshotMonitorError) throw snapshotMonitorError;

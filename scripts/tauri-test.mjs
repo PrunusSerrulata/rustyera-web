@@ -36,6 +36,9 @@ const specProfiles = {
     environmentFlag: "VITE_RUSTYERA_TAURI_AKUMA_MAID_IMAGES",
   },
   "rorona-images.spec.mjs": { environmentFlag: "VITE_RUSTYERA_TAURI_RORONA_IMAGES" },
+  "rorona-log-inputs.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_RORONA_LOG_INPUTS",
+  },
   "eratw-character-images.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_ERATW_CHARACTER_IMAGES",
     defaultState: "tests/fixtures/eratw/save18.sav",

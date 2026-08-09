@@ -44,6 +44,15 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain('telemetry.outcome !== "success"');
   });
 
+  it("provides a native-browser game-log input smoke flow", () => {
+    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+
+    expect(runner).toContain('process.argv.includes("--log-input-smoke")');
+    expect(runner).toContain("await runLogInputSmoke(browser, browserName)");
+    expect(runner).toContain("state.wait?.stop_message_skip === true");
+    expect(runner).toContain('String(line).includes("暗之公会")');
+  });
+
   it("uses the requested mouse button for visible UI click actions", () => {
     const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
 

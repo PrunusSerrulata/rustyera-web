@@ -23,7 +23,12 @@ import {
 } from "@/core/debug";
 import { preferredRuntimeLocales, resolveGameTextStyle } from "@/core/gameText";
 import { decodeImageMetadata } from "@/core/imageMetadata";
-import { isMessageSkipWait } from "@/core/messageSkip";
+import {
+  isMessageContinuationWait,
+  isMessageSkipWait,
+  messageWaitIntent,
+  type MessageWaitIntent,
+} from "@/core/messageSkip";
 import {
   at,
   concatenateChunks,
@@ -72,6 +77,25 @@ import { transportValue } from "@/stores/runtimeTransport";
 
 type LogEntry = DiagnosisLogEntry & { authoritative: boolean };
 
+type RuntimeInputIntent =
+  | MessageWaitIntent
+  | { type: "commit_text"; value: string }
+  | { type: "activate"; value: InteractionToken }
+  | { type: "continue" }
+  | { type: "cancel" }
+  | {
+      type: "primitive";
+      value: {
+        input_type: number;
+        result_1: number;
+        result_2: number;
+        result_3: number;
+        result_4: number;
+        selection_token: InteractionToken | null;
+      };
+    }
+  | { type: "activate_key_macro"; value: { group: number; slot: number } };
+
 const sessionFontFallback = ["system-ui", "sans-serif", "serif", "monospace"];
 
 interface ExportState {
@@ -100,7 +124,7 @@ interface PendingGameInput {
   waitId: string;
   messageId?: string;
   waitKind: string;
-  intent: any;
+  intent: RuntimeInputIntent;
   messageSkip: boolean;
   waitClosed?: boolean;
   retryPending?: boolean;
@@ -1243,7 +1267,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function submitText(): Promise<void> {
     const wait = currentPresentation().inputWait;
     if (!wait || !canInteract.value) return;
-    let intent: any;
+    let intent: RuntimeInputIntent;
     switch (wait.kind) {
       case "enter_key":
         intent = { type: "enter" };
@@ -1284,17 +1308,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function skip(): Promise<void> {
     const wait = currentPresentation().inputWait;
     if (canInteract.value && isMessageSkipWait(wait)) {
-      await submitIntent({ type: "enter" }, true);
+      await submitIntent(messageWaitIntent(wait), true);
     }
   }
 
   async function continueFromViewport(): Promise<void> {
-    if (canInteract.value && currentPresentation().inputWait?.kind === "enter_key") {
-      await submitIntent({ type: "enter" }, false);
-    }
+    const wait = currentPresentation().inputWait;
+    if (canInteract.value && isMessageContinuationWait(wait))
+      await submitIntent(messageWaitIntent(wait), false);
   }
 
-  async function submitIntent(intent: any, messageSkip: boolean): Promise<void> {
+  async function submitIntent(intent: RuntimeInputIntent, messageSkip: boolean): Promise<void> {
     if (diagnosisExporting.value || pendingGameInput.value || pendingInputUndo.value) return;
     const wait = currentPresentation().inputWait;
     if (!wait) return;
@@ -2920,7 +2944,24 @@ export const useRuntimeStore = defineStore("runtime", () => {
     ) {
       event.preventDefault();
       void stepDebug();
+    } else if (
+      !event.defaultPrevented &&
+      !event.repeat &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !event.shiftKey &&
+      !isModifierKey(event.key) &&
+      canInteract.value &&
+      currentPresentation().inputWait?.kind === "any_key"
+    ) {
+      event.preventDefault();
+      void submitIntent({ type: "any_key", value: event.key || "\n" }, false);
     }
+  }
+
+  function isModifierKey(key: string): boolean {
+    return ["Alt", "AltGraph", "Control", "Meta", "Shift"].includes(key);
   }
 
   function onKeyUp(event: KeyboardEvent): void {

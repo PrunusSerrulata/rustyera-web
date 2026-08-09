@@ -1,5 +1,5 @@
 import { mount } from "@vue/test-utils";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import DraggableDialog from "@/components/DraggableDialog.vue";
 
@@ -31,6 +31,23 @@ describe("DraggableDialog", () => {
     await wrapper.vm.$nextTick();
 
     expect(wrapper.emitted("close")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("keeps every dialog key event away from document gameplay handlers", () => {
+    const documentKeydown = vi.fn();
+    document.addEventListener("keydown", documentKeydown);
+    const wrapper = mount(DraggableDialog, {
+      attachTo: document.body,
+      props: { open: true, title: "测试对话框" },
+      slots: { default: '<input aria-label="对话框输入" />' },
+    });
+    const input = document.body.querySelector<HTMLInputElement>("[aria-label='对话框输入']")!;
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+
+    expect(documentKeydown).not.toHaveBeenCalled();
+    document.removeEventListener("keydown", documentKeydown);
     wrapper.unmount();
   });
 });
