@@ -95,6 +95,25 @@ roronaImages("Tauri erarorona image rendering", () => {
     assert.ok(actionScreenClicks > 0, "the action screen must require alternating viewport clicks");
     const actionScreen = await actionScreenMetrics();
     assertActionScreen(actionScreen);
+    const friendPanel = await selectActionPanel("[*] 友人", friendPanelMetrics, (metrics) =>
+      metrics.rows.every((row) => row.shapeCount > 0),
+    );
+    assertFriendPanel(friendPanel.metrics);
+    const playingAudio = await waitForPlayingBackgroundMusic();
+    const backgroundMusic = currentBackgroundMusic(playingAudio);
+    assert.ok(backgroundMusic, "the workshop must expose its active background music");
+    const firstButtonStarts = playingAudio.audioPlayback?.[backgroundMusic]?.starts ?? 0;
+    assert.ok(firstButtonStarts > 0, "the workshop background music must be playing");
+    const slavePanel = await selectActionPanel("[/] 奴隶", async () =>
+      (await friendPanelMetrics()).rows.every((row) => row.shapeCount === 0),
+    );
+    assert.equal(currentBackgroundMusic(slavePanel.state), backgroundMusic);
+    assert.equal(
+      slavePanel.state.audioPlayback?.[backgroundMusic]?.starts,
+      firstButtonStarts,
+      "clicking another action button must not restart the same BGM",
+    );
+    assert.equal(slavePanel.state.audioPlayback?.[backgroundMusic]?.active, 1);
     assert.ok(
       automaticTimedWaits > 0,
       "opening fades and dialogue typewriter frames must advance without clicking",
@@ -104,6 +123,9 @@ roronaImages("Tauri erarorona image rendering", () => {
         firstDialogue,
         secondDialogue,
         actionScreen,
+        friendPanel: friendPanel.metrics,
+        backgroundMusic,
+        backgroundMusicStarts: firstButtonStarts,
         actionScreenClicks,
         automaticTimedWaits,
       }),
@@ -120,6 +142,54 @@ async function enableMessageSkip() {
     }
   }
   throw new Error("the visible [*] message-skip control was not found");
+}
+
+async function selectActionPanel(label, measure, isReady = (value) => Boolean(value)) {
+  const before = await snapshot();
+  const buttons = await $$("button");
+  for (const button of buttons) {
+    if ((await button.getText()).includes(label)) {
+      await button.click();
+      let acceptedMetrics;
+      const state = await driveRuntimeUntil({
+        browser,
+        snapshot,
+        label: `Rorona action panel ${label}`,
+        totalTimeout: STEP_TIMEOUT,
+        pollInterval: 50,
+        accept: async (state) => {
+          if (
+            state.presentationRevision === before.presentationRevision ||
+            !state.canInteract ||
+            state.wait?.stability !== "stable_input"
+          )
+            return false;
+          acceptedMetrics = await measure();
+          return isReady(acceptedMetrics);
+        },
+      });
+      return { state, metrics: acceptedMetrics };
+    }
+  }
+  throw new Error(`the visible ${label} action-panel button was not found`);
+}
+
+function currentBackgroundMusic(state) {
+  return Object.values(state.audio ?? {}).find((channel) => channel.playing)?.resourceId ?? null;
+}
+
+async function waitForPlayingBackgroundMusic() {
+  return driveRuntimeUntil({
+    browser,
+    snapshot,
+    label: "Rorona workshop background music playback",
+    totalTimeout: STEP_TIMEOUT,
+    pollInterval: 50,
+    accept: (state) => {
+      const resource = currentBackgroundMusic(state);
+      return resource != null && state.audioPlayback?.[resource]?.active === 1;
+    },
+  });
 }
 
 async function alternateClicksUntilActionScreen() {
@@ -306,6 +376,32 @@ async function actionScreenMetrics() {
   });
 }
 
+async function friendPanelMetrics() {
+  return browser.execute(() => {
+    const names = ["亚斯特丽德", "霍姆弟弟", "霍姆妹妹"];
+    return {
+      rows: names.map((name) => {
+        const line = [...document.querySelectorAll(".game-line")].find(
+          (candidate) =>
+            candidate.textContent?.includes(name) &&
+            candidate.querySelector(".html-shape-rect-visual"),
+        );
+        const shapes = line
+          ? [...line.querySelectorAll(".html-shape-rect-visual")].map((shape) => {
+              const bounds = shape.getBoundingClientRect();
+              return {
+                color: getComputedStyle(shape).backgroundColor,
+                width: bounds.width,
+                height: bounds.height,
+              };
+            })
+          : [];
+        return { name, shapeCount: shapes.length, shapes };
+      }),
+    };
+  });
+}
+
 function assertActionScreen(metrics) {
   assert.ok(metrics.identityLineTop != null, "the Rorona identity row must be visible");
   assert.ok(metrics.portraitLayers.length >= 2, "the layered Rorona avatar must be visible");
@@ -321,4 +417,17 @@ function assertActionScreen(metrics) {
   assert.ok(metrics.barColors.includes("rgb(112, 112, 192)"), "the stamina bar must be blue");
   assert.ok(metrics.barColors.includes("rgb(112, 192, 112)"), "the mana bar must be green");
   assert.equal(metrics.disabledStartColor, "rgb(64, 64, 64)");
+}
+
+function assertFriendPanel(metrics) {
+  assert.equal(metrics.rows.length, 3);
+  for (const row of metrics.rows) {
+    assert.ok(row.shapeCount > 0, `${row.name} must render an Era HTML health rectangle`);
+    assert.ok(
+      row.shapes.some(
+        (shape) => shape.color === "rgb(192, 112, 112)" && shape.width > 0 && shape.height > 0,
+      ),
+      `${row.name} must show a visible red health rectangle`,
+    );
+  }
 }

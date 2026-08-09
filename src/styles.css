@@ -328,6 +328,19 @@ select {
 :is(.game-button, .html-node:is(button)):hover:not(:disabled) .html-font {
   --game-interaction-foreground: var(--game-button-foreground);
 }
+:is(.game-button, .html-node:is(button)):hover:not(:disabled) .html-shape-rect-visual {
+  --game-shape-foreground: var(--game-button-shape-foreground);
+}
+.html-shape-rect {
+  display: inline-block;
+  position: relative;
+  vertical-align: top;
+}
+.html-shape-rect-visual {
+  position: absolute;
+  display: block;
+  pointer-events: none;
+}
 .game-viewport.mouse-disabled :is(.game-button, .html-node:is(button), [data-era-tooltip]) {
   pointer-events: none;
 }

@@ -52,6 +52,51 @@ const spaceShapeStyle = computed(() => {
         height: `${store.gameTextStyle.fontSizePx}px`,
       };
 });
+const rectangleShapeStyle = computed(() => {
+  const semantic = props.node.semantic;
+  if (semantic?.type !== "shape" || semantic.kind?.toLowerCase() !== "rect") return null;
+  const parameters = semantic.parameters ?? [];
+  let x: number | undefined = 0;
+  let y: number | undefined = 0;
+  let width: number | undefined;
+  let height: number | undefined = store.gameTextStyle.fontSizePx;
+  if (parameters.length === 1) {
+    width = projectLength(parameters[0]);
+  } else if (parameters.length === 4) {
+    [x, y, width, height] = parameters.map(projectLength);
+  } else {
+    return null;
+  }
+  if (
+    x == null ||
+    y == null ||
+    width == null ||
+    height == null ||
+    x < 0 ||
+    width <= 0 ||
+    height <= 0
+  )
+    return null;
+  const top = Math.min(0, y);
+  const bottom = Math.max(store.gameTextStyle.fontSizePx, y + height);
+  return {
+    slot: {
+      width: `${x + width}px`,
+      height: `${bottom - top}px`,
+    },
+    visual: {
+      left: `${x}px`,
+      top: `${y - top}px`,
+      width: `${width}px`,
+      height: `${height}px`,
+      backgroundColor: `var(--game-shape-foreground, ${
+        semantic.color == null ? "currentColor" : htmlColor(semantic.color)
+      })`,
+      "--game-button-shape-foreground":
+        semantic.button_color == null ? "var(--game-focus)" : htmlColor(semantic.button_color),
+    },
+  };
+});
 const fontStyle = computed(() => {
   const semantic = props.node.semantic;
   if (semantic?.type !== "font") return null;
@@ -191,6 +236,13 @@ function textSegments(value: unknown): Array<{ text: string; space: boolean; wid
     class="html-node html-shape html-shape-space"
     :style="spaceShapeStyle"
   />
+  <span
+    v-else-if="rectangleShapeStyle"
+    class="html-node html-shape html-shape-rect"
+    :style="rectangleShapeStyle.slot"
+  >
+    <span class="html-shape-rect-visual" :style="rectangleShapeStyle.visual" />
+  </span>
   <MediaImage v-else-if="imagePlacement" :placement="imagePlacement" />
   <span v-else-if="layeredDivisionStyle" class="html-node html-division">
     <span class="html-division-visual" :style="layeredDivisionStyle">

@@ -147,6 +147,71 @@ describe("audio engine scheduling", () => {
     expect(bridge.readResource).toHaveBeenCalledOnce();
   });
 
+  it("continues the same recoverable track across revision and volume updates", async () => {
+    const source = sourceNode();
+    const { gains } = stubAudioContext(source);
+    const bridge = {
+      readResource: vi.fn(async () => Uint8Array.of(1, 2, 3)),
+    } as unknown as FrontendBridge;
+    const engine = new AudioEngine(bridge, defaultPreferences());
+
+    await engine.synchronize([playingState(1)]);
+    await vi.waitFor(() => expect(source.start).toHaveBeenCalledOnce());
+    await engine.synchronize([playingState(2, 250_000)]);
+
+    expect(source.stop).not.toHaveBeenCalled();
+    expect(source.start).toHaveBeenCalledOnce();
+    expect(gains[1].gain.value).toBe(0.25);
+  });
+
+  it("deduplicates a looping effect already started from presentation state", async () => {
+    const source = sourceNode();
+    stubAudioContext(source);
+    const bridge = {
+      readResource: vi.fn(async () => Uint8Array.of(1, 2, 3)),
+    } as unknown as FrontendBridge;
+    const engine = new AudioEngine(bridge, defaultPreferences());
+
+    await engine.synchronize([playingState(1, 1_000_000, "sound/theme.mp3", 1)]);
+    await vi.waitFor(() => expect(source.start).toHaveBeenCalledOnce());
+    await engine.applyEffect({
+      action: "play",
+      channel_id: 1,
+      resource_id: "sound/theme.mp3",
+      repeat_count: -1,
+      volume_millionths: 1_000_000,
+    });
+
+    expect(source.stop).not.toHaveBeenCalled();
+    expect(source.start).toHaveBeenCalledOnce();
+  });
+
+  it("merges a looping effect into presentation playback before loading starts", async () => {
+    const resource = deferred<Uint8Array>();
+    const source = sourceNode();
+    const { gains, decodeAudioData } = stubAudioContext(source);
+    const bridge = {
+      readResource: vi.fn(() => resource.promise),
+    } as unknown as FrontendBridge;
+    const engine = new AudioEngine(bridge, defaultPreferences());
+
+    await engine.synchronize([playingState(1, 1_000_000, "sound/theme.mp3", 1)]);
+    await engine.applyEffect({
+      action: "play",
+      channel_id: 1,
+      resource_id: "sound/theme.mp3",
+      repeat_count: -1,
+      volume_millionths: 250_000,
+    });
+    await vi.waitFor(() => expect(bridge.readResource).toHaveBeenCalledOnce());
+    resource.resolve(Uint8Array.of(1, 2, 3));
+    await vi.waitFor(() => expect(source.start).toHaveBeenCalledOnce());
+
+    expect(decodeAudioData).toHaveBeenCalledOnce();
+    expect(source.stop).not.toHaveBeenCalled();
+    expect(gains[1].gain.value).toBe(0.25);
+  });
+
   it("executes bare runtime audio effects and can stop the started channel", async () => {
     const source = sourceNode();
     stubAudioContext(source);

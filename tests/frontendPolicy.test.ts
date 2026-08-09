@@ -359,6 +359,55 @@ describe("frontend host and image-line policy", () => {
     expect(wrapper.get(".html-shape-space").attributes("style")).toContain("height: 12px");
   });
 
+  it("projects Era HTML rectangles with normal and focused colors", () => {
+    const wrapper = mount(HtmlNode, {
+      props: {
+        node: {
+          type: "element",
+          kind: "shape",
+          children: [],
+          semantic: {
+            type: "shape",
+            kind: "rect",
+            parameters: [
+              { unit: "font_height_hundredths", value: 50 },
+              { unit: "font_height_hundredths", value: 25 },
+              { unit: "font_height_hundredths", value: 500 },
+              { unit: "font_height_hundredths", value: 36 },
+            ],
+            color: 0xc07070,
+            button_color: 0x70c070,
+          },
+        },
+      },
+    });
+
+    expect(wrapper.get(".html-shape-rect").attributes("style")).toContain("width: 66px");
+    expect(wrapper.get(".html-shape-rect").attributes("style")).toContain("height: 12px");
+    const visual = wrapper.get(".html-shape-rect-visual");
+    expect(visual.attributes("style")).toContain("left: 6px");
+    expect(visual.attributes("style")).toContain("top: 3px");
+    expect(visual.attributes("style")).toContain("width: 60px");
+    expect(visual.attributes("style")).toContain("height: 4.32px");
+    expect(visual.attributes("style")).toContain(
+      "background-color: var(--game-shape-foreground, rgb(192, 112, 112))",
+    );
+    expect(visual.attributes("style")).toContain(
+      "--game-button-shape-foreground: rgb(112, 192, 112)",
+    );
+
+    const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
+    expect(stylesheet).toMatch(
+      /:is\(\.game-button, \.html-node:is\(button\)\):hover:not\(:disabled\) \.html-shape-rect-visual\s*\{[^}]*--game-shape-foreground:\s*var\(--game-button-shape-foreground\);/s,
+    );
+    expect(stylesheet).toMatch(
+      /\.html-shape-rect\s*\{[^}]*display:\s*inline-block;[^}]*position:\s*relative;[^}]*vertical-align:\s*top;/s,
+    );
+    expect(stylesheet).toMatch(
+      /\.html-shape-rect-visual\s*\{[^}]*position:\s*absolute;[^}]*pointer-events:\s*none;/s,
+    );
+  });
+
   it("reserves one configured console row for an overflowing HTML image", () => {
     const wrapper = mount(HtmlNode, {
       props: {

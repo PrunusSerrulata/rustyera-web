@@ -3,14 +3,13 @@ import type { FrontendBridge, Preferences } from "@/core/types";
 interface ActiveChannel {
   source: AudioBufferSourceNode;
   gain: GainNode;
-  identity: string;
   channelId: number;
   resourceId: string;
+  repeatCount: number;
   recoverable: boolean;
 }
 
 interface PendingChannel {
-  identity: string;
   state: any;
   token: symbol;
   channelId: number;
@@ -29,7 +28,6 @@ export class AudioEngine {
   private readonly pending = new Map<number, PendingChannel>();
   private readonly buffers = new Map<string, Promise<AudioBuffer>>();
   private readonly groupVolumes = new Map<number, number>();
-  private effectSequence = 0;
 
   constructor(
     private readonly bridge: FrontendBridge,
@@ -53,16 +51,10 @@ export class AudioEngine {
     const retained = new Set<number>();
     for (const state of states) {
       retained.add(state.channel_id);
-      const active = this.channels.get(state.channel_id);
-      const pending = this.pending.get(state.channel_id);
-      const identity = `runtime:${state.revision}`;
       if (!state.playing) {
         this.stop(state.channel_id);
-      } else if (!active || active.identity !== identity) {
-        if (pending?.identity === identity) pending.state = state;
-        else this.play(state, identity);
-      } else {
-        active.gain.gain.value = Number(state.volume_millionths) / 1_000_000;
+      } else if (!this.continuePlayback(state, state.channel_id)) {
+        this.play(state);
       }
     }
     for (const [playbackId, active] of this.channels)
@@ -84,9 +76,9 @@ export class AudioEngine {
         playing: true,
         volume_millionths: this.groupVolumes.get(channelId) ?? effect.volume_millionths,
       };
-      const identity = `effect:${++this.effectSequence}`;
-      if (channelId === SOUND_CHANNEL_ID) this.playSound(state, identity);
-      else this.play(state, identity);
+      if (channelId === SOUND_CHANNEL_ID) this.playSound(state);
+      else if (state.repeat_count >= 0 || !this.continuePlayback(state, channelId))
+        this.play(state);
     }
     return Promise.resolve();
   }
@@ -107,7 +99,7 @@ export class AudioEngine {
     return this.context;
   }
 
-  private playSound(state: any, identity: string): void {
+  private playSound(state: any): void {
     let playbackId = -1;
     for (let slot = 0; slot < SOUND_VOICE_COUNT; slot += 1) {
       const candidate = -(slot + 1);
@@ -116,19 +108,13 @@ export class AudioEngine {
         break;
       }
     }
-    this.play(state, identity, playbackId, false);
+    this.play(state, playbackId, false);
   }
 
-  private play(
-    state: any,
-    identity: string,
-    playbackId = state.channel_id,
-    recoverable = true,
-  ): void {
+  private play(state: any, playbackId = state.channel_id, recoverable = true): void {
     this.stop(playbackId);
     const token = Symbol("audio playback");
     const pending = {
-      identity,
       state,
       token,
       channelId: Number(state.channel_id),
@@ -159,9 +145,9 @@ export class AudioEngine {
         this.channels.set(playbackId, {
           source,
           gain,
-          identity: current.identity,
           channelId: current.channelId,
           resourceId: latest.resource_id,
+          repeatCount: Number(latest.repeat_count),
           recoverable: current.recoverable,
         });
         try {
@@ -192,6 +178,23 @@ export class AudioEngine {
       this.releaseActive(playbackId, active.source);
       this.observePlayback?.("ended", active.resourceId);
     }
+  }
+
+  private continuePlayback(state: any, playbackId: number): boolean {
+    const active = this.channels.get(playbackId);
+    if (active && this.matches(active.resourceId, active.repeatCount, state)) {
+      active.gain.gain.value = Number(state.volume_millionths) / 1_000_000;
+      return true;
+    }
+    const pending = this.pending.get(playbackId);
+    if (!pending || !this.matches(pending.state.resource_id, pending.state.repeat_count, state))
+      return false;
+    pending.state = state;
+    return true;
+  }
+
+  private matches(resourceId: unknown, repeatCount: unknown, state: any): boolean {
+    return resourceId === state.resource_id && Number(repeatCount) === Number(state.repeat_count);
   }
 
   private releaseActive(
