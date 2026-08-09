@@ -187,7 +187,7 @@ describe("frontend host and image-line policy", () => {
     );
   });
 
-  it("gives ambiguous glyphs and equivalent ASCII the same runtime-owned advance", () => {
+  it("gives special glyphs and equivalent ASCII font-independent runtime advance", () => {
     const render = (text: string) =>
       mount(RunRenderer, {
         props: {
@@ -201,11 +201,14 @@ describe("frontend host and image-line policy", () => {
       }).get("span");
 
     const ambiguous = render("■");
+    const greek = render("γ");
+    const cyrillic = render("ф");
+    const mathematical = render("∬");
     const ascii = render("- ");
     expect(ambiguous.classes()).toContain("text-layout");
     expect(ambiguous.attributes("data-columns")).toBe("2");
-    expect(ambiguous.attributes("style")).toContain("width: 2ch");
-    expect(ascii.attributes("style")).toContain("width: 2ch");
+    for (const segment of [ambiguous, greek, cyrillic, mathematical, ascii])
+      expect(segment.attributes("style")).toContain("width: 1em");
   });
 
   it("projects HTML space shapes before positioned images", () => {

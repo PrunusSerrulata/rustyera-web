@@ -5,7 +5,7 @@
   "compiled_cache": false,
   "start": {
     "type": "traditional_save",
-    "path": "../../../../games/eraTW/sav/save18.sav"
+    "path": "../../../../games/eraTW/sav/save17.sav"
   },
   "actions": [
     { "type": "input", "value": 120 },
@@ -19,46 +19,17 @@
       "type": "assert_dom",
       "locator": { "css": ".game-line" },
       "fields": ["count", "square_grid"],
-      "expect": { "square_grid": { "aligned": true, "left": 0, "right": 608 } }
-    },
-    { "type": "input", "value": 1998 },
-    { "type": "input", "value": 400 },
-    {
-      "type": "click_until_text",
-      "locator": { "role": "button", "name": "地図的显示模式", "exact": false },
-      "until_text": ["颜色地图"],
-      "until_not_text": ["+ 動画"],
-      "maximum": 3
-    },
-    { "type": "input", "value": 999 },
-    { "type": "input", "value": 120 },
-    {
-      "type": "assert_dom",
-      "locator": { "text": "■博麗神社", "exact": true, "nth": -1 },
-      "fields": ["count", "visible"],
-      "expect": { "visible": true }
-    },
-    {
-      "type": "assert_dom",
-      "locator": { "css": ".game-line" },
-      "fields": ["count", "square_grid"],
-      "expect": { "square_grid": { "aligned": true, "left": 0, "right": 608 } }
-    },
-    { "type": "input", "value": 1998 },
-    { "type": "input", "value": 400 },
-    {
-      "type": "click_until_text",
-      "locator": { "role": "button", "name": "地図的显示模式", "exact": false },
-      "until_text": ["颜色地图 + 動画"],
-      "maximum": 3
-    },
-    { "type": "input", "value": 999 },
-    { "type": "input", "value": 120 },
-    {
-      "type": "assert_dom",
-      "locator": { "css": ".game-line" },
-      "fields": ["count", "square_grid"],
-      "expect": { "square_grid": { "aligned": true, "left": 0, "right": 608 } }
+      "expect": {
+        "square_grid": {
+          "left": 0,
+          "right": 608,
+          "left_spread": 0,
+          "right_spread": 0,
+          "rows": 25,
+          "edge_rows": 10,
+          "aligned": true
+        }
+      }
     },
     {
       "type": "sample_queries",

@@ -815,6 +815,10 @@ async function queryLocator(locator, fields = ["count", "text", "visible", "enab
       });
     if (fields.includes("square_grid"))
       result.square_grid = await locator.evaluateAll((elements) => {
+        const SHRINE_LABEL = "■博麗神社";
+        const BORDER_CHARACTER = "■";
+        const MAP_ROW_COUNT = 25;
+        const SHRINE_EDGE_ROW_COUNT = 10;
         const characterBoxes = (element, selectedCharacter) => {
           const boxes = [];
           const ownerDocument = element.ownerDocument;
@@ -837,45 +841,51 @@ async function queryLocator(locator, fields = ["count", "text", "visible", "enab
           return boxes;
         };
         const tolerance = 1;
-        const rows = elements
-          .map((element) => ({
-            top: element.getBoundingClientRect().top,
-            squares: characterBoxes(element, "■"),
-          }))
+        const rows = elements.map((element) => ({
+          text: element.textContent?.trim() ?? "",
+          top: element.getBoundingClientRect().top,
+          squares: characterBoxes(element, BORDER_CHARACTER),
+        }));
+        const labelIndex = rows.findLastIndex((row) => row.text === SHRINE_LABEL);
+        let mapEnd = labelIndex - 1;
+        while (mapEnd >= 0 && rows[mapEnd].squares.length < 2) mapEnd -= 1;
+        const mapStart = mapEnd - MAP_ROW_COUNT + 1;
+        if (labelIndex < 0 || mapStart < 0)
+          return { aligned: false, reason: "latest shrine map was not found" };
+        const map = rows.slice(mapStart, mapEnd + 1);
+        const top = map[0];
+        const bottom = map.at(-1);
+        if (top.squares.length < 8 || bottom.squares.length < 8)
+          return { aligned: false, reason: "shrine border rows were incomplete" };
+        const left = top.squares[0];
+        const right = top.squares.at(-1);
+        const alignedBottom =
+          Math.abs(bottom.squares[0] - left) <= tolerance &&
+          Math.abs(bottom.squares.at(-1) - right) <= tolerance;
+        // The shrine's upper outer wall is a ten-row vertical edge. Lower rows
+        // intentionally open into paths and adjacent areas, so their last square
+        // is not the outer wall and must not be treated as a rectangular edge.
+        const borderedRows = map
+          .slice(0, SHRINE_EDGE_ROW_COUNT)
           .filter((row) => row.squares.length >= 2);
-        for (let topIndex = 0; topIndex < rows.length; topIndex += 1) {
-          const top = rows[topIndex];
-          for (let start = 0; start + 7 < top.squares.length; start += 1) {
-            const gap = top.squares[start + 1] - top.squares[start];
-            let end = start + 1;
-            while (
-              end + 1 < top.squares.length &&
-              Math.abs(top.squares[end + 1] - top.squares[end] - gap) <= tolerance
-            )
-              end += 1;
-            if (end - start + 1 < 8) continue;
-            const left = top.squares[start];
-            const right = top.squares[end];
-            for (let bottomIndex = topIndex + 2; bottomIndex < rows.length; bottomIndex += 1) {
-              const window = rows.slice(topIndex, bottomIndex + 1);
-              const edges = window.filter(
-                (row) =>
-                  row.squares.some((value) => Math.abs(value - left) <= tolerance) &&
-                  row.squares.some((value) => Math.abs(value - right) <= tolerance),
-              );
-              if (edges.length < window.length - 1) continue;
-              return {
-                aligned: true,
-                left: Math.round(left * 100) / 100,
-                right: Math.round(right * 100) / 100,
-                top: Math.round(top.top * 100) / 100,
-                bottom: Math.round(rows[bottomIndex].top * 100) / 100,
-                rows: window.length,
-              };
-            }
-          }
-        }
-        return { aligned: false };
+        const leftEdges = borderedRows.map((row) => row.squares[0]);
+        const rightEdges = borderedRows.map((row) => row.squares.at(-1));
+        const edgeRows = borderedRows.filter(
+          (row) =>
+            Math.abs(row.squares[0] - left) <= tolerance &&
+            Math.abs(row.squares.at(-1) - right) <= tolerance,
+        );
+        return {
+          aligned: alignedBottom && edgeRows.length === SHRINE_EDGE_ROW_COUNT,
+          left: Math.round(left * 100) / 100,
+          right: Math.round(right * 100) / 100,
+          left_spread: Math.round((Math.max(...leftEdges) - Math.min(...leftEdges)) * 100) / 100,
+          right_spread: Math.round((Math.max(...rightEdges) - Math.min(...rightEdges)) * 100) / 100,
+          top: Math.round(top.top * 100) / 100,
+          bottom: Math.round(bottom.top * 100) / 100,
+          rows: map.length,
+          edge_rows: edgeRows.length,
+        };
       });
     if (fields.includes("dialog_border"))
       result.dialog_border = await first.evaluate((element) => {
