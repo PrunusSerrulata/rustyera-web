@@ -215,6 +215,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const presentation = reactive(emptyPresentation());
   let stagedPresentation: PresentationState | undefined;
   let stagedPresentationReady = false;
+  let stagedPresentationCanFlushWhenIdle = false;
   const presentationStaged = ref(false);
   const preferences = ref<Preferences>(defaultPreferences());
   const projectConfiguration = ref<ProjectConfigurationSnapshot | null>(null);
@@ -672,7 +673,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
       else await handleDebug(event.message as any, event.correlationId);
       index += 1;
     }
-    if (stagedPresentationReady) batchMediaDirty = publishStagedPresentation() || batchMediaDirty;
+    if (
+      stagedPresentationReady ||
+      (stagedPresentationCanFlushWhenIdle &&
+        stagedPresentation &&
+        !["more_work", "output_ready"].includes(batch.state))
+    )
+      batchMediaDirty = publishStagedPresentation() || batchMediaDirty;
     if (batchMediaDirty) await synchronizeMedia();
     if (debugGrantRefreshNeeded) {
       debugGrantRefreshNeeded = false;
@@ -788,6 +795,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         } catch (error) {
           stagedPresentation = undefined;
           stagedPresentationReady = false;
+          stagedPresentationCanFlushWhenIdle = false;
           presentationStaged.value = false;
           log("warning", String(error));
           await send({ type: "resynchronize", value: { after_sequence: null } });
@@ -1018,6 +1026,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (!stagedPresentation) {
       stagedPresentation = clonePresentation(presentation);
       stagedPresentationReady = false;
+      stagedPresentationCanFlushWhenIdle = false;
       presentationStaged.value = true;
     }
     return stagedPresentation;
@@ -1033,6 +1042,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     Object.assign(presentation, stagedPresentation);
     stagedPresentation = undefined;
     stagedPresentationReady = false;
+    stagedPresentationCanFlushWhenIdle = false;
     presentationStaged.value = false;
     return true;
   }
@@ -1043,11 +1053,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (next.redraw?.enabled === false && next.inputWait == null) {
       stagedPresentation = next;
       stagedPresentationReady = false;
+      stagedPresentationCanFlushWhenIdle = false;
       presentationStaged.value = true;
       return false;
     }
     stagedPresentation = undefined;
     stagedPresentationReady = false;
+    stagedPresentationCanFlushWhenIdle = false;
     presentationStaged.value = false;
     Object.assign(presentation, next);
     return true;
@@ -1063,13 +1075,27 @@ export const useRuntimeStore = defineStore("runtime", () => {
         (operation.type === "set_redraw" && operation.redraw?.enabled !== false) ||
         (operation.type === "set_input_wait" && operation.input_wait != null),
     );
+    // CLEARLINE commonly lands in its own output batch between timed animation frames. Emuera
+    // repaints the replacement immediately, but publishing that intermediate tail deletion lets
+    // the browser paint an empty frame before the next zero-delay pump. Hold the previous frame
+    // until replacement output, a wait/redraw boundary, or a genuinely idle runtime arrives.
+    const startsTransientReplacement =
+      presentation.inputWait == null &&
+      !completesFrame &&
+      operations.some((operation: any) =>
+        ["clear", "delete_lines"].includes(String(operation.type)),
+      );
     const shouldStage =
       stagedPresentation != null ||
       (presentation.redraw?.enabled === false && presentation.inputWait == null) ||
-      disablesRedraw;
+      disablesRedraw ||
+      startsTransientReplacement;
     const target = shouldStage ? stagePresentation() : presentation;
     applyDelta(target, delta);
     if (target !== stagedPresentation) return true;
+    if (disablesRedraw || target.redraw?.enabled === false)
+      stagedPresentationCanFlushWhenIdle = false;
+    else if (startsTransientReplacement) stagedPresentationCanFlushWhenIdle = true;
     if (completesFrame) stagedPresentationReady = true;
     return false;
   }
@@ -1505,6 +1531,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     testAudioPlayback.clear();
     stagedPresentation = undefined;
     stagedPresentationReady = false;
+    stagedPresentationCanFlushWhenIdle = false;
     presentationStaged.value = false;
     runtimePump.setReady(false);
     phase.value = "negotiating";

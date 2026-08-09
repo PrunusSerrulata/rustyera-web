@@ -2791,6 +2791,76 @@ describe("runtime store session lifecycle", () => {
     expect(store.canInteract).toBe(true);
   });
 
+  it("keeps the previous frame visible across a timed animation CLEARLINE batch", async () => {
+    const line = (lineId: number, text: string) => ({
+      line_id: lineId,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs: [{ type: "text", text, style: {} }],
+    });
+    const timedWait = (waitId: number) => ({
+      kind: "integer_value",
+      wait_id: waitId,
+      submission_token: { epoch: 2, id: waitId },
+      deadline_ns: waitId * 1_000_000,
+    });
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("presentation_snapshot", {
+            revision: 1,
+            title: "animation",
+            history: { logical_lines: [line(1, "frame 1")] },
+            input_wait: timedWait(10),
+            redraw: { enabled: true },
+          }),
+          runtimeEvent("wait_changed", { type: "opened", value: timedWait(10) }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        state: "output_ready",
+        events: [
+          runtimeEvent("wait_changed", { type: "closed", value: null }),
+          runtimeEvent("presentation_delta", {
+            base_revision: 1,
+            new_revision: 2,
+            operations: [{ type: "delete_lines", count: 1 }],
+          }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("presentation_delta", {
+            base_revision: 2,
+            new_revision: 3,
+            operations: [
+              { type: "append_line", line: line(2, "frame 2") },
+              { type: "set_input_wait", input_wait: timedWait(11) },
+            ],
+          }),
+          runtimeEvent("wait_changed", { type: "opened", value: timedWait(11) }),
+        ],
+      });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(plainLine(store.presentation.lines[0])).toBe("frame 1");
+
+    await vi.advanceTimersByTimeAsync(16);
+    expect(store.presentation.revision).toBe(1);
+    expect(plainLine(store.presentation.lines[0])).toBe("frame 1");
+
+    await vi.advanceTimersByTimeAsync(16);
+    expect(store.presentation.revision).toBe(3);
+    expect(plainLine(store.presentation.lines[0])).toBe("frame 2");
+  });
+
   it("publishes hot-setting deltas at an existing redraw-disabled input wait", async () => {
     const wait = {
       kind: "integer_value",

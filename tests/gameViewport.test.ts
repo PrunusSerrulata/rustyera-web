@@ -292,6 +292,24 @@ describe("game viewport", () => {
     wrapper.unmount();
   });
 
+  it("reuses a replaced animation row key so mounted media can retain its prior frame", async () => {
+    store.presentation.lines = [
+      { line_id: 1, alignment: "left", runs: [] },
+      { line_id: 2, alignment: "left", runs: [{ type: "text", text: "frame 1" }] },
+    ];
+    const wrapper = shallowMount(GameViewport);
+    expect(virtualOptions.value.value.getItemKey(1)).toBe("1:2");
+
+    store.presentation.lines = [
+      store.presentation.lines[0],
+      { line_id: 3, alignment: "left", runs: [{ type: "text", text: "frame 2" }] },
+    ];
+    await nextTick();
+
+    expect(virtualOptions.value.value.getItemKey(1)).toBe("1:2");
+    wrapper.unmount();
+  });
+
   it("bottom-aligns short history while retaining virtual row coordinates", async () => {
     const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
     Object.defineProperty(HTMLElement.prototype, "clientHeight", {

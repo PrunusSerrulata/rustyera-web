@@ -15,11 +15,47 @@ const viewport = ref<HTMLElement>();
 const history = ref<HTMLElement>();
 const viewportColumns = ref(100);
 const viewportHeight = ref(0);
+const lineRenderKeys = ref<string[]>([]);
 let viewportObserver: ResizeObserver | undefined;
 let viewportFrame: number | undefined;
 let projectedWidth = -1;
 let projectedHeight = -1;
 let projectedLineColumns = -1;
+let keyedRuntimeEpoch = "";
+let keyedLines: Array<{ id: string; key: string }> = [];
+
+watch(
+  () => [store.runtimeEpoch, store.presentation.lines.map((line) => String(line.line_id))] as const,
+  ([runtimeEpoch, lineIds]) => {
+    const epoch = String(runtimeEpoch);
+    if (epoch !== keyedRuntimeEpoch) {
+      keyedRuntimeEpoch = epoch;
+      keyedLines = [];
+    }
+    const previousById = new Map(keyedLines.map((entry) => [entry.id, entry.key]));
+    const currentIds = new Set(lineIds);
+    const sameLength = lineIds.length === keyedLines.length;
+    const usedKeys = new Set<string>();
+    const next = lineIds.map((id, index) => {
+      let key = previousById.get(id);
+      const replaced = keyedLines[index];
+      if (
+        key == null &&
+        sameLength &&
+        replaced != null &&
+        !currentIds.has(replaced.id) &&
+        !usedKeys.has(replaced.key)
+      )
+        key = replaced.key;
+      key ??= `${epoch}:${id}`;
+      usedKeys.add(key);
+      return { id, key };
+    });
+    keyedLines = next;
+    lineRenderKeys.value = next.map((entry) => entry.key);
+  },
+  { immediate: true, flush: "sync" },
+);
 const virtualizer = useVirtualizer(
   computed(() => {
     return {
@@ -27,8 +63,11 @@ const virtualizer = useVirtualizer(
       getScrollElement: () => viewport.value ?? null,
       estimateSize: () => Math.max(1, store.gameLineHeightPx),
       overscan: 20,
-      // Preserve measured rows across same-epoch snapshots, but isolate restarted sessions.
+      // Preserve measured rows and mounted media across same-epoch snapshots. When an animation
+      // deletes and recreates an equal-length tail, reuse that row's render key so its canvas can
+      // keep the prior frame visible until the replacement replay has committed.
       getItemKey: (index: number) =>
+        lineRenderKeys.value[index] ??
         `${store.runtimeEpoch}:${store.presentation.lines[index]?.line_id ?? index}`,
     };
   }),
