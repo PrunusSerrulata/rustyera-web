@@ -53,10 +53,34 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain('String(line).includes("暗之公会")');
   });
 
+  it("provides a native-browser font hot-apply flow", () => {
+    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+
+    expect(runner).toContain('process.argv.includes("--settings-hot-apply")');
+    expect(runner).toContain('gameFont.setValue("monospace")');
+    expect(runner).toContain('settingsDialog.$("#setting-FontSize").setValue("19")');
+    expect(runner).toContain('style.fontFamily === "monospace"');
+    expect(runner).toContain('style.fontSize === "19px"');
+  });
+
   it("uses the requested mouse button for visible UI click actions", () => {
     const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
 
     expect(runner).toContain('locator.click({ button: action.button ?? "left" })');
+  });
+
+  it("can assert computed game-font styles after applying settings", () => {
+    const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const scenario = readFileSync(
+      resolve("tools/runtime-tester/scenarios/settings-hot-apply.json"),
+      "utf8",
+    );
+
+    expect(runner).toContain('fields.includes("computed_style")');
+    expect(runner).toContain("font_family: style.fontFamily");
+    expect(scenario).toContain('"value": "monospace"');
+    expect(scenario).toContain('"font_family": "monospace"');
+    expect(scenario).toContain('"font_size": "19px"');
   });
 
   it("starts delayed captures on an absolute five-second cadence", async () => {

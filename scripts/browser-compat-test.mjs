@@ -38,6 +38,7 @@ const checkTooltip = process.argv.includes("--check-tooltip");
 const startupOnly = process.argv.includes("--startup-only");
 const cacheInputSmoke = process.argv.includes("--cache-input-smoke");
 const logInputSmoke = process.argv.includes("--log-input-smoke");
+const settingsHotApply = process.argv.includes("--settings-hot-apply");
 const files = await collectFiles(project);
 if (projectIndex < 0) {
   const oracle = files.find((entry) => entry.path.toLowerCase() === "erb/oracle.erb");
@@ -341,6 +342,34 @@ try {
       fontAccess.options.length !== 0
     ) {
       throw new Error(`font picker fallback mismatch: ${JSON.stringify(fontAccess)}`);
+    }
+    if (settingsHotApply) {
+      compatibilityStage = "hot-applying browser font settings";
+      await gameFont.setValue("monospace");
+      await settingsDialog.$("#setting-FontSize").setValue("19");
+      await clickButton("应用");
+      await browser.waitUntil(
+        () =>
+          browser.execute(() => {
+            const viewport = document.querySelector(".game-viewport");
+            if (!(viewport instanceof HTMLElement)) return null;
+            const style = getComputedStyle(viewport);
+            return style.fontFamily === "monospace" && style.fontSize === "19px";
+          }),
+        {
+          timeout: 30_000,
+          interval: 100,
+          timeoutMsg: "browser did not hot-apply the saved game font",
+        },
+      );
+      console.log(
+        JSON.stringify({
+          browser: browserName,
+          settingsHotApply: true,
+          fontFamily: "monospace",
+          fontSize: "19px",
+        }),
+      );
     }
     await clickButton("取消");
     const safariSaveWaitId =

@@ -38,13 +38,15 @@ export async function saveBrowserPreferences(value: Preferences): Promise<Prefer
 }
 
 export function normalizePreferences(value: StoredPreferences): Preferences {
-  const legacyDefaultFontSize =
-    Number(value.schemaVersion ?? 1) < 2 && value.fontSizeOverridePx === 12;
+  // Schema 1/2 global font overrides became invisible once font controls moved into the unified
+  // project settings dialog. Clear those unremovable values so they cannot shadow a hot-applied
+  // FontName/FontSize; schema 3 values represent an intentional accessibility override.
+  const obsoleteFontOverrides = Number(value.schemaVersion ?? 1) < 3;
   return {
-    schemaVersion: 2,
-    fontFamilyOverride: value.fontFamilyOverride || null,
+    schemaVersion: 3,
+    fontFamilyOverride: obsoleteFontOverrides ? null : value.fontFamilyOverride || null,
     fontSizeOverridePx:
-      value.fontSizeOverridePx == null || legacyDefaultFontSize
+      obsoleteFontOverrides || value.fontSizeOverridePx == null
         ? null
         : Math.round(Math.min(72, Math.max(8, value.fontSizeOverridePx))),
     imageScale: Number.isFinite(value.imageScale)

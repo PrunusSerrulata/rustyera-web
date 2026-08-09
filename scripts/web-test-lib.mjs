@@ -760,6 +760,11 @@ async function queryLocator(locator, fields = ["count", "text", "visible", "enab
       result.attributes = await first.evaluate((element) =>
         Object.fromEntries([...element.attributes].map((item) => [item.name, item.value])),
       );
+    if (fields.includes("computed_style"))
+      result.computed_style = await first.evaluate((element) => {
+        const style = window.getComputedStyle(element);
+        return { font_family: style.fontFamily, font_size: style.fontSize };
+      });
     if (fields.includes("scroll_top"))
       result.scroll_top = await first.evaluate((element) => element.scrollTop);
     if (fields.includes("scroll_height"))

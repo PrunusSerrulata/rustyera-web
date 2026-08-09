@@ -10,6 +10,7 @@ import {
   type ProjectProgress,
   type SystemFontQueryResult,
 } from "@/core/types";
+import { normalizePreferences } from "@/platform/database";
 
 const emptyBatch = () => ({
   state: "idle" as const,
@@ -611,6 +612,166 @@ describe("runtime store session lifecycle", () => {
       undefined,
     );
     expect(bridge.restartProject).not.toHaveBeenCalled();
+  });
+
+  it("lets hot project fonts take effect after migrating hidden legacy overrides", async () => {
+    const textLine = (fontFamily: string, fontSize: number) => ({
+      line_id: 1,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs: [
+        {
+          type: "text",
+          text: "font sample",
+          style: {
+            foreground: { red: 255, green: 255, blue: 255, alpha: 255 },
+            bold: false,
+            italic: false,
+            underline: false,
+            strikeout: false,
+            font_family: fontFamily,
+            font_millipixels: fontSize * 1_000,
+          },
+        },
+      ],
+    });
+    const configuration = (fontFamily: string, fontSize: string, digestByte: number) => ({
+      project_revision: 3,
+      source_digest: new Uint8Array(32).fill(digestByte),
+      restart_pending: false,
+      entries: [
+        {
+          code: "FontName",
+          japanese: "フォント名",
+          english: "Font name",
+          value: fontFamily,
+          effective_value: fontFamily,
+          default_value: "ＭＳ ゴシック",
+          application: "hot",
+          kind: "string",
+          allowed: [],
+          fixed: false,
+          applicability: 8,
+        },
+        {
+          code: "FontSize",
+          japanese: "フォントサイズ",
+          english: "Font size",
+          value: fontSize,
+          effective_value: fontSize,
+          default_value: "18",
+          application: "hot",
+          kind: "integer",
+          allowed: [],
+          fixed: false,
+          applicability: 8,
+        },
+      ],
+    });
+    const migrated = normalizePreferences({
+      schemaVersion: 2,
+      fontFamilyOverride: "Hidden Legacy Font",
+      fontSizeOverridePx: 42,
+      imageScale: 1.5,
+      masterVolume: 0.75,
+    });
+    expect(migrated).toMatchObject({
+      schemaVersion: 3,
+      fontFamilyOverride: null,
+      fontSizeOverridePx: null,
+      imageScale: 1.5,
+      masterVolume: 0.75,
+    });
+    bridge.savePreferences.mockResolvedValueOnce(migrated);
+    bridge.projectConfigurationWritable.mockReturnValue(false);
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", {
+          success: true,
+          diagnostics: [],
+          configuration: configuration("Old Project Font", "16", 7),
+        }),
+        runtimeEvent("presentation_snapshot", {
+          revision: 1,
+          title: "font migration",
+          history: { logical_lines: [textLine("Old Project Font", 16)] },
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    expect(store.gameTextStyle).toMatchObject({
+      fontFamily: "Old Project Font",
+      fontSize: "16px",
+    });
+
+    let messageId = 70;
+    bridge.submitRuntime.mockReset();
+    bridge.submitRuntime.mockImplementation(async () => messageId++);
+    const saving = store.savePreferences(migrated, [
+      { code: "FontName", value: "New Project Font" },
+      { code: "FontSize", value: "20" },
+    ]);
+    await Promise.resolve();
+    const contents = "フォント名:New Project Font\nフォントサイズ:20\n";
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "configuration_update_prepared",
+            {
+              project_revision: 3,
+              expected_source_digest: new Uint8Array(32).fill(7),
+              contents,
+              restart_required: false,
+              prepared_source_digest: blake3(new TextEncoder().encode(contents)),
+            },
+            70,
+          ),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "configuration_update_committed",
+            { configuration: configuration("New Project Font", "20", 8) },
+            71,
+          ),
+          runtimeEvent("presentation_delta", {
+            base_revision: 1,
+            new_revision: 2,
+            operations: [
+              {
+                type: "replace_line",
+                line_id: 1,
+                line: textLine("New Project Font", 20),
+              },
+            ],
+          }),
+        ],
+      });
+
+    await vi.advanceTimersByTimeAsync(64);
+    await saving;
+
+    expect(bridge.savePreferences).toHaveBeenCalledWith(migrated);
+    expect(bridge.applyProjectConfiguration).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "FontName", effective_value: "New Project Font" }),
+        expect.objectContaining({ code: "FontSize", effective_value: "20" }),
+      ]),
+      { width: 0, height: 0 },
+      ["FontName", "FontSize"],
+    );
+    expect(store.gameTextStyle).toMatchObject({
+      fontFamily: "New Project Font",
+      fontSize: "20px",
+    });
   });
 
   it("commits hot project-file settings for this session without writing the package", async () => {

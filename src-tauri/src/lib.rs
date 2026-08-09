@@ -79,10 +79,15 @@ struct ProjectOpenMetrics {
 
 impl Preferences {
     fn normalized(mut self) -> Self {
-        let legacy_default_font_size =
-            self.schema_version < 2 && self.font_size_override_px == Some(12);
-        self.schema_version = 2;
-        self.font_size_override_px = if legacy_default_font_size {
+        // Schema 1/2 stored global font controls that the unified project settings UI no longer
+        // exposes. Clear those unremovable values so project FontName/FontSize can hot-apply;
+        // schema 3 values are deliberate accessibility overrides and remain supported.
+        let obsolete_font_overrides = self.schema_version < 3;
+        self.schema_version = 3;
+        if obsolete_font_overrides {
+            self.font_family_override = None;
+        }
+        self.font_size_override_px = if obsolete_font_overrides {
             None
         } else {
             self.font_size_override_px.map(|value| value.clamp(8, 72))
@@ -684,7 +689,7 @@ fn preferences_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn default_preferences() -> Preferences {
     Preferences {
-        schema_version: 2,
+        schema_version: 3,
         font_family_override: None,
         font_size_override_px: None,
         image_scale: 1.0,
@@ -868,14 +873,63 @@ mod tests {
     }
 
     #[test]
-    fn legacy_default_font_size_becomes_an_opt_in_override() {
+    fn obsolete_global_font_overrides_yield_to_project_configuration() {
+        for schema_version in [1, 2] {
+            let normalized = Preferences {
+                schema_version,
+                font_family_override: Some("Legacy Font".into()),
+                font_size_override_px: Some(24),
+                image_scale: 1.75,
+                master_volume: 0.4,
+            }
+            .normalized();
+
+            assert_eq!(normalized.schema_version, 3);
+            assert_eq!(normalized.font_family_override, None);
+            assert_eq!(normalized.font_size_override_px, None);
+            assert!((normalized.image_scale - 1.75).abs() < f64::EPSILON);
+            assert!((normalized.master_volume - 0.4).abs() < f64::EPSILON);
+        }
+    }
+
+    #[test]
+    fn stored_camel_case_font_overrides_migrate_without_resetting_other_preferences() {
+        let stored = serde_json::from_str::<Preferences>(
+            r#"{
+                "schemaVersion": 2,
+                "fontFamilyOverride": "Legacy Font",
+                "fontSizeOverridePx": 31,
+                "imageScale": 1.75,
+                "masterVolume": 0.4
+            }"#,
+        )
+        .unwrap()
+        .normalized();
+
+        assert_eq!(stored.schema_version, 3);
+        assert_eq!(stored.font_family_override, None);
+        assert_eq!(stored.font_size_override_px, None);
+        assert!((stored.image_scale - 1.75).abs() < f64::EPSILON);
+        assert!((stored.master_volume - 0.4).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn current_accessibility_font_overrides_remain_normalized() {
         let normalized = Preferences {
-            schema_version: 1,
-            font_size_override_px: Some(12),
-            ..default_preferences()
+            schema_version: 3,
+            font_family_override: Some("Accessible Font".into()),
+            font_size_override_px: Some(100),
+            image_scale: 2.0,
+            master_volume: 0.5,
         }
         .normalized();
 
-        assert_eq!(normalized.font_size_override_px, None);
+        assert_eq!(
+            normalized.font_family_override.as_deref(),
+            Some("Accessible Font")
+        );
+        assert_eq!(normalized.font_size_override_px, Some(72));
+        assert!((normalized.image_scale - 2.0).abs() < f64::EPSILON);
+        assert!((normalized.master_volume - 0.5).abs() < f64::EPSILON);
     }
 }

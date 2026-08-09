@@ -19,7 +19,7 @@ export interface PumpBatch {
 }
 
 export interface Preferences {
-  schemaVersion: 2;
+  schemaVersion: 3;
   fontFamilyOverride: string | null;
   fontSizeOverridePx: number | null;
   imageScale: number;
@@ -27,7 +27,7 @@ export interface Preferences {
 }
 
 export const defaultPreferences = (): Preferences => ({
-  schemaVersion: 2,
+  schemaVersion: 3,
   fontFamilyOverride: null,
   fontSizeOverridePx: null,
   imageScale: 1,
