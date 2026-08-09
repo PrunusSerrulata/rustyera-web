@@ -311,7 +311,7 @@ async fn open_project_file(
         let started = Instant::now();
         let bytes =
             fs::read(&path).map_err(|error| format!("cannot read project file: {error}"))?;
-        let mut host = ProjectHost::from_project_file(&path, &bytes)?;
+        let host = ProjectHost::from_project_file(&path, &bytes)?;
         let identity = host.identity();
         with_session(&state, |session| {
             session.load_project_with_compiled_cache(identity, bytes)
@@ -323,9 +323,10 @@ async fn open_project_file(
             .join(".rustyera/packaged-projects")
             .join(storage_key.as_str());
         *state.storage.lock().map_err(lock_error)? = Some(StorageHost::new(storage_root));
-        // The runtime now owns the compiled artifact; retaining the manifest is unnecessary,
-        // while ProjectHost keeps only embedded resources required by frontend services.
-        let _ = host.take_manifest_with_progress(None)?;
+        // Keep the embedded manifest until the runtime accepts the compiled snapshot. A project
+        // file exported after legacy-configuration migration can legitimately require a source
+        // fallback because its embedded source identity differs from the cached build identity.
+        // `submit_project_source` consumes this manifest only when the runtime requests it.
         *state.project.lock().map_err(lock_error)? = Some(host);
         Ok(ProjectOpenMetrics {
             quick_scan_ms: 0.0,

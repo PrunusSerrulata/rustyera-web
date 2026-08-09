@@ -36,6 +36,10 @@ const specProfiles = {
     environmentFlag: "VITE_RUSTYERA_TAURI_RERACONFIG",
     copyProject: true,
   },
+  "project-configuration.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_PROJECT_CONFIGURATION",
+    copyProject: true,
+  },
   "akuma-maid-images.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_AKUMA_MAID_IMAGES",
   },

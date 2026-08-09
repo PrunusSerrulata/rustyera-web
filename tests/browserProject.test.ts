@@ -40,11 +40,27 @@ class SaveFileHandle {
     return file;
   }
 
-  async createWritable() {
+  async createWritable(options?: { keepExistingData?: boolean }) {
+    if (!options?.keepExistingData) this.bytes = new Uint8Array();
+    let cursor = 0;
     return {
       write: async (bytes: Uint8Array) => {
-        this.bytes = new Uint8Array(bytes);
+        const end = cursor + bytes.byteLength;
+        if (end > this.bytes.byteLength) {
+          const grown = new Uint8Array(end);
+          grown.set(this.bytes);
+          this.bytes = grown;
+        }
+        this.bytes.set(bytes, cursor);
+        cursor = end;
         this.lastModified += 1;
+      },
+      seek: async (position: number) => {
+        cursor = position;
+      },
+      truncate: async (size: number) => {
+        this.bytes = this.bytes.slice(0, size);
+        if (cursor > size) cursor = size;
       },
       close: async () => {},
       abort: async () => {},
@@ -306,6 +322,116 @@ describe("browser project reads", () => {
     );
   });
 
+  it("incrementally updates the OPFS project cache with the authoritative configuration", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const privateDirectory = await root.getDirectoryHandle(".rustyera", { create: true });
+    const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
+    const cache = await cacheDirectory.getFileHandle("compiled-project.reraproj", {
+      create: true,
+    });
+    await (await cache.createWritable()).write(new TextEncoder().encode("base-tail"));
+    const prepare = vi.fn(async (projectFile: Uint8Array) => {
+      expect(new TextDecoder().decode(projectFile)).toBe("base-tail");
+      const result = new Uint8Array(8 + 7);
+      new DataView(result.buffer).setBigUint64(0, 4n, true);
+      result.set(new TextEncoder().encode("journal"), 8);
+      return result;
+    });
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    project.useConfigurationUpdatePreparer(prepare);
+
+    await project.writeConfiguration(
+      new Uint8Array(),
+      "[text]\nreplace_full_width_spaces = true\n",
+    );
+
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(new TextDecoder().decode(await (await cache.getFile()).arrayBuffer())).toBe(
+      "basejournal",
+    );
+    expect(await (await (await root.getFileHandle("reraconfig.toml")).getFile()).text()).toBe(
+      "[text]\nreplace_full_width_spaces = true\n",
+    );
+  });
+
+  it("persists authoritative configuration when the cache planner rejects stale data", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const privateDirectory = await root.getDirectoryHandle(".rustyera", { create: true });
+    const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
+    const cache = await cacheDirectory.getFileHandle("compiled-project.reraproj", {
+      create: true,
+    });
+    await (await cache.createWritable()).write(new TextEncoder().encode("stale-cache"));
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    project.useConfigurationUpdatePreparer(async () => {
+      throw new Error("stale cache");
+    });
+
+    await expect(
+      project.writeConfiguration(new Uint8Array(), "[audio]\nvolume = 42\n"),
+    ).resolves.toBeUndefined();
+
+    await expect(cacheDirectory.getFileHandle("compiled-project.reraproj")).rejects.toMatchObject({
+      name: "NotFoundError",
+    });
+    expect(await (await (await root.getFileHandle("reraconfig.toml")).getFile()).text()).toBe(
+      "[audio]\nvolume = 42\n",
+    );
+  });
+
+  it("persists authoritative configuration when the cache changes before append", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const privateDirectory = await root.getDirectoryHandle(".rustyera", { create: true });
+    const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
+    const cache = await cacheDirectory.getFileHandle("compiled-project.reraproj", {
+      create: true,
+    });
+    await (await cache.createWritable()).write(new TextEncoder().encode("base-tail"));
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    project.useConfigurationUpdatePreparer(async () => {
+      cache.replacePreservingMetadata(new TextEncoder().encode("evil-tail"));
+      const result = new Uint8Array(8 + 7);
+      new DataView(result.buffer).setBigUint64(0, 4n, true);
+      result.set(new TextEncoder().encode("journal"), 8);
+      return result;
+    });
+
+    await project.writeConfiguration(new Uint8Array(), "[audio]\nvolume = 42\n");
+
+    await expect(cacheDirectory.getFileHandle("compiled-project.reraproj")).rejects.toMatchObject({
+      name: "NotFoundError",
+    });
+    expect(await (await (await root.getFileHandle("reraconfig.toml")).getFile()).text()).toBe(
+      "[audio]\nvolume = 42\n",
+    );
+  });
+
+  it("does not roll back authoritative configuration when stale-cache deletion fails", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const privateDirectory = await root.getDirectoryHandle(".rustyera", { create: true });
+    const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
+    const cache = await cacheDirectory.getFileHandle("compiled-project.reraproj", {
+      create: true,
+    });
+    await (await cache.createWritable()).write(new TextEncoder().encode("stale-cache"));
+    cacheDirectory.removeEntry = async () => {
+      throw new DOMException("quota", "QuotaExceededError");
+    };
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    project.useConfigurationUpdatePreparer(async () => {
+      throw new Error("stale cache");
+    });
+
+    await expect(
+      project.writeConfiguration(new Uint8Array(), "[audio]\nvolume = 42\n"),
+    ).resolves.toBeUndefined();
+
+    expect(await (await (await root.getFileHandle("reraconfig.toml")).getFile()).text()).toBe(
+      "[audio]\nvolume = 42\n",
+    );
+    await expect(cacheDirectory.getFileHandle("compiled-project.reraproj")).resolves.toBe(cache);
+  });
+
   it("treats repeated first-time writes as idempotent and rejects non-UTF-8 TOML", async () => {
     const root = new SaveDirectoryHandle("game");
     const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
@@ -315,13 +441,44 @@ describe("browser project reads", () => {
     expect(() => decodeProjectSource(Uint8Array.of(0x81), "reraconfig.toml")).toThrow("UTF-8");
   });
 
-  it("keeps configuration embedded in packaged projects read-only", async () => {
+  it("keeps packaged configuration read-only without a writable file handle", async () => {
     const project = new BrowserProject(new SaveDirectoryHandle("storage") as any, 1, "game");
     project.useEmbeddedManifest({ project_revision: 1, files: [] });
 
     await expect(
       project.writeConfiguration(new Uint8Array(), "[text]\nfont_size = 18\n"),
-    ).rejects.toThrow("只读");
+    ).rejects.toThrow("无法直接修改");
+  });
+
+  it("appends a compact packaged configuration update through a writable handle", async () => {
+    const project = new BrowserProject(new SaveDirectoryHandle("storage") as any, 1, "game");
+    const handle = new SaveFileHandle("game.reraproj", new TextEncoder().encode("base-tail"));
+    const file = await handle.getFile();
+    const prepare = vi.fn(async () => {
+      const result = new Uint8Array(8 + 7);
+      new DataView(result.buffer).setBigUint64(0, 4n, true);
+      result.set(new TextEncoder().encode("journal"), 8);
+      return result;
+    });
+    project.usePackagedFile(file, handle as any, prepare);
+    project.useEmbeddedManifest({ project_revision: 1, files: [] });
+
+    await project.writeConfiguration(
+      new Uint8Array(),
+      "[text]\r\nreplace_full_width_spaces = true\r\n",
+    );
+
+    expect(project.configurationWritable()).toBe(true);
+    expect(new TextDecoder().decode(await (await handle.getFile()).arrayBuffer())).toBe(
+      "basejournal",
+    );
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(project.embeddedManifest()?.files).toContainEqual(
+      expect.objectContaining({
+        relative_path: "reraconfig.toml",
+        payload: { type: "utf8", value: "[text]\nreplace_full_width_spaces = true\n" },
+      }),
+    );
   });
 
   it("reuses the selected packaged file without copying it into browser storage", async () => {

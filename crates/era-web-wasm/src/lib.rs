@@ -132,6 +132,35 @@ impl WasmRuntime {
         )
     }
 
+    /// Prepare a compact append-only update for a project file's embedded configuration.
+    ///
+    /// The returned byte array starts with a little-endian `u64` truncation offset and is
+    /// followed by the journal record to append.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error when the project, optimistic-lock digest, or TOML is invalid.
+    #[wasm_bindgen(js_name = prepareProjectConfigurationUpdate)]
+    pub fn prepare_project_configuration_update(
+        &self,
+        project_file: &js_sys::Uint8Array,
+        expected_digest: &js_sys::Uint8Array,
+        contents: &str,
+    ) -> Result<js_sys::Uint8Array, JsValue> {
+        let project_file = project_file.to_vec();
+        let update = era_runtime::prepare_project_configuration_update(
+            &project_file,
+            usize::try_from(self.inner.maximum_transfer_bytes()).unwrap_or(usize::MAX),
+            &expected_digest.to_vec(),
+            contents,
+        )
+        .map_err(js_error)?;
+        let mut encoded = Vec::with_capacity(8 + update.append.len());
+        encoded.extend_from_slice(&update.truncate_to.to_le_bytes());
+        encoded.extend_from_slice(&update.append);
+        Ok(js_sys::Uint8Array::from(encoded.as_slice()))
+    }
+
     /// Return the active project's selectable traditional-save slot count.
     ///
     /// # Errors

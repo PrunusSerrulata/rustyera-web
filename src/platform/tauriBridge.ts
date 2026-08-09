@@ -234,7 +234,7 @@ export class TauriBridge implements FrontendBridge {
   }
 
   projectConfigurationWritable(): boolean {
-    return Boolean(this.projectPath) && !this.projectIsFile;
+    return Boolean(this.projectPath);
   }
 
   writeProjectConfiguration(expectedDigest: Uint8Array, contents: string): Promise<void> {

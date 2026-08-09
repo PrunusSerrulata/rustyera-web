@@ -94,7 +94,7 @@ describe("Tauri project restart", () => {
       path: "/game/eraTW.reraproj",
     });
     expect(bridge.projectName()).toBe("eraTW");
-    expect(bridge.projectConfigurationWritable()).toBe(false);
+    expect(bridge.projectConfigurationWritable()).toBe(true);
   });
 
   it("writes configuration only for an opened source directory", async () => {

@@ -3,6 +3,7 @@ import {
   importBrowserDirectory,
   pickBrowserDirectory,
   pickBrowserFile,
+  pickBrowserProjectFile,
   selectedProjectFiles,
 } from "@/platform/browserDirectory";
 import { BrowserProject } from "@/platform/browserProject";
@@ -362,6 +363,35 @@ describe("portable browser directory selection", () => {
     input.dispatchEvent(new Event("cancel"));
 
     await expect(selection).resolves.toBeUndefined();
+  });
+
+  it("requests a read-write handle for a directly editable project file", async () => {
+    const file = new File([Uint8Array.of(1, 2, 3)], "game.reraproj");
+    const handle = {
+      getFile: vi.fn(async () => file),
+      requestPermission: vi.fn(async () => "granted" as PermissionState),
+    };
+    vi.stubGlobal(
+      "showOpenFilePicker",
+      vi.fn(async () => [handle]),
+    );
+
+    await expect(pickBrowserProjectFile()).resolves.toEqual({ file, handle });
+    expect(handle.requestPermission).toHaveBeenCalledWith({ mode: "readwrite" });
+  });
+
+  it("falls back to an importable file when direct write permission is denied", async () => {
+    const file = new File([Uint8Array.of(1, 2, 3)], "game.reraproj");
+    const handle = {
+      getFile: vi.fn(async () => file),
+      requestPermission: vi.fn(async () => "denied" as PermissionState),
+    };
+    vi.stubGlobal(
+      "showOpenFilePicker",
+      vi.fn(async () => [handle]),
+    );
+
+    await expect(pickBrowserProjectFile()).resolves.toEqual({ file });
   });
 
   it("strips the shared directory name while retaining nested project paths", () => {

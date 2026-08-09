@@ -11,6 +11,11 @@ type WasmModule = {
     loadProject(manifest: unknown): bigint;
     loadProjectBinary(manifest: Uint8Array): bigint;
     projectFileManifest(bytes: Uint8Array): unknown;
+    prepareProjectConfigurationUpdate(
+      projectFile: Uint8Array,
+      expectedDigest: Uint8Array,
+      contents: string,
+    ): Uint8Array;
     loadProjectWithCompiledCache(manifest: unknown, cache: Uint8Array): bigint;
     traditionalSaveSlotCount(): number;
     inspectTraditionalSave(bytes: Uint8Array): unknown;
@@ -51,6 +56,13 @@ self.onmessage = async (event: MessageEvent) => {
           break;
         case "projectFileManifest":
           result = runtime.projectFileManifest(args[0] as Uint8Array);
+          break;
+        case "prepareProjectConfigurationUpdate":
+          result = runtime.prepareProjectConfigurationUpdate(
+            args[0] as Uint8Array,
+            args[1] as Uint8Array,
+            args[2] as string,
+          );
           break;
         case "loadProjectFile": {
           const bytes = args[0] as Uint8Array;

@@ -14,7 +14,11 @@ import type {
 } from "@/core/types";
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import type { DiagnosisArchiveInput } from "@/core/diagnosis";
-import { pickBrowserDirectory, pickBrowserFile } from "@/platform/browserDirectory";
+import {
+  pickBrowserDirectory,
+  pickBrowserFile,
+  pickBrowserProjectFile,
+} from "@/platform/browserDirectory";
 import { encodeBrowserManifest } from "@/platform/browserManifestCodec";
 import { streamDiagnosisArchiveInWorker } from "@/platform/diagnosis";
 import {
@@ -52,9 +56,20 @@ export class BrowserBridge implements FrontendBridge {
   private readonly worker = new WorkerClient();
   private project?: BrowserProject;
   private cacheWriter?: FileSystemWritableFileStream;
+  private discardCompiledCacheExport = false;
   private projectFileWriter?: FileSystemWritableFileStream;
   private projectFileFallback?: { name: string; chunks: Uint8Array[] };
   private projectProgressListener?: (progress: ProjectProgress) => void;
+  private readonly prepareProjectConfigurationUpdate = (
+    projectFile: Uint8Array,
+    expectedDigest: Uint8Array,
+    contents: string,
+  ) =>
+    this.worker.callWithTransfer<Uint8Array>(
+      "prepareProjectConfigurationUpdate",
+      [projectFile, expectedDigest, contents],
+      [projectFile.buffer],
+    );
 
   setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void {
     this.worker.setProjectProgressListener(listener);
@@ -109,6 +124,7 @@ export class BrowserBridge implements FrontendBridge {
     if (picked.persistHandle && import.meta.env.VITE_RUSTYERA_TEST !== "1")
       await database.handles.put({ key: "last-project", handle });
     const project = new BrowserProject(handle, 1, picked.projectName);
+    project.useConfigurationUpdatePreparer(this.prepareProjectConfigurationUpdate);
     const started = performance.now();
     const sourcesReady = picked.manifest != null;
     const manifest =
@@ -134,8 +150,9 @@ export class BrowserBridge implements FrontendBridge {
     onSubmitted?: ProjectSubmittedListener,
     prepareAfterSelection?: ProjectSelectionPreparation,
   ): Promise<ProjectOpenMetrics | undefined> {
-    const file = await pickBrowserFile(".reraproj,application/octet-stream");
-    if (!file) return undefined;
+    const picked = await pickBrowserProjectFile();
+    if (!picked) return undefined;
+    const { file } = picked;
     const submittedAtMs = performance.now();
     onSubmitted?.(submittedAtMs);
     await prepareAfterSelection?.();
@@ -153,12 +170,30 @@ export class BrowserBridge implements FrontendBridge {
       create: true,
     });
     const root = await projects.getDirectoryHandle(loaded.storageKey, { create: true });
+    let writableFile = file;
+    let writableHandle = picked.handle;
+    if (!writableHandle) {
+      writableHandle = await root.getFileHandle("project.reraproj", { create: true });
+      const writer = await writableHandle.createWritable({ keepExistingData: false });
+      try {
+        await copyFileToWritable(file, writer);
+        await writer.close();
+      } catch (error) {
+        await writer.abort().catch(() => undefined);
+        throw error;
+      }
+      writableFile = await writableHandle.getFile();
+    }
     this.project = new BrowserProject(
       root,
       manifest.project_revision,
       file.name.replace(/\.reraproj$/i, ""),
     );
-    this.project.usePackagedFile(file);
+    this.project.usePackagedFile(
+      writableFile,
+      writableHandle,
+      this.prepareProjectConfigurationUpdate,
+    );
     this.project.useEmbeddedManifest(manifest);
     return {
       submittedAtMs,
@@ -327,6 +362,13 @@ export class BrowserBridge implements FrontendBridge {
 
   async writeProjectConfiguration(expectedDigest: Uint8Array, contents: string): Promise<void> {
     if (!this.project) throw new Error("没有打开的项目");
+    if (this.cacheWriter) {
+      const writer = this.cacheWriter;
+      this.cacheWriter = undefined;
+      this.discardCompiledCacheExport = true;
+      await writer.abort().catch(() => undefined);
+      await this.project.invalidateCompiledCache();
+    }
     await this.project.writeConfiguration(expectedDigest, contents);
   }
 
@@ -502,6 +544,7 @@ export class BrowserBridge implements FrontendBridge {
   ): Promise<void> {
     if (!this.project) throw new Error("没有打开的项目");
     if (reset) {
+      this.discardCompiledCacheExport = false;
       const privateDirectory = await this.project.root.getDirectoryHandle(".rustyera", {
         create: true,
       });
@@ -510,6 +553,10 @@ export class BrowserBridge implements FrontendBridge {
         create: true,
       });
       this.cacheWriter = await handle.createWritable({ keepExistingData: false });
+    }
+    if (this.discardCompiledCacheExport) {
+      if (complete) this.discardCompiledCacheExport = false;
+      return;
     }
     if (!this.cacheWriter) throw new Error("编译缓存写入尚未开始");
     await this.cacheWriter.write(bytes as FileSystemWriteChunkType);
@@ -522,6 +569,7 @@ export class BrowserBridge implements FrontendBridge {
   async cancelCompiledCacheExport(): Promise<void> {
     const writer = this.cacheWriter;
     this.cacheWriter = undefined;
+    this.discardCompiledCacheExport = false;
     await writer?.abort();
   }
 
@@ -550,6 +598,24 @@ async function readProjectFile(
     await yieldToMainThread();
   }
   return output;
+}
+
+async function copyFileToWritable(file: File, writer: FileSystemWritableFileStream): Promise<void> {
+  if (file.size === 0) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (bytes.byteLength) await writer.write(bytes as FileSystemWriteChunkType);
+    return;
+  }
+  for (let offset = 0; offset < file.size; offset += PROJECT_FILE_READ_CHUNK_BYTES) {
+    const end = Math.min(file.size, offset + PROJECT_FILE_READ_CHUNK_BYTES);
+    const blob = file.slice(offset, end);
+    const buffer =
+      typeof blob.arrayBuffer === "function"
+        ? await blob.arrayBuffer()
+        : await readBlobWithFileReader(blob);
+    await writer.write(new Uint8Array(buffer) as FileSystemWriteChunkType);
+    await yieldToMainThread();
+  }
 }
 
 function readBlobWithFileReader(blob: Blob): Promise<ArrayBuffer> {

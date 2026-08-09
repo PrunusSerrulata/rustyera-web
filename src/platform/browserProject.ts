@@ -37,6 +37,11 @@ export interface BrowserManifest {
 }
 
 export type FileScanProgress = (completed: number, total: number) => void;
+export type ProjectConfigurationUpdatePreparer = (
+  projectFile: Uint8Array,
+  expectedDigest: Uint8Array,
+  contents: string,
+) => Promise<Uint8Array>;
 
 interface BrowserSourceIndexEntry {
   category: string;
@@ -58,6 +63,13 @@ interface PendingBrowserSnapshot {
   topLevel: Set<string>;
 }
 
+interface PreparedProjectFileUpdate {
+  handle: FileSystemFileHandle;
+  size: number;
+  digest: Uint8Array;
+  update: Uint8Array;
+}
+
 export class BrowserProject {
   private readonly files = new Map<string, FileSystemFileHandle>();
   private readonly embeddedResources = new Map<string, Uint8Array>();
@@ -66,6 +78,8 @@ export class BrowserProject {
   private manifestValue?: BrowserManifest;
   private pendingSnapshot?: PendingBrowserSnapshot;
   private packagedFile?: File;
+  private packagedHandle?: FileSystemFileHandle;
+  private prepareConfigurationUpdate?: ProjectConfigurationUpdatePreparer;
   private importedSnapshot = false;
 
   constructor(
@@ -90,8 +104,18 @@ export class BrowserProject {
     this.manifestValue = cacheIdentityManifest(manifest);
   }
 
-  usePackagedFile(file: File): void {
+  usePackagedFile(
+    file: File,
+    handle?: FileSystemFileHandle,
+    prepareConfigurationUpdate?: ProjectConfigurationUpdatePreparer,
+  ): void {
     this.packagedFile = file;
+    this.packagedHandle = handle;
+    if (prepareConfigurationUpdate) this.prepareConfigurationUpdate = prepareConfigurationUpdate;
+  }
+
+  useConfigurationUpdatePreparer(prepare: ProjectConfigurationUpdatePreparer): void {
+    this.prepareConfigurationUpdate = prepare;
   }
 
   useImportedManifest(manifest: BrowserManifest): void {
@@ -112,11 +136,17 @@ export class BrowserProject {
   }
 
   configurationWritable(): boolean {
-    return !this.usesEmbeddedManifest;
+    return (
+      !this.usesEmbeddedManifest || Boolean(this.packagedHandle && this.prepareConfigurationUpdate)
+    );
   }
 
   async writeConfiguration(expectedDigest: Uint8Array, contents: string): Promise<void> {
-    if (!this.configurationWritable()) throw new Error("项目文件中的 reraconfig.toml 为只读");
+    if (!this.configurationWritable()) throw new Error("当前浏览器无法直接修改项目文件");
+    if (this.usesEmbeddedManifest) {
+      await this.writePackagedConfiguration(expectedDigest, contents);
+      return;
+    }
     let handle =
       this.files.get("reraconfig.toml") ??
       (await optionalFileHandle(this.root, ["reraconfig.toml"]));
@@ -130,6 +160,7 @@ export class BrowserProject {
     if (expectedDigest.length === 0 && equalBytes(currentDigest, requestedDigest)) return;
     if (!equalBytes(currentDigest, expectedDigest))
       throw new Error("reraconfig.toml 已被其他程序修改，请重新打开设置窗口");
+    const cachedUpdate = await this.prepareCachedConfigurationUpdate(expectedDigest, contents);
     handle ??= await this.root.getFileHandle("reraconfig.toml", { create: true });
     const writer = await handle.createWritable({ keepExistingData: false });
     try {
@@ -143,6 +174,107 @@ export class BrowserProject {
     }
     this.files.set("reraconfig.toml", handle);
     this.manifestValue = undefined;
+    await this.commitCachedConfigurationUpdate(cachedUpdate);
+  }
+
+  private async writePackagedConfiguration(
+    expectedDigest: Uint8Array,
+    contents: string,
+  ): Promise<void> {
+    const handle = this.packagedHandle;
+    const prepare = this.prepareConfigurationUpdate;
+    if (!handle || !prepare) throw new Error("当前浏览器无法直接修改项目文件");
+    const current = await handle.getFile();
+    const projectBytes = new Uint8Array(await current.arrayBuffer());
+    const projectDigest = blake3(projectBytes);
+    const update = await prepare(projectBytes, expectedDigest, contents);
+    await applyProjectFileUpdate(handle, current.size, projectDigest, update);
+    this.packagedFile = await handle.getFile();
+    this.updateEmbeddedConfiguration(contents);
+  }
+
+  private async prepareCachedConfigurationUpdate(
+    expectedDigest: Uint8Array,
+    contents: string,
+  ): Promise<PreparedProjectFileUpdate | undefined> {
+    const prepare = this.prepareConfigurationUpdate;
+    if (!prepare) return undefined;
+    const handle = await this.compiledCacheHandle();
+    if (!handle) return undefined;
+    try {
+      const file = await handle.getFile();
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const digest = blake3(bytes);
+      return {
+        handle,
+        size: file.size,
+        digest,
+        update: await prepare(bytes, expectedDigest, contents),
+      };
+    } catch {
+      await this.invalidateCompiledCache();
+      return undefined;
+    }
+  }
+
+  private async commitCachedConfigurationUpdate(
+    prepared: PreparedProjectFileUpdate | undefined,
+  ): Promise<void> {
+    if (!prepared) return;
+    try {
+      await applyProjectFileUpdate(
+        prepared.handle,
+        prepared.size,
+        prepared.digest,
+        prepared.update,
+      );
+    } catch {
+      await this.invalidateCompiledCache();
+    }
+  }
+
+  private async compiledCacheHandle(): Promise<FileSystemFileHandle | undefined> {
+    try {
+      const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
+      const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
+      return await cacheDirectory.getFileHandle("compiled-project.reraproj");
+    } catch (error) {
+      if (errorKind(error) === "not_found") return undefined;
+      throw error;
+    }
+  }
+
+  async invalidateCompiledCache(): Promise<void> {
+    try {
+      const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
+      const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
+      await cacheDirectory.removeEntry("compiled-project.reraproj");
+    } catch {
+      // The cache is derived data. A stale survivor is rejected by its project identity later.
+    }
+  }
+
+  private updateEmbeddedConfiguration(contents: string): void {
+    const manifest = this.manifestValue;
+    if (!manifest) return;
+    const source = normalizeLineEndings(contents);
+    const contentHash = blake3(new TextEncoder().encode(source));
+    const existing = manifest.files.find(
+      (file) =>
+        file.category === "configuration" &&
+        file.relative_path.replaceAll("\\", "/").toLocaleLowerCase() === "reraconfig.toml",
+    );
+    if (existing) {
+      existing.payload = { type: "utf8", value: source };
+      existing.content_hash = contentHash;
+      return;
+    }
+    manifest.files.push({
+      relative_path: "reraconfig.toml",
+      category: "configuration",
+      payload: { type: "utf8", value: source },
+      content_hash: contentHash,
+    });
   }
 
   async scan(
@@ -307,6 +439,7 @@ export class BrowserProject {
   }
 
   async readCompiledCache(progress?: FileScanProgress): Promise<Uint8Array | undefined> {
+    if (this.packagedHandle) return readFileInChunks(await this.packagedHandle.getFile(), progress);
     if (this.packagedFile) return readFileInChunks(this.packagedFile, progress);
     try {
       const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
@@ -576,6 +709,34 @@ export class BrowserProject {
   private async namespace(namespace: string): Promise<FileSystemDirectoryHandle> {
     if (namespace === "resource") return this.root;
     return this.root.getDirectoryHandle(storageDirectoryName(namespace), { create: true });
+  }
+}
+
+async function applyProjectFileUpdate(
+  handle: FileSystemFileHandle,
+  expectedSize: number,
+  expectedDigest: Uint8Array,
+  update: Uint8Array,
+): Promise<void> {
+  if (update.byteLength < 8) throw new Error("Runtime 返回了无效的项目配置更新");
+  const truncate = Number(new DataView(update.buffer, update.byteOffset, 8).getBigUint64(0, true));
+  if (!Number.isSafeInteger(truncate) || truncate < 0 || truncate > expectedSize)
+    throw new Error("Runtime 返回了无效的项目配置更新位置");
+  const current = await handle.getFile();
+  if (
+    current.size !== expectedSize ||
+    !equalBytes(blake3(new Uint8Array(await current.arrayBuffer())), expectedDigest)
+  )
+    throw new Error("项目文件已被其他程序修改，请重试");
+  const writer = await handle.createWritable({ keepExistingData: true });
+  try {
+    await writer.truncate(truncate);
+    await writer.seek(truncate);
+    await writer.write(update.subarray(8) as FileSystemWriteChunkType);
+    await writer.close();
+  } catch (error) {
+    await writer.abort().catch(() => undefined);
+    throw error;
   }
 }
 

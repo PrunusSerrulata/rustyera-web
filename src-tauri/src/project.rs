@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
@@ -14,6 +14,8 @@ use era_runtime_protocol::{
     FileCategory, FileChange, FilePayload, ProjectIdentity, ProjectManifest, ReloadProject,
     SubmittedFile, validate_relative_path,
 };
+
+const PROJECT_CONFIGURATION_UPDATE_HEADROOM: usize = 1024 * 1024;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 use walkdir::{DirEntry, WalkDir};
@@ -55,7 +57,7 @@ pub struct ProjectHost {
     indexed_files: Vec<IndexedFile>,
     revision: u64,
     embedded_resources: BTreeMap<String, Vec<u8>>,
-    packaged: bool,
+    project_file: Option<PathBuf>,
 }
 
 impl ProjectHost {
@@ -107,7 +109,7 @@ impl ProjectHost {
             }),
             revision,
             embedded_resources: BTreeMap::new(),
-            packaged: false,
+            project_file: None,
         })
     }
 
@@ -216,7 +218,7 @@ impl ProjectHost {
             indexed_files,
             revision,
             embedded_resources: BTreeMap::new(),
-            packaged: false,
+            project_file: None,
         })
     }
 
@@ -257,7 +259,7 @@ impl ProjectHost {
             indexed_files,
             revision: decoded.identity.project_revision,
             embedded_resources,
-            packaged: true,
+            project_file: Some(path),
         })
     }
 
@@ -270,8 +272,43 @@ impl ProjectHost {
         expected_digest: &[u8],
         contents: &str,
     ) -> Result<(), String> {
-        if self.packaged {
-            return Err("项目文件中的 reraconfig.toml 为只读".into());
+        if let Some(project_file) = &self.project_file {
+            let project_bytes = fs::read(project_file)
+                .map_err(|error| format!("cannot read project file: {error}"))?;
+            let update = era_runtime::prepare_project_configuration_update(
+                &project_bytes,
+                project_bytes
+                    .len()
+                    .saturating_add(PROJECT_CONFIGURATION_UPDATE_HEADROOM),
+                expected_digest,
+                contents,
+            )
+            .map_err(|error| error.to_string())?;
+            let mut target = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(project_file)
+                .map_err(|error| format!("cannot open project file for update: {error}"))?;
+            let mut current_bytes = Vec::with_capacity(project_bytes.len());
+            target
+                .read_to_end(&mut current_bytes)
+                .map_err(|error| format!("cannot verify project file: {error}"))?;
+            if blake3::hash(&current_bytes) != blake3::hash(&project_bytes) {
+                return Err("项目文件已被其他程序修改，请重新打开偏好设置".into());
+            }
+            target
+                .set_len(update.truncate_to)
+                .map_err(|error| format!("cannot recover project configuration tail: {error}"))?;
+            target
+                .seek(SeekFrom::Start(update.truncate_to))
+                .map_err(|error| format!("cannot seek project configuration tail: {error}"))?;
+            target
+                .write_all(&update.append)
+                .map_err(|error| format!("cannot append project configuration: {error}"))?;
+            target
+                .sync_all()
+                .map_err(|error| format!("cannot sync project configuration: {error}"))?;
+            return Ok(());
         }
         let relative_path = self
             .indexed_files
@@ -419,7 +456,7 @@ impl ProjectHost {
         &mut self,
         progress: Option<&dyn Fn(usize, usize)>,
     ) -> Result<ReloadProject, String> {
-        if self.packaged {
+        if self.project_file.is_some() {
             return Err("a packaged project cannot reload source files".into());
         }
         self.materialize_with_progress(progress)?;

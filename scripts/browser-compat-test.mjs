@@ -368,6 +368,13 @@ try {
       throw new Error(`font picker fallback mismatch: ${JSON.stringify(fontAccess)}`);
     }
     if (settingsHotApply) {
+      compatibilityStage = "waiting for the OPFS project cache before applying settings";
+      await browser.waitUntil(async () => (await inspectOpfsProjectCache(browser)).exists, {
+        timeout: 120_000,
+        interval: 250,
+        timeoutMsg: "OPFS compiled-project.reraproj was not generated",
+      });
+      const cacheBeforeSettings = await inspectOpfsProjectCache(browser);
       compatibilityStage = "hot-applying browser font settings";
       await gameFont.setValue("monospace");
       await settingsDialog.$("#setting-FontSize").setValue("19");
@@ -386,12 +393,32 @@ try {
           timeoutMsg: "browser did not hot-apply the saved game font",
         },
       );
+      compatibilityStage = "checking the incremental OPFS project-cache update";
+      await browser.waitUntil(
+        async () => {
+          const cache = await inspectOpfsProjectCache(browser, cacheBeforeSettings.size);
+          const appendedBytes = cache.size - cacheBeforeSettings.size;
+          return (
+            cache.hasConfigurationJournal &&
+            cache.prefixDigest === cacheBeforeSettings.prefixDigest &&
+            appendedBytes > 0 &&
+            appendedBytes < 4_096
+          );
+        },
+        {
+          timeout: 30_000,
+          interval: 100,
+          timeoutMsg: "browser did not append the reraconfig transaction to its OPFS cache",
+        },
+      );
+      const cacheAfterSettings = await inspectOpfsProjectCache(browser, cacheBeforeSettings.size);
       console.log(
         JSON.stringify({
           browser: browserName,
           settingsHotApply: true,
           fontFamily: "monospace",
           fontSize: "19px",
+          opfsProjectCacheAppendBytes: cacheAfterSettings.size - cacheBeforeSettings.size,
         }),
       );
     }
@@ -607,6 +634,54 @@ try {
   }
   await browser?.deleteSession().catch(() => {});
   await server?.close().catch(() => {});
+}
+
+async function inspectOpfsProjectCache(activeBrowser, prefixBytes = undefined) {
+  return activeBrowser.executeAsync(async (requestedPrefixBytes, done) => {
+    try {
+      const storage = await navigator.storage.getDirectory();
+      const imports = await storage.getDirectoryHandle(".rustyera-imports");
+      let project;
+      for await (const [, handle] of imports.entries()) {
+        if (handle.kind === "directory") {
+          project = handle;
+          break;
+        }
+      }
+      if (!project) {
+        done({ exists: false, size: 0, hasConfigurationJournal: false });
+        return;
+      }
+      const privateDirectory = await project.getDirectoryHandle(".rustyera");
+      const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
+      const handle = await cacheDirectory.getFileHandle("compiled-project.reraproj");
+      const file = await handle.getFile();
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const prefixLength = requestedPrefixBytes ?? bytes.length;
+      const prefixHash = new Uint8Array(
+        await crypto.subtle.digest("SHA-256", bytes.subarray(0, prefixLength)),
+      );
+      const prefixDigest = [...prefixHash]
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+      const magic = new TextEncoder().encode("RERACFG1");
+      const hasConfigurationJournal = bytes.some((_, start) =>
+        magic.every((byte, offset) => bytes[start + offset] === byte),
+      );
+      done({ exists: true, size: file.size, prefixDigest, hasConfigurationJournal });
+    } catch (error) {
+      if (error?.name === "NotFoundError") {
+        done({ exists: false, size: 0, hasConfigurationJournal: false });
+        return;
+      }
+      done({
+        exists: false,
+        size: 0,
+        hasConfigurationJournal: false,
+        error: `${error?.name ?? "Error"}: ${error?.message ?? String(error)}`,
+      });
+    }
+  }, prefixBytes);
 }
 
 async function runCacheInputSmoke(

@@ -3,8 +3,13 @@ import { blake3 } from "@noble/hashes/blake3.js";
 
 const pickBrowserDirectory = vi.hoisted(() => vi.fn());
 const pickBrowserFile = vi.hoisted(() => vi.fn());
+const pickBrowserProjectFile = vi.hoisted(() => vi.fn());
 
-vi.mock("@/platform/browserDirectory", () => ({ pickBrowserDirectory, pickBrowserFile }));
+vi.mock("@/platform/browserDirectory", () => ({
+  pickBrowserDirectory,
+  pickBrowserFile,
+  pickBrowserProjectFile,
+}));
 vi.mock("@/platform/database", () => ({
   database: { handles: { put: vi.fn() } },
   loadBrowserPreferences: vi.fn(),
@@ -42,11 +47,27 @@ class MemoryFileHandle {
     return file;
   }
 
-  async createWritable() {
+  async createWritable(options?: { keepExistingData?: boolean }) {
+    if (!options?.keepExistingData) this.bytes = new Uint8Array();
+    let cursor = 0;
     return {
       write: async (bytes: Uint8Array) => {
-        this.bytes = new Uint8Array(bytes);
+        const end = cursor + bytes.byteLength;
+        if (end > this.bytes.byteLength) {
+          const grown = new Uint8Array(end);
+          grown.set(this.bytes);
+          this.bytes = grown;
+        }
+        this.bytes.set(bytes, cursor);
+        cursor = end;
         this.lastModified += 1;
+      },
+      seek: async (position: number) => {
+        cursor = position;
+      },
+      truncate: async (size: number) => {
+        this.bytes = this.bytes.slice(0, size);
+        if (cursor > size) cursor = size;
       },
       close: async () => {},
       abort: this.abort,
@@ -76,6 +97,10 @@ class MemoryDirectoryHandle {
     const file = new MemoryFileHandle(name);
     this.children.set(name, file);
     return file;
+  }
+
+  async removeEntry(name: string) {
+    if (!this.children.delete(name)) throw new DOMException("missing", "NotFoundError");
   }
 
   async *entries() {
@@ -125,6 +150,11 @@ describe("browser startup bridge", () => {
     requests.length = 0;
     pickBrowserDirectory.mockReset();
     pickBrowserFile.mockReset();
+    pickBrowserProjectFile.mockReset();
+    pickBrowserProjectFile.mockImplementation(async () => {
+      const file = await pickBrowserFile();
+      return file ? { file } : undefined;
+    });
     respond = () => 1n;
     vi.stubGlobal("Worker", MemoryWorker);
   });
@@ -209,7 +239,36 @@ describe("browser startup bridge", () => {
     expect(file.abort).toHaveBeenCalledOnce();
   });
 
-  it("transfers a packaged file once, retains it for restart, and does not copy it to OPFS", async () => {
+  it("cancels an active cache export before persisting authoritative configuration", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    pickBrowserDirectory.mockResolvedValue({
+      handle: root,
+      persistHandle: false,
+      projectName: "game",
+      manifest: { project_revision: 1, files: [] },
+    });
+    const bridge = new BrowserBridge();
+    await bridge.openProject();
+    await bridge.writeCompiledCacheChunk(Uint8Array.of(1, 2, 3), true, false);
+    const cache = await (await root.getDirectoryHandle(".rustyera")).getDirectoryHandle("cache");
+    const partial = await cache.getFileHandle("compiled-project.reraproj");
+
+    await bridge.writeProjectConfiguration(
+      new Uint8Array(),
+      "[text]\nreplace_full_width_spaces = true\n",
+    );
+    await bridge.writeCompiledCacheChunk(Uint8Array.of(4, 5, 6), false, true);
+
+    expect(partial.abort).toHaveBeenCalledOnce();
+    await expect(cache.getFileHandle("compiled-project.reraproj")).rejects.toMatchObject({
+      name: "NotFoundError",
+    });
+    expect(await (await (await root.getFileHandle("reraconfig.toml")).getFile()).text()).toContain(
+      "replace_full_width_spaces = true",
+    );
+  });
+
+  it("imports a fallback packaged file into OPFS for incremental updates and restart", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
     const bytes = Uint8Array.of(1, 2, 3, 4);
@@ -223,15 +282,26 @@ describe("browser startup bridge", () => {
           storageKey: "legacy-key",
           manifest: { project_revision: 3, files: [] },
         };
+      if (method === "prepareProjectConfigurationUpdate") {
+        const result = new Uint8Array(8 + 7);
+        new DataView(result.buffer).setBigUint64(0, 4n, true);
+        result.set(new TextEncoder().encode("journal"), 8);
+        return result;
+      }
       return 1n;
     };
     const bridge = new BrowserBridge();
 
     await bridge.openProjectFile();
+    await bridge.writeProjectConfiguration(
+      new Uint8Array(),
+      "[text]\nreplace_full_width_spaces = true\n",
+    );
     await bridge.restartProject();
 
     expect(requests.map((request) => request.message.method)).toEqual([
       "loadProjectFile",
+      "prepareProjectConfigurationUpdate",
       "loadProjectWithCompiledCache",
     ]);
     expect(requests[0].transfer).toHaveLength(1);
@@ -239,9 +309,49 @@ describe("browser startup bridge", () => {
     const projectRoot = await (
       await storage.getDirectoryHandle(".rustyera-project-files")
     ).getDirectoryHandle("legacy-key");
+    const copiedProject = await projectRoot.getFileHandle("project.reraproj");
+    expect(new TextDecoder().decode(await (await copiedProject.getFile()).arrayBuffer())).toBe(
+      "\u0001\u0002\u0003\u0004journal",
+    );
+    expect(bridge.projectConfigurationWritable()).toBe(true);
     await expect(projectRoot.getDirectoryHandle(".rustyera")).rejects.toMatchObject({
       name: "NotFoundError",
     });
+  });
+
+  it("routes a writable packaged configuration through the WASM update planner", async () => {
+    const storage = new MemoryDirectoryHandle("storage");
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    const handle = new MemoryFileHandle("game.reraproj", new TextEncoder().encode("base-tail"));
+    const file = await handle.getFile();
+    pickBrowserProjectFile.mockResolvedValue({ file, handle });
+    respond = (method) => {
+      if (method === "loadProjectFile")
+        return { storageKey: "writable-key", manifest: { project_revision: 1, files: [] } };
+      if (method === "prepareProjectConfigurationUpdate") {
+        const result = new Uint8Array(8 + 7);
+        new DataView(result.buffer).setBigUint64(0, 4n, true);
+        result.set(new TextEncoder().encode("journal"), 8);
+        return result;
+      }
+      return 1n;
+    };
+    const bridge = new BrowserBridge();
+
+    await bridge.openProjectFile();
+    await bridge.writeProjectConfiguration(
+      new Uint8Array(),
+      "[text]\nreplace_full_width_spaces = true\n",
+    );
+
+    expect(bridge.projectConfigurationWritable()).toBe(true);
+    expect(requests.map((request) => request.message.method)).toEqual([
+      "loadProjectFile",
+      "prepareProjectConfigurationUpdate",
+    ]);
+    expect(new TextDecoder().decode(await (await handle.getFile()).arrayBuffer())).toBe(
+      "basejournal",
+    );
   });
 
   it("submits and prepares a selected project file before reading it", async () => {

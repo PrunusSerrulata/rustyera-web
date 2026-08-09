@@ -86,8 +86,9 @@ compile status, and visible output.
 
 Both hosts can open source directories or self-contained `.reraproj` files, export compiled project
 files and VM snapshots, and edit the runtime-provided project configuration. Directory-backed
-projects persist writable configuration changes; project-file sessions accept only settings that
-can take effect immediately without rewriting the source archive.
+projects persist writable configuration changes. Project-file settings are stored as compact
+append-only transactions: Chromium updates a directly writable selected file, while Firefox and
+Safari update an isolated OPFS copy.
 
 The Playwright wrapper stores Chromium in the fixed local directory `.playwright-browsers` under
 this frontend. The directory is ignored by Git and survives ordinary `npm ci` runs, so subsequent
@@ -101,7 +102,8 @@ Current desktop Chromium uses File System Access for direct project-directory I/
 Access for the session-fixed font list. Current Firefox and Safari use their directory upload picker
 and import the selected project into origin-private browser storage. Once the self-contained
 `.reraproj` has been built, copied source files are removed from OPFS while saves and runtime-owned
-storage remain available. Chromium directory handles
+storage remain available. The retained OPFS project cache receives the same incremental
+configuration transactions, so changing settings does not regenerate the whole cache. Chromium directory handles
 survive reloads only after user permission and are persisted in IndexedDB. IndexedDB otherwise
 stores only global preferences and the last Chromium directory handle.
 

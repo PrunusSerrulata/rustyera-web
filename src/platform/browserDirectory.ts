@@ -65,6 +65,36 @@ export async function pickBrowserFile(accept?: string): Promise<File | undefined
   return (await pickFiles({ accept }))?.[0];
 }
 
+export interface PickedBrowserProjectFile {
+  file: File;
+  handle?: FileSystemFileHandle;
+}
+
+export async function pickBrowserProjectFile(): Promise<PickedBrowserProjectFile | undefined> {
+  if (window.showOpenFilePicker) {
+    let handle: FileSystemFileHandle;
+    try {
+      [handle] = await window.showOpenFilePicker({
+        multiple: false,
+        types: [
+          {
+            description: "RustyEra 项目",
+            accept: { "application/octet-stream": [".reraproj"] },
+          },
+        ],
+      });
+    } catch (error) {
+      if (isPickerCancellation(error)) return undefined;
+      throw error;
+    }
+    const permission = await handle.requestPermission?.({ mode: "readwrite" });
+    const file = await handle.getFile();
+    return permission && permission !== "granted" ? { file } : { file, handle };
+  }
+  const file = await pickBrowserFile(".reraproj,application/octet-stream");
+  return file ? { file } : undefined;
+}
+
 export async function importBrowserDirectory(
   selectedFiles: Iterable<File>,
   storageRoot: FileSystemDirectoryHandle,

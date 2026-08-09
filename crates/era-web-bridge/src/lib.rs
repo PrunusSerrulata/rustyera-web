@@ -158,6 +158,12 @@ impl WebSession {
         Ok(session)
     }
 
+    /// Return the negotiated maximum size of one frontend transfer.
+    #[must_use]
+    pub const fn maximum_transfer_bytes(&self) -> u64 {
+        self.runtime.maximum_transfer_bytes()
+    }
+
     /// Install or clear the host's read-only project workload observer.
     pub fn set_project_progress_reporter(&mut self, reporter: Option<ProjectProgressReporter>) {
         self.runtime.set_project_progress_reporter(reporter);
