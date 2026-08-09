@@ -95,9 +95,12 @@ describe("browser game runner progress policy", () => {
     );
 
     expect(runner).toContain('fields.includes("square_grid")');
+    expect(runner).toContain('const SHRINE_INTERIOR_EDGE = "║"');
     expect(runner).toContain('fields.includes("dialog_border")');
     expect(runner).toContain('action.type === "click_until_text"');
     expect(mapScenario).toContain('"square_grid"');
+    expect(mapScenario).toContain('"interior_rows": 5');
+    expect(mapScenario).toContain('"interior_counts": [1, 1, 1, 1, 1]');
     expect(dialogueScenario).toContain('"dialog_border"');
   });
 

@@ -205,10 +205,16 @@ describe("frontend host and image-line policy", () => {
     const cyrillic = render("ф");
     const mathematical = render("∬");
     const ascii = render("- ");
+    const trailingSpace = mount(RunRenderer, {
+      props: {
+        run: { type: "text_layout", text: " ", columns: 0, style: {} },
+      },
+    }).get("span");
     expect(ambiguous.classes()).toContain("text-layout");
     expect(ambiguous.attributes("data-columns")).toBe("2");
     for (const segment of [ambiguous, greek, cyrillic, mathematical, ascii])
       expect(segment.attributes("style")).toContain("width: 1em");
+    expect(trailingSpace.attributes("style")).toContain("width: 0em");
   });
 
   it("projects HTML space shapes before positioned images", () => {

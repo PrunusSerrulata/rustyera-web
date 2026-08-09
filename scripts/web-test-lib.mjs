@@ -819,6 +819,9 @@ async function queryLocator(locator, fields = ["count", "text", "visible", "enab
         const BORDER_CHARACTER = "■";
         const MAP_ROW_COUNT = 25;
         const SHRINE_EDGE_ROW_COUNT = 10;
+        const SHRINE_INTERIOR_START_ROW = 11;
+        const SHRINE_INTERIOR_ROW_COUNT = 5;
+        const SHRINE_INTERIOR_EDGE = "║";
         const characterBoxes = (element, selectedCharacter) => {
           const boxes = [];
           const ownerDocument = element.ownerDocument;
@@ -842,6 +845,7 @@ async function queryLocator(locator, fields = ["count", "text", "visible", "enab
         };
         const tolerance = 1;
         const rows = elements.map((element) => ({
+          element,
           text: element.textContent?.trim() ?? "",
           top: element.getBoundingClientRect().top,
           squares: characterBoxes(element, BORDER_CHARACTER),
@@ -875,8 +879,27 @@ async function queryLocator(locator, fields = ["count", "text", "visible", "enab
             Math.abs(row.squares[0] - left) <= tolerance &&
             Math.abs(row.squares.at(-1) - right) <= tolerance,
         );
+        const interiorRows = map.slice(
+          SHRINE_INTERIOR_START_ROW,
+          SHRINE_INTERIOR_START_ROW + SHRINE_INTERIOR_ROW_COUNT,
+        );
+        const interiorEdges = interiorRows.map((row) =>
+          characterBoxes(row.element, SHRINE_INTERIOR_EDGE),
+        );
+        const interiorCounts = interiorEdges.map((edges) => edges.length);
+        const completeInterior = interiorCounts.every((count) => count === 1);
+        const interiorPositions = completeInterior ? interiorEdges.map((edges) => edges[0]) : [];
+        const interiorSpread = completeInterior
+          ? Math.max(...interiorPositions) - Math.min(...interiorPositions)
+          : null;
         return {
-          aligned: alignedBottom && edgeRows.length === SHRINE_EDGE_ROW_COUNT,
+          aligned:
+            alignedBottom &&
+            edgeRows.length === SHRINE_EDGE_ROW_COUNT &&
+            interiorRows.length === SHRINE_INTERIOR_ROW_COUNT &&
+            completeInterior &&
+            interiorSpread != null &&
+            interiorSpread <= tolerance,
           left: Math.round(left * 100) / 100,
           right: Math.round(right * 100) / 100,
           left_spread: Math.round((Math.max(...leftEdges) - Math.min(...leftEdges)) * 100) / 100,
@@ -885,6 +908,11 @@ async function queryLocator(locator, fields = ["count", "text", "visible", "enab
           bottom: Math.round(bottom.top * 100) / 100,
           rows: map.length,
           edge_rows: edgeRows.length,
+          interior_left:
+            interiorPositions.length > 0 ? Math.round(interiorPositions[0] * 100) / 100 : null,
+          interior_spread: interiorSpread == null ? null : Math.round(interiorSpread * 100) / 100,
+          interior_rows: interiorRows.length,
+          interior_counts: interiorCounts,
         };
       });
     if (fields.includes("dialog_border"))

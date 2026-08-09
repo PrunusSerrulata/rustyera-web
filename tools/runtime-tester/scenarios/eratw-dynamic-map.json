@@ -27,6 +27,10 @@
           "right_spread": 0,
           "rows": 25,
           "edge_rows": 10,
+          "interior_left": 128,
+          "interior_spread": 0,
+          "interior_rows": 5,
+          "interior_counts": [1, 1, 1, 1, 1],
           "aligned": true
         }
       }
