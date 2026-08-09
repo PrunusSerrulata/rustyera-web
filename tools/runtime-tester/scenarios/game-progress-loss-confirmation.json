@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "project": "../../../../emuera.em/emuera-reference-cli/tests/fixture",
+  "mode": "fixed",
+  "seed": 123456,
+  "actions": [
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "重新开始", "exact": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "dialog", "name": "重新开始游戏", "exact": true },
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "重新开始游戏可能会丢失尚未保存的游戏进度。", "exact": true },
+      "expect": { "count": 1, "visible": true }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "dialog", "name": "重新开始游戏", "exact": true },
+      "expect": { "count": 0 }
+    },
+    {
+      "type": "assert_state",
+      "expect": { "startupTelemetry": { "attemptId": 1 } }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "返回标题", "exact": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "dialog", "name": "返回标题", "exact": true },
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "返回标题可能会丢失尚未保存的游戏进度。", "exact": true },
+      "expect": { "count": 1, "visible": true }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } },
+    {
+      "type": "assert_state",
+      "expect": { "startupTelemetry": { "attemptId": 1 } }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "重新开始", "exact": true }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "重新开始", "exact": true }
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "phase": "waiting_input",
+        "canInteract": true,
+        "startupTelemetry": { "attemptId": 2, "outcome": "success" }
+      }
+    }
+  ],
+  "limits": {
+    "max_steps": 30,
+    "timeout_seconds": 120
+  }
+}

@@ -2015,6 +2015,62 @@ describe("runtime store session lifecycle", () => {
     );
   });
 
+  it("requires explicit confirmation before restarting or returning to the title", async () => {
+    stubRunningAudioContext();
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 })],
+    });
+    mockProjectSelection({
+      submittedAtMs: 0,
+      quickScanMs: 1,
+      cacheReadMs: 2,
+      sourceReadMs: 3,
+      submitMs: 4,
+      cacheImported: true,
+    });
+    const store = useRuntimeStore();
+    await store.openProject();
+    store.projectLoading = false;
+
+    store.requestRestart();
+    await store.openProject();
+    await store.confirmOpenProject();
+    expect(store.gameProgressLossConfirmation).toBeNull();
+    await store.confirmGameProgressLossAction();
+    expect(bridge.restartProject).not.toHaveBeenCalled();
+
+    store.phase = "waiting_input";
+    store.projectLoading = false;
+    store.requestRestart();
+    expect(store.gameProgressLossConfirmation).toBe("restart");
+    store.cancelGameProgressLossAction();
+    expect(store.gameProgressLossConfirmation).toBeNull();
+    expect(bridge.restartProject).not.toHaveBeenCalled();
+
+    store.requestRestart();
+    await store.confirmGameProgressLossAction();
+    expect(store.gameProgressLossConfirmation).toBeNull();
+    expect(bridge.restartProject).toHaveBeenCalledOnce();
+
+    store.phase = "waiting_input";
+    store.projectLoading = false;
+    store.requestReturnToTitle();
+    expect(store.gameProgressLossConfirmation).toBe("title");
+    store.cancelGameProgressLossAction();
+    expect(bridge.submitRuntime).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "return_to_title" }),
+    );
+
+    store.requestReturnToTitle();
+    await store.confirmGameProgressLossAction();
+    expect(store.gameProgressLossConfirmation).toBeNull();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "return_to_title", value: {} }),
+      undefined,
+    );
+  });
+
   it("confirms project replacement, clears the viewport, and blocks opening through compilation", async () => {
     vi.stubGlobal(
       "AudioContext",

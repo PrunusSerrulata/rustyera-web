@@ -310,6 +310,30 @@ try {
       await button.waitForClickable({ timeout: 30_000 });
       await button.click();
     };
+    for (const action of [
+      { menuLabel: "重新开始", title: "重新开始游戏" },
+      { menuLabel: "返回标题", title: "返回标题" },
+    ]) {
+      const beforeConfirmation = await browser.execute(() => window.__RUSTYERA_TEST__?.snapshot());
+      await clickButton("文件");
+      await clickButton(action.menuLabel);
+      compatibilityStage = `checking ${action.title} confirmation`;
+      const confirmation = await browser.$(`section[aria-label='${action.title}']`);
+      await confirmation.waitForDisplayed({ timeout: 30_000 });
+      if (!(await confirmation.getText()).includes("可能会丢失尚未保存的游戏进度")) {
+        throw new Error(`${action.title} confirmation did not warn about progress loss`);
+      }
+      await confirmation.$("button=取消").click();
+      await confirmation.waitForDisplayed({ reverse: true, timeout: 30_000 });
+      const afterCancellation = await browser.execute(() => window.__RUSTYERA_TEST__?.snapshot());
+      if (
+        afterCancellation.runtimeEpoch !== beforeConfirmation.runtimeEpoch ||
+        afterCancellation.presentationRevision !== beforeConfirmation.presentationRevision ||
+        JSON.stringify(afterCancellation.output) !== JSON.stringify(beforeConfirmation.output)
+      ) {
+        throw new Error(`${action.title} cancellation changed the running game`);
+      }
+    }
     await clickButton("文件");
     await clickButton("设置…");
     compatibilityStage = "checking font settings";

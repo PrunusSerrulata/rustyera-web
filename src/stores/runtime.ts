@@ -243,6 +243,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const projectLoadElapsedSeconds = ref(0);
   const startupTelemetry = ref<StartupTelemetry>();
   const openProjectConfirmationOpen = ref(false);
+  const gameProgressLossConfirmation = ref<"restart" | "title" | null>(null);
   let pendingProjectSelection: "directory" | "file" = "directory";
   let activeProjectSelection: "directory" | "file" = "directory";
   const prompt = ref("");
@@ -332,6 +333,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     handleBatch,
     advanceTimedWait,
     handleError(error) {
+      gameProgressLossConfirmation.value = null;
       failStartupTelemetry(error);
       finishProjectLoad();
       fault.value = { code: "frontend", message: String(error) };
@@ -775,6 +777,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
       }
       case "state_changed":
         phase.value = value.phase;
+        if (value.phase === "faulted" || value.phase === "stopped")
+          gameProgressLossConfirmation.value = null;
         if (
           startupTelemetry.value?.milestones.startSubmittedMs != null &&
           startupTelemetry.value.milestones.firstGamePhaseMs == null &&
@@ -930,6 +934,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         importKind = undefined;
         break;
       case "fault":
+        gameProgressLossConfirmation.value = null;
         failStartupTelemetry(value.message ?? "Runtime fault");
         fault.value = value;
         log("error", value.message ?? "Runtime fault", true);
@@ -1529,7 +1534,33 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await send({ type: "return_to_title", value: {} });
   }
 
+  function requestRestart(): void {
+    requestGameProgressLossAction("restart");
+  }
+
+  function requestReturnToTitle(): void {
+    requestGameProgressLossAction("title");
+  }
+
+  function requestGameProgressLossAction(action: "restart" | "title"): void {
+    if (!runtimeReady.value || gameInteractionsBlocked.value) return;
+    gameProgressLossConfirmation.value = action;
+  }
+
+  function cancelGameProgressLossAction(): void {
+    gameProgressLossConfirmation.value = null;
+  }
+
+  async function confirmGameProgressLossAction(): Promise<void> {
+    const action = gameProgressLossConfirmation.value;
+    gameProgressLossConfirmation.value = null;
+    if (!action || !runtimeReady.value || gameInteractionsBlocked.value) return;
+    if (action === "restart") await restart();
+    else await returnToTitle();
+  }
+
   function resetSessionState(preserveCompiledCacheExport = false): void {
+    gameProgressLossConfirmation.value = null;
     const compiledCacheExport =
       preserveCompiledCacheExport && exportState?.kind === "compiled_cache"
         ? exportState
@@ -3038,6 +3069,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     projectLoadProgressLabel,
     projectLoadProgressValue,
     openProjectConfirmationOpen,
+    gameProgressLossConfirmation,
     prompt,
     inputUndo,
     fault,
@@ -3090,6 +3122,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     undo,
     restart,
     returnToTitle,
+    requestRestart,
+    requestReturnToTitle,
+    cancelGameProgressLossAction,
+    confirmGameProgressLossAction,
     reloadProject,
     dismissFault,
     recoverFromFault,

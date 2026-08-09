@@ -7,6 +7,7 @@ const props = defineProps<{
   wide?: boolean;
   panelClass?: string;
   closeDisabled?: boolean;
+  returnFocus?: string;
 }>();
 const emit = defineEmits<{ close: [] }>();
 const panel = ref<HTMLElement>();
@@ -16,12 +17,16 @@ let previousFocus: Element | null = null;
 
 watch(
   () => props.open,
-  async (open) => {
-    if (!open) return;
-    previousFocus = document.activeElement;
-    await nextTick();
-    center();
-    panel.value?.focus();
+  async (open, wasOpen) => {
+    if (open) {
+      previousFocus = document.activeElement;
+      await nextTick();
+      center();
+      panel.value?.focus();
+    } else if (wasOpen) {
+      await nextTick();
+      restoreFocus();
+    }
   },
 );
 
@@ -69,7 +74,15 @@ function end(event: PointerEvent): void {
 function close(): void {
   if (props.closeDisabled) return;
   emit("close");
-  if (previousFocus instanceof HTMLElement) previousFocus.focus();
+}
+
+function restoreFocus(): void {
+  const configuredTarget = props.returnFocus
+    ? document.querySelector(props.returnFocus)
+    : undefined;
+  const target = configuredTarget ?? previousFocus;
+  if (target instanceof HTMLElement && target.isConnected) target.focus();
+  previousFocus = null;
 }
 
 function keydown(event: KeyboardEvent): void {

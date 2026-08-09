@@ -28,6 +28,7 @@ vi.mock("@/stores/runtime", () => ({ useRuntimeStore: () => debugStore }));
 
 import DebugDialogs from "@/components/DebugDialogs.vue";
 import ColorPickerDialog from "@/components/ColorPickerDialog.vue";
+import GameProgressLossDialog from "@/components/GameProgressLossDialog.vue";
 import LogDialog from "@/components/LogDialog.vue";
 import OpenProjectDialog from "@/components/OpenProjectDialog.vue";
 import PreferencesDialog from "@/components/PreferencesDialog.vue";
@@ -348,6 +349,48 @@ describe("dialog actions", () => {
     expect(wrapper.emitted("confirm")).toHaveLength(1);
     wrapper.unmount();
   });
+
+  it.each([
+    ["restart", "重新开始游戏", "重新开始"],
+    ["title", "返回标题", "返回标题"],
+  ] as const)(
+    "warns before the %s action and exposes both choices",
+    async (action, title, label) => {
+      const returnTarget = document.createElement("button");
+      returnTarget.id = "menu-file";
+      document.body.append(returnTarget);
+
+      const cancelWrapper = mount(GameProgressLossDialog, {
+        attachTo: document.body,
+        props: { action: null },
+      });
+      returnTarget.focus();
+      await cancelWrapper.setProps({ action });
+
+      const dialog = document.body.querySelector(`[role='dialog'][aria-label='${title}']`);
+      expect(dialog?.textContent).toContain("可能会丢失尚未保存的游戏进度");
+      await clickButton("取消");
+      expect(cancelWrapper.emitted("cancel")).toHaveLength(1);
+      await cancelWrapper.setProps({ action: null });
+      await nextTick();
+      expect(document.activeElement).toBe(returnTarget);
+      cancelWrapper.unmount();
+
+      const confirmWrapper = mount(GameProgressLossDialog, {
+        attachTo: document.body,
+        props: { action: null },
+      });
+      returnTarget.focus();
+      await confirmWrapper.setProps({ action });
+      await clickButton(label);
+      expect(confirmWrapper.emitted("confirm")).toHaveLength(1);
+      await confirmWrapper.setProps({ action: null });
+      await nextTick();
+      expect(document.activeElement).toBe(returnTarget);
+      confirmWrapper.unmount();
+      returnTarget.remove();
+    },
+  );
 
   it("executes both debug commands and closes every debug dialog", async () => {
     const wrapper = mount(DebugDialogs, { attachTo: document.body });

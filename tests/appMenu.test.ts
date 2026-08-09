@@ -33,6 +33,7 @@ const store = vi.hoisted(() => ({
   fontAccessStatus: "idle",
   fontAccessError: "",
   openProjectConfirmationOpen: false,
+  gameProgressLossConfirmation: null as "restart" | "title" | null,
   logsOpen: false,
   logs: [],
   initialize: vi.fn(),
@@ -40,6 +41,8 @@ const store = vi.hoisted(() => ({
   openProjectFile: vi.fn(),
   restart: vi.fn(),
   returnToTitle: vi.fn(),
+  requestRestart: vi.fn(),
+  requestReturnToTitle: vi.fn(),
   reloadProject: vi.fn(),
   exportSnapshot: vi.fn(),
   exportProjectFile: vi.fn(),
@@ -70,6 +73,8 @@ const store = vi.hoisted(() => ({
   requestSystemFonts: vi.fn(),
   cancelOpenProject: vi.fn(),
   confirmOpenProject: vi.fn(),
+  cancelGameProgressLossAction: vi.fn(),
+  confirmGameProgressLossAction: vi.fn(),
 }));
 
 vi.mock("@/stores/runtime", () => ({ useRuntimeStore: () => store }));
@@ -114,10 +119,32 @@ async function menuStates(wrapper: VueWrapper): Promise<Map<string, boolean>> {
 
 describe("application menus", () => {
   afterEach(() => {
+    vi.clearAllMocks();
     store.runtimeReady = false;
     store.canExportDiagnosis = false;
     store.canManageTraditionalSaves = false;
     store.configurationEntries = [];
+  });
+
+  it("requests confirmation for progress-losing game actions", async () => {
+    store.runtimeReady = true;
+    const wrapper = mountApp();
+
+    await wrapper.get("nav > .menu > button").trigger("click");
+    const restart = wrapper
+      .findAll(".menu-popup button")
+      .find((item) => item.text() === "重新开始");
+    await restart!.trigger("click");
+    expect(store.requestRestart).toHaveBeenCalledOnce();
+    expect(store.restart).not.toHaveBeenCalled();
+
+    await wrapper.get("nav > .menu > button").trigger("click");
+    const title = wrapper.findAll(".menu-popup button").find((item) => item.text() === "返回标题");
+    await title!.trigger("click");
+    expect(store.requestReturnToTitle).toHaveBeenCalledOnce();
+    expect(store.returnToTitle).not.toHaveBeenCalled();
+
+    wrapper.unmount();
   });
 
   it("disables project and debug actions until the game is running", async () => {

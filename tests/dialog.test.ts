@@ -1,4 +1,5 @@
 import { mount } from "@vue/test-utils";
+import { nextTick } from "vue";
 import { describe, expect, it, vi } from "vitest";
 
 import DraggableDialog from "@/components/DraggableDialog.vue";
@@ -49,5 +50,32 @@ describe("DraggableDialog", () => {
     expect(documentKeydown).not.toHaveBeenCalled();
     document.removeEventListener("keydown", documentKeydown);
     wrapper.unmount();
+  });
+
+  it("restores an explicit stable focus target when its open prop closes", async () => {
+    const returnTarget = document.createElement("button");
+    returnTarget.id = "return-target";
+    document.body.append(returnTarget);
+    const wrapper = mount(DraggableDialog, {
+      attachTo: document.body,
+      props: {
+        open: false,
+        title: "测试对话框",
+        returnFocus: "#return-target",
+      },
+      slots: { default: "内容" },
+    });
+
+    returnTarget.focus();
+    await wrapper.setProps({ open: true });
+    await nextTick();
+    expect(document.activeElement?.getAttribute("role")).toBe("dialog");
+
+    await wrapper.setProps({ open: false });
+    await nextTick();
+    expect(document.activeElement).toBe(returnTarget);
+
+    wrapper.unmount();
+    returnTarget.remove();
   });
 });

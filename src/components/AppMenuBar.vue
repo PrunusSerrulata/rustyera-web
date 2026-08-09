@@ -23,7 +23,11 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
 <template>
   <nav class="menu-bar" aria-label="应用菜单">
     <div class="menu">
-      <button :aria-expanded="menu === 'file'" @click.stop="menu = menu === 'file' ? null : 'file'">
+      <button
+        id="menu-file"
+        :aria-expanded="menu === 'file'"
+        @click.stop="menu = menu === 'file' ? null : 'file'"
+      >
         文件
       </button>
       <div v-if="menu === 'file'" class="menu-popup">
@@ -42,13 +46,13 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
         </button>
         <button
           :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
-          @click="action(store.restart)"
+          @click="action(store.requestRestart)"
         >
           重新开始
         </button>
         <button
           :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
-          @click="action(store.returnToTitle)"
+          @click="action(store.requestReturnToTitle)"
         >
           返回标题
         </button>

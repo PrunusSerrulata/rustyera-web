@@ -153,8 +153,44 @@ preferences("Tauri emuera.config preferences", () => {
     );
 
     await sessionDialog.$("button=取消").click();
+    const beforeTitle = await snapshot();
+    await $("button=文件").click();
+    await $("button=返回标题").click();
+    const titleConfirmation = await $(".dialog-panel[aria-label='返回标题']");
+    await titleConfirmation.waitForDisplayed();
+    assert.match(await titleConfirmation.getText(), /可能会丢失尚未保存的游戏进度/);
+    await titleConfirmation.$("button=取消").click();
+    const afterTitleCancellation = await snapshot();
+    assert.equal(afterTitleCancellation.runtimeEpoch, beforeTitle.runtimeEpoch);
+    assert.equal(afterTitleCancellation.presentationRevision, beforeTitle.presentationRevision);
+    assert.deepEqual(afterTitleCancellation.output, beforeTitle.output);
+
+    await $("button=文件").click();
+    await $("button=返回标题").click();
+    const confirmedTitle = await $(".dialog-panel[aria-label='返回标题']");
+    await confirmedTitle.waitForDisplayed();
+    await confirmedTitle.$("button=返回标题").click();
+    await waitForRuntimeProgress({
+      browser,
+      snapshot,
+      label: "confirmed return-to-title did not reach a new stable presentation",
+      totalTimeout: PROJECT_TIMEOUT,
+      stallTimeout: PROJECT_TIMEOUT,
+      accept: (titleState) =>
+        titleState?.projectOpen &&
+        titleState.phase === "waiting_input" &&
+        titleState.canInteract &&
+        titleState.runtimeEpoch !== beforeTitle.runtimeEpoch,
+    });
+    const afterTitle = await snapshot();
+    assert.notEqual(afterTitle.runtimeEpoch, beforeTitle.runtimeEpoch);
+
     await $("button=文件").click();
     await $("button=重新开始").click();
+    const restartConfirmation = await $(".dialog-panel[aria-label='重新开始游戏']");
+    await restartConfirmation.waitForDisplayed();
+    assert.match(await restartConfirmation.getText(), /可能会丢失尚未保存的游戏进度/);
+    await restartConfirmation.$("button=重新开始").click();
     await waitForInteractiveProject();
     const restartedMetrics = await gameLineMetrics();
     assert.equal(restartedMetrics.fontSize, "16px");
