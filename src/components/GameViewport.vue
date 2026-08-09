@@ -186,7 +186,8 @@ watch(
     :inert="store.gameInteractionsBlocked"
     :aria-busy="store.gameInteractionsBlocked"
     @click="click"
-    @contextmenu.prevent="store.useMouse && store.skip()"
+    @mousedown.right.prevent="store.useMouse && store.skip()"
+    @contextmenu.prevent
     @wheel.prevent="wheel"
   >
     <div class="background-layer">

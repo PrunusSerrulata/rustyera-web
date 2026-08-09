@@ -242,10 +242,21 @@ describe("game viewport", () => {
     wrapper.unmount();
   });
 
-  it("starts continuous Enter-wait skipping from a viewport context menu", async () => {
+  it("starts continuous Enter-wait skipping when the secondary mouse button is pressed", async () => {
     const wrapper = shallowMount(GameViewport);
-    await wrapper.get("main").trigger("contextmenu");
+    const viewport = wrapper.get("main");
+    await viewport.trigger("mousedown", { button: 2 });
 
+    expect(store.skip).toHaveBeenCalledOnce();
+
+    await viewport.trigger("mousedown", { button: 0 });
+    const contextMenu = new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+    });
+    viewport.element.dispatchEvent(contextMenu);
+    expect(contextMenu.defaultPrevented).toBe(true);
     expect(store.skip).toHaveBeenCalledOnce();
     wrapper.unmount();
   });
@@ -260,7 +271,7 @@ describe("game viewport", () => {
 
     store.useMouse = false;
     await viewport.trigger("click", { button: 0 });
-    await viewport.trigger("contextmenu");
+    await viewport.trigger("mousedown", { button: 2 });
     await viewport.trigger("wheel", { deltaY: 1 });
     expect(continueFromViewport).not.toHaveBeenCalled();
     expect(store.skip).not.toHaveBeenCalled();
