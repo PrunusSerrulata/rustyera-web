@@ -971,6 +971,7 @@ describe("runtime store session lifecycle", () => {
 
     await vi.advanceTimersByTimeAsync(64);
     await saving;
+    await vi.advanceTimersByTimeAsync(1_000);
 
     expect(bridge.writeProjectConfiguration).toHaveBeenCalledWith(
       new Uint8Array(32).fill(7),
@@ -983,6 +984,14 @@ describe("runtime store session lifecycle", () => {
       },
       undefined,
     );
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      {
+        type: "state_export_request",
+        value: { kind: "compiled_project_cache", snapshot_purpose: "normal" },
+      },
+      undefined,
+    );
+    expect(store.status).toBe("设置已应用");
     expect(bridge.restartProject).not.toHaveBeenCalled();
   });
 
@@ -1203,6 +1212,14 @@ describe("runtime store session lifecycle", () => {
       undefined,
     );
     expect(store.status).toContain("退出游戏后将丢失");
+    expect(
+      bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) =>
+          (message as { type?: string; value?: { kind?: string } }).type ===
+            "state_export_request" &&
+          (message as { value?: { kind?: string } }).value?.kind === "compiled_project_cache",
+      ),
+    ).toBe(false);
     expect(store.configurationEntries[0]?.effective_value).toBe("18");
   });
 
@@ -1505,6 +1522,195 @@ describe("runtime store session lifecycle", () => {
           (message as { type?: string }).type === "state_export_chunk_request",
       ),
     ).toHaveLength(2);
+  });
+
+  it("restores the stable status after compiled-cache success feedback", async () => {
+    const cacheWrite = deferred<void>();
+    const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("state_export_chunk", {
+          offset: 3,
+          data: [4, 5, 6],
+          complete: true,
+        }),
+      ],
+    });
+
+    cacheWrite.resolve();
+    await flushMicrotasks();
+    await advanceUntil(() => store.testTransferState().export == null);
+
+    expect(store.testTransferState().export).toBeNull();
+    expect(store.status).toBe("项目缓存已保存。");
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(store.status).toBe("项目编译完成");
+  });
+
+  it("clears a compiled-cache status when the initial request fails", async () => {
+    mockProjectSelection({
+      submittedAtMs: 0,
+      quickScanMs: 1,
+      cacheReadMs: 0,
+      sourceReadMs: 1,
+      submitMs: 1,
+      cacheImported: false,
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("project_load_report", { success: true, diagnostics: [] })],
+    });
+    const store = useRuntimeStore();
+    await store.openProject();
+    await vi.advanceTimersByTimeAsync(16);
+    bridge.submitRuntime.mockRejectedValueOnce(new Error("cache request failed"));
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushMicrotasks();
+
+    expect(store.testTransferState().export).toBeNull();
+    expect(store.status).toBe("项目编译完成");
+    expect(store.logs.at(-1)?.message).toContain("项目缓存生成失败");
+  });
+
+  it("clears a compiled-cache status when Runtime reports it ineligible", async () => {
+    mockProjectSelection({
+      submittedAtMs: 0,
+      quickScanMs: 1,
+      cacheReadMs: 0,
+      sourceReadMs: 1,
+      submitMs: 1,
+      cacheImported: false,
+    });
+    let reportSent = false;
+    let ineligibleSent = false;
+    bridge.pump.mockImplementation(async () => {
+      if (!reportSent) {
+        reportSent = true;
+        return {
+          ...emptyBatch(),
+          events: [runtimeEvent("project_load_report", { success: true, diagnostics: [] })],
+        };
+      }
+      const requested = bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) =>
+          (message as { type?: string; value?: { kind?: string } }).type ===
+            "state_export_request" &&
+          (message as { value?: { kind?: string } }).value?.kind === "compiled_project_cache",
+      );
+      if (requested && !ineligibleSent) {
+        ineligibleSent = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("state_export_ready", {
+              result: { type: "ineligible", reasons: ["running"] },
+            }),
+          ],
+        };
+      }
+      return emptyBatch();
+    });
+    const store = useRuntimeStore();
+    await store.openProject();
+    await vi.advanceTimersByTimeAsync(1_100);
+
+    expect(store.testTransferState().export).toBeNull();
+    expect(store.status).toBe("项目编译完成");
+    expect(store.logs.at(-1)?.message).toContain("项目缓存生成失败");
+  });
+
+  it("keeps settings status above an active compiled-cache export", async () => {
+    const cacheWrite = deferred<void>();
+    const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
+    const preferencesWrite = deferred<Preferences>();
+    bridge.savePreferences.mockReturnValueOnce(preferencesWrite.promise);
+
+    const saving = store.savePreferences(defaultPreferences());
+    expect(store.status).toBe("正在保存客户端偏好…");
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(store.status).toMatch(/^正在保存客户端偏好… · 已等待 1 秒$/);
+    expect(store.status).not.toContain("后台生成项目缓存");
+
+    preferencesWrite.resolve(defaultPreferences());
+    await saving;
+    expect(store.status).toBe("设置已应用");
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(store.status).toContain("正在后台生成项目缓存");
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("state_export_chunk", {
+          offset: 3,
+          data: [4, 5, 6],
+          complete: true,
+        }),
+      ],
+    });
+    cacheWrite.resolve();
+    await flushMicrotasks();
+    await advanceUntil(() => store.testTransferState().export == null);
+    expect(store.status).toBe("项目缓存已保存。");
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(store.status).toBe("项目编译完成");
+  });
+
+  it("does not let a late cache completion cover active settings", async () => {
+    const cacheWrite = deferred<void>();
+    const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
+    const preferencesWrite = deferred<Preferences>();
+    bridge.savePreferences.mockReturnValueOnce(preferencesWrite.promise);
+    const saving = store.savePreferences(defaultPreferences());
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("state_export_chunk", {
+          offset: 3,
+          data: [4, 5, 6],
+          complete: true,
+        }),
+      ],
+    });
+
+    cacheWrite.resolve();
+    await flushMicrotasks();
+    await advanceUntil(() => store.testTransferState().export == null);
+
+    expect(store.status).toContain("正在保存客户端偏好");
+    preferencesWrite.resolve(defaultPreferences());
+    await saving;
+    expect(store.status).toBe("设置已应用");
+  });
+
+  it("does not let an earlier settings timer clear a later save", async () => {
+    const store = useRuntimeStore();
+    await store.savePreferences(defaultPreferences());
+    expect(store.status).toBe("设置已应用");
+    await vi.advanceTimersByTimeAsync(1_000);
+    const secondWrite = deferred<Preferences>();
+    bridge.savePreferences.mockReturnValueOnce(secondWrite.promise);
+
+    const secondSave = store.savePreferences(defaultPreferences());
+    await vi.advanceTimersByTimeAsync(1_100);
+
+    expect(store.status).toContain("正在保存客户端偏好");
+    secondWrite.resolve(defaultPreferences());
+    await secondSave;
+  });
+
+  it("invalidates settings feedback when the session restarts", async () => {
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.savePreferences(defaultPreferences());
+    expect(store.status).toBe("设置已应用");
+
+    await store.restart();
+    const restartedStatus = store.status;
+    expect(restartedStatus).not.toBe("设置已应用");
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(store.status).toBe(restartedStatus);
   });
 
   it("allows only one in-flight submission for every active input wait", async () => {
@@ -2106,6 +2312,7 @@ describe("runtime store session lifecycle", () => {
       bridge.reloadProject.mock.invocationCallOrder[0]!,
     );
     expect(store.status).not.toBe("项目缓存已保存。");
+    expect(store.status).not.toContain("正在后台生成项目缓存");
   });
 
   it("cleans up a rejected compiled-cache write without requesting another chunk", async () => {
@@ -2113,11 +2320,14 @@ describe("runtime store session lifecycle", () => {
     const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
 
     cacheWrite.reject(undefined);
-    await flushMicrotasks();
+    await advanceUntil(() =>
+      store.logs.some((entry) => entry.message.includes("项目缓存生成失败")),
+    );
 
     expect(bridge.cancelCompiledCacheExport).toHaveBeenCalledOnce();
     expect(store.testTransferState().export).toBeNull();
     expect(store.logs.at(-1)?.message).toContain("项目缓存生成失败");
+    expect(store.status).toBe("项目编译完成");
     expect(
       bridge.submitRuntime.mock.calls.filter(
         ([message]: unknown[]) =>
@@ -2771,6 +2981,17 @@ describe("runtime store session lifecycle", () => {
     expect(store.startupTelemetry?.milestones.frontendReadyToStartMs).toBeTypeOf("number");
     expect(store.startupTelemetry?.milestones.startSubmittedMs).toBeTypeOf("number");
     expect(store.startupTelemetry?.milestones.firstGamePhaseMs).toBeTypeOf("number");
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) =>
+          (message as { type?: string; value?: { kind?: string } }).type ===
+            "state_export_request" &&
+          (message as { value?: { kind?: string } }).value?.kind === "compiled_project_cache",
+      ),
+    ).toHaveLength(0);
+    expect(store.testTransferState().export).toBeNull();
+    expect(store.status).toBe("项目编译完成");
   });
 
   it("terminates startup telemetry when a bridge fails after submission", async () => {
@@ -3766,6 +3987,14 @@ function deferred<T>(): {
 
 async function flushMicrotasks(): Promise<void> {
   for (let index = 0; index < 4; index += 1) await Promise.resolve();
+}
+
+async function advanceUntil(predicate: () => boolean, attempts = 10): Promise<void> {
+  for (let attempt = 0; attempt < attempts && !predicate(); attempt += 1) {
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(16);
+  }
+  expect(predicate()).toBe(true);
 }
 
 function projectConfigurationReport(revision: number, digestByte: number, fontSize: string) {

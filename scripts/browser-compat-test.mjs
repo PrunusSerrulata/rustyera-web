@@ -401,11 +401,39 @@ try {
         interval: 250,
         timeoutMsg: "OPFS compiled-project.reracache was not generated",
       });
+      await browser.waitUntil(
+        () =>
+          browser.execute(() => {
+            const state = window.__RUSTYERA_TEST__?.snapshot();
+            return state?.transfer?.export == null && state.status === "项目编译完成";
+          }),
+        {
+          timeout: 30_000,
+          interval: 100,
+          timeoutMsg: "compiled-cache feedback did not restore the stable status",
+        },
+      );
       const cacheBeforeSettings = await inspectOpfsProjectCache(browser);
       compatibilityStage = "hot-applying browser font settings";
       await gameFont.setValue("monospace");
       await settingsDialog.$("#setting-FontSize").setValue("19");
       await clickButton("应用");
+      await browser.waitUntil(
+        () => browser.execute(() => window.__RUSTYERA_TEST__?.snapshot().status === "设置已应用"),
+        {
+          timeout: 20_000,
+          interval: 100,
+          timeoutMsg: "settings completion feedback was not displayed",
+        },
+      );
+      await browser.waitUntil(
+        () => browser.execute(() => window.__RUSTYERA_TEST__?.snapshot().status === "项目编译完成"),
+        {
+          timeout: 10_000,
+          interval: 100,
+          timeoutMsg: "settings completion feedback did not restore the stable status",
+        },
+      );
       await browser.waitUntil(
         () =>
           browser.execute(() => {
@@ -420,16 +448,19 @@ try {
           timeoutMsg: "browser did not hot-apply the saved game font",
         },
       );
-      compatibilityStage = "checking the incremental OPFS project-cache update";
+      compatibilityStage = "checking the refreshed OPFS project cache";
       await browser.waitUntil(
         async () => {
           const cache = await inspectOpfsProjectCache(browser, cacheBeforeSettings.size);
           const appendedBytes = cache.size - cacheBeforeSettings.size;
           return (
-            cache.hasConfigurationJournal &&
-            cache.prefixDigest === cacheBeforeSettings.prefixDigest &&
-            appendedBytes > 0 &&
-            appendedBytes < 4_096
+            cache.exists &&
+            ((cache.hasConfigurationJournal &&
+              cache.prefixDigest === cacheBeforeSettings.prefixDigest &&
+              appendedBytes > 0 &&
+              appendedBytes < 4_096) ||
+              cache.prefixDigest !== cacheBeforeSettings.prefixDigest ||
+              cache.size !== cacheBeforeSettings.size)
           );
         },
         {
@@ -439,13 +470,23 @@ try {
         },
       );
       const cacheAfterSettings = await inspectOpfsProjectCache(browser, cacheBeforeSettings.size);
+      const appendedBytes = cacheAfterSettings.size - cacheBeforeSettings.size;
+      const cacheUpdate =
+        cacheAfterSettings.hasConfigurationJournal &&
+        cacheAfterSettings.prefixDigest === cacheBeforeSettings.prefixDigest &&
+        appendedBytes > 0 &&
+        appendedBytes < 4_096
+          ? "journal"
+          : "rebuilt";
       console.log(
         JSON.stringify({
           browser: browserName,
           settingsHotApply: true,
           fontFamily: "monospace",
           fontSize: "19px",
-          opfsProjectCacheAppendBytes: cacheAfterSettings.size - cacheBeforeSettings.size,
+          cacheUpdate,
+          opfsProjectCacheBytes: cacheAfterSettings.size,
+          opfsProjectCacheAppendBytes: appendedBytes,
         }),
       );
     }

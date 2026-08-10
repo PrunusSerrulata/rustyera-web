@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "project": "../../../../emuera.em/emuera-reference-cli/tests/fixture",
+  "mode": "fixed",
+  "seed": 123456,
+  "actions": [
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "文件", "exact": true },
+      "settle_ms": 3500
+    },
+    { "type": "click", "locator": { "role": "button", "name": "重新开始", "exact": true } },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "重新开始", "exact": true },
+      "settle_ms": 2000
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "bridgeKind": "browser",
+        "projectOpen": true,
+        "status": "项目编译完成",
+        "startupTelemetry": { "scenario": "warm", "cacheHit": true, "outcome": "success" },
+        "transfer": { "export": null }
+      }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    { "type": "click", "locator": { "role": "button", "name": "设置…", "exact": true } },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "应用", "exact": true },
+      "settle_ms": 50
+    },
+    { "type": "assert_state", "expect": { "status": "设置已应用" } },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "取消", "exact": true },
+      "settle_ms": 2100
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "bridgeKind": "browser",
+        "projectOpen": true,
+        "status": "项目编译完成",
+        "transfer": { "export": null }
+      }
+    }
+  ],
+  "limits": { "max_steps": 12, "timeout_seconds": 30 }
+}

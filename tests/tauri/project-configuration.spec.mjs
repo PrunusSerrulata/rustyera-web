@@ -131,11 +131,11 @@ async function waitForInteractiveProject() {
 async function waitForBackgroundProjectExport() {
   await browser.pause(1_500);
   const initial = await snapshot();
-  if (initial?.transfer?.export == null && initial.status === "项目编译完成") return;
+  if (initial?.transfer?.export == null) return;
   await browser.waitUntil(
     async () => {
       const state = await snapshot();
-      return state?.transfer?.export == null && state.status === "项目缓存已保存。";
+      return state?.transfer?.export == null;
     },
     {
       timeout: PROJECT_TIMEOUT,

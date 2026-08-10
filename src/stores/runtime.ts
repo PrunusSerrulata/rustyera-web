@@ -114,6 +114,15 @@ interface ExportState {
   requestMessageId?: string;
   hostWrite?: Promise<void>;
   hostWriteFailure?: { error: unknown };
+  statusToken?: number;
+}
+
+type TransientStatusOwner = "settings" | "compiled_cache";
+
+interface TransientStatusState {
+  token: number;
+  message: string;
+  timer?: number;
 }
 
 type FullProjectExportState = ExportState & {
@@ -156,6 +165,7 @@ interface PendingConfigurationBase {
   changedCodes: string[];
   sessionOnly: boolean;
   automatic: boolean;
+  statusToken?: number;
   resolve: () => void;
   reject: (error: unknown) => void;
 }
@@ -225,6 +235,7 @@ const DEBUG_VARIABLE_PAGE_LIMIT = 256;
 const DEBUG_VARIABLE_MAX_PAGES = 16;
 const TIME_ADVANCE_INTERVAL_NS = 16_000_000;
 const MAXIMUM_LOG_ENTRIES = 10_000;
+const STATUS_FEEDBACK_DURATION_MS = 2_000;
 
 export const useRuntimeStore = defineStore("runtime", () => {
   const bridge = platformBridge();
@@ -257,7 +268,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
   });
   const phase = ref("negotiating");
   const runtimeEpoch = ref<number | bigint>(0);
-  const status = ref("请选择 Era 项目文件夹");
+  const baseStatus = ref("请选择 Era 项目文件夹");
+  const transientStatuses = reactive<Partial<Record<TransientStatusOwner, TransientStatusState>>>(
+    {},
+  );
+  let transientStatusSequence = 0;
+  const status = computed(
+    () =>
+      transientStatuses.settings?.message ??
+      transientStatuses.compiled_cache?.message ??
+      baseStatus.value,
+  );
   const projectOpen = ref(false);
   const projectLoading = ref(false);
   const projectSelecting = ref(false);
@@ -474,7 +495,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (!projectLoading.value) return "";
     const label = projectProgress.value
       ? formatProjectProgress(projectProgress.value)
-      : status.value;
+      : baseStatus.value;
     return projectLoadElapsedSeconds.value >= 1
       ? `${label} · 已等待 ${projectLoadElapsedSeconds.value} 秒`
       : label;
@@ -500,6 +521,54 @@ export const useRuntimeStore = defineStore("runtime", () => {
       return `单步暂停：${source.relative_path}:${Number(source.line) + 1}（F10 继续）`;
     return canInteract.value ? "输入内容；Enter 提交" : "等待 Runtime…";
   });
+
+  function beginTransientStatus(owner: TransientStatusOwner, message: string): number {
+    clearTransientStatus(owner);
+    const token = ++transientStatusSequence;
+    transientStatuses[owner] = { token, message };
+    return token;
+  }
+
+  function updateTransientStatus(
+    owner: TransientStatusOwner,
+    token: number | undefined,
+    message: string,
+  ): void {
+    const active = transientStatuses[owner];
+    if (token == null || active?.token !== token) return;
+    active.message = message;
+  }
+
+  function finishTransientStatus(
+    owner: TransientStatusOwner,
+    token: number | undefined,
+    message?: string,
+  ): void {
+    const active = transientStatuses[owner];
+    if (token == null || active?.token !== token) return;
+    if (!message) {
+      clearTransientStatus(owner, token);
+      return;
+    }
+    active.message = message;
+    active.timer = window.setTimeout(
+      () => clearTransientStatus(owner, token),
+      STATUS_FEEDBACK_DURATION_MS,
+    );
+  }
+
+  function clearTransientStatus(owner: TransientStatusOwner, token?: number): void {
+    const active = transientStatuses[owner];
+    if (!active || (token != null && active.token !== token)) return;
+    if (active.timer != null) window.clearTimeout(active.timer);
+    delete transientStatuses[owner];
+  }
+
+  function resetTransientStatuses(): void {
+    clearTransientStatus("settings");
+    clearTransientStatus("compiled_cache");
+    finishSettingsElapsedTimer();
+  }
 
   async function initialize(): Promise<void> {
     // Host end-to-end tests must not inherit a developer's persisted font/image
@@ -624,7 +693,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           currentSessionReplaced = true;
           await recreateSessionForProjectSelection();
         } else await ensureSession();
-        status.value = "正在读取项目…";
+        baseStatus.value = "正在读取项目…";
       };
       const onSubmitted = (submittedAtMs: number) => {
         selectionSubmitted = true;
@@ -635,7 +704,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         : bridge.openProject(onSubmitted, prepareAfterSelection));
       if (!metrics) {
         finishProjectLoad();
-        status.value = "已取消打开项目";
+        baseStatus.value = "已取消打开项目";
         return;
       }
       refreshProjectFontFamilies(metrics.projectFonts);
@@ -654,8 +723,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
       if (selectionSubmitted) failStartupTelemetry(error);
       if (currentSessionReplaced) projectOpen.value = false;
       finishProjectLoad();
-      status.value = String(error);
-      log("error", status.value);
+      baseStatus.value = String(error);
+      log("error", baseStatus.value);
     } finally {
       projectSelecting.value = false;
       if (currentSessionReplaced) {
@@ -670,7 +739,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     try {
       clearSessionTimers();
       resetSessionState(true);
-      status.value = "正在创建新的 Runtime session…";
+      baseStatus.value = "正在创建新的 Runtime session…";
       unlockAudioFromUserGesture();
       await audio
         .synchronize([])
@@ -783,18 +852,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
         configurationProfileValid.value = value.configuration_profile === bridge.kind;
         if (!configurationProfileValid.value)
           log("error", "Runtime 返回的设置宿主类别与当前客户端不一致，项目设置已停用");
-        status.value = "Runtime 已就绪";
+        baseStatus.value = "Runtime 已就绪";
         break;
       case "project_load_report": {
         finishStartupProgressStage();
         if (startupTelemetry.value)
           startupTelemetry.value.milestones.runtimeValidationReportedMs = startupElapsedMs();
         const diagnostics = value.diagnostics ?? [];
-        if (
-          startupTelemetry.value &&
-          diagnostics.some((diagnostic: any) => diagnostic.code === "runtime.compiled_cache_hit")
-        )
+        const runtimeAcceptedCompiledCache = diagnostics.some(
+          (diagnostic: any) => diagnostic.code === "runtime.compiled_cache_hit",
+        );
+        if (startupTelemetry.value && runtimeAcceptedCompiledCache)
           startupTelemetry.value.cacheHit = true;
+        if (runtimeAcceptedCompiledCache) projectUsedCompiledCache = true;
         appendLogEntries(
           diagnostics.map((diagnostic: any) => ({
             timestamp: new Date(),
@@ -819,7 +889,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           }
           await settleProjectViewport();
           completeStartupFrontendReadiness();
-          status.value = "项目编译完成";
+          baseStatus.value = "项目编译完成";
           finishProjectLoad();
           if (pendingStart.type === "new_game") {
             await send({
@@ -829,7 +899,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
           } else {
             await restoreState(pendingStart.type, pendingStart.bytes!);
           }
-          if (!projectUsedCompiledCache) scheduleCompiledCacheExport(1000);
+          if (!runtimeAcceptedCompiledCache && !projectUsedCompiledCache)
+            scheduleCompiledCacheExport(1000);
         } else if (value.payload_required) {
           showProjectLoadTransition("项目缓存未命中，正在读取项目源码…");
           projectUsedCompiledCache = false;
@@ -843,7 +914,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         } else {
           failStartupTelemetry("项目加载失败");
           finishProjectLoad();
-          status.value = "项目加载失败，请查看日志";
+          baseStatus.value = "项目加载失败，请查看日志";
         }
         break;
       }
@@ -930,7 +1001,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           !pending.automatic &&
           pendingConfigurationUpdate?.stage === "finalizing"
         )
-          status.value = "正在应用项目配置…";
+          updateTransientStatus("settings", pending.statusToken, "正在应用项目配置…");
         break;
       }
       case "configuration_update_committed": {
@@ -946,7 +1017,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
         updateProjectConfiguration(value.configuration);
         if (pending.outcome === "abort") {
           const error = new Error(`保存项目配置失败：${String(pending.writeError)}`);
-          status.value = error.message;
           log("error", error.message);
           pending.reject(error);
           break;
@@ -961,7 +1031,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
           } catch (error) {
             log("warning", `客户端项目配置应用失败：${String(error)}`);
           }
-          status.value = "项目配置已应用";
+          updateTransientStatus("settings", pending.statusToken, "正在保存客户端偏好…");
+          if (!pending.sessionOnly) await refreshCompiledCacheAfterConfigurationUpdate();
         }
         pending.resolve();
         break;
@@ -1024,8 +1095,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
           value.code === "runtime.compiled_cache_ready" &&
           exportState?.kind === "compiled_cache" &&
           !exportState.descriptor
-        )
-          await requestCompiledCacheExport();
+        ) {
+          const activeExport = exportState;
+          try {
+            await requestCompiledCacheExport(activeExport);
+          } catch (error) {
+            await failCompiledCacheExport(activeExport, error);
+          }
+        }
         break;
       case "log":
         if (!isRecoverableStaleDebugLog(value.message))
@@ -1093,12 +1170,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
             await failDiagnosisExport(exportState, message);
           else {
             const projectFileFailed = exportState.kind === "project_file";
+            const compiledCacheFailed = exportState.kind === "compiled_cache";
             if (projectFileFailed) {
               await finishProjectFileExport("failed", message);
+            } else if (compiledCacheFailed) {
+              await failCompiledCacheExport(exportState, message);
             } else {
               exportState = undefined;
             }
-            if (!projectFileFailed) status.value = message;
+            if (!projectFileFailed && !compiledCacheFailed) baseStatus.value = message;
             if (diagnosisExporting.value) void startDiagnosisSnapshot();
           }
         }
@@ -1647,7 +1727,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       failStartupTelemetry(error);
       finishProjectLoad();
       const message = `重新开始失败：${String(error)}`;
-      status.value = message;
+      baseStatus.value = message;
       log("error", message);
     } finally {
       runtimePump.setTransitioning(false);
@@ -1687,6 +1767,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   function resetSessionState(preserveCompiledCacheExport = false): void {
     gameProgressLossConfirmation.value = null;
+    resetTransientStatuses();
     const compiledCacheExport =
       preserveCompiledCacheExport && exportState?.kind === "compiled_cache"
         ? exportState
@@ -1739,6 +1820,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     importBytes = undefined;
     importKind = undefined;
     projectConfiguration.value = null;
+    projectUsedCompiledCache = false;
     if (pendingConfigurationUpdate) {
       const pending = pendingConfigurationUpdate;
       pendingConfigurationUpdate = undefined;
@@ -1759,7 +1841,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } catch (error) {
       finishProjectLoad();
       const message = `重新加载项目失败：${String(error)}`;
-      status.value = message;
+      baseStatus.value = message;
       log("error", message);
     } finally {
       runtimePump.setTransitioning(false);
@@ -1775,14 +1857,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (faultActionBusy.value || diagnosisExporting.value) return;
     faultActionBusy.value = true;
     fault.value = null;
-    status.value = action === "title" ? "正在返回主菜单…" : "正在重启并重新编译…";
+    baseStatus.value = action === "title" ? "正在返回主菜单…" : "正在重启并重新编译…";
     try {
       if (action === "title") await returnToTitle();
       else await reloadProject();
     } catch (error) {
       const message = `错误恢复失败：${String(error)}`;
       fault.value = { code: "frontend.recovery_failed", message };
-      status.value = message;
+      baseStatus.value = message;
       log("error", message, false, "none");
     } finally {
       faultActionBusy.value = false;
@@ -1828,7 +1910,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function exportSnapshot(purpose: "normal" | "debug" = "normal"): Promise<void> {
     if (diagnosisExporting.value) return;
     if (exportState) {
-      status.value = "另一项状态导出仍在进行，请稍后重试";
+      baseStatus.value = "另一项状态导出仍在进行，请稍后重试";
       return;
     }
     exportState = {
@@ -1954,7 +2036,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       if (traditionalSaveDialogMode.value === "export") {
         if (!selected.occupied) throw new Error("所选存档槽位为空");
         await access.exportSlot(slot);
-        status.value = `已导出 ${saveSlotFileName(slot)}`;
+        baseStatus.value = `已导出 ${saveSlotFileName(slot)}`;
         traditionalSaveTransferBusy.value = false;
         closeTraditionalSaveDialog();
         return;
@@ -1998,32 +2080,42 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const access = bridge.traditionalSaves;
     if (!access || !traditionalSaveImportBytes) throw new Error("没有可导入的存档文件");
     await access.writeSlot(slot, traditionalSaveImportBytes);
-    status.value = `已导入 ${saveSlotFileName(slot)}`;
+    baseStatus.value = `已导入 ${saveSlotFileName(slot)}`;
     traditionalSaveTransferBusy.value = false;
     closeTraditionalSaveDialog();
   }
 
   async function beginCompiledCacheExport(): Promise<void> {
     if (exportState) return;
-    exportState = {
+    const activeExport: ExportState = {
       name: "compiled-project.reracache",
       kind: "compiled_cache",
       chunks: [],
       received: 0,
     };
-    status.value = "正在后台生成项目缓存，可继续游戏，但游戏运行和响应速度可能暂时受到影响…";
-    await requestCompiledCacheExport();
+    exportState = activeExport;
+    activeExport.statusToken = beginTransientStatus(
+      "compiled_cache",
+      "正在后台生成项目缓存，可继续游戏，但游戏运行和响应速度可能暂时受到影响…",
+    );
+    try {
+      await requestCompiledCacheExport(activeExport);
+    } catch (error) {
+      await failCompiledCacheExport(activeExport, error);
+    }
   }
 
   function scheduleCompiledCacheExport(delayMs = 0): void {
     if (compiledCacheTimer != null) return;
     compiledCacheTimer = window.setTimeout(() => {
       compiledCacheTimer = undefined;
-      void beginCompiledCacheExport().catch((error) => {
-        exportState = undefined;
-        log("warning", `项目缓存生成失败：${String(error)}`);
-      });
+      void beginCompiledCacheExport();
     }, delayMs);
+  }
+
+  async function refreshCompiledCacheAfterConfigurationUpdate(): Promise<void> {
+    if (exportState?.kind === "compiled_cache") await cancelCompiledCacheExport();
+    scheduleCompiledCacheExport();
   }
 
   async function exportProjectFile(): Promise<void> {
@@ -2034,7 +2126,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     );
     const name = `${title}.reraproj`;
     if (!(await bridge.beginProjectFileExport(name))) {
-      status.value = "已取消导出全量项目文件";
+      baseStatus.value = "已取消导出全量项目文件";
       return;
     }
     if (exportState?.kind === "compiled_cache") {
@@ -2055,7 +2147,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       received: 0,
     };
     exportState = activeExport;
-    status.value = "正在读取全量项目文件…";
+    baseStatus.value = "正在读取全量项目文件…";
     try {
       await bridge.stageFullProjectManifest();
       if (!projectFileExporting.value || exportState !== activeExport) return;
@@ -2076,26 +2168,29 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (exportState === activeExport) activeExport.requestMessageId = String(messageId);
   }
 
-  async function requestCompiledCacheExport(): Promise<void> {
+  async function requestCompiledCacheExport(activeExport: ExportState): Promise<void> {
     const messageId = await send({
       type: "state_export_request",
       value: { kind: "compiled_project_cache", snapshot_purpose: "normal" },
     });
-    if (exportState?.kind === "compiled_cache") exportState.requestMessageId = String(messageId);
+    if (exportState === activeExport) activeExport.requestMessageId = String(messageId);
   }
 
   async function handleExportReady(ready: any): Promise<void> {
     if (!exportState) return;
     if (ready.result.type !== "ready") {
       const message = `当前状态不能导出快照：${(ready.result.reasons ?? []).join(", ")}`;
-      const failedKind = exportState.kind;
-      log("warning", message);
+      const activeExport = exportState;
+      const failedKind = activeExport.kind;
+      if (failedKind !== "compiled_cache") log("warning", message);
       if (failedKind.startsWith("diagnosis_")) {
         await failDiagnosisExport(exportState, message);
         return;
       }
       if (failedKind === "project_file") {
         await finishProjectFileExport("failed", message);
+      } else if (failedKind === "compiled_cache") {
+        await failCompiledCacheExport(activeExport, message);
       } else {
         exportState = undefined;
       }
@@ -2113,11 +2208,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
       totalBytes >= 0
     )
       exportState.buffer = new Uint8Array(totalBytes);
+    const activeExport = exportState;
     try {
       await requestExportChunk();
     } catch (error) {
-      if (exportState?.kind.startsWith("diagnosis_")) {
-        await failDiagnosisExport(exportState, `诊断信息导出失败：${String(error)}`);
+      if (activeExport.kind.startsWith("diagnosis_")) {
+        await failDiagnosisExport(activeExport, `诊断信息导出失败：${String(error)}`);
+        return;
+      }
+      if (activeExport.kind === "compiled_cache") {
+        await failCompiledCacheExport(activeExport, error);
         return;
       }
       throw error;
@@ -2164,10 +2264,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
         await finishProjectFileExport("failed");
       } else if (activeExport.kind.startsWith("diagnosis_")) {
         await failDiagnosisExport(activeExport, `诊断信息导出失败：${String(error)}`);
+      } else if (activeExport.kind === "compiled_cache") {
+        await failCompiledCacheExport(activeExport, error);
       } else {
         exportState = undefined;
       }
-      if (!activeExport.kind.startsWith("diagnosis_")) throw error;
+      if (activeExport.kind !== "compiled_cache" && !activeExport.kind.startsWith("diagnosis_"))
+        throw error;
       return;
     }
     if (activeExport.kind === "compiled_cache") {
@@ -2216,7 +2319,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function failCompiledCacheExport(activeExport: ExportState, error: unknown): Promise<void> {
     if (exportState !== activeExport) return;
-    exportState = undefined;
+    finishCompiledCacheExport(activeExport, "failed");
     try {
       await bridge.cancelCompiledCacheExport();
     } catch (cancelError) {
@@ -2225,11 +2328,24 @@ export const useRuntimeStore = defineStore("runtime", () => {
     log("warning", `项目缓存生成失败：${String(error)}`);
   }
 
+  function finishCompiledCacheExport(
+    activeExport: ExportState,
+    outcome: "success" | "cancelled" | "failed",
+  ): void {
+    if (exportState !== activeExport || activeExport.kind !== "compiled_cache") return;
+    exportState = undefined;
+    if (outcome === "success" && !projectLoading.value)
+      finishTransientStatus("compiled_cache", activeExport.statusToken, "项目缓存已保存。");
+    else clearTransientStatus("compiled_cache", activeExport.statusToken);
+  }
+
   async function cancelCompiledCacheExport(): Promise<void> {
     const activeExport = exportState?.kind === "compiled_cache" ? exportState : undefined;
     if (activeExport) {
-      exportState = undefined;
+      finishCompiledCacheExport(activeExport, "cancelled");
       await activeExport.hostWrite;
+    } else {
+      clearTransientStatus("compiled_cache");
     }
     try {
       await send({ type: "state_export_cancel", value: { kind: "compiled_project_cache" } });
@@ -2265,7 +2381,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         }
       }
     }
-    if (message) status.value = message;
+    if (message) baseStatus.value = message;
     if (resumeCacheAfterProjectExport) scheduleCompiledCacheExport();
     resumeCacheAfterProjectExport = false;
   }
@@ -2284,14 +2400,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
     try {
       if (completed.kind === "download") {
         const saved = await bridge.saveDownload(completed.name, result);
-        status.value = saved ? `已导出 ${completed.name}` : "已取消导出 VM 快照";
+        baseStatus.value = saved ? `已导出 ${completed.name}` : "已取消导出 VM 快照";
         exportState = undefined;
         if (diagnosisExporting.value) await startDiagnosisSnapshot();
       } else if (completed.kind === "project_file") {
         await finishProjectFileExport("success", `已导出 ${completed.name}`);
       } else if (completed.kind === "compiled_cache") {
-        if (!projectLoading.value) status.value = "项目缓存已保存。";
-        exportState = undefined;
+        finishCompiledCacheExport(completed, "success");
         if (diagnosisExporting.value) await startDiagnosisSnapshot();
       } else if (completed.kind === "diagnosis_snapshot") {
         if (!diagnosisState) throw new Error("诊断导出状态缺失");
@@ -2327,11 +2442,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
       } else {
         if (completed.kind === "project_file") {
           await finishProjectFileExport("failed");
+        } else if (completed.kind === "compiled_cache") {
+          await failCompiledCacheExport(completed, error);
+          return;
         } else {
           exportState = undefined;
         }
         const message = `状态导出失败：${String(error)}`;
-        status.value = message;
+        baseStatus.value = message;
         log("error", message);
       }
     }
@@ -2341,7 +2459,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     exportState = undefined;
     diagnosisState = undefined;
     diagnosisExporting.value = false;
-    status.value = message;
+    baseStatus.value = message;
     showDiagnosisNotification(message, false);
     log(success ? "info" : "error", message);
   }
@@ -2809,27 +2927,31 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (settingsBusy.value) return;
     settingsBusy.value = true;
     settingsError.value = "";
-    startSettingsElapsedTimer();
+    const statusToken = beginTransientStatus("settings", "正在保存设置…");
+    startSettingsElapsedTimer(statusToken);
     let projectApplication: "persistent" | "session" | undefined;
     let preferencesSaved = false;
     try {
       if (changes.length) {
         if (restartAfterApply && configurationSessionOnly.value)
           throw new Error("项目文件的会话设置无法通过重启应用");
-        projectApplication = await saveProjectConfiguration(changes);
+        projectApplication = await saveProjectConfiguration(changes, false, statusToken);
       }
+      updateTransientStatus("settings", statusToken, "正在保存客户端偏好…");
       preferences.value = await bridge.savePreferences(value);
       preferencesSaved = true;
       previewPreferences.value = null;
       audio.setPreferences(preferences.value);
-      status.value = restartAfterApply
-        ? "设置已保存，正在重新启动…"
-        : projectApplication === "session"
-          ? "会话设置已应用；退出游戏后将丢失"
-          : "设置已应用";
       if (restartAfterApply) {
+        clearTransientStatus("settings", statusToken);
         preferencesOpen.value = false;
         await restart();
+      } else {
+        finishTransientStatus(
+          "settings",
+          statusToken,
+          projectApplication === "session" ? "会话设置已应用；退出游戏后将丢失" : "设置已应用",
+        );
       }
     } catch (error) {
       const message = preferencesSaved
@@ -2839,7 +2961,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           : projectApplication === "persistent"
             ? `项目设置已应用，但客户端偏好保存失败：${String(error)}`
             : `设置未保存：${String(error)}`;
-      status.value = message;
+      updateTransientStatus("settings", statusToken, message);
       log("error", message);
       settingsError.value = message;
     } finally {
@@ -2848,13 +2970,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
   }
 
-  function startSettingsElapsedTimer(): void {
+  function startSettingsElapsedTimer(statusToken: number): void {
     settingsStartedAt = performance.now();
     settingsElapsedTimer = window.setInterval(() => {
       if (settingsStartedAt == null) return;
       const elapsed = Math.floor((performance.now() - settingsStartedAt) / 1000);
       if (elapsed < 1) return;
-      status.value = `${status.value.replace(/ · 已等待 \d+ 秒$/, "")} · 已等待 ${elapsed} 秒`;
+      const active = transientStatuses.settings;
+      if (active?.token !== statusToken) return;
+      active.message = `${active.message.replace(/ · 已等待 \d+ 秒$/, "")} · 已等待 ${elapsed} 秒`;
     }, 1000);
   }
 
@@ -2869,8 +2993,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function saveProjectConfiguration(
     changes: ProjectConfigurationChange[],
     automatic = false,
+    statusToken?: number,
   ): Promise<"persistent" | "session"> {
-    const update = await beginProjectConfigurationUpdate(changes, automatic);
+    const update = await beginProjectConfigurationUpdate(changes, automatic, statusToken);
     await update.completion;
     return update.application;
   }
@@ -2878,6 +3003,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function beginProjectConfigurationUpdate(
     changes: ProjectConfigurationChange[],
     automatic: boolean,
+    statusToken?: number,
   ): Promise<{
     completion: Promise<void>;
     application: "persistent" | "session";
@@ -2912,10 +3038,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
       changedCodes: changes.map((change) => change.code),
       sessionOnly,
       automatic,
+      statusToken,
       resolve,
       reject,
     };
-    if (!automatic) status.value = "正在验证项目配置…";
+    if (!automatic) updateTransientStatus("settings", statusToken, "正在验证项目配置…");
     return { completion, application: sessionOnly ? "session" : "persistent" };
   }
 
@@ -2954,7 +3081,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (String(messageId) !== String(correlationId)) return;
     pendingConfigurationUpdate = undefined;
     const error = new Error(`项目配置未保存：${message}`);
-    status.value = error.message;
     pending.reject(error);
   }
 
@@ -3125,7 +3251,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     acceptingProjectProgress = true;
     projectLoading.value = true;
     projectProgress.value = undefined;
-    status.value = message;
+    baseStatus.value = message;
     startProjectLoadElapsedTimer();
   }
 
@@ -3139,7 +3265,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     )
       return;
     projectProgress.value = undefined;
-    status.value = cacheImported
+    baseStatus.value = cacheImported
       ? "项目缓存命中，正在加载缓存…"
       : "项目文件读取完成，正在准备编译与校验…";
   }
@@ -3147,7 +3273,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   function showProjectLoadTransition(message: string): void {
     projectLoading.value = true;
     projectProgress.value = undefined;
-    status.value = message;
+    baseStatus.value = message;
     startProjectLoadElapsedTimer();
   }
 
@@ -3178,7 +3304,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       return;
     if (projectFileExporting.value) {
       projectFileExportProgress.value = progress;
-      status.value = formatProjectProgress(progress);
+      baseStatus.value = formatProjectProgress(progress);
       return;
     }
     if (!acceptingProjectProgress) return;
@@ -3186,7 +3312,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     startProjectLoadElapsedTimer();
     projectProgress.value = progress;
     recordStartupProgress(progress.stage);
-    status.value = formatProjectProgress(progress);
+    baseStatus.value = formatProjectProgress(progress);
   }
 
   function beginStartupTelemetry(submittedAtMs: number, selection: "directory" | "file"): void {
@@ -3297,7 +3423,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     window.setTimeout(() => {
       if (window.closed) return;
       const message = "浏览器阻止了关闭当前标签页，请手动关闭此标签页。";
-      status.value = message;
+      baseStatus.value = message;
       log("warning", message);
     }, 0);
   }

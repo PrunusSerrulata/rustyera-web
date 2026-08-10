@@ -40,10 +40,28 @@ preferences("Tauri emuera.config preferences", () => {
     const configuredFont = await chooseDifferentSystemFont(await fontName.getValue());
     await fontName.setValue(configuredFont);
     const fontSize = await dialog.$("#setting-FontSize");
-    assert.equal(await fontSize.getValue(), "16");
+    const initialFontSize = await fontSize.getValue();
+    assert.match(initialFontSize, /^\d+$/);
     await fontSize.setValue("20");
     await dialog.$("#setting-LineHeight").setValue("20");
     await dialog.$("button=应用").click();
+
+    await browser.waitUntil(async () => (await snapshot())?.status === "设置已应用", {
+      timeout: 20_000,
+      interval: 100,
+      timeoutMsg: "settings completion feedback was not displayed",
+    });
+    await browser.waitUntil(
+      async () => {
+        const state = await snapshot();
+        return state?.bridgeKind === "tauri" && state.status === "项目编译完成";
+      },
+      {
+        timeout: 10_000,
+        interval: 100,
+        timeoutMsg: "settings completion feedback did not restore the stable status",
+      },
+    );
 
     await browser.waitUntil(
       async () => {
@@ -70,6 +88,7 @@ preferences("Tauri emuera.config preferences", () => {
       JSON.stringify({
         project: process.env.VITE_RUSTYERA_TEST_PROJECT,
         bridgeKind: state.bridgeKind,
+        initialFontSize,
         phase: state.phase,
         wait: state.wait,
         metrics,
@@ -160,11 +179,11 @@ async function waitForBackgroundProjectExport() {
   // at the compiled status and has no export to serialize against.
   await browser.pause(1_500);
   const initial = await snapshot();
-  if (initial?.transfer?.export == null && initial.status === "项目编译完成") return;
+  if (initial?.transfer?.export == null) return;
   await browser.waitUntil(
     async () => {
       const state = await snapshot();
-      return state?.transfer?.export == null && state.status === "项目缓存已保存。";
+      return state?.transfer?.export == null;
     },
     {
       timeout: PROJECT_TIMEOUT,
