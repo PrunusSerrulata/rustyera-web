@@ -3,6 +3,7 @@ import { onMounted, ref } from "vue";
 
 import AboutDialog from "@/components/AboutDialog.vue";
 import AppMenuBar from "@/components/AppMenuBar.vue";
+import CornerNotifications from "@/components/CornerNotifications.vue";
 import DebugDialogs from "@/components/DebugDialogs.vue";
 import FaultDialog from "@/components/FaultDialog.vue";
 import FullProjectExportDialog from "@/components/FullProjectExportDialog.vue";
@@ -12,7 +13,6 @@ import LogDialog from "@/components/LogDialog.vue";
 import OpenProjectDialog from "@/components/OpenProjectDialog.vue";
 import PreferencesDialog from "@/components/PreferencesDialog.vue";
 import TraditionalSaveDialog from "@/components/TraditionalSaveDialog.vue";
-import WarningNotification from "@/components/WarningNotification.vue";
 import { useRuntimeStore } from "@/stores/runtime";
 
 const store = useRuntimeStore();
@@ -55,23 +55,11 @@ onMounted(() => void store.initialize());
       <span>{{ store.projectLoadProgressLabel }}</span>
     </div>
 
-    <div class="corner-notifications">
-      <WarningNotification
-        v-if="store.warningNotification"
-        :key="store.warningNotification.id"
-        :id="store.warningNotification.id"
-        :message="store.warningNotification.message"
-        @close="store.dismissWarningNotification"
-      />
-      <div
-        v-if="store.diagnosisNotification"
-        class="diagnosis-notification"
-        role="status"
-        aria-live="polite"
-      >
-        {{ store.diagnosisNotification }}
-      </div>
-    </div>
+    <CornerNotifications
+      :notifications="store.logNotifications"
+      :diagnosis="store.diagnosisNotification"
+      @dismiss="store.dismissLogNotification"
+    />
 
     <section v-if="!store.projectOpen" class="welcome">
       <h1>RustyEra</h1>

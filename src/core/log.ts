@@ -1,4 +1,11 @@
 export type WebLogLevel = "debug" | "info" | "warning" | "error";
+export type LogNotificationLevel = Extract<WebLogLevel, "warning" | "error">;
+
+export interface LogNotificationState {
+  id: number;
+  level: LogNotificationLevel;
+  message: string;
+}
 
 const labels: Record<WebLogLevel, string> = {
   debug: "DEBUG",

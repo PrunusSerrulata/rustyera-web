@@ -23,6 +23,7 @@ import {
 } from "@/core/debug";
 import { preferredRuntimeLocales, resolveGameTextStyle } from "@/core/gameText";
 import { decodeImageMetadata } from "@/core/imageMetadata";
+import type { LogNotificationState } from "@/core/log";
 import {
   isMessageContinuationWait,
   isMessageSkipWait,
@@ -79,7 +80,7 @@ import { useSystemFontAccess } from "@/stores/systemFontAccess";
 import { transportValue } from "@/stores/runtimeTransport";
 
 type LogEntry = DiagnosisLogEntry & { authoritative: boolean };
-type WarningNotificationState = { id: number; message: string };
+type LogNotificationPolicy = "all" | "errors_only" | "none";
 
 type RuntimeInputIntent =
   | MessageWaitIntent
@@ -215,6 +216,7 @@ export interface StartupTelemetry {
 const DEBUG_VARIABLE_PAGE_LIMIT = 256;
 const DEBUG_VARIABLE_MAX_PAGES = 16;
 const TIME_ADVANCE_INTERVAL_NS = 16_000_000;
+const MAXIMUM_LOG_ENTRIES = 10_000;
 
 export const useRuntimeStore = defineStore("runtime", () => {
   const bridge = platformBridge();
@@ -278,7 +280,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const debugVariableValues = ref<Record<string, string>>({});
   const diagnosisExporting = ref(false);
   const diagnosisNotification = ref("");
-  const warningNotification = ref<WarningNotificationState | null>(null);
+  const logNotifications = shallowReactive<LogNotificationState[]>([]);
   const traditionalSaveDialogMode = ref<"export" | "import" | null>(null);
   const traditionalSaveSlots = ref<TraditionalSaveSlot[]>([]);
   const traditionalSaveImportName = ref("");
@@ -300,7 +302,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let diagnosisState: DiagnosisState | undefined;
   let projectTitleCaptured = false;
   let diagnosisNotificationTimer: number | undefined;
-  let warningNotificationId = 0;
+  let logNotificationId = 0;
   let importBytes: Uint8Array | undefined;
   let importKind: Exclude<RuntimeStartKind, "new_game"> | undefined;
   let traditionalSaveImportBytes: Uint8Array | undefined;
@@ -345,7 +347,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       failStartupTelemetry(error);
       finishProjectLoad();
       fault.value = { code: "frontend", message: String(error) };
-      log("error", String(error));
+      log("error", String(error), false, "none");
     },
   });
 
@@ -679,6 +681,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function handleBatch(batch: PumpBatch): Promise<void> {
     batchMediaDirty = false;
+    const fatalLogIndexes = new Set<number>();
+    for (let index = 1; index < batch.events.length; index += 1) {
+      const event = batch.events[index];
+      const previous = batch.events[index - 1];
+      if (
+        event.channel === "runtime" &&
+        event.message.type === "fault" &&
+        previous.channel === "runtime" &&
+        previous.message.type === "log" &&
+        (previous.message as RuntimeMessage).value.level === "error"
+      )
+        fatalLogIndexes.add(index - 1);
+    }
     for (let index = 0; index < batch.events.length;) {
       const event = batch.events[index];
       if (event.epoch != null) runtimeEpoch.value = event.epoch;
@@ -706,7 +721,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
         continue;
       }
       if (event.channel === "runtime")
-        await handleRuntime(event.message as RuntimeMessage, event.correlationId);
+        await handleRuntime(
+          event.message as RuntimeMessage,
+          event.correlationId,
+          fatalLogIndexes.has(index),
+        );
       else await handleDebug(event.message as any, event.correlationId);
       index += 1;
     }
@@ -730,6 +749,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function handleRuntime(
     message: RuntimeMessage,
     correlationId?: number | bigint,
+    suppressNotification = false,
   ): Promise<void> {
     const value = message.value;
     switch (message.type) {
@@ -756,6 +776,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
             message: formatDiagnostic(diagnostic),
             authoritative: true,
           })),
+          "errors_only",
         );
         updateProjectConfiguration(value.configuration);
         await persistGeneratedConfiguration();
@@ -969,7 +990,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         gameProgressLossConfirmation.value = null;
         failStartupTelemetry(value.message ?? "Runtime fault");
         fault.value = value;
-        log("error", formatRuntimeFault(value), true);
+        log("error", formatRuntimeFault(value), true, "none");
         break;
       case "diagnostic":
         log(value.level ?? "info", formatDiagnostic(value), true);
@@ -984,7 +1005,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "log":
         if (!isRecoverableStaleDebugLog(value.message))
-          log(value.level ?? "info", value.message, true);
+          log(value.level ?? "info", value.message, true, suppressNotification ? "none" : "all");
         break;
       case "command_rejected": {
         if (String(correlationId) === startupStartMessageId)
@@ -1724,7 +1745,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       const message = `错误恢复失败：${String(error)}`;
       fault.value = { code: "frontend.recovery_failed", message };
       status.value = message;
-      log("error", message);
+      log("error", message, false, "none");
     } finally {
       faultActionBusy.value = false;
     }
@@ -2978,27 +2999,46 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
   }
 
-  function log(level: LogEntry["level"], message: string, authoritative = false): void {
-    appendLogEntries([{ timestamp: new Date(), level, message, authoritative }]);
+  function log(
+    level: LogEntry["level"],
+    message: string,
+    authoritative = false,
+    notificationPolicy: LogNotificationPolicy = "all",
+  ): void {
+    appendLogEntries(
+      [{ timestamp: new Date(), level, message, authoritative }],
+      notificationPolicy,
+    );
   }
 
-  function appendLogEntries(entries: LogEntry[]): void {
-    const maximumEntries = 10_000;
+  function appendLogEntries(
+    entries: LogEntry[],
+    notificationPolicy: LogNotificationPolicy = "all",
+  ): void {
     const retained =
-      entries.length > maximumEntries ? entries.slice(entries.length - maximumEntries) : entries;
-    const overflow = Math.max(0, logs.length + retained.length - maximumEntries);
+      entries.length > MAXIMUM_LOG_ENTRIES
+        ? entries.slice(entries.length - MAXIMUM_LOG_ENTRIES)
+        : entries;
+    const overflow = Math.max(0, logs.length + retained.length - MAXIMUM_LOG_ENTRIES);
     if (overflow > 0) logs.splice(0, overflow);
     if (retained.length > 0) logs.push(...retained);
-    for (let index = retained.length - 1; index >= 0; index -= 1) {
-      const entry = retained[index];
-      if (entry?.level !== "warning") continue;
-      warningNotification.value = { id: ++warningNotificationId, message: entry.message };
-      break;
+    if (notificationPolicy === "none") return;
+    for (const entry of retained) {
+      if (entry.level !== "error" && !(entry.level === "warning" && notificationPolicy === "all"))
+        continue;
+      logNotifications.push({
+        id: ++logNotificationId,
+        level: entry.level,
+        message: entry.message,
+      });
     }
+    const notificationOverflow = Math.max(0, logNotifications.length - MAXIMUM_LOG_ENTRIES);
+    if (notificationOverflow > 0) logNotifications.splice(0, notificationOverflow);
   }
 
-  function dismissWarningNotification(id: number): void {
-    if (warningNotification.value?.id === id) warningNotification.value = null;
+  function dismissLogNotification(id: number): void {
+    const index = logNotifications.findIndex((notification) => notification.id === id);
+    if (index >= 0) logNotifications.splice(index, 1);
   }
 
   function beginProjectLoad(message: string): void {
@@ -3278,7 +3318,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     projectFileExportProgressLabel,
     projectFileExportProgressValue,
     diagnosisNotification,
-    warningNotification,
+    logNotifications,
     traditionalSaveDialogMode,
     traditionalSaveSlots,
     traditionalSaveImportName,
@@ -3315,7 +3355,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     dismissFault,
     recoverFromFault,
     exportDiagnosis,
-    dismissWarningNotification,
+    dismissLogNotification,
     exportSnapshot,
     exportProjectFile,
     cancelProjectFileExport,

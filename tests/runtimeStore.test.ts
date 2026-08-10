@@ -361,9 +361,10 @@ describe("runtime store session lifecycle", () => {
     expect(store.logs).toHaveLength(10_000);
     expect(store.logs[0].message).toContain("duplicate 50");
     expect(store.logs.at(-1)?.message).toContain("duplicate 10049");
+    expect(store.logNotifications).toEqual([]);
   });
 
-  it("surfaces warnings and preserves runtime source locations in the log", async () => {
+  it("surfaces ordered non-fatal warnings and errors without duplicating fatal errors", async () => {
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
       events: [
@@ -373,10 +374,24 @@ describe("runtime store session lifecycle", () => {
           message: "legacy behavior",
           source: { relative_path: "ERB/WARN.ERB", line: 4, byte_column: 2 },
         }),
+        runtimeEvent("diagnostic", {
+          code: "runtime.resource",
+          level: "error",
+          message: "recoverable error",
+          source: { relative_path: "ERB/ERROR.ERB", line: 6, byte_column: 1 },
+        }),
         runtimeEvent("command_rejected", {
           code: "invalid_state",
           message: "command failed",
           source: { relative_path: "ERB/COMMAND.ERB", line: 8, byte_column: 0 },
+        }),
+        runtimeEvent("log", {
+          level: "error",
+          message: "recoverable context also mentions division by zero",
+        }),
+        runtimeEvent("log", {
+          level: "error",
+          message: "runtime fault [VmFault]: division by zero",
         }),
         runtimeEvent("fault", {
           code: "vm_fault",
@@ -394,17 +409,131 @@ describe("runtime store session lifecycle", () => {
 
     expect(store.logs.map((entry) => entry.message)).toEqual([
       "ERB/WARN.ERB:5:3: [runtime.compatibility] legacy behavior",
+      "ERB/ERROR.ERB:7:2: [runtime.resource] recoverable error",
       "ERB/COMMAND.ERB:9:1: [invalid_state] command failed",
+      "recoverable context also mentions division by zero",
+      "runtime fault [VmFault]: division by zero",
       "Runtime 故障 [VmFault] [CALCULATE]：division by zero（ERB/FAULT.ERB:12:6）",
     ]);
-    expect(store.warningNotification).toEqual({
-      id: 2,
-      message: "ERB/COMMAND.ERB:9:1: [invalid_state] command failed",
+    expect(store.logNotifications).toEqual([
+      {
+        id: 1,
+        level: "warning",
+        message: "ERB/WARN.ERB:5:3: [runtime.compatibility] legacy behavior",
+      },
+      {
+        id: 2,
+        level: "error",
+        message: "ERB/ERROR.ERB:7:2: [runtime.resource] recoverable error",
+      },
+      {
+        id: 3,
+        level: "warning",
+        message: "ERB/COMMAND.ERB:9:1: [invalid_state] command failed",
+      },
+      {
+        id: 4,
+        level: "error",
+        message: "recoverable context also mentions division by zero",
+      },
+    ]);
+    store.dismissLogNotification(2);
+    expect(store.logNotifications.map((notification) => notification.id)).toEqual([1, 3, 4]);
+    expect(store.logs).toHaveLength(6);
+  });
+
+  it("suppresses compile warnings while surfacing compile errors", async () => {
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", {
+          success: false,
+          payload_required: false,
+          diagnostics: [
+            { code: "compile.warning", level: "warning", message: "compile warning" },
+            { code: "compile.error", level: "error", message: "compile error" },
+          ],
+        }),
+      ],
     });
-    store.dismissWarningNotification(1);
-    expect(store.warningNotification?.id).toBe(2);
-    store.dismissWarningNotification(2);
-    expect(store.warningNotification).toBeNull();
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+
+    expect(store.logs.map((entry) => entry.message)).toEqual([
+      "[compile.warning] compile warning",
+      "[compile.error] compile error",
+    ]);
+    expect(store.logNotifications).toEqual([
+      { id: 1, level: "error", message: "[compile.error] compile error" },
+    ]);
+  });
+
+  it("does not notify for a standalone fatal fault", async () => {
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("fault", { code: "vm_fault", message: "fatal" })],
+    });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+
+    expect(store.fault).toMatchObject({ code: "vm_fault", message: "fatal" });
+    expect(store.logs.at(-1)?.message).toContain("Runtime 故障 [VmFault]");
+    expect(store.logNotifications).toEqual([]);
+  });
+
+  it("bounds pending notifications without deleting retained logs", async () => {
+    const diagnostics = Array.from({ length: 10_005 }, (_, index) => ({
+      code: "compile.error",
+      level: "error",
+      message: `error ${index}`,
+    }));
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", {
+          success: false,
+          payload_required: false,
+          diagnostics,
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+
+    expect(store.logs).toHaveLength(10_000);
+    expect(store.logNotifications).toHaveLength(10_000);
+    expect(store.logs[0].message).toContain("error 5");
+    expect(store.logNotifications[0]?.message).toContain("error 5");
+  });
+
+  it("does not notify when a pump failure opens the fatal dialog", async () => {
+    bridge.pump.mockRejectedValueOnce(new Error("pump failed"));
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.fault).toMatchObject({ code: "frontend", message: "Error: pump failed" });
+    expect(store.logs.at(-1)?.message).toBe("Error: pump failed");
+    expect(store.logNotifications).toEqual([]);
+  });
+
+  it("does not notify when fault recovery opens another fatal dialog", async () => {
+    bridge.submitRuntime.mockRejectedValueOnce(new Error("recovery failed"));
+    const store = useRuntimeStore();
+    store.fault = { code: "vm_fault", message: "original fault" };
+
+    await store.recoverFromFault("title");
+
+    expect(store.fault).toMatchObject({
+      code: "frontend.recovery_failed",
+      message: "错误恢复失败：Error: recovery failed",
+    });
+    expect(store.logs.at(-1)?.message).toBe("错误恢复失败：Error: recovery failed");
+    expect(store.logNotifications).toEqual([]);
   });
 
   it("exposes applicable reraconfig entries and asks Runtime to validate changes", async () => {

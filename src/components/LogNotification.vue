@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from "vue";
 
-const props = defineProps<{ id: number; message: string }>();
+import type { LogNotificationLevel } from "@/core/log";
+
+const props = defineProps<{ id: number; level: LogNotificationLevel; message: string }>();
 const emit = defineEmits<{ close: [id: number] }>();
 
 const dismissAfterMs = 8000;
@@ -27,16 +29,29 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <aside class="warning-notification" role="alert" aria-live="assertive" aria-atomic="true">
+  <aside
+    class="log-notification"
+    :class="level"
+    role="alert"
+    aria-live="assertive"
+    aria-atomic="true"
+  >
     <span
-      class="warning-notification-countdown"
+      class="log-notification-countdown"
       :style="{ animationDuration: `${dismissAfterMs}ms` }"
       aria-hidden="true"
     />
-    <div class="warning-notification-content">
-      <strong>警告</strong>
+    <div class="log-notification-content">
+      <strong>{{ level === "error" ? "错误" : "警告" }}</strong>
       <span>{{ message }}</span>
     </div>
-    <button type="button" aria-label="关闭警告" title="关闭" @click="dismiss">×</button>
+    <button
+      type="button"
+      :aria-label="level === 'error' ? '关闭错误' : '关闭警告'"
+      title="关闭"
+      @click="dismiss"
+    >
+      ×
+    </button>
   </aside>
 </template>
