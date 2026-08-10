@@ -105,8 +105,8 @@ An action has `type`:
 - `assert_layout`: `locator`, optional `relative_to`, and `expect`. It measures production DOM
   boxes and accepts `count`, `visible`, `same_left_within`, `same_top_within`, `no_overlap`,
   `above`/`below` gap ranges (`min`/`max`), `inside.tolerance`, `right_aligned_within`, and
-  `top_aligned_within`/`bottom_aligned_within`. Prefer these relative checks over hard-coded
-  viewport coordinates.
+  `horizontal_centered_within`, `top_aligned_within`/`bottom_aligned_within`. Prefer these relative
+  checks over hard-coded viewport coordinates.
 - `assert_canvas_pixels`: `locator` plus an `expect` subset such as `count`, `width`, `height`, or
   `nontransparent_at_least`. Use it to prove that a generated canvas contains rendered pixels, not
   merely that an empty canvas element has layout dimensions.

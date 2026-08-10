@@ -280,6 +280,35 @@ describe("frontend host and image-line policy", () => {
       "background-color: rgb(1, 2, 3)",
     );
 
+    const bordered = mount(HtmlNode, {
+      props: {
+        node: {
+          type: "element",
+          kind: "division",
+          semantic: {
+            type: "division",
+            x: { unit: "font_height_hundredths", value: 2450 },
+            y: null,
+            width: { unit: "pixels", value: 640 },
+            height: { unit: "pixels", value: 600 },
+            depth: 1,
+            color: null,
+            relative: true,
+            box_model: {
+              border: Array(4).fill({ unit: "pixels", value: 1 }),
+              border_colors: Array(4).fill(0xc0c0c0),
+            },
+          },
+          children: [{ type: "text", text: "portrait" }],
+        },
+      },
+    });
+    const borderedStyle = bordered.get(".html-division-visual").attributes("style");
+    expect(borderedStyle).toContain("left: 294px");
+    expect(borderedStyle).toContain("border-style: solid");
+    expect(borderedStyle).toContain("border-width: 1px");
+    expect(borderedStyle).toContain("border-color: rgb(192, 192, 192)");
+
     for (const semantic of [
       {
         type: "division",
@@ -302,6 +331,24 @@ describe("frontend host and image-line policy", () => {
         color: null,
         relative: true,
         box_model: { padding: [{ unit: "pixels", value: 1 }] },
+      },
+      {
+        type: "division",
+        x: { unit: "pixels", value: 10 },
+        y: { unit: "pixels", value: 20 },
+        width: { unit: "pixels", value: 100 },
+        height: { unit: "pixels", value: 80 },
+        depth: 0,
+        color: null,
+        relative: true,
+        box_model: {
+          margin: [
+            { unit: "pixels", value: 1 },
+            { unit: "pixels", value: 2 },
+            { unit: "pixels", value: 3 },
+            { unit: "pixels", value: 4 },
+          ],
+        },
       },
     ]) {
       const unsupported = mount(HtmlNode, {
@@ -371,8 +418,10 @@ describe("frontend host and image-line policy", () => {
     expect(ambiguous.classes()).toContain("text-layout");
     expect(ambiguous.attributes("data-columns")).toBe("2");
     for (const segment of [ambiguous, sun, heart, greek, cyrillic, mathematical, ascii])
-      expect(segment.attributes("style")).toContain("width: 1em");
-    expect(trailingSpace.attributes("style")).toContain("width: 0em");
+      expect(segment.attributes("style")).toContain("width: 2ch");
+    expect(trailingSpace.attributes("style")).toContain("width: 0ch");
+    for (const segment of [ambiguous, sun, heart, greek, cyrillic, mathematical, ascii])
+      expect(segment.attributes("style")).toContain("vertical-align: top");
   });
 
   it("projects HTML space shapes before positioned images", () => {
@@ -631,6 +680,8 @@ describe("frontend host and image-line policy", () => {
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*line-height:\s*var\(--game-line-height\);/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*white-space:\s*pre;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*overflow-wrap:\s*normal;/s);
+    expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*contain:\s*layout;/s);
+    expect(stylesheet).not.toMatch(/\.game-line\s*\{[^}]*contain:\s*layout paint;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*pointer-events:\s*none;/s);
     expect(stylesheet).toMatch(
       /\.game-line:has\(\.media-image, \.canvas-replay\)[^}]*padding:\s*0;/s,

@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/erarorona",
+  "mode": "fixed",
+  "compiled_cache": false,
+  "clean_saves": true,
+  "seed": 1126218542,
+  "clock": "2026-01-01T00:00:00Z",
+  "viewport": { "width": 1415, "height": 1056 },
+  "actions": [
+    { "type": "drain_void_waits", "maximum": 300 },
+    { "type": "input", "value": 0 },
+    { "type": "drain_void_waits", "maximum": 300 },
+    { "type": "input", "value": 0 },
+    { "type": "input", "value": 999 },
+    { "type": "input", "value": 9 },
+    { "type": "input", "value": 0, "auto_enter": false },
+    {
+      "type": "click",
+      "locator": { "css": ".game-viewport" },
+      "button": "right",
+      "auto_enter": false
+    },
+    {
+      "type": "advance_enter_waits_until",
+      "maximum": 4000,
+      "settle_auto_enter": false,
+      "until": {
+        "locator": {
+          "css": ".game-viewport button:has-text(\"查看能力\")",
+          "nth": -1
+        }
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-viewport" },
+      "fields": ["count", "visible", "computed_style"],
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "computed_style": { "font_family": "\"等距时代黑体 SC\"", "font_size": "16px" }
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".game-viewport button:has-text(\"查看能力\")",
+        "nth": -1
+      },
+      "fields": ["count", "visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    { "type": "input", "value": 50 },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "特质", "exact": false, "nth": -1 },
+      "fields": ["count", "visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "▅", "exact": true },
+      "fields": ["count", "visible"],
+      "expect": { "count": 128, "visible": true }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    { "type": "click", "locator": { "role": "button", "name": "设置…", "exact": true } },
+    { "type": "click", "locator": { "role": "tab", "name": "显示", "exact": true } },
+    { "type": "fill", "locator": { "css": "#setting-FontName" }, "value": "Explex" },
+    { "type": "click", "locator": { "role": "button", "name": "应用", "exact": true } },
+    { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-viewport" },
+      "fields": ["count", "visible", "computed_style"],
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "computed_style": { "font_family": "Explex", "font_size": "16px" }
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "特质", "exact": false, "nth": -1 },
+      "fields": ["count", "visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "▅", "exact": true },
+      "fields": ["count", "visible"],
+      "expect": { "count": 128, "visible": true }
+    }
+  ],
+  "limits": { "max_steps": 120, "timeout_seconds": 900 }
+}

@@ -120,6 +120,14 @@ describe("browser game runner progress policy", () => {
       resolve("tools/runtime-tester/scenarios/erarorona-log-inputs.json"),
       "utf8",
     );
+    const characterScenario = readFileSync(
+      resolve("tools/runtime-tester/scenarios/erarorona-character-layout.json"),
+      "utf8",
+    );
+    const titleScenario = readFileSync(
+      resolve("tools/runtime-tester/scenarios/erafl-title-layout.json"),
+      "utf8",
+    );
 
     expect(runner).toContain('fields.includes("square_grid")');
     expect(runner).toContain('const SHRINE_INTERIOR_EDGE = "║"');
@@ -129,6 +137,14 @@ describe("browser game runner progress policy", () => {
     expect(mapScenario).toContain('"interior_rows": 5');
     expect(mapScenario).toContain('"interior_counts": [1, 1, 1, 1, 1]');
     expect(dialogueScenario).toContain('"dialog_border"');
+    expect(characterScenario).toContain('"text": "特质"');
+    expect(characterScenario).toContain('"count": 128');
+    expect(characterScenario).toContain('"font_family": "\\"等距时代黑体 SC\\""');
+    expect(characterScenario).toContain('"value": "Explex"');
+    expect(characterScenario).toContain('"font_family": "Explex"');
+    expect(runner).toContain("expected.horizontal_centered_within");
+    expect(titleScenario).toContain('"image_loaded": true');
+    expect(titleScenario).toContain('"horizontal_centered_within": 16');
   });
 
   it("starts delayed captures on an absolute five-second cadence", async () => {

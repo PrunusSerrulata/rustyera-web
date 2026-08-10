@@ -356,7 +356,7 @@ select {
   line-height: var(--game-line-height);
   white-space: pre;
   overflow-wrap: normal;
-  contain: layout paint;
+  contain: layout;
   /* Interactive descendants opt back in, so later transparent virtual rows do not
      steal pointer hits from positioned images extending out of an earlier row. */
   pointer-events: none;
@@ -471,7 +471,7 @@ select {
   display: inline-block;
   overflow: hidden;
   font-size: 0;
-  vertical-align: baseline;
+  vertical-align: top;
 }
 .html-division {
   display: inline-block;

@@ -386,6 +386,39 @@ describe("web game test scenario", () => {
     ).resolves.toEqual(expect.objectContaining({ query: expect.any(Object) }));
   });
 
+  it("asserts horizontal centering against a reference box", async () => {
+    const box = (left, width) => ({
+      getBoundingClientRect: () => ({
+        left,
+        top: 0,
+        right: left + width,
+        bottom: 40,
+        width,
+        height: 40,
+      }),
+    });
+    const subject = { evaluateAll: vi.fn((callback) => callback([box(39, 20)])) };
+    const reference = { evaluateAll: vi.fn((callback) => callback([box(0, 100)])) };
+    const page = {
+      locator: vi.fn((selector) => (selector === ".title" ? subject : reference)),
+    };
+    const action = {
+      type: "assert_layout",
+      locator: { css: ".title" },
+      relative_to: { css: ".viewport" },
+      expect: { horizontal_centered_within: 1 },
+    };
+
+    await expect(runAction(page, action)).resolves.toEqual(
+      expect.objectContaining({ query: expect.any(Object) }),
+    );
+
+    subject.evaluateAll.mockImplementationOnce((callback) => callback([box(37, 20)]));
+    await expect(runAction(page, action)).rejects.toThrow(
+      "assertion failed at layout.horizontal_center",
+    );
+  });
+
   it("can measure a text locator by its logical game-line box", async () => {
     const line = {
       getBoundingClientRect: () => ({

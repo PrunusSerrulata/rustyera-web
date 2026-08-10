@@ -38,11 +38,11 @@ const textLayoutStyle = computed(() =>
   props.run.type === "text_layout"
     ? {
         display: "inline-block",
-        // Emuera's console cell is half of the configured font em. CSS `ch` follows
-        // the active font's zero glyph instead, so proportional fonts and fallback
-        // glyphs make otherwise identical runtime columns advance by different pixels.
-        width: `${Math.max(0, Number(props.run.columns) || 0) / 2}em`,
-        verticalAlign: "baseline",
+        // The viewport reports columns from the active font's zero advance. Use the
+        // same physical cell here so fonts whose half-width advance is not exactly
+        // half an em cannot accumulate layout drift across a console row.
+        width: `${Math.max(0, Number(props.run.columns) || 0)}ch`,
+        verticalAlign: "top",
       }
     : undefined,
 );

@@ -701,6 +701,7 @@ function assertLayout(actual, expected) {
       expected.below ||
       expected.no_overlap ||
       expected.inside ||
+      expected.horizontal_centered_within != null ||
       expected.right_aligned_within != null ||
       expected.top_aligned_within != null ||
       expected.bottom_aligned_within != null
@@ -735,6 +736,13 @@ function assertLayout(actual, expected) {
           `relative_to ${JSON.stringify(reference)} by more than ${tolerance}px`,
       );
   }
+  if (expected.horizontal_centered_within != null)
+    assertDistance(
+      "horizontal_center",
+      (first.left + first.right) / 2,
+      (reference.left + reference.right) / 2,
+      expected.horizontal_centered_within,
+    );
   if (expected.right_aligned_within != null)
     assertDistance("right_aligned", first.right, reference.right, expected.right_aligned_within);
   if (expected.top_aligned_within != null)

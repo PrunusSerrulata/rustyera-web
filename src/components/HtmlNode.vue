@@ -114,15 +114,12 @@ const fontStyle = computed(() => {
 });
 const layeredDivisionStyle = computed(() => {
   const semantic = props.node.semantic;
-  if (
-    semantic?.type !== "division" ||
-    semantic.relative !== true ||
-    hasBoxModel(semantic.box_model)
-  )
-    return null;
+  if (semantic?.type !== "division" || semantic.relative !== true) return null;
   const width = projectLength(semantic.width);
   const height = projectLength(semantic.height);
   if (width == null || height == null) return null;
+  const boxModel = projectBoxModel(semantic.box_model);
+  if (boxModel == null) return null;
   const depth = Number(semantic.depth);
   return {
     left: `${projectLength(semantic.x) ?? 0}px`,
@@ -131,6 +128,7 @@ const layeredDivisionStyle = computed(() => {
     height: `${Math.abs(height)}px`,
     zIndex: Number.isFinite(depth) ? depth : undefined,
     backgroundColor: semantic.color == null ? undefined : htmlColor(semantic.color),
+    ...boxModel,
   };
 });
 const positionedHeight = computed(() => positionedMediaHeight(props.node));
@@ -177,11 +175,37 @@ function htmlColor(value: unknown): string {
   return `rgb(${(color >> 16) & 0xff}, ${(color >> 8) & 0xff}, ${color & 0xff})`;
 }
 
-function hasBoxModel(value: any): boolean {
-  if (!value) return false;
-  return [value.border, value.radius, value.margin, value.padding, value.border_colors].some(
-    (part) => part != null,
-  );
+function projectBoxModel(value: any): Record<string, string | undefined> | null {
+  if (!value) return {};
+  // Era's division margin is part of the declared rectangle: it offsets the
+  // content and reduces the available size. A CSS margin on an absolutely
+  // positioned visual would only move it, so keep those divisions on the
+  // ordinary HTML path until that geometry can be projected faithfully.
+  if (value.margin != null) return null;
+  const lengths = (part: unknown): string | undefined | null => {
+    if (part == null) return undefined;
+    if (!Array.isArray(part) || part.length !== 4) return null;
+    const projected = part.map(projectLength);
+    return projected.every((item) => item != null)
+      ? projected.map((item) => `${item}px`).join(" ")
+      : null;
+  };
+  const borderWidth = lengths(value.border);
+  const borderRadius = lengths(value.radius);
+  const padding = lengths(value.padding);
+  if ([borderWidth, borderRadius, padding].includes(null)) return null;
+  let borderColor: string | undefined;
+  if (value.border_colors != null) {
+    if (!Array.isArray(value.border_colors) || value.border_colors.length !== 4) return null;
+    borderColor = value.border_colors.map(htmlColor).join(" ");
+  }
+  return {
+    borderStyle: borderWidth == null ? undefined : "solid",
+    borderWidth: borderWidth ?? undefined,
+    borderColor,
+    borderRadius: borderRadius ?? undefined,
+    padding: padding ?? undefined,
+  };
 }
 
 function positionedMediaHeight(node: any): number | undefined {

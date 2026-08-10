@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/erafl",
+  "mode": "fixed",
+  "compiled_cache": false,
+  "clean_saves": true,
+  "seed": 123456,
+  "clock": "2026-01-01T00:00:00Z",
+  "viewport": { "width": 1415, "height": 1056 },
+  "actions": [
+    { "type": "drain_void_waits", "maximum": 300 },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "eraFL", "exact": true },
+      "fields": ["count", "visible"],
+      "expect": { "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".media-visual.media-sprite" },
+      "fields": ["count", "visible", "image_loaded"],
+      "expect": { "count": 1, "visible": true, "image_loaded": true }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite" },
+      "relative_to": { "css": ".game-viewport" },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "inside": { "tolerance": 0 },
+        "horizontal_centered_within": 16
+      }
+    }
+  ],
+  "limits": { "max_steps": 40, "timeout_seconds": 900 }
+}
