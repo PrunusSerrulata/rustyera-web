@@ -187,12 +187,18 @@ function mediaReplay(resources: any, resourceName: string): Record<string, unkno
   });
 }
 
-function downloadSummary(download?: { name: string; bytes: Uint8Array; size?: number }): unknown {
+function downloadSummary(download?: {
+  name: string;
+  bytes: Uint8Array;
+  size?: number;
+  projectMagic?: Uint8Array;
+}): unknown {
   if (!download) return null;
   return {
     name: download.name,
     size: download.size ?? download.bytes.length,
     magic: [...download.bytes.slice(0, 4)],
+    ...(download.projectMagic ? { projectMagic: [...download.projectMagic] } : {}),
   };
 }
 

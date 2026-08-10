@@ -543,13 +543,19 @@ export class BrowserBridge implements FrontendBridge {
   async saveDiagnosis(name: string, input: DiagnosisArchiveInput): Promise<boolean> {
     if (import.meta.env.VITE_RUSTYERA_TEST === "1") {
       const prefix = new Uint8Array(4);
+      const projectMagic = input.projectFile.slice(0, 8);
       let size = 0;
       await streamDiagnosisArchiveInWorker(input, async (chunk) => {
         const prefixLength = Math.min(chunk.length, prefix.length - Math.min(size, prefix.length));
         if (prefixLength > 0) prefix.set(chunk.subarray(0, prefixLength), size);
         size += chunk.length;
       });
-      (window.__RUSTYERA_TEST_DOWNLOADS__ ??= []).push({ name, bytes: prefix, size });
+      (window.__RUSTYERA_TEST_DOWNLOADS__ ??= []).push({
+        name,
+        bytes: prefix,
+        size,
+        projectMagic,
+      });
       return true;
     }
 

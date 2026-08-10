@@ -12,19 +12,20 @@ describe("diagnosis archive", () => {
     expect(diagnosisArchiveName("eraThe World", exportedAt)).toBe(
       "eraThe World-diagnosis_20260729-140506.tar.zst",
     );
+    const projectFile = new TextEncoder().encode("RERAPROJpayload");
 
     const archive = createDiagnosisArchive({
       projectName: "eraThe World",
       snapshot: Uint8Array.of(1, 2),
       logs: "[14:05:06] INFO  ready\n",
-      compiledArtifact: Uint8Array.of(3, 4),
+      projectFile,
       exportedAt,
     });
 
     expect(unpackTar(decodeRawZstd(archive))).toEqual({
       "runtime.snapshot": [1, 2],
       "runtime.log": [...new TextEncoder().encode("[14:05:06] INFO  ready\n")],
-      "eraThe World.reraproj": [3, 4],
+      "eraThe World.reraproj": [...projectFile],
     });
   });
 
@@ -34,7 +35,7 @@ describe("diagnosis archive", () => {
         projectName: "unsafe/project",
         snapshot: new Uint8Array(512 * 1024),
         logs: "",
-        compiledArtifact: new Uint8Array(512 * 1024),
+        projectFile: new Uint8Array(512 * 1024),
         exportedAt: new Date(2026, 6, 29, 14, 5, 6),
       }),
     ];

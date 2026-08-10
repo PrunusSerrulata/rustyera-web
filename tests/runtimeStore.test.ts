@@ -2190,16 +2190,17 @@ describe("runtime store session lifecycle", () => {
     expect(bridge.submitRuntime).toHaveBeenCalledWith(
       {
         type: "state_export_request",
-        value: { kind: "compiled_project_cache", snapshot_purpose: "normal" },
+        value: { kind: "full_project_file", snapshot_purpose: "normal" },
       },
       undefined,
     );
+    expect(bridge.stageFullProjectManifest).toHaveBeenCalledOnce();
     expect(bridge.saveDiagnosis).toHaveBeenCalledWith(
       "eraThe World-diagnosis_20260729-140506.tar.zst",
       expect.objectContaining({
         projectName: "eraThe World",
         snapshot: Uint8Array.of(1, 2),
-        compiledArtifact: Uint8Array.of(3, 4),
+        projectFile: Uint8Array.of(3, 4),
         logs: expect.stringContaining("INFO  diagnostic detail"),
       }),
     );
@@ -2208,6 +2209,191 @@ describe("runtime store session lifecycle", () => {
     expect(store.diagnosisNotification).toContain("诊断信息已导出");
     await vi.advanceTimersByTimeAsync(5000);
     expect(store.diagnosisNotification).toBe("");
+  });
+
+  it("restores interaction when diagnosis project staging fails", async () => {
+    bridge.stageFullProjectManifest.mockRejectedValueOnce(new Error("scan failed"));
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          runtimeEvent("presentation_snapshot", {
+            revision: 1,
+            title: "diagnosis fixture",
+            history: { logical_lines: [] },
+          }),
+          runtimeEvent("wait_changed", {
+            type: "opened",
+            value: {
+              kind: "integer_value",
+              wait_id: 1,
+              submission_token: { epoch: 2, id: 3 },
+            },
+          }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_export_ready", {
+            result: { type: "ready", transfer: { transfer_id: 11, total_bytes: 2 } },
+          }),
+          runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
+        ],
+      });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+
+    await store.exportDiagnosis();
+    await vi.advanceTimersByTimeAsync(32);
+    await flushMicrotasks();
+
+    expect(store.diagnosisExporting).toBe(false);
+    expect(store.canInteract).toBe(true);
+    expect(store.diagnosisNotification).toContain("scan failed");
+    expect(bridge.cancelProjectFileExport).toHaveBeenCalledOnce();
+    expect(bridge.saveDiagnosis).not.toHaveBeenCalled();
+    expect(bridge.submitRuntime).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "state_export_request",
+        value: { kind: "full_project_file", snapshot_purpose: "normal" },
+      }),
+      undefined,
+    );
+  });
+
+  it("retries only the correlated diagnosis full-project preparation", async () => {
+    let fullProjectRequests = 0;
+    bridge.submitRuntime.mockImplementation(async (...args: unknown[]) => {
+      const message = args[0] as { type?: string; value?: { kind?: string } };
+      if (message.type === "state_export_request" && message.value?.kind === "full_project_file") {
+        fullProjectRequests += 1;
+        return fullProjectRequests === 1 ? 41 : 42;
+      }
+      return 10;
+    });
+    let pumpCalls = 0;
+    bridge.pump.mockImplementation(async () => {
+      pumpCalls += 1;
+      if (pumpCalls === 1)
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+            runtimeEvent("presentation_snapshot", {
+              revision: 1,
+              title: "diagnosis fixture",
+              history: { logical_lines: [] },
+            }),
+            runtimeEvent("wait_changed", {
+              type: "opened",
+              value: {
+                kind: "integer_value",
+                wait_id: 1,
+                submission_token: { epoch: 2, id: 3 },
+              },
+            }),
+          ],
+        };
+      if (pumpCalls === 2)
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("state_export_ready", {
+              result: { type: "ready", transfer: { transfer_id: 11, total_bytes: 2 } },
+            }),
+            runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
+          ],
+        };
+      if (pumpCalls === 3)
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("command_rejected", { message: "full project preparation started" }, 999),
+            runtimeEvent("command_rejected", { message: "full project preparation started" }, 41),
+          ],
+        };
+      if (pumpCalls === 7)
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("state_export_ready", {
+              result: { type: "ready", transfer: { transfer_id: 12, total_bytes: 2 } },
+            }),
+            runtimeEvent("state_export_chunk", { offset: 0, data: [3, 4], complete: true }),
+          ],
+        };
+      return emptyBatch();
+    });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+
+    await store.exportDiagnosis();
+    await vi.advanceTimersByTimeAsync(112);
+    await flushMicrotasks();
+
+    expect(fullProjectRequests).toBe(2);
+    expect(bridge.saveDiagnosis).toHaveBeenCalledOnce();
+    expect(store.diagnosisExporting).toBe(false);
+    expect(store.canInteract).toBe(true);
+  });
+
+  it("cancels both sides when a diagnosis project chunk exceeds its descriptor", async () => {
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          runtimeEvent("presentation_snapshot", {
+            revision: 1,
+            title: "diagnosis fixture",
+            history: { logical_lines: [] },
+          }),
+          runtimeEvent("wait_changed", {
+            type: "opened",
+            value: {
+              kind: "integer_value",
+              wait_id: 1,
+              submission_token: { epoch: 2, id: 3 },
+            },
+          }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_export_ready", {
+            result: { type: "ready", transfer: { transfer_id: 11, total_bytes: 2 } },
+          }),
+          runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
+          runtimeEvent("state_export_ready", {
+            result: { type: "ready", transfer: { transfer_id: 12, total_bytes: 1 } },
+          }),
+          runtimeEvent("state_export_chunk", { offset: 0, data: [3, 4], complete: true }),
+        ],
+      });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+
+    await store.exportDiagnosis();
+    await vi.advanceTimersByTimeAsync(32);
+    await flushMicrotasks();
+
+    expect(store.diagnosisExporting).toBe(false);
+    expect(store.canInteract).toBe(true);
+    expect(bridge.saveDiagnosis).not.toHaveBeenCalled();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      { type: "state_export_cancel", value: { kind: "full_project_file" } },
+      undefined,
+    );
+    expect(bridge.cancelProjectFileExport).toHaveBeenCalledOnce();
   });
 
   it("starts a test new game with the configured deterministic seed", async () => {

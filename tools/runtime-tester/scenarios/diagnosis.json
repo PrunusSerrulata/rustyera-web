@@ -17,7 +17,8 @@
         "diagnosis": { "exporting": false, "canExport": true },
         "lastDownload": {
           "name": "Oracle CSV-diagnosis_20260101-080000.tar.zst",
-          "magic": [40, 181, 47, 253]
+          "magic": [40, 181, 47, 253],
+          "projectMagic": [82, 69, 82, 65, 80, 82, 79, 74]
         }
       }
     },

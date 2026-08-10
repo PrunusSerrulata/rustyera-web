@@ -36,6 +36,7 @@ interface Window {
     name: string;
     bytes: Uint8Array;
     size?: number;
+    projectMagic?: Uint8Array;
   }>;
 }
 
