@@ -357,6 +357,8 @@ describe("frontend host and image-line policy", () => {
       }).get("span");
 
     const ambiguous = render("■");
+    const sun = render("☀");
+    const heart = render("❤");
     const greek = render("γ");
     const cyrillic = render("ф");
     const mathematical = render("∬");
@@ -368,7 +370,7 @@ describe("frontend host and image-line policy", () => {
     }).get("span");
     expect(ambiguous.classes()).toContain("text-layout");
     expect(ambiguous.attributes("data-columns")).toBe("2");
-    for (const segment of [ambiguous, greek, cyrillic, mathematical, ascii])
+    for (const segment of [ambiguous, sun, heart, greek, cyrillic, mathematical, ascii])
       expect(segment.attributes("style")).toContain("width: 1em");
     expect(trailingSpace.attributes("style")).toContain("width: 0em");
   });

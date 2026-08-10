@@ -110,10 +110,11 @@ export const projectSettingsTabs: SettingsTab[] = [
           {
             code: "CharacterWidthMode",
             label: "字符列宽计算模式",
-            description: "选择字符列宽计算策略；当前仅保存此选项。",
+            description:
+              "统一控制游戏格式化和显示列宽；自动模式兼容 Era 的 CJK 字符及 emoji 类图形符号。",
             control: "enum",
             options: [
-              { value: "AUTOMATIC", label: "自动" },
+              { value: "AUTOMATIC", label: "自动（Era 与图形符号兼容）" },
               { value: "AMBIGUOUS_NARROW", label: "模糊字符按窄字符" },
               { value: "AMBIGUOUS_WIDE", label: "模糊字符按宽字符" },
             ],
