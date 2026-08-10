@@ -10,7 +10,7 @@ export function oldestOverflowCount(
   for (let index = notificationHeights.length - 1; index >= 0; index -= 1) {
     const height = Math.max(0, notificationHeights[index] ?? 0);
     const nextHeight = usedHeight + (usedHeight > 0 ? gap : 0) + height;
-    if (nextHeight > availableHeight) break;
+    if (nextHeight >= availableHeight) break;
     usedHeight = nextHeight;
     retained += 1;
   }

@@ -44,7 +44,7 @@ describe("corner notification stack", () => {
 
     expect(dismissed).toEqual([1, 2]);
     expect(items.value.map((item) => item.id)).toEqual([3]);
-    expect(totalStackHeight(wrapper, 8)).toBeLessThanOrEqual(100);
+    expect(totalStackHeight(wrapper, 8)).toBeLessThan(100);
   });
 
   it("includes diagnosis height and every gap when evicting after a viewport shrink", async () => {
@@ -68,7 +68,7 @@ describe("corner notification stack", () => {
     expect(items.value.map((item) => item.id)).toEqual([3]);
   });
 
-  it("does not evict when the stack exactly equals the available height", async () => {
+  it("evicts the oldest entry when the stack exactly equals the available height", async () => {
     mockRects(() => 40, 0);
     vi.stubGlobal("innerHeight", 140);
     const twoNotifications = initialNotifications.slice(0, 2);
@@ -76,8 +76,8 @@ describe("corner notification stack", () => {
 
     await flushFits();
 
-    expect(dismissed).toEqual([]);
-    expect(items.value).toHaveLength(2);
+    expect(dismissed).toEqual([1]);
+    expect(items.value.map((item) => item.id)).toEqual([2]);
   });
 
   it("reflows the lower entries immediately after manual dismissal", async () => {

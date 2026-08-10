@@ -11,8 +11,8 @@ describe("notification viewport layout", () => {
     expect(oldestOverflowCount([40], 20, 8, 300)).toBe(0);
   });
 
-  it("retains a stack whose notifications, diagnosis, and gaps exactly fit", () => {
-    expect(oldestOverflowCount([30, 30], 20, 8, 96)).toBe(0);
+  it("evicts the oldest notification when the stack exactly fills the viewport", () => {
+    expect(oldestOverflowCount([30, 30], 20, 8, 96)).toBe(1);
   });
 
   it("evicts every notification when none can fit beside reserved content", () => {
