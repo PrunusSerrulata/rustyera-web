@@ -189,17 +189,76 @@ select {
   color: #cbd1dd;
   font-size: 0.75rem;
 }
-.diagnosis-notification {
+.corner-notifications {
   position: fixed;
   top: 42px;
   right: 10px;
+  display: grid;
+  gap: 8px;
   max-width: min(32rem, calc(100vw - 20px));
+  z-index: 900;
+}
+.diagnosis-notification {
   padding: 0.65rem 0.85rem;
   border: 1px solid #5279eb;
   border-radius: 6px;
   background: #202b49;
   box-shadow: 0 8px 24px #0009;
-  z-index: 900;
+}
+.warning-notification {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid #b98524;
+  border-radius: 5px;
+  background: #29251b;
+  color: #f5e7c6;
+}
+.warning-notification-countdown {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 3px;
+  background: #e6a936;
+  transform-origin: left;
+  animation-name: warning-notification-countdown;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+.warning-notification-content {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 0.75rem 0.85rem;
+}
+.warning-notification-content strong {
+  color: #ffc857;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+}
+.warning-notification-content span {
+  overflow-wrap: anywhere;
+}
+.warning-notification > button {
+  align-self: start;
+  margin: 0.35rem;
+  padding: 0.1rem 0.38rem;
+  border: 0;
+  background: transparent;
+  color: #d8c9a7;
+  font-size: 1.2rem;
+  line-height: 1;
+}
+.warning-notification > button:hover {
+  background: #ffffff10;
+  color: #fff;
+}
+@keyframes warning-notification-countdown {
+  to {
+    transform: scaleX(0);
+  }
 }
 
 .about-details {

@@ -21,6 +21,10 @@ export function formatRuntimeFault(fault: unknown): string {
   if (source?.relative_path) {
     location = `（${String(source.relative_path)}`;
     if (source.line != null) location += `:${String(source.line)}`;
+    if (source.byte_column != null) {
+      if (source.line == null) location += ":?";
+      location += `:${String(Number(source.byte_column) + 1)}`;
+    }
     location += "）";
   }
   return `Runtime 故障 [${code}]${context}：${String(value.message ?? "")}${location}`;

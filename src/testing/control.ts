@@ -58,6 +58,7 @@ export function installWebTestControl(pinia: Pinia): void {
       audioPlayback: store.testAudioPlaybackState(),
       fault: store.fault,
       logs: store.logs.slice(-100),
+      warningNotification: store.warningNotification,
       debug: {
         enabled: store.debugEnabled,
         singleStepEnabled: store.singleStepEnabled,

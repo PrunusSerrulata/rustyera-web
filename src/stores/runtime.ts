@@ -79,6 +79,7 @@ import { useSystemFontAccess } from "@/stores/systemFontAccess";
 import { transportValue } from "@/stores/runtimeTransport";
 
 type LogEntry = DiagnosisLogEntry & { authoritative: boolean };
+type WarningNotificationState = { id: number; message: string };
 
 type RuntimeInputIntent =
   | MessageWaitIntent
@@ -277,6 +278,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const debugVariableValues = ref<Record<string, string>>({});
   const diagnosisExporting = ref(false);
   const diagnosisNotification = ref("");
+  const warningNotification = ref<WarningNotificationState | null>(null);
   const traditionalSaveDialogMode = ref<"export" | "import" | null>(null);
   const traditionalSaveSlots = ref<TraditionalSaveSlot[]>([]);
   const traditionalSaveImportName = ref("");
@@ -298,6 +300,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let diagnosisState: DiagnosisState | undefined;
   let projectTitleCaptured = false;
   let diagnosisNotificationTimer: number | undefined;
+  let warningNotificationId = 0;
   let importBytes: Uint8Array | undefined;
   let importKind: Exclude<RuntimeStartKind, "new_game"> | undefined;
   let traditionalSaveImportBytes: Uint8Array | undefined;
@@ -966,10 +969,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
         gameProgressLossConfirmation.value = null;
         failStartupTelemetry(value.message ?? "Runtime fault");
         fault.value = value;
-        log("error", value.message ?? "Runtime fault", true);
+        log("error", formatRuntimeFault(value), true);
         break;
       case "diagnostic":
-        log(value.level ?? "info", `[${value.code}] ${value.message}`, true);
+        log(value.level ?? "info", formatDiagnostic(value), true);
         if (
           value.code === "runtime.compiled_cache_ready" &&
           (exportState?.kind === "compiled_cache" || exportState?.kind === "diagnosis_artifact") &&
@@ -1012,8 +1015,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           pendingGameInput.value = undefined;
         }
         if (pendingInputUndo.value?.messageId === correlation) pendingInputUndo.value = undefined;
-        if (!staleProjection && !willRetryInput)
-          log("warning", value.message ?? "Runtime 拒绝了命令", true);
+        if (!staleProjection && !willRetryInput) log("warning", formatDiagnostic(value), true);
         rejectPendingConfiguration(correlationId, value.message ?? "Runtime 拒绝了命令");
         const exportRejection = String(value.message ?? "");
         const activeExport = exportState;
@@ -2987,6 +2989,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const overflow = Math.max(0, logs.length + retained.length - maximumEntries);
     if (overflow > 0) logs.splice(0, overflow);
     if (retained.length > 0) logs.push(...retained);
+    for (let index = retained.length - 1; index >= 0; index -= 1) {
+      const entry = retained[index];
+      if (entry?.level !== "warning") continue;
+      warningNotification.value = { id: ++warningNotificationId, message: entry.message };
+      break;
+    }
+  }
+
+  function dismissWarningNotification(id: number): void {
+    if (warningNotification.value?.id === id) warningNotification.value = null;
   }
 
   function beginProjectLoad(message: string): void {
@@ -3266,6 +3278,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     projectFileExportProgressLabel,
     projectFileExportProgressValue,
     diagnosisNotification,
+    warningNotification,
     traditionalSaveDialogMode,
     traditionalSaveSlots,
     traditionalSaveImportName,
@@ -3302,6 +3315,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     dismissFault,
     recoverFromFault,
     exportDiagnosis,
+    dismissWarningNotification,
     exportSnapshot,
     exportProjectFile,
     cancelProjectFileExport,

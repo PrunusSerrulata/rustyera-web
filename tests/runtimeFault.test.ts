@@ -14,11 +14,12 @@ describe("runtime fault text", () => {
           source: {
             relative_path: "ERB/コマンド関連/COMF/COMF60 正常位.ERB",
             line: 349,
+            byte_column: 17,
           },
         },
       }),
     ).toBe(
-      "Runtime 故障 [VmFault] [CAN_COM60]：an input command cannot execute while user SKIPDISP is active; wrap it in NOSKIP/ENDNOSKIP（ERB/コマンド関連/COMF/COMF60 正常位.ERB:349）",
+      "Runtime 故障 [VmFault] [CAN_COM60]：an input command cannot execute while user SKIPDISP is active; wrap it in NOSKIP/ENDNOSKIP（ERB/コマンド関連/COMF/COMF60 正常位.ERB:349:18）",
     );
   });
 });

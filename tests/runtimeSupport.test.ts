@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   concatenateChunks,
+  formatDiagnostic,
   formatDiagnosisLogs,
   formatProjectProgress,
   saveSlotFileName,
@@ -9,6 +10,16 @@ import {
 } from "@/core/runtimeSupport";
 
 describe("runtime support", () => {
+  it("keeps unknown diagnostic positions distinct from the first line and column", () => {
+    expect(
+      formatDiagnostic({
+        code: "runtime.warning",
+        message: "position unavailable",
+        source: { relative_path: "ERB/UNKNOWN.ERB" },
+      }),
+    ).toBe("ERB/UNKNOWN.ERB:?:?: [runtime.warning] position unavailable");
+  });
+
   it("preserves project progress labels and clamps completed work", () => {
     expect(formatProjectProgress({ stage: "scanning", completed: 0, total: 0 })).toBe(
       "正在枚举项目文件…",

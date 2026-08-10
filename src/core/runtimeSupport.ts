@@ -79,9 +79,12 @@ export function formatDiagnosisLogs(entries: DiagnosisLogEntry[]): string {
 
 export function formatDiagnostic(value: any): string {
   const source = value.source;
-  return source
-    ? `${source.relative_path}:${Number(source.line ?? 0) + 1}:${Number(source.byte_column ?? 0) + 1}: [${value.code}] ${value.message}`
-    : `[${value.code}] ${value.message}`;
+  const detail =
+    value.code == null ? String(value.message ?? "") : `[${value.code}] ${value.message}`;
+  if (!source) return detail;
+  const line = source.line == null ? "?" : String(Number(source.line) + 1);
+  const column = source.byte_column == null ? "?" : String(Number(source.byte_column) + 1);
+  return `${source.relative_path}:${line}:${column}: ${detail}`;
 }
 
 export function snapshotFileName(now = new Date()): string {

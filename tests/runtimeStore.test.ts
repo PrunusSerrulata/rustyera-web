@@ -363,6 +363,50 @@ describe("runtime store session lifecycle", () => {
     expect(store.logs.at(-1)?.message).toContain("duplicate 10049");
   });
 
+  it("surfaces warnings and preserves runtime source locations in the log", async () => {
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("diagnostic", {
+          code: "runtime.compatibility",
+          level: "warning",
+          message: "legacy behavior",
+          source: { relative_path: "ERB/WARN.ERB", line: 4, byte_column: 2 },
+        }),
+        runtimeEvent("command_rejected", {
+          code: "invalid_state",
+          message: "command failed",
+          source: { relative_path: "ERB/COMMAND.ERB", line: 8, byte_column: 0 },
+        }),
+        runtimeEvent("fault", {
+          code: "vm_fault",
+          message: "division by zero",
+          origin: {
+            function: "CALCULATE",
+            source: { relative_path: "ERB/FAULT.ERB", line: 12, byte_column: 5 },
+          },
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+
+    expect(store.logs.map((entry) => entry.message)).toEqual([
+      "ERB/WARN.ERB:5:3: [runtime.compatibility] legacy behavior",
+      "ERB/COMMAND.ERB:9:1: [invalid_state] command failed",
+      "Runtime 故障 [VmFault] [CALCULATE]：division by zero（ERB/FAULT.ERB:12:6）",
+    ]);
+    expect(store.warningNotification).toEqual({
+      id: 2,
+      message: "ERB/COMMAND.ERB:9:1: [invalid_state] command failed",
+    });
+    store.dismissWarningNotification(1);
+    expect(store.warningNotification?.id).toBe(2);
+    store.dismissWarningNotification(2);
+    expect(store.warningNotification).toBeNull();
+  });
+
   it("exposes applicable reraconfig entries and asks Runtime to validate changes", async () => {
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
