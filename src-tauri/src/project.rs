@@ -325,17 +325,18 @@ impl ProjectHost {
             .find(|file| file.relative_path.eq_ignore_ascii_case("reraconfig.toml"))
             .map_or("reraconfig.toml", |file| file.relative_path.as_str());
         let target = self.root.join(relative_path);
-        let current_digest = match normalized_file_bytes(&target, FileCategory::Configuration) {
-            Ok(bytes) => {
-                let text = String::from_utf8(bytes)
-                    .map_err(|_| "reraconfig.toml is not valid UTF-8".to_owned())?;
-                blake3::hash(normalize_configuration_text(&text).as_bytes())
-                    .as_bytes()
-                    .to_vec()
-            }
-            Err(_) if !target.exists() => Vec::new(),
-            Err(error) => return Err(error),
-        };
+        let current_digest =
+            match normalized_file_bytes(&target, relative_path, FileCategory::Configuration) {
+                Ok(bytes) => {
+                    let text = String::from_utf8(bytes)
+                        .map_err(|_| "reraconfig.toml is not valid UTF-8".to_owned())?;
+                    blake3::hash(normalize_configuration_text(&text).as_bytes())
+                        .as_bytes()
+                        .to_vec()
+                }
+                Err(_) if !target.exists() => Vec::new(),
+                Err(error) => return Err(error),
+            };
         let requested_digest = blake3::hash(
             contents
                 .replace("\r\n", "\n")
@@ -660,27 +661,86 @@ fn relative_path(root: &Path, path: &Path) -> Result<String, String> {
         .collect())
 }
 
-fn normalized_file_bytes(path: &Path, category: FileCategory) -> Result<Vec<u8>, String> {
+fn normalized_file_bytes(
+    path: &Path,
+    relative_path: &str,
+    category: FileCategory,
+) -> Result<Vec<u8>, String> {
     let bytes =
         fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     if category == FileCategory::Resource {
         return Ok(bytes);
     }
-    decode_text_for_path(path, &bytes)
+    normalized_project_text(relative_path, &bytes, category)
         .map(String::into_bytes)
         .ok_or_else(|| format!("{} is not valid UTF-8, Windows-31J, or GBK", path.display()))
 }
 
-fn decode_text_for_path(path: &Path, bytes: &[u8]) -> Option<String> {
-    if path
-        .file_name()
-        .is_some_and(|name| name.eq_ignore_ascii_case("reraconfig.toml"))
-    {
-        return std::str::from_utf8(bytes)
-            .ok()
-            .map(|text| text.strip_prefix('\u{feff}').unwrap_or(text).to_owned());
+fn normalize_resource_manifest(text: &str) -> String {
+    let mut normalized = String::with_capacity(text.len());
+    let mut start = 0;
+    while start < text.len() {
+        let ending_start = text[start..]
+            .char_indices()
+            .find_map(|(offset, value)| matches!(value, '\r' | '\n').then_some(start + offset))
+            .unwrap_or(text.len());
+        let ending_end = if text[ending_start..].starts_with("\r\n") {
+            ending_start + 2
+        } else if ending_start < text.len() {
+            ending_start + 1
+        } else {
+            ending_start
+        };
+        normalized.push_str(&normalize_resource_manifest_line(
+            &text[start..ending_start],
+        ));
+        normalized.push_str(&text[ending_start..ending_end]);
+        start = ending_end;
     }
-    decode_project_text(bytes)
+    normalized
+}
+
+fn normalize_resource_manifest_line(line: &str) -> String {
+    let mut fields = line.split(',').map(str::to_owned).collect::<Vec<_>>();
+    let replacement = fields.get(1).and_then(|value| {
+        let trimmed = value.trim_matches([' ', '\t']);
+        if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("anime") {
+            let leading_bytes = value.len() - value.trim_start_matches([' ', '\t']).len();
+            let trailing_start = value.trim_end_matches([' ', '\t']).len();
+            let path = trimmed.nfc().collect::<String>();
+            Some(format!(
+                "{}{}{}",
+                &value[..leading_bytes],
+                path,
+                &value[trailing_start..]
+            ))
+        } else {
+            None
+        }
+    });
+    if let Some(replacement) = replacement {
+        fields[1] = replacement;
+    }
+    fields.join(",")
+}
+
+fn normalized_project_text(
+    relative_path: &str,
+    bytes: &[u8],
+    category: FileCategory,
+) -> Option<String> {
+    let text = if relative_path.eq_ignore_ascii_case("reraconfig.toml") {
+        std::str::from_utf8(bytes)
+            .ok()
+            .map(|text| text.strip_prefix('\u{feff}').unwrap_or(text).to_owned())
+    } else {
+        decode_project_text(bytes)
+    }?;
+    Some(if category == FileCategory::ResourceManifest {
+        normalize_resource_manifest(&text)
+    } else {
+        text
+    })
 }
 
 fn decode_project_text(bytes: &[u8]) -> Option<String> {
@@ -873,7 +933,7 @@ fn read_file(root: &Path, path: &Path, category: FileCategory) -> Result<Submitt
         let content_hash = blake3::hash(&bytes);
         (FilePayload::Bytes(ProtocolBytes::new(bytes)), content_hash)
     } else {
-        let text = decode_text_for_path(path, &bytes).ok_or_else(|| {
+        let text = normalized_project_text(&relative_path, &bytes, category).ok_or_else(|| {
             if relative_path.eq_ignore_ascii_case("reraconfig.toml") {
                 format!("{relative_path} is not valid UTF-8")
             } else {
@@ -943,6 +1003,99 @@ mod tests {
         assert_eq!(
             classify(root, &root.join("sound/cover.png"), &canonical).unwrap(),
             None
+        );
+    }
+
+    #[test]
+    fn resource_manifest_paths_are_normalized_to_nfc() {
+        let directory = tempfile::tempdir().unwrap();
+        let resources = directory.path().join("resources");
+        fs::create_dir(&resources).unwrap();
+        fs::write(
+            resources.join("sprites.csv"),
+            "FACE, e\u{301}.png \r\nANIME,anime\n",
+        )
+        .unwrap();
+
+        let project = ProjectHost::scan_with_progress(directory.path(), 1, None).unwrap();
+        let manifest = project.manifest.as_ref().unwrap();
+        let resource_manifest = manifest
+            .files
+            .iter()
+            .find(|file| file.relative_path == "resources/sprites.csv")
+            .unwrap();
+
+        assert!(matches!(
+            &resource_manifest.payload,
+            FilePayload::Utf8(text) if text == "FACE, \u{e9}.png \r\nANIME,anime\n"
+        ));
+    }
+
+    #[test]
+    fn project_scan_matches_the_cross_frontend_cache_contract() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let resources = root.join("resources");
+        let sound = root.join("sound");
+        let nested = root.join("sub");
+        let private = root.join(".RUSTYERA/cache");
+        for path in [&resources, &sound, &nested, &private] {
+            fs::create_dir_all(path).unwrap();
+        }
+        let decomposed = "e\u{301}.png";
+        fs::write(resources.join(decomposed), b"png").unwrap();
+        fs::write(
+            resources.join("sprites.csv"),
+            format!(
+                "FACE, \t{decomposed} \t\r\nANIME, \tAnImE\t \nNOTE,\u{a0}{decomposed}\u{a0}\rMETA,a\u{85}b"
+            ),
+        )
+        .unwrap();
+        fs::write(sound.join("theme.MP3"), b"audio").unwrap();
+        fs::write(sound.join("ignored.erb"), b"@IGNORED").unwrap();
+        fs::write(private.join("ignored.erb"), b"@PRIVATE").unwrap();
+        fs::write(root.join("reraconfig.toml"), b"[display]\nfont_size = 20\n").unwrap();
+        fs::write(nested.join("reraconfig.toml"), b"\x82\xa0\n").unwrap();
+        fs::write(root.join("\u{e9}.erb"), b"@ACCENTED\nRETURN\n").unwrap();
+        fs::write(root.join("z.erb"), b"@ASCII\nRETURN\n").unwrap();
+
+        let project = ProjectHost::scan_with_progress(root, 1, None).unwrap();
+        let manifest = project.manifest.as_ref().unwrap();
+
+        assert_eq!(
+            manifest
+                .files
+                .iter()
+                .map(|file| (file.relative_path.as_str(), file.category))
+                .collect::<Vec<_>>(),
+            vec![
+                ("reraconfig.toml", FileCategory::Configuration),
+                ("resources/sprites.csv", FileCategory::ResourceManifest),
+                ("resources/\u{e9}.png", FileCategory::Resource),
+                ("sound/theme.MP3", FileCategory::Resource),
+                ("sub/reraconfig.toml", FileCategory::Configuration),
+                ("z.erb", FileCategory::Erb),
+                ("\u{e9}.erb", FileCategory::Erb),
+            ]
+        );
+        assert!(matches!(
+            &manifest.files[1].payload,
+            FilePayload::Utf8(text)
+                if text == "FACE, \t\u{e9}.png \t\r\nANIME, \tAnImE\t \nNOTE,\u{a0}\u{e9}.png\u{a0}\rMETA,a\u{85}b"
+        ));
+        assert!(matches!(
+            &manifest.files[4].payload,
+            FilePayload::Utf8(text) if text == "\u{3042}\n"
+        ));
+        let digest: [u8; 32] = project
+            .identity()
+            .source_digest
+            .as_slice()
+            .try_into()
+            .unwrap();
+        assert_eq!(
+            encode_hash(&digest),
+            "50fbe8e1e7ad5492e29fab4b229ad35d31ccde47f9c078df86c1ee5c30ed7255"
         );
     }
 

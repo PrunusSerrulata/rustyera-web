@@ -781,7 +781,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           }
           if (!projectUsedCompiledCache) scheduleCompiledCacheExport(1000);
         } else if (value.payload_required) {
-          showProjectLoadTransition("项目文件缓存未命中，正在读取项目源码…");
+          showProjectLoadTransition("项目缓存未命中，正在读取项目源码…");
           projectUsedCompiledCache = false;
           if (startupTelemetry.value) {
             startupTelemetry.value.scenario = "cold";
@@ -1949,7 +1949,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       chunks: [],
       received: 0,
     };
-    status.value = "正在后台生成项目文件…";
+    status.value = "正在后台生成项目缓存，可继续游戏，但游戏运行和响应速度可能暂时受到影响…";
     await requestCompiledCacheExport();
   }
 
@@ -1959,7 +1959,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       compiledCacheTimer = undefined;
       void beginCompiledCacheExport().catch((error) => {
         exportState = undefined;
-        log("warning", `项目文件生成失败：${String(error)}`);
+        log("warning", `项目缓存生成失败：${String(error)}`);
       });
     }, delayMs);
   }
@@ -2133,9 +2133,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     try {
       await bridge.cancelCompiledCacheExport();
     } catch (cancelError) {
-      log("warning", `清理项目文件缓存失败：${String(cancelError)}`);
+      log("warning", `清理项目缓存失败：${String(cancelError)}`);
     }
-    log("warning", `项目文件生成失败：${String(error)}`);
+    log("warning", `项目缓存生成失败：${String(error)}`);
   }
 
   async function cancelCompiledCacheExport(): Promise<void> {
@@ -2203,7 +2203,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       } else if (completed.kind === "project_file") {
         await finishProjectFileExport("success", `已导出 ${completed.name}`);
       } else if (completed.kind === "compiled_cache") {
-        status.value = `已导出 ${completed.name}`;
+        status.value = "项目缓存已保存。";
         exportState = undefined;
         if (diagnosisExporting.value) await startDiagnosisSnapshot();
       } else if (completed.kind === "diagnosis_snapshot") {
@@ -3008,7 +3008,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       return;
     projectProgress.value = undefined;
     status.value = cacheImported
-      ? "项目文件缓存命中，正在加载缓存…"
+      ? "项目缓存命中，正在加载缓存…"
       : "项目文件读取完成，正在准备编译与校验…";
   }
 

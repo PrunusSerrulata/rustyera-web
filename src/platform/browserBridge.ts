@@ -220,7 +220,7 @@ export class BrowserBridge implements FrontendBridge {
     const embedded = this.project.embeddedManifest();
     if (embedded) {
       const bytes = await this.project.readCompiledCache();
-      if (!bytes) throw new Error("项目文件缓存缺失");
+      if (!bytes) throw new Error("项目缓存缺失");
       const started = performance.now();
       await this.worker.callWithTransfer(
         "loadProjectWithCompiledCache",

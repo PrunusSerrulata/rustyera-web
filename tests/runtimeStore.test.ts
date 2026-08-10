@@ -1255,6 +1255,9 @@ describe("runtime store session lifecycle", () => {
     const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
 
     expect(bridge.writeCompiledCacheChunk).toHaveBeenCalledOnce();
+    expect(store.status).toBe(
+      "正在后台生成项目缓存，可继续游戏，但游戏运行和响应速度可能暂时受到影响…",
+    );
     expect(
       bridge.submitRuntime.mock.calls.filter(
         ([message]: unknown[]) =>
@@ -1875,7 +1878,7 @@ describe("runtime store session lifecycle", () => {
 
     expect(bridge.cancelCompiledCacheExport).toHaveBeenCalledOnce();
     expect(store.testTransferState().export).toBeNull();
-    expect(store.logs.at(-1)?.message).toContain("项目文件生成失败");
+    expect(store.logs.at(-1)?.message).toContain("项目缓存生成失败");
     expect(
       bridge.submitRuntime.mock.calls.filter(
         ([message]: unknown[]) =>
@@ -2294,7 +2297,7 @@ describe("runtime store session lifecycle", () => {
     expect(store.projectOpen).toBe(true);
     expect(store.projectLoading).toBe(true);
     expect(store.canOpenProject).toBe(false);
-    expect(store.projectLoadProgressLabel).toBe("项目文件缓存命中，正在加载缓存…");
+    expect(store.projectLoadProgressLabel).toBe("项目缓存命中，正在加载缓存…");
     expect(store.projectLoadProgressValue).toBeUndefined();
 
     bridge.projectProgressListener?.({ stage: "compiling", completed: 7, total: 10 });

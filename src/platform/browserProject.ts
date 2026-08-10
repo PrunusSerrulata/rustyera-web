@@ -90,7 +90,7 @@ export class BrowserProject {
     for (const file of manifest.files) {
       if (file.category === "resource" && file.payload.type === "bytes") {
         this.embeddedResources.set(
-          safePath(file.relative_path).toLocaleLowerCase(),
+          safePath(file.relative_path).toLowerCase(),
           new Uint8Array(file.payload.value as Uint8Array),
         );
       }
@@ -116,7 +116,7 @@ export class BrowserProject {
     this.importedSnapshot = true;
     this.canonicalPaths.clear();
     for (const file of manifest.files) {
-      this.canonicalPaths.set(file.relative_path.toLocaleLowerCase(), file.relative_path);
+      this.canonicalPaths.set(file.relative_path.toLowerCase(), file.relative_path);
     }
     this.manifestValue = manifest;
   }
@@ -208,7 +208,7 @@ export class BrowserProject {
     const existing = manifest.files.find(
       (file) =>
         file.category === "configuration" &&
-        file.relative_path.replaceAll("\\", "/").toLocaleLowerCase() === "reraconfig.toml",
+        file.relative_path.replaceAll("\\", "/").toLowerCase() === "reraconfig.toml",
     );
     if (existing) {
       existing.payload = { type: "utf8", value: source };
@@ -233,8 +233,8 @@ export class BrowserProject {
     progress?.(0, 0);
     const topLevel = new Set<string>();
     for await (const [name, handle] of this.root.entries()) {
-      if (handle.kind === "directory" && name.toLocaleLowerCase() !== ".rustyera") {
-        topLevel.add(name.toLocaleLowerCase());
+      if (handle.kind === "directory" && name.toLowerCase() !== ".rustyera") {
+        topLevel.add(name.toLowerCase());
       }
     }
     const files: ScannedFile[] = [];
@@ -242,9 +242,7 @@ export class BrowserProject {
     await this.walk(this.root, "", topLevel, files, reads, preloaded);
     progress?.(0, reads.length);
     await runBounded(reads, 8, progress, signal);
-    files.sort((left, right) =>
-      left.relative_path.localeCompare(right.relative_path, undefined, { sensitivity: "base" }),
-    );
+    files.sort(compareScannedFiles);
     this.manifestValue = { project_revision: this.revision, files };
     this.pendingSnapshot = undefined;
     return this.manifestValue;
@@ -255,8 +253,8 @@ export class BrowserProject {
     progress?.(0, 0);
     const topLevel = new Set<string>();
     for await (const [name, handle] of this.root.entries()) {
-      if (handle.kind === "directory" && name.toLocaleLowerCase() !== ".rustyera") {
-        topLevel.add(name.toLocaleLowerCase());
+      if (handle.kind === "directory" && name.toLowerCase() !== ".rustyera") {
+        topLevel.add(name.toLowerCase());
       }
     }
     const candidates: Array<{
@@ -332,8 +330,8 @@ export class BrowserProject {
     this.files.clear();
     const topLevel = new Set<string>();
     for await (const [name, handle] of this.root.entries()) {
-      if (handle.kind === "directory" && name.toLocaleLowerCase() !== ".rustyera") {
-        topLevel.add(name.toLocaleLowerCase());
+      if (handle.kind === "directory" && name.toLowerCase() !== ".rustyera") {
+        topLevel.add(name.toLowerCase());
       }
     }
     const current: Array<{
@@ -455,7 +453,7 @@ export class BrowserProject {
 
   async readResource(relativePath: string): Promise<Uint8Array> {
     const normalized = safePath(relativePath);
-    const key = normalized.toLocaleLowerCase();
+    const key = normalized.toLowerCase();
     const embedded = this.embeddedResources.get(key);
     if (embedded) return new Uint8Array(embedded);
     const handle =
@@ -470,7 +468,7 @@ export class BrowserProject {
 
   async readResourcePrefix(relativePath: string, maximumBytes: number): Promise<Uint8Array> {
     const normalized = safePath(relativePath);
-    const key = normalized.toLocaleLowerCase();
+    const key = normalized.toLowerCase();
     const embedded = this.embeddedResources.get(key);
     if (embedded) return embedded.slice(0, maximumBytes);
     const handle =
@@ -591,7 +589,7 @@ export class BrowserProject {
     preloaded?: ReadonlyMap<string, ScannedFile>,
   ): Promise<void> {
     for await (const [name, handle] of directory.entries()) {
-      if (name.toLocaleLowerCase() === ".rustyera") continue;
+      if (name.toLowerCase() === ".rustyera") continue;
       const relative = `${prefix}${name}`.normalize("NFC");
       if (handle.kind === "directory") {
         await this.walk(handle, `${relative}/`, topLevel, output, reads, preloaded);
@@ -599,7 +597,7 @@ export class BrowserProject {
       }
       const category = classify(relative, topLevel);
       if (!category) continue;
-      this.files.set(relative.toLocaleLowerCase(), handle);
+      this.files.set(relative.toLowerCase(), handle);
       const prepared = preloaded?.get(relative);
       if (prepared) {
         output.push(prepared);
@@ -624,7 +622,7 @@ export class BrowserProject {
     }>,
   ): Promise<void> {
     for await (const [name, handle] of directory.entries()) {
-      if (name.toLocaleLowerCase() === ".rustyera") continue;
+      if (name.toLowerCase() === ".rustyera") continue;
       const relativePath = `${prefix}${name}`.normalize("NFC");
       if (handle.kind === "directory") {
         await this.walkHandles(handle, `${relativePath}/`, topLevel, output);
@@ -632,7 +630,7 @@ export class BrowserProject {
       }
       const category = classify(relativePath, topLevel);
       if (!category) continue;
-      this.files.set(relativePath.toLocaleLowerCase(), handle);
+      this.files.set(relativePath.toLowerCase(), handle);
       output.push({ relativePath, category, handle });
     }
   }
@@ -758,7 +756,25 @@ function compareScannedFiles(left: ScannedFile, right: ScannedFile): number {
 }
 
 function comparePaths(left: string, right: string): number {
-  return left.localeCompare(right, undefined, { sensitivity: "base" });
+  return (
+    compareCodePoints(left.toLowerCase(), right.toLowerCase()) || compareCodePoints(left, right)
+  );
+}
+
+function compareCodePoints(left: string, right: string): number {
+  const leftPoints = left[Symbol.iterator]();
+  const rightPoints = right[Symbol.iterator]();
+  while (true) {
+    const leftItem = leftPoints.next();
+    const rightItem = rightPoints.next();
+    if (leftItem.done || rightItem.done) {
+      if (leftItem.done === rightItem.done) return 0;
+      return leftItem.done ? -1 : 1;
+    }
+    const leftPoint = leftItem.value.codePointAt(0)!;
+    const rightPoint = rightItem.value.codePointAt(0)!;
+    if (leftPoint !== rightPoint) return leftPoint < rightPoint ? -1 : 1;
+  }
 }
 
 function decodeHex(value: string): Uint8Array {
@@ -798,7 +814,7 @@ function sourceIndexesEqual(
         isBrowserSourceIndexEntry(previous) &&
         previous.category === entry.category &&
         previous.signature === entry.signature &&
-        previous.hash.toLocaleLowerCase() === entry.hash.toLocaleLowerCase() &&
+        previous.hash.toLowerCase() === entry.hash.toLowerCase() &&
         previous.size === entry.size
       );
     })
@@ -815,7 +831,7 @@ export function scanBrowserProjectFile(
   topLevel: ReadonlySet<string>,
 ): ScannedFile | undefined {
   const relative = safePath(relativePath);
-  if (relative.split("/", 1)[0]?.toLocaleLowerCase() === ".rustyera") return undefined;
+  if (relative.split("/", 1)[0]?.toLowerCase() === ".rustyera") return undefined;
   const category = classify(relative, topLevel);
   if (!category) return undefined;
   if (category === "resource") {
@@ -878,7 +894,7 @@ function throwIfAborted(signal?: AbortSignal): void {
 }
 
 export function decodeProjectSource(bytes: Uint8Array, relativePath: string): string {
-  if (relativePath.replaceAll("\\", "/").toLocaleLowerCase() === "reraconfig.toml") {
+  if (relativePath.replaceAll("\\", "/").toLowerCase() === "reraconfig.toml") {
     try {
       return new TextDecoder("utf-8", { fatal: true }).decode(bytes).replace(/^\uFEFF/, "");
     } catch {
@@ -908,10 +924,11 @@ export function normalizeResourceManifest(text: string): string {
     if (!body) return ending;
     const fields = body.split(",");
     const value = fields[1];
-    if (value?.trim() && value.trim().toLocaleLowerCase() !== "anime") {
-      const leading = value.slice(0, value.length - value.trimStart().length);
-      const trailing = value.slice(value.trimEnd().length);
-      fields[1] = `${leading}${value.trim().normalize("NFC")}${trailing}`;
+    const stripped = value?.replace(/^[ \t]+|[ \t]+$/g, "") ?? "";
+    if (value && stripped && stripped.toLowerCase() !== "anime") {
+      const leading = value.match(/^[ \t]*/)?.[0] ?? "";
+      const trailing = value.match(/[ \t]*$/)?.[0] ?? "";
+      fields[1] = `${leading}${stripped.normalize("NFC")}${trailing}`;
     }
     return `${fields.join(",")}${ending}`;
   });
@@ -930,9 +947,9 @@ export function storageDirectoryName(namespace: string): string {
 
 function classify(path: string, roots: ReadonlySet<string>): string | undefined {
   const parts = path.split("/");
-  const first = parts[0].toLocaleLowerCase();
-  const suffix = parts.at(-1)?.split(".").at(-1)?.toLocaleLowerCase() ?? "";
-  const name = parts.at(-1)?.toLocaleLowerCase() ?? "";
+  const first = parts[0].toLowerCase();
+  const suffix = parts.at(-1)?.split(".").at(-1)?.toLowerCase() ?? "";
+  const name = parts.at(-1)?.toLowerCase() ?? "";
   if (name === "reraconfig.toml" || name === "setting.json") return "configuration";
   if (first === "resources") {
     if (suffix === "csv") return "resource_manifest";

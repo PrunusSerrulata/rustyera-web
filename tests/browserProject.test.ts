@@ -23,6 +23,45 @@ function deferred<T>(): {
   return { promise, resolve };
 }
 
+function manifestIdentityHex(manifest: {
+  files: Array<{ relative_path: string; category: string; content_hash: Uint8Array }>;
+}): string {
+  const categoryCodes: Record<string, number> = {
+    csv: 0,
+    erh: 1,
+    erb: 2,
+    resource_manifest: 3,
+    resource: 4,
+    configuration: 5,
+  };
+  const encoder = new TextEncoder();
+  const identity: number[] = [];
+  for (const file of manifest.files) {
+    const category = categoryCodes[file.category];
+    if (category === undefined) throw new Error(`unknown test category ${file.category}`);
+    const path = encoder.encode(file.relative_path);
+    const length = new Uint8Array(8);
+    new DataView(length.buffer).setBigUint64(0, BigInt(path.byteLength), true);
+    identity.push(...length, ...path, category, ...file.content_hash);
+  }
+  return Array.from(
+    blake3(Uint8Array.from(identity), {
+      context: encoder.encode("rustyera.project-source-identity.v1"),
+    }),
+    (value) => value.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+async function writeFixtureFile(
+  directory: SaveDirectoryHandle,
+  name: string,
+  contents: Uint8Array | string,
+): Promise<void> {
+  const file = await directory.getFileHandle(name, { create: true });
+  const bytes = typeof contents === "string" ? new TextEncoder().encode(contents) : contents;
+  await (await file.createWritable()).write(bytes);
+}
+
 class SaveFileHandle {
   readonly kind = "file";
   private lastModified = 1;
@@ -216,6 +255,61 @@ describe("browser project reads", () => {
       category: "erb",
       payload: { type: "utf8", value: "@MAIN\nRETURN\n" },
     });
+  });
+
+  it("sorts project paths by portable lowercase code-point order", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const accented = await root.getFileHandle("é.erb", { create: true });
+    const ascii = await root.getFileHandle("z.erb", { create: true });
+    await (await accented.createWritable()).write(new TextEncoder().encode("@ACCENTED\nRETURN\n"));
+    await (await ascii.createWritable()).write(new TextEncoder().encode("@ASCII\nRETURN\n"));
+
+    const manifest = await new BrowserProject(root as any).scanQuick();
+
+    expect(manifest.files.map((file) => file.relative_path)).toEqual(["z.erb", "é.erb"]);
+  });
+
+  it("shares the fixed project-scan contract used by native frontends", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const resources = await root.getDirectoryHandle("resources", { create: true });
+    const sound = await root.getDirectoryHandle("sound", { create: true });
+    const nested = await root.getDirectoryHandle("sub", { create: true });
+    const privateDirectory = await root.getDirectoryHandle(".RUSTYERA", { create: true });
+    const privateCache = await privateDirectory.getDirectoryHandle("cache", { create: true });
+    const decomposed = "e\u0301.png";
+    await writeFixtureFile(resources, decomposed, "png");
+    await writeFixtureFile(
+      resources,
+      "sprites.csv",
+      `FACE, \t${decomposed} \t\r\nANIME, \tAnImE\t \nNOTE,\u00a0${decomposed}\u00a0\rMETA,a\u0085b`,
+    );
+    await writeFixtureFile(sound, "theme.MP3", "audio");
+    await writeFixtureFile(sound, "ignored.erb", "@IGNORED");
+    await writeFixtureFile(privateCache, "ignored.erb", "@PRIVATE");
+    await writeFixtureFile(root, "reraconfig.toml", "[display]\nfont_size = 20\n");
+    await writeFixtureFile(nested, "reraconfig.toml", Uint8Array.of(0x82, 0xa0, 0x0a));
+    await writeFixtureFile(root, "é.erb", "@ACCENTED\nRETURN\n");
+    await writeFixtureFile(root, "z.erb", "@ASCII\nRETURN\n");
+
+    const manifest = await new BrowserProject(root as any).scanQuick();
+
+    expect(manifest.files.map((file) => [file.relative_path, file.category])).toEqual([
+      ["reraconfig.toml", "configuration"],
+      ["resources/sprites.csv", "resource_manifest"],
+      ["resources/é.png", "resource"],
+      ["sound/theme.MP3", "resource"],
+      ["sub/reraconfig.toml", "configuration"],
+      ["z.erb", "erb"],
+      ["é.erb", "erb"],
+    ]);
+    expect(manifest.files[1].payload).toEqual({
+      type: "utf8",
+      value: "FACE, \té.png \t\r\nANIME, \tAnImE\t \nNOTE,\u00a0é.png\u00a0\rMETA,a\u0085b",
+    });
+    expect(manifest.files[4].payload).toEqual({ type: "utf8", value: "あ\n" });
+    expect(manifestIdentityHex(manifest)).toBe(
+      "50fbe8e1e7ad5492e29fab4b229ad35d31ccde47f9c078df86c1ee5c30ed7255",
+    );
   });
 
   it("rescans instead of mixing a quick snapshot with added or changed files", async () => {
