@@ -62,8 +62,19 @@ impl StorageHost {
         relative_path: &str,
         operation: StorageOperation,
     ) -> Result<StorageResult, std::io::Error> {
-        let root = self.namespace_root(namespace);
-        let path = resolve(&root, relative_path)?;
+        let (root, path) = if matches!(
+            &operation,
+            StorageOperation::Read
+                | StorageOperation::List { .. }
+                | StorageOperation::Stat
+                | StorageOperation::ReadRange { .. }
+        ) {
+            self.resolve_for_read(namespace, relative_path)?
+        } else {
+            let root = self.namespace_root(namespace);
+            let path = resolve(&root, relative_path)?;
+            (root, path)
+        };
         match operation {
             StorageOperation::Read => {
                 let data = fs::read(path)?;
@@ -120,7 +131,7 @@ impl StorageHost {
                             .replace('\\', "/");
                         if pattern
                             .as_ref()
-                            .is_some_and(|value| !value.matches_path(Path::new(&relative)))
+                            .is_some_and(|value| !value.matches_path(Path::new(entry.file_name())))
                         {
                             continue;
                         }
@@ -187,6 +198,36 @@ impl StorageHost {
             StorageNamespace::Resource => self.project_root.clone(),
         }
     }
+
+    fn resolve_for_read(
+        &self,
+        namespace: StorageNamespace,
+        relative_path: &str,
+    ) -> Result<(PathBuf, PathBuf), std::io::Error> {
+        let root = self.namespace_root(namespace);
+        let primary = resolve(&root, relative_path)?;
+        if matches!(
+            namespace,
+            StorageNamespace::Project | StorageNamespace::Data
+        ) && !primary.try_exists()?
+        {
+            let path = resolve(&self.project_root, relative_path)?;
+            return validate_read_path(&self.project_root, path);
+        }
+        validate_read_path(&root, primary)
+    }
+}
+
+fn validate_read_path(root: &Path, path: PathBuf) -> Result<(PathBuf, PathBuf), std::io::Error> {
+    if !path.try_exists()? {
+        return Ok((root.to_owned(), path));
+    }
+    let root = root.canonicalize()?;
+    let path = path.canonicalize()?;
+    if path != root && !path.starts_with(&root) {
+        return Err(invalid_path());
+    }
+    Ok((root, path))
 }
 
 fn resolve(root: &Path, relative_path: &str) -> Result<PathBuf, std::io::Error> {
@@ -322,5 +363,116 @@ mod tests {
             panic!("expected global save data");
         };
         assert_eq!(data.as_slice(), b"global");
+    }
+
+    #[test]
+    fn data_operations_use_emuera_root_fallback_and_private_overrides() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join("XML")).unwrap();
+        fs::write(directory.path().join("XML/SKILL_LIFE.xml"), b"<project />").unwrap();
+        let mut storage = StorageHost::new(directory.path().to_owned());
+
+        let response = storage.handle(StorageRequest {
+            request_id: 1,
+            namespace: StorageNamespace::Data,
+            relative_path: "XML/SKILL_LIFE.xml".into(),
+            operation: StorageOperation::Read,
+            idempotency_key: String::new(),
+            deadline_ns: None,
+        });
+
+        let StorageResult::Read { data, .. } = response.result else {
+            panic!("expected project-root text data");
+        };
+        assert_eq!(data.as_slice(), b"<project />");
+
+        let listed = storage.handle(StorageRequest {
+            request_id: 2,
+            namespace: StorageNamespace::Data,
+            relative_path: "XML".into(),
+            operation: StorageOperation::List {
+                pattern: Some("SKILL*.xml".into()),
+                recursive: false,
+            },
+            idempotency_key: String::new(),
+            deadline_ns: None,
+        });
+        let StorageResult::Listed { entries } = listed.result else {
+            panic!("expected project-root XML listing");
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].relative_path, "XML/SKILL_LIFE.xml");
+
+        fs::create_dir_all(directory.path().join("data/XML")).unwrap();
+        fs::write(
+            directory.path().join("data/XML/SKILL_LIFE.xml"),
+            b"<override />",
+        )
+        .unwrap();
+        let override_read = storage.handle(StorageRequest {
+            request_id: 3,
+            namespace: StorageNamespace::Data,
+            relative_path: "XML/SKILL_LIFE.xml".into(),
+            operation: StorageOperation::Read,
+            idempotency_key: String::new(),
+            deadline_ns: None,
+        });
+        let StorageResult::Read { data, .. } = override_read.result else {
+            panic!("expected private text data");
+        };
+        assert_eq!(data.as_slice(), b"<override />");
+
+        let written = storage.handle(StorageRequest {
+            request_id: 4,
+            namespace: StorageNamespace::Data,
+            relative_path: "XML/SKILL_LIFE.xml".into(),
+            operation: StorageOperation::Write {
+                data: ProtocolBytes::new(b"<written />".to_vec()),
+                atomic_replace: true,
+                precondition: StoragePrecondition::Any,
+            },
+            idempotency_key: String::new(),
+            deadline_ns: None,
+        });
+        assert!(matches!(written.result, StorageResult::Written { .. }));
+        assert_eq!(
+            fs::read(directory.path().join("data/XML/SKILL_LIFE.xml")).unwrap(),
+            b"<written />"
+        );
+        assert_eq!(
+            fs::read(directory.path().join("XML/SKILL_LIFE.xml")).unwrap(),
+            b"<project />"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_root_fallback_rejects_symlinks_that_escape_the_project() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join("XML")).unwrap();
+        fs::write(outside.path().join("secret.xml"), b"secret").unwrap();
+        symlink(
+            outside.path().join("secret.xml"),
+            directory.path().join("XML/SKILL_LIFE.xml"),
+        )
+        .unwrap();
+        let mut storage = StorageHost::new(directory.path().to_owned());
+
+        let response = storage.handle(StorageRequest {
+            request_id: 1,
+            namespace: StorageNamespace::Data,
+            relative_path: "XML/SKILL_LIFE.xml".into(),
+            operation: StorageOperation::Read,
+            idempotency_key: String::new(),
+            deadline_ns: None,
+        });
+
+        let StorageResult::Error { error } = response.result else {
+            panic!("expected an invalid path error");
+        };
+        assert_eq!(error.kind, FrontendIoErrorKind::InvalidData);
     }
 }

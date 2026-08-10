@@ -806,6 +806,83 @@ describe("browser compiled cache identity", () => {
 });
 
 describe("browser traditional saves", () => {
+  it("treats a missing save namespace as an empty directory", async () => {
+    const root = new SaveDirectoryHandle("project");
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+
+    const response = await project.storage({
+      request_id: 5n,
+      namespace: "save",
+      relative_path: "",
+      operation: { type: "list", pattern: "save*.sav", recursive: false },
+    });
+
+    expect(response.result).toEqual({ type: "listed", entries: [] });
+    await expect(root.getDirectoryHandle("sav")).resolves.toBeDefined();
+  });
+
+  it("falls back to Emuera root reads while preserving private data overrides", async () => {
+    const root = new SaveDirectoryHandle("project");
+    const xml = await root.getDirectoryHandle("XML", { create: true });
+    const source = await xml.getFileHandle("SKILL_LIFE.xml", { create: true });
+    await (await source.createWritable()).write(new TextEncoder().encode("<project />"));
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+
+    const response = await project.storage({
+      request_id: 6n,
+      namespace: "data",
+      relative_path: "XML/SKILL_LIFE.xml",
+      operation: { type: "read" },
+    });
+
+    expect(response.result).toMatchObject({
+      type: "read",
+      data: [...new TextEncoder().encode("<project />")],
+    });
+
+    const listed = await project.storage({
+      request_id: 7n,
+      namespace: "data",
+      relative_path: "XML",
+      operation: { type: "list", pattern: "SKILL*.xml", recursive: false },
+    });
+    expect(listed.result).toMatchObject({
+      type: "listed",
+      entries: [{ relative_path: "XML/SKILL_LIFE.xml" }],
+    });
+
+    const data = await root.getDirectoryHandle("data", { create: true });
+    const dataXml = await data.getDirectoryHandle("XML", { create: true });
+    await writeFixtureFile(dataXml, "SKILL_LIFE.xml", "<override />");
+    const overrideRead = await project.storage({
+      request_id: 8n,
+      namespace: "data",
+      relative_path: "XML/SKILL_LIFE.xml",
+      operation: { type: "read" },
+    });
+    expect(overrideRead.result).toMatchObject({
+      type: "read",
+      data: [...new TextEncoder().encode("<override />")],
+    });
+
+    const written = await project.storage({
+      request_id: 9n,
+      namespace: "data",
+      relative_path: "XML/SKILL_LIFE.xml",
+      operation: {
+        type: "write",
+        data: [...new TextEncoder().encode("<written />")],
+        atomic_replace: true,
+        precondition: { type: "any" },
+      },
+    });
+    expect(written.result.type).toBe("written");
+    expect(await (await source.getFile()).text()).toBe("<project />");
+    expect(await (await (await dataXml.getFileHandle("SKILL_LIFE.xml")).getFile()).text()).toBe(
+      "<written />",
+    );
+  });
+
   it("creates a missing save only after its write precondition passes", async () => {
     const root = new SaveDirectoryHandle("project");
     const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);

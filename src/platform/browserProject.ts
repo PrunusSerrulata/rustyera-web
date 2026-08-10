@@ -527,61 +527,17 @@ export class BrowserProject {
 
   async storage(request: any): Promise<any> {
     try {
-      const root = await this.namespace(request.namespace);
       const parts = request.relative_path ? safePath(request.relative_path).split("/") : [];
       const operation = request.operation;
+      const readOnly = ["read", "stat", "read_range", "list"].includes(operation.type);
+      const rootReadFallback = readOnly && ["project", "data"].includes(request.namespace);
       let result: any;
-      if (operation.type === "read") {
-        const file = await getFile(root, parts);
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        result = { type: "read", data: [...bytes], revision: hex(blake3(bytes)) };
-      } else if (operation.type === "write") {
-        // A missing precondition must be checked before creating the destination. Creating the
-        // handle first leaves a zero-byte save behind and then makes the precondition fail.
-        const existingHandle = await optionalFileHandle(root, parts);
-        const current = existingHandle ? await existingHandle.getFile() : undefined;
-        await checkPrecondition(current, operation.precondition);
-        const handle = existingHandle ?? (await getFileHandle(root, parts, true));
-        const writable = await handle.createWritable({ keepExistingData: false });
-        const bytes = decodeProtocolBytes(operation.data);
-        await writable.write(bytes as FileSystemWriteChunkType);
-        await writable.close();
-        result = { type: "written", revision: hex(blake3(bytes)) };
-      } else if (operation.type === "delete") {
-        const parent = await getDirectory(root, parts.slice(0, -1), false);
-        const handle = await parent.getFileHandle(parts.at(-1)!);
-        await checkPrecondition(await optionalFile(handle), operation.precondition);
-        await parent.removeEntry(parts.at(-1)!);
-        result = { type: "deleted" };
-      } else if (operation.type === "stat") {
-        const file = await getFile(root, parts);
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        result = {
-          type: "metadata",
-          byte_length: file.size,
-          revision: hex(blake3(bytes)),
-        };
-      } else if (operation.type === "read_range") {
-        const file = await getFile(root, parts);
-        const token = `${file.size}:${file.lastModified}`;
-        if (operation.change_token && operation.change_token !== token) throw conflict();
-        const offset = Number(operation.offset);
-        const end = Math.min(file.size, offset + Number(operation.maximum_bytes));
-        const data = new Uint8Array(await file.slice(offset, end).arrayBuffer());
-        result = {
-          type: "read_chunk",
-          data: [...data],
-          offset: operation.offset,
-          complete: end >= file.size,
-          change_token: token,
-        };
-      } else if (operation.type === "list") {
-        const directory = await getDirectory(root, parts, false);
-        const entries: any[] = [];
-        await collectEntries(directory, root, "", operation.recursive, operation.pattern, entries);
-        result = { type: "listed", entries };
-      } else {
-        throw new Error(`不支持的存储操作：${operation.type}`);
+      try {
+        const primary = await this.namespace(request.namespace, !rootReadFallback);
+        result = await operateBrowserStorage(primary, parts, operation);
+      } catch (error) {
+        if (!rootReadFallback || errorKind(error) !== "not_found") throw error;
+        result = await operateBrowserStorage(this.root, parts, operation);
       }
       return { request_id: request.request_id, result };
     } catch (error) {
@@ -685,10 +641,74 @@ export class BrowserProject {
     }
   }
 
-  private async namespace(namespace: string): Promise<FileSystemDirectoryHandle> {
+  private async namespace(namespace: string, create = true): Promise<FileSystemDirectoryHandle> {
     if (namespace === "resource") return this.root;
-    return this.root.getDirectoryHandle(storageDirectoryName(namespace), { create: true });
+    return this.root.getDirectoryHandle(storageDirectoryName(namespace), { create });
   }
+}
+
+async function operateBrowserStorage(
+  root: FileSystemDirectoryHandle,
+  parts: string[],
+  operation: any,
+): Promise<any> {
+  if (operation.type === "read") {
+    const file = await getFile(root, parts);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return { type: "read", data: [...bytes], revision: hex(blake3(bytes)) };
+  }
+  if (operation.type === "write") {
+    // A missing precondition must be checked before creating the destination. Creating the
+    // handle first leaves a zero-byte save behind and then makes the precondition fail.
+    const existingHandle = await optionalFileHandle(root, parts);
+    const current = existingHandle ? await existingHandle.getFile() : undefined;
+    await checkPrecondition(current, operation.precondition);
+    const handle = existingHandle ?? (await getFileHandle(root, parts, true));
+    const writable = await handle.createWritable({ keepExistingData: false });
+    const bytes = decodeProtocolBytes(operation.data);
+    await writable.write(bytes as FileSystemWriteChunkType);
+    await writable.close();
+    return { type: "written", revision: hex(blake3(bytes)) };
+  }
+  if (operation.type === "delete") {
+    const parent = await getDirectory(root, parts.slice(0, -1), false);
+    const handle = await parent.getFileHandle(parts.at(-1)!);
+    await checkPrecondition(await optionalFile(handle), operation.precondition);
+    await parent.removeEntry(parts.at(-1)!);
+    return { type: "deleted" };
+  }
+  if (operation.type === "stat") {
+    const file = await getFile(root, parts);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return {
+      type: "metadata",
+      byte_length: file.size,
+      revision: hex(blake3(bytes)),
+    };
+  }
+  if (operation.type === "read_range") {
+    const file = await getFile(root, parts);
+    const token = `${file.size}:${file.lastModified}`;
+    if (operation.change_token && operation.change_token !== token) throw conflict();
+    const offset = Number(operation.offset);
+    const end = Math.min(file.size, offset + Number(operation.maximum_bytes));
+    const data = new Uint8Array(await file.slice(offset, end).arrayBuffer());
+    return {
+      type: "read_chunk",
+      data: [...data],
+      offset: operation.offset,
+      complete: end >= file.size,
+      change_token: token,
+    };
+  }
+  if (operation.type === "list") {
+    const directory = await getDirectory(root, parts, false);
+    const entries: any[] = [];
+    const prefix = parts.length ? `${parts.join("/")}/` : "";
+    await collectEntries(directory, prefix, operation.recursive, operation.pattern, entries);
+    return { type: "listed", entries };
+  }
+  throw new Error(`不支持的存储操作：${operation.type}`);
 }
 
 async function applyProjectFileUpdate(
@@ -1059,17 +1079,15 @@ async function checkPrecondition(file: File | undefined, precondition: any): Pro
 
 async function collectEntries(
   directory: FileSystemDirectoryHandle,
-  root: FileSystemDirectoryHandle,
   prefix: string,
   recursive: boolean,
   pattern: string | null,
   entries: any[],
 ): Promise<void> {
-  void root;
   for await (const [name, handle] of directory.entries()) {
     const path = `${prefix}${name}`;
     if (handle.kind === "directory") {
-      if (recursive) await collectEntries(handle, root, `${path}/`, true, pattern, entries);
+      if (recursive) await collectEntries(handle, `${path}/`, true, pattern, entries);
       continue;
     }
     if (pattern && !wildcard(pattern, name)) continue;
