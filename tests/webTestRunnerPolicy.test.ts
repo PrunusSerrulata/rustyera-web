@@ -20,6 +20,7 @@ describe("browser game runner progress policy", () => {
     expect(runner).not.toContain("OBSERVATION_REPORT_MS");
     expect(runner).not.toContain("OBSERVATION_STALL_MS");
     expect(runner).toContain("action.settle_auto_enter ?? action.auto_enter !== false");
+    expect(runner).toContain("action.observe !== false");
   });
 
   it("sets the repository browser path before importing Playwright", () => {
@@ -44,6 +45,14 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain('telemetry.outcome !== "success"');
   });
 
+  it("materializes portable browser files without joining large base64 payloads", () => {
+    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+
+    expect(runner).toContain("chunks.push(Uint8Array.from(raw");
+    expect(runner).toContain("new File(chunks");
+    expect(runner).not.toContain('atob(chunks.join(""))');
+  });
+
   it("provides a native-browser game-log input smoke flow", () => {
     const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
 
@@ -51,6 +60,18 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain("await runLogInputSmoke(browser, browserName)");
     expect(runner).toContain("state.wait?.stop_message_skip === true");
     expect(runner).toContain('String(line).includes("暗之公会")');
+  });
+
+  it("keeps the compiled-cache input smoke independent of game-specific opening text", () => {
+    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+    const cacheSmoke = runner.slice(
+      runner.indexOf("async function runCacheInputSmoke"),
+      runner.indexOf("async function runLogInputSmoke"),
+    );
+
+    expect(cacheSmoke).toContain("game input was blocked by compiled cache generation");
+    expect(cacheSmoke).not.toContain("亚兰德");
+    expect(cacheSmoke).not.toContain("亚斯特丽德的工房");
   });
 
   it("provides a native-browser font hot-apply flow", () => {
@@ -65,8 +86,14 @@ describe("browser game runner progress policy", () => {
 
   it("uses the requested mouse button for visible UI click actions", () => {
     const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const fullProjectExport = readFileSync(
+      resolve("tools/runtime-tester/scenarios/full-project-export.json"),
+      "utf8",
+    );
 
     expect(runner).toContain('locator.click({ button: action.button ?? "left" })');
+    expect(runner).toContain("action.settle_ms");
+    expect(fullProjectExport).toContain('"observe": false');
   });
 
   it("can assert computed game-font styles after applying settings", () => {

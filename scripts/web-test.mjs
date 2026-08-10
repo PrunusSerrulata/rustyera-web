@@ -431,7 +431,8 @@ async function execute(args) {
           "drain_void_waits",
           "advance_intermediate_waits_until",
           "advance_enter_waits_until",
-        ].includes(action.type)
+        ].includes(action.type) &&
+        action.observe !== false
       ) {
         current = await observe(action.settle_auto_enter ?? action.auto_enter !== false);
         if (current.rust.fault && action.allow_fault !== true)
@@ -487,7 +488,8 @@ async function execute(args) {
           "drain_void_waits",
           "advance_intermediate_waits_until",
           "advance_enter_waits_until",
-        ].includes(action.type)
+        ].includes(action.type) &&
+        action.observe !== false
       ) {
         current = await observe(action.settle_auto_enter ?? action.auto_enter !== false);
         if (current.rust.fault && action.allow_fault !== true)

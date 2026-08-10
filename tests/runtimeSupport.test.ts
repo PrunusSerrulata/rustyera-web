@@ -16,6 +16,9 @@ describe("runtime support", () => {
     expect(formatProjectProgress({ stage: "compiling", completed: 12, total: 10 })).toBe(
       "正在编译脚本函数：10/10（100%）",
     );
+    expect(formatProjectProgress({ stage: "packaging", completed: 1, total: 2 })).toBe(
+      "正在打包全量项目文件：1/2（50%）",
+    );
   });
 
   it("assembles transfer chunks in order", () => {

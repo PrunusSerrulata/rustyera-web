@@ -60,6 +60,7 @@ const bridge = vi.hoisted(() => ({
   projectName: vi.fn(() => "eraTW"),
   openUpload: vi.fn(),
   saveDownload: vi.fn(),
+  stageFullProjectManifest: vi.fn(),
   beginProjectFileExport: vi.fn(),
   writeProjectFileChunk: vi.fn(),
   cancelProjectFileExport: vi.fn(),
@@ -1216,17 +1217,37 @@ describe("runtime store session lifecycle", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     await store.exportProjectFile();
+    expect(store.gameInteractionsBlocked).toBe(true);
+    expect(store.canInteract).toBe(false);
+    expect(store.canOpenProject).toBe(false);
     await vi.advanceTimersByTimeAsync(32);
 
     expect(bridge.beginProjectFileExport).toHaveBeenCalledWith("测试项目.reraproj");
+    expect(bridge.stageFullProjectManifest).toHaveBeenCalledOnce();
     expect(bridge.submitRuntime).toHaveBeenCalledWith(
       {
         type: "state_export_request",
-        value: { kind: "compiled_project_cache", snapshot_purpose: "normal" },
+        value: { kind: "full_project_file", snapshot_purpose: "normal" },
       },
       undefined,
     );
     expect(bridge.writeProjectFileChunk).toHaveBeenCalledWith(Uint8Array.of(1, 2, 3), true, true);
+    expect(store.gameInteractionsBlocked).toBe(false);
+  });
+
+  it("leaves a background cache export running when the project-file picker is cancelled", async () => {
+    const cacheWrite = deferred<void>();
+    const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
+    bridge.beginProjectFileExport.mockResolvedValueOnce(false);
+
+    await store.exportProjectFile();
+
+    expect(bridge.cancelCompiledCacheExport).not.toHaveBeenCalled();
+    const transfer = store.testTransferState().export as { name?: string } | undefined;
+    expect(transfer?.name).toBe("compiled-project.reracache");
+    expect(store.gameInteractionsBlocked).toBe(false);
+    cacheWrite.resolve();
+    await flushMicrotasks();
   });
 
   it("publishes input waits while the compiled cache is still being persisted", async () => {

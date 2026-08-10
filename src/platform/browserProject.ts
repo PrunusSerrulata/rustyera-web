@@ -63,13 +63,6 @@ interface PendingBrowserSnapshot {
   topLevel: Set<string>;
 }
 
-interface PreparedProjectFileUpdate {
-  handle: FileSystemFileHandle;
-  size: number;
-  digest: Uint8Array;
-  update: Uint8Array;
-}
-
 export class BrowserProject {
   private readonly files = new Map<string, FileSystemFileHandle>();
   private readonly embeddedResources = new Map<string, Uint8Array>();
@@ -81,6 +74,7 @@ export class BrowserProject {
   private packagedHandle?: FileSystemFileHandle;
   private prepareConfigurationUpdate?: ProjectConfigurationUpdatePreparer;
   private importedSnapshot = false;
+  private runtimeManifestSparse = false;
 
   constructor(
     readonly root: FileSystemDirectoryHandle,
@@ -135,6 +129,10 @@ export class BrowserProject {
     return this.usesEmbeddedManifest ? this.manifestValue : undefined;
   }
 
+  markRuntimeManifestSparse(): void {
+    this.runtimeManifestSparse = true;
+  }
+
   configurationWritable(): boolean {
     return (
       !this.usesEmbeddedManifest || Boolean(this.packagedHandle && this.prepareConfigurationUpdate)
@@ -160,7 +158,6 @@ export class BrowserProject {
     if (equalBytes(currentDigest, requestedDigest)) return;
     if (!equalBytes(currentDigest, expectedDigest))
       throw new Error("reraconfig.toml 已被其他程序修改，请重新打开设置窗口");
-    const cachedUpdate = await this.prepareCachedConfigurationUpdate(expectedDigest, contents);
     handle ??= await this.root.getFileHandle("reraconfig.toml", { create: true });
     const writer = await handle.createWritable({ keepExistingData: false });
     try {
@@ -174,7 +171,7 @@ export class BrowserProject {
     }
     this.files.set("reraconfig.toml", handle);
     this.manifestValue = undefined;
-    await this.commitCachedConfigurationUpdate(cachedUpdate);
+    await this.invalidateCompiledCache();
   }
 
   private async writePackagedConfiguration(
@@ -193,62 +190,11 @@ export class BrowserProject {
     this.updateEmbeddedConfiguration(contents);
   }
 
-  private async prepareCachedConfigurationUpdate(
-    expectedDigest: Uint8Array,
-    contents: string,
-  ): Promise<PreparedProjectFileUpdate | undefined> {
-    const prepare = this.prepareConfigurationUpdate;
-    if (!prepare) return undefined;
-    const handle = await this.compiledCacheHandle();
-    if (!handle) return undefined;
-    try {
-      const file = await handle.getFile();
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      const digest = blake3(bytes);
-      return {
-        handle,
-        size: file.size,
-        digest,
-        update: await prepare(bytes, expectedDigest, contents),
-      };
-    } catch {
-      await this.invalidateCompiledCache();
-      return undefined;
-    }
-  }
-
-  private async commitCachedConfigurationUpdate(
-    prepared: PreparedProjectFileUpdate | undefined,
-  ): Promise<void> {
-    if (!prepared) return;
-    try {
-      await applyProjectFileUpdate(
-        prepared.handle,
-        prepared.size,
-        prepared.digest,
-        prepared.update,
-      );
-    } catch {
-      await this.invalidateCompiledCache();
-    }
-  }
-
-  private async compiledCacheHandle(): Promise<FileSystemFileHandle | undefined> {
-    try {
-      const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
-      const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
-      return await cacheDirectory.getFileHandle("compiled-project.reraproj");
-    } catch (error) {
-      if (errorKind(error) === "not_found") return undefined;
-      throw error;
-    }
-  }
-
   async invalidateCompiledCache(): Promise<void> {
     try {
       const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
       const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
-      await cacheDirectory.removeEntry("compiled-project.reraproj");
+      await cacheDirectory.removeEntry("compiled-project.reracache");
     } catch {
       // The cache is derived data. A stale survivor is rejected by its project identity later.
     }
@@ -280,7 +226,9 @@ export class BrowserProject {
   async scan(
     progress?: FileScanProgress,
     preloaded?: ReadonlyMap<string, ScannedFile>,
+    signal?: AbortSignal,
   ): Promise<BrowserManifest> {
+    throwIfAborted(signal);
     this.files.clear();
     progress?.(0, 0);
     const topLevel = new Set<string>();
@@ -293,7 +241,7 @@ export class BrowserProject {
     const reads: Array<() => Promise<void>> = [];
     await this.walk(this.root, "", topLevel, files, reads, preloaded);
     progress?.(0, reads.length);
-    await runBounded(reads, 8, progress);
+    await runBounded(reads, 8, progress, signal);
     files.sort((left, right) =>
       left.relative_path.localeCompare(right.relative_path, undefined, { sensitivity: "base" }),
     );
@@ -377,9 +325,10 @@ export class BrowserProject {
     return this.manifestValue;
   }
 
-  async materialize(progress?: FileScanProgress): Promise<BrowserManifest> {
+  async materialize(progress?: FileScanProgress, signal?: AbortSignal): Promise<BrowserManifest> {
+    throwIfAborted(signal);
     const snapshot = this.pendingSnapshot;
-    if (!snapshot) return this.manifestValue ?? this.scan(progress);
+    if (!snapshot) return this.manifestValue ?? this.scan(progress, undefined, signal);
     this.files.clear();
     const topLevel = new Set<string>();
     for await (const [name, handle] of this.root.entries()) {
@@ -403,15 +352,23 @@ export class BrowserProject {
           entry.category !== snapshot.files[index]?.category,
       )
     ) {
-      return this.scan(progress);
+      return this.scan(progress, undefined, signal);
     }
-    const currentFiles = await Promise.all(current.map((entry) => entry.handle.getFile()));
+    const currentFiles = new Array<File>(current.length);
+    await runBounded(
+      current.map((entry, index) => async () => {
+        currentFiles[index] = await entry.handle.getFile();
+      }),
+      8,
+      undefined,
+      signal,
+    );
     if (
       currentFiles.some(
         (file, index) => `${file.size}:${file.lastModified}` !== snapshot.files[index]?.signature,
       )
     ) {
-      return this.scan(progress);
+      return this.scan(progress, undefined, signal);
     }
     const files = new Array<ScannedFile>(snapshot.files.length);
     progress?.(0, snapshot.files.length);
@@ -431,6 +388,7 @@ export class BrowserProject {
       }),
       8,
       progress,
+      signal,
     );
     files.sort(compareScannedFiles);
     this.pendingSnapshot = undefined;
@@ -444,7 +402,7 @@ export class BrowserProject {
     try {
       const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
       const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
-      const handle = await cacheDirectory.getFileHandle("compiled-project.reraproj");
+      const handle = await cacheDirectory.getFileHandle("compiled-project.reracache");
       return readFileInChunks(await handle.getFile(), progress);
     } catch (error) {
       if (errorKind(error) === "not_found") return undefined;
@@ -461,6 +419,14 @@ export class BrowserProject {
     const newByPath = new Map(current.files.map((file) => [file.relative_path, file]));
     const paths = [...new Set([...oldByPath.keys(), ...newByPath.keys()])].sort();
     const changes: any[] = [];
+    if (this.runtimeManifestSparse) {
+      this.runtimeManifestSparse = false;
+      return {
+        base_revision: previous.project_revision,
+        target_revision: current.project_revision,
+        changes: current.files.map((file) => ({ type: "upsert", file })),
+      };
+    }
     for (const path of paths) {
       const oldFile = oldByPath.get(path);
       const newFile = newByPath.get(path);
@@ -875,12 +841,13 @@ export async function runBounded(
   tasks: Array<() => Promise<void>>,
   maximumConcurrency: number,
   progress?: FileScanProgress,
+  signal?: AbortSignal,
 ): Promise<void> {
   let next = 0;
   let completed = 0;
   const errors: unknown[] = new Array(tasks.length);
   const worker = async () => {
-    while (next < tasks.length) {
+    while (next < tasks.length && !signal?.aborted) {
       const index = next++;
       try {
         await tasks[index]();
@@ -900,8 +867,14 @@ export async function runBounded(
   await Promise.all(
     Array.from({ length: Math.min(tasks.length, maximumConcurrency) }, () => worker()),
   );
+  throwIfAborted(signal);
   const firstError = errors.find((error) => error !== undefined);
   if (firstError !== undefined) throw firstError;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw signal.reason ?? new DOMException("Export cancelled", "AbortError");
 }
 
 export function decodeProjectSource(bytes: Uint8Array, relativePath: string): string {

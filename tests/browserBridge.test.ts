@@ -141,7 +141,7 @@ class MemoryWorker {
 async function installCache(root: MemoryDirectoryHandle, bytes: Uint8Array): Promise<void> {
   const privateDirectory = await root.getDirectoryHandle(".rustyera", { create: true });
   const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
-  const cache = await cacheDirectory.getFileHandle("compiled-project.reraproj", { create: true });
+  const cache = await cacheDirectory.getFileHandle("compiled-project.reracache", { create: true });
   await (await cache.createWritable()).write(bytes);
 }
 
@@ -233,10 +233,61 @@ describe("browser startup bridge", () => {
 
     await bridge.writeCompiledCacheChunk(Uint8Array.of(1, 2, 3), true, false);
     const cache = await (await root.getDirectoryHandle(".rustyera")).getDirectoryHandle("cache");
-    const file = await cache.getFileHandle("compiled-project.reraproj");
+    const file = await cache.getFileHandle("compiled-project.reracache");
     await bridge.cancelCompiledCacheExport();
 
     expect(file.abort).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to download chunks when OPFS export initialization fails", async () => {
+    const originalNavigator = globalThis.navigator;
+    const originalUrl = globalThis.URL;
+    class ExportUrl extends originalUrl {}
+    Object.assign(ExportUrl, {
+      createObjectURL: vi.fn(() => "blob:test"),
+      revokeObjectURL: vi.fn(),
+    });
+    vi.stubGlobal("navigator", {
+      storage: { getDirectory: vi.fn().mockRejectedValue(new Error("OPFS unavailable")) },
+    });
+    vi.stubGlobal("URL", ExportUrl);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    try {
+      const bridge = new BrowserBridge();
+      await expect(bridge.beginProjectFileExport("game.reraproj")).resolves.toBe(true);
+      await bridge.writeProjectFileChunk(Uint8Array.of(1, 2), true, false);
+      await bridge.writeProjectFileChunk(Uint8Array.of(3), false, true);
+      expect(click).toHaveBeenCalledOnce();
+    } finally {
+      click.mockRestore();
+      vi.stubGlobal("navigator", originalNavigator);
+      vi.stubGlobal("URL", originalUrl);
+    }
+  });
+
+  it("propagates project export cancellation through the materialization abort signal", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    pickBrowserDirectory.mockResolvedValue({
+      handle: root,
+      persistHandle: false,
+      projectName: "game",
+    });
+    const bridge = new BrowserBridge();
+    await bridge.openProject();
+    const materialize = vi.spyOn(BrowserProject.prototype, "materialize").mockImplementation(
+      async (_progress, signal) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+    );
+    try {
+      const staging = bridge.stageFullProjectManifest();
+      await Promise.resolve();
+      await bridge.cancelProjectFileExport();
+      await expect(staging).rejects.toMatchObject({ name: "AbortError" });
+    } finally {
+      materialize.mockRestore();
+    }
   });
 
   it("cancels an active cache export before persisting authoritative configuration", async () => {
@@ -251,7 +302,7 @@ describe("browser startup bridge", () => {
     await bridge.openProject();
     await bridge.writeCompiledCacheChunk(Uint8Array.of(1, 2, 3), true, false);
     const cache = await (await root.getDirectoryHandle(".rustyera")).getDirectoryHandle("cache");
-    const partial = await cache.getFileHandle("compiled-project.reraproj");
+    const partial = await cache.getFileHandle("compiled-project.reracache");
 
     await bridge.writeProjectConfiguration(
       new Uint8Array(),
@@ -260,7 +311,7 @@ describe("browser startup bridge", () => {
     await bridge.writeCompiledCacheChunk(Uint8Array.of(4, 5, 6), false, true);
 
     expect(partial.abort).toHaveBeenCalledOnce();
-    await expect(cache.getFileHandle("compiled-project.reraproj")).rejects.toMatchObject({
+    await expect(cache.getFileHandle("compiled-project.reracache")).rejects.toMatchObject({
       name: "NotFoundError",
     });
     expect(await (await (await root.getFileHandle("reraconfig.toml")).getFile()).text()).toContain(

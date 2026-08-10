@@ -58,7 +58,15 @@ export class BrowserBridge implements FrontendBridge {
   private cacheWriter?: FileSystemWritableFileStream;
   private discardCompiledCacheExport = false;
   private projectFileWriter?: FileSystemWritableFileStream;
-  private projectFileFallback?: { name: string; chunks: Uint8Array[] };
+  private projectFileExportAbort?: AbortController;
+  private projectFileFallback?:
+    | { name: string; chunks: Uint8Array[] }
+    | {
+        name: string;
+        root: FileSystemDirectoryHandle;
+        temporaryName: string;
+        writer: FileSystemWritableFileStream;
+      };
   private projectProgressListener?: (progress: ProjectProgress) => void;
   private readonly prepareProjectConfigurationUpdate = (
     projectFile: Uint8Array,
@@ -286,6 +294,7 @@ export class BrowserBridge implements FrontendBridge {
           [cache.buffer],
         );
         cacheImported = true;
+        project.markRuntimeManifestSparse();
       } catch {
         const sourceStarted = performance.now();
         const sourceManifest = sourcesReady
@@ -431,10 +440,31 @@ export class BrowserBridge implements FrontendBridge {
         throw error;
       }
     }
-    // Firefox and Safari do not expose a streaming save picker. Retain chunks only on those
-    // hosts and create one Blob at completion, which is the least memory-efficient fallback.
-    this.projectFileFallback = { name, chunks: [] };
+    try {
+      const root = await navigator.storage.getDirectory();
+      const temporaryName = `.rustyera-project-export-${crypto.randomUUID()}.tmp`;
+      const handle = await root.getFileHandle(temporaryName, { create: true });
+      const writer = await handle.createWritable({ keepExistingData: false });
+      this.projectFileFallback = { name, root, temporaryName, writer };
+    } catch {
+      // Some browsers expose OPFS but deny it in private or constrained contexts.
+      this.projectFileFallback = { name, chunks: [] };
+    }
     return true;
+  }
+
+  async stageFullProjectManifest(): Promise<void> {
+    const project = this.requireProject();
+    if (project.embeddedManifest()) return;
+    const abort = new AbortController();
+    this.projectFileExportAbort = abort;
+    try {
+      const manifest = await project.materialize(this.scanProgress, abort.signal);
+      abort.signal.throwIfAborted();
+      await this.submitRuntime({ type: "full_project_manifest", value: { manifest } });
+    } finally {
+      if (this.projectFileExportAbort === abort) this.projectFileExportAbort = undefined;
+    }
   }
 
   async writeProjectFileChunk(
@@ -452,24 +482,48 @@ export class BrowserBridge implements FrontendBridge {
     }
     const fallback = this.projectFileFallback;
     if (!fallback) throw new Error("项目文件导出尚未开始");
-    fallback.chunks.push(new Uint8Array(bytes));
-    if (!complete) return;
-    const result = new Uint8Array(fallback.chunks.reduce((sum, chunk) => sum + chunk.length, 0));
-    let offset = 0;
-    for (const chunk of fallback.chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
+    if ("chunks" in fallback) {
+      fallback.chunks.push(new Uint8Array(bytes));
+      if (!complete) return;
+      const result = new Uint8Array(fallback.chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+      let offset = 0;
+      for (const chunk of fallback.chunks) {
+        result.set(chunk, offset);
+        offset += chunk.length;
+      }
+      downloadBrowserFile(fallback.name, result);
+      this.projectFileFallback = undefined;
+      return;
     }
-    downloadBrowserFile(fallback.name, result);
+    await fallback.writer.write(bytes as FileSystemWriteChunkType);
+    if (!complete) return;
+    await fallback.writer.close();
+    const file = await (await fallback.root.getFileHandle(fallback.temporaryName)).getFile();
+    const url = URL.createObjectURL(file);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = fallback.name;
+    anchor.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      void fallback.root.removeEntry(fallback.temporaryName);
+    }, 0);
     this.projectFileFallback = undefined;
   }
 
   async cancelProjectFileExport(): Promise<void> {
+    this.projectFileExportAbort?.abort(new DOMException("Export cancelled", "AbortError"));
+    this.projectFileExportAbort = undefined;
     if (this.projectFileWriter) {
       await this.projectFileWriter.abort().catch(() => undefined);
       this.projectFileWriter = undefined;
     }
+    const fallback = this.projectFileFallback;
     this.projectFileFallback = undefined;
+    if (fallback && "writer" in fallback) {
+      await fallback.writer.abort().catch(() => undefined);
+      await fallback.root.removeEntry(fallback.temporaryName).catch(() => undefined);
+    }
   }
 
   private requireProject(): BrowserProject {
@@ -549,7 +603,7 @@ export class BrowserBridge implements FrontendBridge {
         create: true,
       });
       const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
-      const handle = await cacheDirectory.getFileHandle("compiled-project.reraproj", {
+      const handle = await cacheDirectory.getFileHandle("compiled-project.reracache", {
         create: true,
       });
       this.cacheWriter = await handle.createWritable({ keepExistingData: false });
@@ -563,6 +617,9 @@ export class BrowserBridge implements FrontendBridge {
     if (complete) {
       await this.cacheWriter.close();
       this.cacheWriter = undefined;
+      const privateDirectory = await this.project.root.getDirectoryHandle(".rustyera");
+      const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
+      await cacheDirectory.removeEntry("compiled-project.reraproj").catch(() => undefined);
     }
   }
 

@@ -145,7 +145,7 @@ export async function isolatedProject(source, options = {}) {
       return [
         ".rustyera",
         path.join(".rustyera", "cache"),
-        path.join(".rustyera", "cache", "compiled-project.reraproj"),
+        path.join(".rustyera", "cache", "compiled-project.reracache"),
       ].includes(relative);
     },
   });
@@ -502,6 +502,7 @@ export async function runAction(page, action) {
         const snapshot = window.__RUSTYERA_TEST__.snapshot();
         return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
       }, beforeWaitId);
+    if (action.settle_ms != null) await page.waitForTimeout(Number(action.settle_ms));
   } else if (action.type === "scroll_key") {
     await locator.focus();
     await page.keyboard.press(String(action.key ?? "PageUp"));

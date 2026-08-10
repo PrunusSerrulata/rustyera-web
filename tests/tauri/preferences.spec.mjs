@@ -164,7 +164,9 @@ async function waitForBackgroundProjectExport() {
   await browser.waitUntil(
     async () => {
       const state = await snapshot();
-      return state?.transfer?.export == null && state.status === "已导出 compiled-project.reraproj";
+      return (
+        state?.transfer?.export == null && state.status === "已导出 compiled-project.reracache"
+      );
     },
     {
       timeout: PROJECT_TIMEOUT,

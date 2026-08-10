@@ -12,6 +12,17 @@ import {
 } from "../src/platform/browserProject";
 import { loadBrowserProjectFile } from "../src/platform/browserProjectFile";
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
 class SaveFileHandle {
   readonly kind = "file";
   private lastModified = 1;
@@ -322,21 +333,15 @@ describe("browser project reads", () => {
     );
   });
 
-  it("incrementally updates the OPFS project cache with the authoritative configuration", async () => {
+  it("invalidates the compact OPFS cache after a source configuration update", async () => {
     const root = new SaveDirectoryHandle("game");
     const privateDirectory = await root.getDirectoryHandle(".rustyera", { create: true });
     const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
-    const cache = await cacheDirectory.getFileHandle("compiled-project.reraproj", {
+    const cache = await cacheDirectory.getFileHandle("compiled-project.reracache", {
       create: true,
     });
     await (await cache.createWritable()).write(new TextEncoder().encode("base-tail"));
-    const prepare = vi.fn(async (projectFile: Uint8Array) => {
-      expect(new TextDecoder().decode(projectFile)).toBe("base-tail");
-      const result = new Uint8Array(8 + 7);
-      new DataView(result.buffer).setBigUint64(0, 4n, true);
-      result.set(new TextEncoder().encode("journal"), 8);
-      return result;
-    });
+    const prepare = vi.fn();
     const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
     project.useConfigurationUpdatePreparer(prepare);
 
@@ -345,10 +350,10 @@ describe("browser project reads", () => {
       "[text]\nreplace_full_width_spaces = true\n",
     );
 
-    expect(prepare).toHaveBeenCalledOnce();
-    expect(new TextDecoder().decode(await (await cache.getFile()).arrayBuffer())).toBe(
-      "basejournal",
-    );
+    expect(prepare).not.toHaveBeenCalled();
+    await expect(cacheDirectory.getFileHandle("compiled-project.reracache")).rejects.toMatchObject({
+      name: "NotFoundError",
+    });
     expect(await (await (await root.getFileHandle("reraconfig.toml")).getFile()).text()).toBe(
       "[text]\nreplace_full_width_spaces = true\n",
     );
@@ -358,7 +363,7 @@ describe("browser project reads", () => {
     const root = new SaveDirectoryHandle("game");
     const privateDirectory = await root.getDirectoryHandle(".rustyera", { create: true });
     const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
-    const cache = await cacheDirectory.getFileHandle("compiled-project.reraproj", {
+    const cache = await cacheDirectory.getFileHandle("compiled-project.reracache", {
       create: true,
     });
     await (await cache.createWritable()).write(new TextEncoder().encode("stale-cache"));
@@ -371,7 +376,7 @@ describe("browser project reads", () => {
       project.writeConfiguration(new Uint8Array(), "[audio]\nvolume = 42\n"),
     ).resolves.toBeUndefined();
 
-    await expect(cacheDirectory.getFileHandle("compiled-project.reraproj")).rejects.toMatchObject({
+    await expect(cacheDirectory.getFileHandle("compiled-project.reracache")).rejects.toMatchObject({
       name: "NotFoundError",
     });
     expect(await (await (await root.getFileHandle("reraconfig.toml")).getFile()).text()).toBe(
@@ -383,7 +388,7 @@ describe("browser project reads", () => {
     const root = new SaveDirectoryHandle("game");
     const privateDirectory = await root.getDirectoryHandle(".rustyera", { create: true });
     const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
-    const cache = await cacheDirectory.getFileHandle("compiled-project.reraproj", {
+    const cache = await cacheDirectory.getFileHandle("compiled-project.reracache", {
       create: true,
     });
     await (await cache.createWritable()).write(new TextEncoder().encode("base-tail"));
@@ -398,7 +403,7 @@ describe("browser project reads", () => {
 
     await project.writeConfiguration(new Uint8Array(), "[audio]\nvolume = 42\n");
 
-    await expect(cacheDirectory.getFileHandle("compiled-project.reraproj")).rejects.toMatchObject({
+    await expect(cacheDirectory.getFileHandle("compiled-project.reracache")).rejects.toMatchObject({
       name: "NotFoundError",
     });
     expect(await (await (await root.getFileHandle("reraconfig.toml")).getFile()).text()).toBe(
@@ -410,7 +415,7 @@ describe("browser project reads", () => {
     const root = new SaveDirectoryHandle("game");
     const privateDirectory = await root.getDirectoryHandle(".rustyera", { create: true });
     const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
-    const cache = await cacheDirectory.getFileHandle("compiled-project.reraproj", {
+    const cache = await cacheDirectory.getFileHandle("compiled-project.reracache", {
       create: true,
     });
     await (await cache.createWritable()).write(new TextEncoder().encode("stale-cache"));
@@ -429,7 +434,7 @@ describe("browser project reads", () => {
     expect(await (await (await root.getFileHandle("reraconfig.toml")).getFile()).text()).toBe(
       "[audio]\nvolume = 42\n",
     );
-    await expect(cacheDirectory.getFileHandle("compiled-project.reraproj")).resolves.toBe(cache);
+    await expect(cacheDirectory.getFileHandle("compiled-project.reracache")).resolves.toBe(cache);
   });
 
   it("treats repeated first-time writes as idempotent and rejects non-UTF-8 TOML", async () => {
@@ -608,6 +613,30 @@ describe("browser project reads", () => {
       [3, 4],
       [4, 4],
     ]);
+  });
+
+  it("stops scheduling after cancellation and waits for started readers to clean up", async () => {
+    const controller = new AbortController();
+    const release = deferred<void>();
+    const started: number[] = [];
+    const cleaned: number[] = [];
+    const tasks = Array.from({ length: 6 }, (_, index) => async () => {
+      started.push(index);
+      try {
+        await release.promise;
+      } finally {
+        cleaned.push(index);
+      }
+    });
+
+    const reading = runBounded(tasks, 2, undefined, controller.signal);
+    await Promise.resolve();
+    controller.abort(new DOMException("cancelled", "AbortError"));
+    release.resolve();
+
+    await expect(reading).rejects.toMatchObject({ name: "AbortError" });
+    expect(started).toEqual([0, 1]);
+    expect(cleaned).toEqual([0, 1]);
   });
 });
 

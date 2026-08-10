@@ -41,6 +41,10 @@ const specProfiles = {
     environmentFlag: "VITE_RUSTYERA_TAURI_PROJECT_CONFIGURATION",
     copyProject: true,
   },
+  "full-project-export.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_FULL_PROJECT_EXPORT",
+    copyProject: true,
+  },
   "akuma-maid-images.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_AKUMA_MAID_IMAGES",
   },
@@ -114,8 +118,12 @@ const environment = {
     project,
     ".rustyera",
     "cache",
-    "compiled-project.reraproj",
+    "compiled-project.reracache",
   ),
+  VITE_RUSTYERA_TAURI_EXPORT_PATH:
+    specName === "full-project-export.spec.mjs"
+      ? path.join(project, ".rustyera", "full-export.reraproj")
+      : "",
   VITE_RUSTYERA_TEST_STATE: state ?? "",
   VITE_RUSTYERA_TEST_STATE_TYPE: configuredStateType,
   ...Object.fromEntries(

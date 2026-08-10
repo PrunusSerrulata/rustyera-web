@@ -5,6 +5,7 @@ import AboutDialog from "@/components/AboutDialog.vue";
 import AppMenuBar from "@/components/AppMenuBar.vue";
 import DebugDialogs from "@/components/DebugDialogs.vue";
 import FaultDialog from "@/components/FaultDialog.vue";
+import FullProjectExportDialog from "@/components/FullProjectExportDialog.vue";
 import GameProgressLossDialog from "@/components/GameProgressLossDialog.vue";
 import GameViewport from "@/components/GameViewport.vue";
 import LogDialog from "@/components/LogDialog.vue";
@@ -128,6 +129,12 @@ onMounted(() => void store.initialize());
       :action="store.gameProgressLossConfirmation"
       @cancel="store.cancelGameProgressLossAction"
       @confirm="store.confirmGameProgressLossAction"
+    />
+    <FullProjectExportDialog
+      :open="store.projectFileExporting"
+      :label="store.projectFileExportProgressLabel"
+      :value="store.projectFileExportProgressValue"
+      @cancel="store.cancelProjectFileExport"
     />
     <TraditionalSaveDialog
       :open="store.traditionalSaveDialogMode != null"

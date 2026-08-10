@@ -18,6 +18,7 @@ mod storage;
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -28,8 +29,9 @@ use era_runtime::{
 };
 use era_runtime_protocol::{
     DECODE_CANVAS_IMAGE_OPERATION, DecodeCanvasImageRequest, DecodeCanvasImageResponse,
-    IMAGE_METADATA_OPERATION, ImageMetadataRequest, ImageMetadataResponse, RuntimeMessage,
-    ServiceKind, ServiceRequest, ServiceResponse, ServiceResult, StorageRequest, StorageResponse,
+    FullProjectManifest, IMAGE_METADATA_OPERATION, ImageMetadataRequest, ImageMetadataResponse,
+    RuntimeMessage, ServiceKind, ServiceRequest, ServiceResponse, ServiceResult, StorageRequest,
+    StorageResponse,
 };
 use era_web_bridge::{FRONTEND_PUMP_MAXIMUM_QUIET_SLICES, WebSession, WebSessionOptions};
 use serde::{Deserialize, Serialize};
@@ -50,6 +52,7 @@ struct AppState {
     storage: Arc<Mutex<Option<StorageHost>>>,
     cache_writer: Arc<Mutex<Option<AtomicFileWriter>>>,
     export_writer: Arc<Mutex<Option<AtomicFileWriter>>>,
+    full_project_cancelled: Arc<AtomicBool>,
 }
 
 struct AtomicFileWriter {
@@ -146,6 +149,52 @@ async fn submit_runtime(
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn stage_full_project_manifest(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state.full_project_cancelled.store(false, Ordering::Relaxed);
+        let progress = |completed, total| {
+            let _ = app.emit(
+                "project-progress",
+                ProjectProgress {
+                    stage: ProjectProgressStage::Scanning,
+                    completed: u64::try_from(completed).unwrap_or(u64::MAX),
+                    total: u64::try_from(total).unwrap_or(u64::MAX),
+                },
+            );
+        };
+        let manifest = {
+            let mut project = state.project.lock().map_err(lock_error)?;
+            project
+                .as_mut()
+                .ok_or_else(|| "no project is open".to_owned())?
+                .materialize_with_progress_and_cancel(
+                    Some(&progress),
+                    Some(&state.full_project_cancelled),
+                )?
+                .clone()
+        };
+        with_session(&state, |session| {
+            session.submit_runtime(
+                &RuntimeMessage::FullProjectManifest(FullProjectManifest { manifest }),
+                None,
+            )
+        })?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+fn cancel_full_project_export(state: State<'_, AppState>) {
+    state.full_project_cancelled.store(true, Ordering::Relaxed);
 }
 
 #[tauri::command]
@@ -271,6 +320,7 @@ async fn open_project(
             })
             .is_ok()
             {
+                host.mark_runtime_manifest_sparse();
                 true
             } else {
                 let source_started = Instant::now();
@@ -443,13 +493,13 @@ async fn write_project_configuration(
 ) -> Result<(), String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        state
-            .project
-            .lock()
-            .map_err(lock_error)?
+        let project = state.project.lock().map_err(lock_error)?;
+        let project = project
             .as_ref()
-            .ok_or_else(|| "no project is open".to_owned())?
-            .write_configuration(&expected_digest, &contents)
+            .ok_or_else(|| "no project is open".to_owned())?;
+        project.write_configuration(&expected_digest, &contents)?;
+        project.invalidate_compiled_cache();
+        Ok(())
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
@@ -597,7 +647,7 @@ fn write_compiled_cache_chunk_inner(
         let directory = root.join(".rustyera/cache");
         fs::create_dir_all(&directory)
             .map_err(|error| format!("cannot create compiled cache directory: {error}"))?;
-        let target = directory.join("compiled-project.reraproj");
+        let target = directory.join("compiled-project.reracache");
         let temporary = tempfile::NamedTempFile::new_in(&directory)
             .map_err(|error| format!("cannot create temporary compiled cache: {error}"))?;
         *state.cache_writer.lock().map_err(lock_error)? =
@@ -610,7 +660,19 @@ fn write_compiled_cache_chunk_inner(
         "compiled cache write has not started",
         "compiled cache writer disappeared",
         "compiled cache",
-    )
+    )?;
+    if complete {
+        let root = state
+            .project
+            .lock()
+            .map_err(lock_error)?
+            .as_ref()
+            .ok_or_else(|| "no project is open".to_owned())?
+            .root()
+            .to_owned();
+        let _ = fs::remove_file(root.join(".rustyera/cache/compiled-project.reraproj"));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -768,6 +830,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             create_session,
             submit_runtime,
+            stage_full_project_manifest,
             submit_debug,
             pump,
             open_project,
@@ -784,6 +847,7 @@ pub fn run() {
             write_export,
             write_export_chunk,
             cancel_export,
+            cancel_full_project_export,
             write_compiled_cache_chunk,
             cancel_compiled_cache_export,
             read_import,
@@ -812,7 +876,7 @@ mod tests {
             fs::read(
                 directory
                     .path()
-                    .join(".rustyera/cache/compiled-project.reraproj")
+                    .join(".rustyera/cache/compiled-project.reracache")
             )
             .unwrap(),
             b"firstsecond"
@@ -836,7 +900,7 @@ mod tests {
         assert!(
             !directory
                 .path()
-                .join(".rustyera/cache/compiled-project.reraproj")
+                .join(".rustyera/cache/compiled-project.reracache")
                 .exists()
         );
     }

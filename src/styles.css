@@ -118,6 +118,14 @@ select {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.full-project-export {
+  min-width: min(28rem, 75vw);
+}
+
+.full-project-export progress {
+  width: 100%;
+}
 .menu-bar {
   display: flex;
   align-items: center;

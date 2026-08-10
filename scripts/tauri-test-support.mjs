@@ -3,7 +3,6 @@
 import path from "node:path";
 
 const SNAPSHOT_INTERVAL_MS = 5_000;
-const PROJECT_CACHE_STALL_LIMIT_MS = 120_000;
 
 export function resolveTauriBinary(repository, release, platform = process.platform) {
   const profile = release ? "release" : "debug";
@@ -63,37 +62,6 @@ export function snapshotProgressSignature(snapshot) {
   return JSON.stringify(withoutReportMetadata(snapshot));
 }
 
-export function nextSnapshotStallState(
-  previousSnapshot,
-  currentSnapshot,
-  cacheStableSince,
-  now,
-  cacheStallLimit = PROJECT_CACHE_STALL_LIMIT_MS,
-  label = "Tauri",
-) {
-  if (
-    previousSnapshot == null ||
-    snapshotProgressSignature(previousSnapshot) !== snapshotProgressSignature(currentSnapshot)
-  ) {
-    return undefined;
-  }
-  const cacheExport = currentSnapshot.runtime?.transfer?.export;
-  const buildingProjectCache =
-    currentSnapshot.runtime?.status === "正在后台生成项目文件…" ||
-    cacheExport?.name === "compiled-project.reraproj";
-  if (!buildingProjectCache) {
-    assertSnapshotProgress(previousSnapshot, currentSnapshot, label);
-    return undefined;
-  }
-  const stableSince = cacheStableSince ?? now;
-  if (now - stableSince >= cacheStallLimit) {
-    throw new Error(
-      `${label} project cache generation stalled for ${cacheStallLimit}ms: ${JSON.stringify(currentSnapshot)}`,
-    );
-  }
-  return stableSince;
-}
-
 export function startTauriSessionMonitor(
   browser,
   {
@@ -104,7 +72,6 @@ export function startTauriSessionMonitor(
     label = "Tauri",
     output = console.log,
     snapshotContext = () => undefined,
-    projectCacheStallLimit = PROJECT_CACHE_STALL_LIMIT_MS,
   } = {},
 ) {
   let stopped = false;
@@ -129,7 +96,6 @@ export function startTauriSessionMonitor(
 
   async function monitor() {
     let previousSnapshot;
-    let cacheStableSince;
     let nextTick = Date.now();
     try {
       while (!stopped) {
@@ -157,14 +123,7 @@ export function startTauriSessionMonitor(
             ...snapshot,
           }),
         );
-        cacheStableSince = nextSnapshotStallState(
-          previousSnapshot,
-          snapshot,
-          cacheStableSince,
-          Date.now(),
-          projectCacheStallLimit,
-          label,
-        );
+        assertSnapshotProgress(previousSnapshot, snapshot, label);
         previousSnapshot = snapshot;
         if (stopped) break;
         nextTick += interval;

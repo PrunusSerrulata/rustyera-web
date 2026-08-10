@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eraTW",
+  "mode": "fixed",
+  "seed": 1,
+  "actions": [
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "导出全量项目文件…", "exact": true },
+      "observe": false,
+      "settle_ms": 100
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "dialog", "name": "导出全量项目文件", "exact": true },
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".prompt-bar input" },
+      "expect": { "count": 1, "enabled": false }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "dialog", "name": "导出全量项目文件", "exact": true },
+      "expect": { "count": 0 }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".prompt-bar input" },
+      "expect": { "count": 1, "enabled": true }
+    }
+  ],
+  "limits": {
+    "max_steps": 20,
+    "timeout_seconds": 900
+  }
+}

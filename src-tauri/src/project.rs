@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 #[cfg(not(unix))]
@@ -25,7 +26,7 @@ const RESOURCE_SUFFIXES: &[&str] = &[
 ];
 const AUDIO_SUFFIXES: &[&str] = &["wav", "mp3", "ogg", "opus", "aac", "m4a", "flac"];
 const SOURCE_INDEX_VERSION: u32 = 1;
-const COMPILED_CACHE_NAME: &str = "compiled-project.reraproj";
+const COMPILED_CACHE_NAME: &str = "compiled-project.reracache";
 
 #[derive(Clone)]
 struct IndexedFile {
@@ -58,6 +59,7 @@ pub struct ProjectHost {
     revision: u64,
     embedded_resources: BTreeMap<String, Vec<u8>>,
     project_file: Option<PathBuf>,
+    runtime_manifest_sparse: bool,
 }
 
 impl ProjectHost {
@@ -110,6 +112,7 @@ impl ProjectHost {
             revision,
             embedded_resources: BTreeMap::new(),
             project_file: None,
+            runtime_manifest_sparse: false,
         })
     }
 
@@ -219,6 +222,7 @@ impl ProjectHost {
             revision,
             embedded_resources: BTreeMap::new(),
             project_file: None,
+            runtime_manifest_sparse: false,
         })
     }
 
@@ -260,11 +264,16 @@ impl ProjectHost {
             revision: decoded.identity.project_revision,
             embedded_resources,
             project_file: Some(path),
+            runtime_manifest_sparse: false,
         })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn mark_runtime_manifest_sparse(&mut self) {
+        self.runtime_manifest_sparse = true;
     }
 
     pub fn write_configuration(
@@ -354,6 +363,12 @@ impl ProjectHost {
         Ok(())
     }
 
+    pub fn invalidate_compiled_cache(&self) {
+        if self.project_file.is_none() {
+            let _ = fs::remove_file(self.root.join(".rustyera/cache").join(COMPILED_CACHE_NAME));
+        }
+    }
+
     pub fn identity(&self) -> ProjectIdentity {
         let mut hasher = blake3::Hasher::new_derive_key("rustyera.project-source-identity.v1");
         for file in &self.indexed_files {
@@ -378,6 +393,14 @@ impl ProjectHost {
         &mut self,
         progress: Option<&dyn Fn(usize, usize)>,
     ) -> Result<&ProjectManifest, String> {
+        self.materialize_with_progress_and_cancel(progress, None)
+    }
+
+    pub fn materialize_with_progress_and_cancel(
+        &mut self,
+        progress: Option<&dyn Fn(usize, usize)>,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<&ProjectManifest, String> {
         if self.manifest.is_none() {
             if let Some(progress) = progress {
                 progress(0, self.indexed_files.len());
@@ -397,6 +420,13 @@ impl ProjectHost {
                     scope.spawn(move || {
                         let base = chunk_index.saturating_mul(chunk_size);
                         for (offset, indexed) in chunk.iter_mut().enumerate() {
+                            if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                                let _ = sender.send((
+                                    base + offset,
+                                    Err("full project export cancelled".to_owned()),
+                                ));
+                                break;
+                            }
                             let result = materialize_indexed_file(root, indexed);
                             if sender.send((base + offset, result)).is_err() {
                                 break;
@@ -408,6 +438,9 @@ impl ProjectHost {
 
                 let mut ordered = (0..total).map(|_| None).collect::<Vec<_>>();
                 for completed in 1..=total {
+                    if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                        return Err("full project export cancelled".into());
+                    }
                     let (index, file) = receiver
                         .recv()
                         .map_err(|error| format!("project file reader stopped early: {error}"))?;
@@ -477,25 +510,34 @@ impl ProjectHost {
             .chain(new.keys())
             .copied()
             .collect::<BTreeSet<_>>();
-        let changes = paths
-            .into_iter()
-            .filter_map(|path| match (old.get(path), new.get(path)) {
-                (Some(previous), Some(current))
-                    if previous.category == current.category
-                        && previous.content_hash == current.content_hash =>
-                {
-                    None
-                }
-                (_, Some(current)) => Some(FileChange::Upsert {
-                    file: (*current).clone(),
-                }),
-                (Some(previous), None) => Some(FileChange::Remove {
-                    category: previous.category,
-                    relative_path: previous.relative_path.clone(),
-                }),
-                (None, None) => None,
-            })
-            .collect();
+        let changes = if self.runtime_manifest_sparse {
+            new_manifest
+                .files
+                .iter()
+                .cloned()
+                .map(|file| FileChange::Upsert { file })
+                .collect()
+        } else {
+            paths
+                .into_iter()
+                .filter_map(|path| match (old.get(path), new.get(path)) {
+                    (Some(previous), Some(current))
+                        if previous.category == current.category
+                            && previous.content_hash == current.content_hash =>
+                    {
+                        None
+                    }
+                    (_, Some(current)) => Some(FileChange::Upsert {
+                        file: (*current).clone(),
+                    }),
+                    (Some(previous), None) => Some(FileChange::Remove {
+                        category: previous.category,
+                        relative_path: previous.relative_path.clone(),
+                    }),
+                    (None, None) => None,
+                })
+                .collect()
+        };
         let request = ReloadProject {
             base_revision: self.revision,
             target_revision: candidate.revision,
@@ -942,6 +984,24 @@ mod tests {
                 .join(".rustyera/cache/source-index-v1.json")
                 .is_file()
         );
+    }
+
+    #[test]
+    fn full_project_materialization_honors_cancellation() {
+        let directory = tempfile::tempdir().unwrap();
+        let erb = directory.path().join("ERB");
+        fs::create_dir(&erb).unwrap();
+        fs::write(erb.join("main.erb"), "@MAIN\nRETURN\n").unwrap();
+        let mut project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+        let cancelled = AtomicBool::new(true);
+
+        assert_eq!(
+            project
+                .materialize_with_progress_and_cancel(None, Some(&cancelled))
+                .unwrap_err(),
+            "full project export cancelled"
+        );
+        assert!(project.manifest.is_none());
     }
 
     #[test]

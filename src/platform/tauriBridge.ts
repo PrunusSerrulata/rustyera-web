@@ -297,13 +297,21 @@ export class TauriBridge implements FrontendBridge {
   }
 
   async beginProjectFileExport(name: string): Promise<boolean> {
-    const path = await save({
-      defaultPath: name,
-      filters: [{ name: "RustyEra 项目", extensions: ["reraproj"] }],
-    });
+    const testPath = import.meta.env.VITE_RUSTYERA_TAURI_EXPORT_PATH;
+    const path =
+      testPath ||
+      (await save({
+        defaultPath: name,
+        filters: [{ name: "RustyEra 项目", extensions: ["reraproj"] }],
+      }));
     if (!path) return false;
     this.projectFileExportPath = path;
     return true;
+  }
+
+  async stageFullProjectManifest(): Promise<void> {
+    if (this.projectIsFile) return;
+    await invoke("stage_full_project_manifest");
   }
 
   async writeProjectFileChunk(bytes: Uint8Array, reset: boolean, complete: boolean): Promise<void> {
@@ -314,6 +322,7 @@ export class TauriBridge implements FrontendBridge {
   }
 
   async cancelProjectFileExport(): Promise<void> {
+    await invoke("cancel_full_project_export").catch(() => undefined);
     if (!this.projectFileExportPath) return;
     await invoke("cancel_export").catch(() => undefined);
     this.projectFileExportPath = undefined;

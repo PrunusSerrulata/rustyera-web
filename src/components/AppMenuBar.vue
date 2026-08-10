@@ -42,7 +42,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
           :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
           @click="action(store.exportProjectFile)"
         >
-          导出项目文件…
+          导出全量项目文件…
         </button>
         <button
           :disabled="!store.runtimeReady || store.gameInteractionsBlocked"

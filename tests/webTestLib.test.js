@@ -164,13 +164,13 @@ describe("web game test scenario", () => {
     const project = path.join(root, "project");
     const cache = path.join(project, ".rustyera", "cache");
     await mkdir(cache, { recursive: true });
-    await writeFile(path.join(cache, "compiled-project.reraproj"), "cache");
+    await writeFile(path.join(cache, "compiled-project.reracache"), "cache");
     await writeFile(path.join(cache, "source-index-v1.json"), "index");
 
     const isolated = await isolatedProject(project, { compiledCache: true });
 
     await expect(
-      access(path.join(isolated.project, ".rustyera", "cache", "compiled-project.reraproj")),
+      access(path.join(isolated.project, ".rustyera", "cache", "compiled-project.reracache")),
     ).resolves.toBeUndefined();
     await expect(
       access(path.join(isolated.project, ".rustyera", "cache", "source-index-v1.json")),

@@ -19,6 +19,7 @@ const PROJECT_PROGRESS_LABELS: Record<ProjectProgress["stage"], string> = {
   validating: "正在验证编译结果",
   finalizing: "正在整理编译结果",
   preparing: "正在准备 Runtime 资源",
+  packaging: "正在打包全量项目文件",
 };
 
 export function formatProjectProgress(progress: ProjectProgress): string {

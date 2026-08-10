@@ -69,7 +69,8 @@ export type ProjectProgressStage =
   | "compiling"
   | "validating"
   | "finalizing"
-  | "preparing";
+  | "preparing"
+  | "packaging";
 
 export interface ProjectProgress {
   stage: ProjectProgressStage;
@@ -142,6 +143,7 @@ export interface FrontendBridge {
   projectName(): string | undefined;
   openUpload(): Promise<Uint8Array | undefined>;
   saveDownload(name: string, bytes: Uint8Array): Promise<boolean>;
+  stageFullProjectManifest(): Promise<void>;
   beginProjectFileExport(name: string): Promise<boolean>;
   writeProjectFileChunk(bytes: Uint8Array, reset: boolean, complete: boolean): Promise<void>;
   cancelProjectFileExport(): Promise<void>;
