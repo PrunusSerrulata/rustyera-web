@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { blake3 } from "@noble/hashes/blake3.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const invoke = vi.hoisted(() => vi.fn());
 const open = vi.hoisted(() => vi.fn());
@@ -19,6 +20,15 @@ vi.mock("@tauri-apps/api/event", () => ({ listen }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open, save: vi.fn() }));
 
 import { TauriBridge } from "@/platform/tauriBridge";
+import { sfntFont } from "./fontFixture";
+
+function mockNativeProject(metrics: Record<string, unknown>): void {
+  invoke.mockImplementation(async (command) => (command === "project_font_sources" ? [] : metrics));
+}
+
+function commandCalls(command: string): unknown[][] {
+  return invoke.mock.calls.filter((call) => call[0] === command);
+}
 
 describe("Tauri project restart", () => {
   beforeEach(() => {
@@ -32,6 +42,11 @@ describe("Tauri project restart", () => {
     currentWindow.unmaximize.mockResolvedValue(undefined);
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(document, "fonts");
+  });
+
   it("reopens the selected project path after runtime session recreation", async () => {
     const metrics = {
       quickScanMs: 1,
@@ -41,14 +56,64 @@ describe("Tauri project restart", () => {
       cacheImported: true,
     };
     open.mockResolvedValue("/game/eraTW");
-    invoke.mockResolvedValue(metrics);
+    mockNativeProject(metrics);
     const bridge = new TauriBridge();
 
     await bridge.openProject();
     await bridge.restartProject();
 
-    expect(invoke).toHaveBeenNthCalledWith(1, "open_project", { path: "/game/eraTW" });
-    expect(invoke).toHaveBeenNthCalledWith(2, "open_project", { path: "/game/eraTW" });
+    expect(commandCalls("open_project")).toEqual([
+      ["open_project", { path: "/game/eraTW" }],
+      ["open_project", { path: "/game/eraTW" }],
+    ]);
+  });
+
+  it("registers native project font bytes and exposes their family to settings", async () => {
+    const added: Array<{ family: string }> = [];
+    class TestFontFace {
+      constructor(
+        readonly family: string,
+        readonly source: ArrayBuffer,
+      ) {}
+      async load() {
+        return this;
+      }
+    }
+    vi.stubGlobal("FontFace", TestFontFace);
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: {
+        add: (face: { family: string }) => added.push(face),
+        delete: () => true,
+      },
+    });
+    open.mockResolvedValue("/game/project");
+    const bytes = sfntFont([{ nameId: 1, value: "Project Font" }]);
+    invoke.mockImplementation(async (command) => {
+      if (command === "open_project")
+        return {
+          quickScanMs: 1,
+          cacheReadMs: 0,
+          sourceReadMs: 0,
+          submitMs: 1,
+          cacheImported: false,
+        };
+      if (command === "project_font_sources")
+        return [
+          {
+            relativePath: "font/Project.ttf",
+            contentHash: [...blake3(bytes)],
+          },
+        ];
+      if (command === "read_project_font") return [...bytes];
+      return undefined;
+    });
+    const bridge = new TauriBridge();
+
+    const metrics = await bridge.openProject();
+
+    expect(metrics?.projectFonts).toEqual({ fonts: ["Project Font"], errors: [] });
+    expect(added.map((face) => face.family)).toEqual(["Project Font"]);
   });
 
   it("rejects restart before a project has been selected", async () => {
@@ -65,10 +130,12 @@ describe("Tauri project restart", () => {
 
   it("keeps the previous project when opening a replacement fails", async () => {
     open.mockResolvedValueOnce("/game/old").mockResolvedValueOnce("/game/broken");
-    invoke
-      .mockResolvedValueOnce({ cacheImported: true })
-      .mockRejectedValueOnce(new Error("compile failed"))
-      .mockResolvedValueOnce({ cacheImported: true });
+    invoke.mockImplementation(async (command, arguments_) => {
+      if (command === "project_font_sources") return [];
+      if (command === "open_project" && arguments_?.path === "/game/broken")
+        throw new Error("compile failed");
+      return { cacheImported: true };
+    });
     const bridge = new TauriBridge();
 
     await bridge.openProject();
@@ -76,30 +143,28 @@ describe("Tauri project restart", () => {
     await bridge.restartProject();
 
     expect(bridge.projectName()).toBe("old");
-    expect(invoke).toHaveBeenLastCalledWith("open_project", { path: "/game/old" });
+    expect(commandCalls("open_project").at(-1)).toEqual(["open_project", { path: "/game/old" }]);
   });
 
   it("reopens a selected project file through the packaged-project command", async () => {
     open.mockResolvedValue("/game/eraTW.reraproj");
-    invoke.mockResolvedValue({ cacheImported: true });
+    mockNativeProject({ cacheImported: true });
     const bridge = new TauriBridge();
 
     await bridge.openProjectFile();
     await bridge.restartProject();
 
-    expect(invoke).toHaveBeenNthCalledWith(1, "open_project_file", {
-      path: "/game/eraTW.reraproj",
-    });
-    expect(invoke).toHaveBeenNthCalledWith(2, "open_project_file", {
-      path: "/game/eraTW.reraproj",
-    });
+    expect(commandCalls("open_project_file")).toEqual([
+      ["open_project_file", { path: "/game/eraTW.reraproj" }],
+      ["open_project_file", { path: "/game/eraTW.reraproj" }],
+    ]);
     expect(bridge.projectName()).toBe("eraTW");
     expect(bridge.projectConfigurationWritable()).toBe(true);
   });
 
   it("writes configuration only for an opened source directory", async () => {
     open.mockResolvedValue("/game/eraTW");
-    invoke.mockResolvedValue({ cacheImported: false });
+    mockNativeProject({ cacheImported: false });
     const bridge = new TauriBridge();
 
     expect(bridge.projectConfigurationWritable()).toBe(false);
@@ -136,7 +201,7 @@ describe("Tauri project restart", () => {
     "submits and prepares the selected %s before native I/O",
     async (_kind, method, path) => {
       open.mockResolvedValue(path);
-      invoke.mockResolvedValue({
+      mockNativeProject({
         quickScanMs: 1,
         cacheReadMs: 2,
         sourceReadMs: 3,

@@ -1,5 +1,7 @@
 import { blake3 } from "@noble/hashes/blake3.js";
 
+import { isPackagedProjectFontPath, type ProjectFontSource } from "@/platform/projectFonts";
+
 const RESOURCE_SUFFIXES = new Set([
   "bmp",
   "gif",
@@ -16,6 +18,7 @@ const RESOURCE_SUFFIXES = new Set([
   "flac",
 ]);
 const AUDIO_SUFFIXES = new Set(["wav", "mp3", "ogg", "opus", "aac", "m4a", "flac"]);
+const FONT_SUFFIXES = new Set(["otf", "ttc", "ttf", "woff", "woff2"]);
 const SOURCE_INDEX_VERSION = 1;
 const SOURCE_INDEX_NAME = "source-index-v1.json";
 
@@ -480,6 +483,18 @@ export class BrowserProject {
     if (!handle) throw new Error(`未知资源：${relativePath}`);
     const file = await handle.getFile();
     return new Uint8Array(await file.slice(0, maximumBytes).arrayBuffer());
+  }
+
+  fontSources(): ProjectFontSource[] {
+    return (this.manifestValue?.files ?? [])
+      .filter(
+        (file) => file.category === "resource" && isPackagedProjectFontPath(file.relative_path),
+      )
+      .map((file) => ({
+        relativePath: file.relative_path,
+        contentHash: new Uint8Array(file.content_hash),
+        read: () => this.readResource(file.relative_path),
+      }));
   }
 
   async listTraditionalSaveSlots(slotCount: number): Promise<BrowserTraditionalSaveSlot[]> {
@@ -956,6 +971,7 @@ function classify(path: string, roots: ReadonlySet<string>): string | undefined 
     return RESOURCE_SUFFIXES.has(suffix) ? "resource" : undefined;
   }
   if (first === "sound") return AUDIO_SUFFIXES.has(suffix) ? "resource" : undefined;
+  if (first === "font") return FONT_SUFFIXES.has(suffix) ? "resource" : undefined;
   if ((suffix === "erb" || suffix === "erh") && roots.has("erb") && first !== "erb") return;
   if (suffix === "csv" && roots.has("csv") && first !== "csv") return;
   if (suffix === "config" && roots.has("csv") && parts.length > 1 && first !== "csv") return;

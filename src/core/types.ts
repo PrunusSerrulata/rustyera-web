@@ -52,6 +52,7 @@ export interface ProjectOpenMetrics {
   sourceReadMs: number;
   submitMs: number;
   cacheImported: boolean;
+  projectFonts: ProjectFontLoadResult;
 }
 
 export type ProjectSubmittedListener = (submittedAtMs: number) => void;
@@ -103,6 +104,11 @@ export type SystemFontQueryResult =
 
 export type FontAccessStatus = "idle" | "loading" | "ready" | "unsupported" | "denied" | "error";
 
+export interface ProjectFontLoadResult {
+  fonts: string[];
+  errors: string[];
+}
+
 export interface FrontendBridge {
   readonly kind: "tauri" | "browser";
   readonly traditionalSaves?: TraditionalSaveAccess;
@@ -121,7 +127,7 @@ export interface FrontendBridge {
   ): Promise<ProjectOpenMetrics | undefined>;
   restartProject(onSubmitted?: ProjectSubmittedListener): Promise<ProjectOpenMetrics>;
   submitProjectSource(): Promise<void>;
-  reloadProject(): Promise<void>;
+  reloadProject(): Promise<ProjectFontLoadResult>;
   readResource(relativePath: string): Promise<Uint8Array>;
   readImageMetadata(relativePath: string): Promise<{
     width: number;

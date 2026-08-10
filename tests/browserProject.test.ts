@@ -9,6 +9,7 @@ import {
   normalizeResourceManifest,
   runBounded,
   saveSlotName,
+  scanBrowserProjectFile,
 } from "../src/platform/browserProject";
 import { loadBrowserProjectFile } from "../src/platform/browserProjectFile";
 
@@ -210,6 +211,43 @@ describe("browser resource manifest normalization", () => {
   });
 });
 
+describe("browser project font resources", () => {
+  it("packages supported files below the case-insensitive font directory", () => {
+    for (const extension of ["ttf", "otf", "ttc", "woff", "woff2"]) {
+      const bytes = new TextEncoder().encode(extension);
+      expect(scanBrowserProjectFile(`FoNt/game.${extension}`, bytes, new Set())).toMatchObject({
+        relative_path: `FoNt/game.${extension}`,
+        category: "resource",
+        payload: { type: "bytes", value: bytes },
+      });
+    }
+    expect(scanBrowserProjectFile("font/license.txt", new Uint8Array(), new Set())).toBeUndefined();
+  });
+
+  it("materializes font resources for full project exports and page registration", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const fonts = await root.getDirectoryHandle("font", { create: true });
+    await writeFixtureFile(fonts, "Project.ttf", Uint8Array.of(1, 2, 3));
+    const project = new BrowserProject(root as any);
+
+    const manifest = await project.scanQuick();
+
+    expect(manifest.files[0]).toMatchObject({
+      relative_path: "font/Project.ttf",
+      category: "resource",
+    });
+    const [font] = project.fontSources();
+    expect(font).toMatchObject({
+      relativePath: "font/Project.ttf",
+      contentHash: blake3(Uint8Array.of(1, 2, 3)),
+    });
+    await expect(font?.read()).resolves.toEqual(Uint8Array.of(1, 2, 3));
+    await expect(project.materialize()).resolves.toMatchObject({
+      files: [{ payload: { type: "bytes", value: Uint8Array.of(1, 2, 3) } }],
+    });
+  });
+});
+
 describe("browser project reads", () => {
   it("reuses a persistent stat index for warm project identity scans", async () => {
     const root = new SaveDirectoryHandle("game");
@@ -273,6 +311,7 @@ describe("browser project reads", () => {
     const root = new SaveDirectoryHandle("game");
     const resources = await root.getDirectoryHandle("resources", { create: true });
     const sound = await root.getDirectoryHandle("sound", { create: true });
+    const fonts = await root.getDirectoryHandle("font", { create: true });
     const nested = await root.getDirectoryHandle("sub", { create: true });
     const privateDirectory = await root.getDirectoryHandle(".RUSTYERA", { create: true });
     const privateCache = await privateDirectory.getDirectoryHandle("cache", { create: true });
@@ -284,6 +323,7 @@ describe("browser project reads", () => {
       `FACE, \t${decomposed} \t\r\nANIME, \tAnImE\t \nNOTE,\u00a0${decomposed}\u00a0\rMETA,a\u0085b`,
     );
     await writeFixtureFile(sound, "theme.MP3", "audio");
+    await writeFixtureFile(fonts, "Project.ttf", "font");
     await writeFixtureFile(sound, "ignored.erb", "@IGNORED");
     await writeFixtureFile(privateCache, "ignored.erb", "@PRIVATE");
     await writeFixtureFile(root, "reraconfig.toml", "[display]\nfont_size = 20\n");
@@ -291,9 +331,12 @@ describe("browser project reads", () => {
     await writeFixtureFile(root, "é.erb", "@ACCENTED\nRETURN\n");
     await writeFixtureFile(root, "z.erb", "@ASCII\nRETURN\n");
 
-    const manifest = await new BrowserProject(root as any).scanQuick();
+    const project = new BrowserProject(root as any);
+    const manifest = await project.scanQuick();
+    const quickIdentity = manifestIdentityHex(manifest);
 
     expect(manifest.files.map((file) => [file.relative_path, file.category])).toEqual([
+      ["font/Project.ttf", "resource"],
       ["reraconfig.toml", "configuration"],
       ["resources/sprites.csv", "resource_manifest"],
       ["resources/é.png", "resource"],
@@ -302,14 +345,13 @@ describe("browser project reads", () => {
       ["z.erb", "erb"],
       ["é.erb", "erb"],
     ]);
-    expect(manifest.files[1].payload).toEqual({
+    expect(manifest.files[2].payload).toEqual({
       type: "utf8",
       value: "FACE, \té.png \t\r\nANIME, \tAnImE\t \nNOTE,\u00a0é.png\u00a0\rMETA,a\u0085b",
     });
-    expect(manifest.files[4].payload).toEqual({ type: "utf8", value: "あ\n" });
-    expect(manifestIdentityHex(manifest)).toBe(
-      "50fbe8e1e7ad5492e29fab4b229ad35d31ccde47f9c078df86c1ee5c30ed7255",
-    );
+    expect(manifest.files[5].payload).toEqual({ type: "utf8", value: "あ\n" });
+    expect(quickIdentity).toBe("2554d3820c88d26cf3ddd33ba9896e9cc6397ce28669772cd0abd60539b2ae2b");
+    expect(manifestIdentityHex(await project.materialize())).toBe(quickIdentity);
   });
 
   it("rescans instead of mixing a quick snapshot with added or changed files", async () => {

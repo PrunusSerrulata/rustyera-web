@@ -33,6 +33,7 @@ const store = vi.hoisted(() => ({
   useMenu: true,
   gameLineHeightPx: 13,
   systemFonts: [],
+  availableFontFamilies: [],
   fontAccessStatus: "idle",
   fontAccessError: "",
   openProjectConfirmationOpen: false,

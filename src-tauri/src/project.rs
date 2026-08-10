@@ -25,6 +25,7 @@ const RESOURCE_SUFFIXES: &[&str] = &[
     "bmp", "gif", "jpeg", "jpg", "png", "webp", "wav", "mp3", "ogg", "opus", "aac", "m4a", "flac",
 ];
 const AUDIO_SUFFIXES: &[&str] = &["wav", "mp3", "ogg", "opus", "aac", "m4a", "flac"];
+const FONT_SUFFIXES: &[&str] = &["otf", "ttc", "ttf", "woff", "woff2"];
 const SOURCE_INDEX_VERSION: u32 = 1;
 const COMPILED_CACHE_NAME: &str = "compiled-project.reracache";
 
@@ -60,6 +61,13 @@ pub struct ProjectHost {
     embedded_resources: BTreeMap<String, Vec<u8>>,
     project_file: Option<PathBuf>,
     runtime_manifest_sparse: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFontSource {
+    pub relative_path: String,
+    pub content_hash: Vec<u8>,
 }
 
 impl ProjectHost {
@@ -270,6 +278,40 @@ impl ProjectHost {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn font_sources(&self) -> Vec<ProjectFontSource> {
+        self.indexed_files
+            .iter()
+            .filter(|file| is_project_font_path(&file.relative_path))
+            .map(|file| ProjectFontSource {
+                relative_path: file.relative_path.clone(),
+                content_hash: file.content_hash.to_vec(),
+            })
+            .collect()
+    }
+
+    pub fn read_font(&self, relative_path: &str) -> Result<Vec<u8>, String> {
+        let file = self
+            .indexed_files
+            .iter()
+            .find(|file| {
+                file.relative_path.eq_ignore_ascii_case(relative_path)
+                    && is_project_font_path(&file.relative_path)
+            })
+            .ok_or_else(|| "unknown project font".to_owned())?;
+        if let Some(bytes) = self
+            .embedded_resources
+            .get(&file.relative_path.to_lowercase())
+        {
+            return Ok(bytes.clone());
+        }
+        let path = file
+            .source_path
+            .as_deref()
+            .map_or_else(|| self.root.join(&file.relative_path), Path::to_owned);
+        fs::read(&path)
+            .map_err(|error| format!("cannot read project font {}: {error}", path.display()))
     }
 
     pub fn mark_runtime_manifest_sparse(&mut self) {
@@ -493,19 +535,15 @@ impl ProjectHost {
         if self.project_file.is_some() {
             return Err("a packaged project cannot reload source files".into());
         }
-        self.materialize_with_progress(progress)?;
         let candidate =
             Self::scan_with_progress(&self.root, self.revision.saturating_add(1), progress)?;
-        let old_manifest = self
-            .manifest
-            .as_ref()
-            .ok_or_else(|| "project manifest was not materialized".to_owned())?;
         let new_manifest = candidate
             .manifest
             .as_ref()
             .ok_or_else(|| "candidate manifest was not materialized".to_owned())?;
-        let old = by_path(old_manifest);
-        let new = by_path(new_manifest);
+        let old = indexed_by_path(&self.indexed_files);
+        let new = indexed_by_path(&candidate.indexed_files);
+        let new_files = by_path(new_manifest);
         let paths = old
             .keys()
             .chain(new.keys())
@@ -528,12 +566,15 @@ impl ProjectHost {
                     {
                         None
                     }
-                    (_, Some(current)) => Some(FileChange::Upsert {
-                        file: (*current).clone(),
+                    (_, Some(_)) => Some(FileChange::Upsert {
+                        file: (*new_files
+                            .get(path)
+                            .expect("candidate index must match its manifest"))
+                        .clone(),
                     }),
                     (Some(previous), None) => Some(FileChange::Remove {
                         category: previous.category,
-                        relative_path: previous.relative_path.clone(),
+                        relative_path: path.to_owned(),
                     }),
                     (None, None) => None,
                 })
@@ -832,6 +873,13 @@ fn by_path(manifest: &ProjectManifest) -> BTreeMap<&str, &SubmittedFile> {
         .collect()
 }
 
+fn indexed_by_path(files: &[IndexedFile]) -> BTreeMap<&str, &IndexedFile> {
+    files
+        .iter()
+        .map(|file| (file.relative_path.as_str(), file))
+        .collect()
+}
+
 fn include_entry(entry: &DirEntry) -> bool {
     entry.depth() == 0
         || !entry
@@ -878,6 +926,11 @@ fn classify(
             .contains(&extension.as_str())
             .then_some(FileCategory::Resource));
     }
+    if first == "font" {
+        return Ok(FONT_SUFFIXES
+            .contains(&extension.as_str())
+            .then_some(FileCategory::Resource));
+    }
     let category = match extension.as_str() {
         "csv" => FileCategory::Csv,
         "erh" => FileCategory::Erh,
@@ -902,6 +955,17 @@ fn classify(
         return Ok(None);
     }
     Ok(Some(category))
+}
+
+fn is_project_font_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let mut parts = normalized.split('/');
+    let first = parts.next().unwrap_or_default();
+    let extension = Path::new(&normalized)
+        .extension()
+        .map(|value| value.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    first.eq_ignore_ascii_case("font") && FONT_SUFFIXES.contains(&extension.as_str())
 }
 
 fn normalize_configuration_text(text: &str) -> String {
@@ -1007,6 +1071,46 @@ mod tests {
     }
 
     #[test]
+    fn font_directory_files_are_binary_resources_for_cross_frontend_exports() {
+        let root = Path::new("/project");
+        let canonical = BTreeSet::new();
+        for extension in ["ttf", "otf", "ttc", "woff", "woff2"] {
+            let path = root.join(format!("FoNt/sample.{extension}"));
+            assert_eq!(
+                classify(root, &path, &canonical).unwrap(),
+                Some(FileCategory::Resource)
+            );
+        }
+        assert_eq!(
+            classify(root, &root.join("font/license.txt"), &canonical).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn scanned_font_resources_remain_available_after_a_sparse_quick_scan() {
+        let directory = tempfile::tempdir().unwrap();
+        let fonts = directory.path().join("font");
+        fs::create_dir(&fonts).unwrap();
+        fs::write(fonts.join("Project.ttf"), b"font bytes").unwrap();
+        fs::write(fonts.join("license.txt"), b"not packaged").unwrap();
+
+        let project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+
+        let resources = project.font_sources();
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].relative_path, "font/Project.ttf");
+        assert_eq!(
+            resources[0].content_hash,
+            blake3::hash(b"font bytes").as_bytes()
+        );
+        assert_eq!(
+            project.read_font("font/Project.ttf").unwrap(),
+            b"font bytes"
+        );
+    }
+
+    #[test]
     fn resource_manifest_paths_are_normalized_to_nfc() {
         let directory = tempfile::tempdir().unwrap();
         let resources = directory.path().join("resources");
@@ -1037,9 +1141,10 @@ mod tests {
         let root = directory.path();
         let resources = root.join("resources");
         let sound = root.join("sound");
+        let fonts = root.join("font");
         let nested = root.join("sub");
         let private = root.join(".RUSTYERA/cache");
-        for path in [&resources, &sound, &nested, &private] {
+        for path in [&resources, &sound, &fonts, &nested, &private] {
             fs::create_dir_all(path).unwrap();
         }
         let decomposed = "e\u{301}.png";
@@ -1052,6 +1157,7 @@ mod tests {
         )
         .unwrap();
         fs::write(sound.join("theme.MP3"), b"audio").unwrap();
+        fs::write(fonts.join("Project.ttf"), b"font").unwrap();
         fs::write(sound.join("ignored.erb"), b"@IGNORED").unwrap();
         fs::write(private.join("ignored.erb"), b"@PRIVATE").unwrap();
         fs::write(root.join("reraconfig.toml"), b"[display]\nfont_size = 20\n").unwrap();
@@ -1069,6 +1175,7 @@ mod tests {
                 .map(|file| (file.relative_path.as_str(), file.category))
                 .collect::<Vec<_>>(),
             vec![
+                ("font/Project.ttf", FileCategory::Resource),
                 ("reraconfig.toml", FileCategory::Configuration),
                 ("resources/sprites.csv", FileCategory::ResourceManifest),
                 ("resources/\u{e9}.png", FileCategory::Resource),
@@ -1079,12 +1186,12 @@ mod tests {
             ]
         );
         assert!(matches!(
-            &manifest.files[1].payload,
+            &manifest.files[2].payload,
             FilePayload::Utf8(text)
                 if text == "FACE, \t\u{e9}.png \t\r\nANIME, \tAnImE\t \nNOTE,\u{a0}\u{e9}.png\u{a0}\rMETA,a\u{85}b"
         ));
         assert!(matches!(
-            &manifest.files[4].payload,
+            &manifest.files[5].payload,
             FilePayload::Utf8(text) if text == "\u{3042}\n"
         ));
         let digest: [u8; 32] = project
@@ -1095,7 +1202,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             encode_hash(&digest),
-            "50fbe8e1e7ad5492e29fab4b229ad35d31ccde47f9c078df86c1ee5c30ed7255"
+            "2554d3820c88d26cf3ddd33ba9896e9cc6397ce28669772cd0abd60539b2ae2b"
+        );
+        let mut quick = ProjectHost::scan_quick(root, 1).unwrap();
+        assert_eq!(quick.identity(), project.identity());
+        assert_eq!(
+            era_web_bridge::project_identity(quick.materialize().unwrap()).unwrap(),
+            project.identity()
         );
     }
 
@@ -1247,6 +1360,32 @@ mod tests {
                 .unwrap_err()
                 .contains("project changed while its source files were being loaded")
         );
+    }
+
+    #[test]
+    fn reload_uses_the_indexed_baseline_after_a_file_is_removed() {
+        let directory = tempfile::tempdir().unwrap();
+        let fonts = directory.path().join("font");
+        fs::create_dir(&fonts).unwrap();
+        fs::write(directory.path().join("main.erb"), "@MAIN\nRETURN\n").unwrap();
+        let removed = fonts.join("Project.ttf");
+        fs::write(&removed, b"font bytes").unwrap();
+        let mut project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+
+        fs::remove_file(removed).unwrap();
+        let request = project.reload_with_progress(None).unwrap();
+
+        assert_eq!(request.base_revision, 1);
+        assert_eq!(request.target_revision, 2);
+        assert_eq!(request.changes.len(), 1);
+        assert!(matches!(
+            &request.changes[0],
+            FileChange::Remove {
+                category: FileCategory::Resource,
+                relative_path,
+            } if relative_path == "font/Project.ttf"
+        ));
+        assert!(project.font_sources().is_empty());
     }
 
     #[test]

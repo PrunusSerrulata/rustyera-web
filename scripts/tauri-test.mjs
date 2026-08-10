@@ -45,6 +45,10 @@ const specProfiles = {
     environmentFlag: "VITE_RUSTYERA_TAURI_FULL_PROJECT_EXPORT",
     copyProject: true,
   },
+  "project-fonts.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_PROJECT_FONTS",
+    copyProject: true,
+  },
   "akuma-maid-images.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_AKUMA_MAID_IMAGES",
   },

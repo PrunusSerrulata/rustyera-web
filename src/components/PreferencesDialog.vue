@@ -18,7 +18,7 @@ const props = withDefaults(
   defineProps<{
     open: boolean;
     value: Preferences;
-    systemFonts: string[];
+    fontFamilies: string[];
     fontAccessStatus?: FontAccessStatus;
     fontAccessError?: string;
     hostKind: "browser" | "tauri";
@@ -267,7 +267,7 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
                     v-else-if="field.code === 'FontName'"
                     :id="`setting-${field.code}`"
                     v-model="configurationDraft[field.code]"
-                    :system-fonts="systemFonts"
+                    :font-families="fontFamilies"
                     :status="fontAccessStatus"
                     :error="fontAccessError"
                     :host-kind="hostKind"
@@ -305,7 +305,7 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
             </div>
           </fieldset>
           <datalist id="available-game-fonts">
-            <option v-for="font in systemFonts" :key="font" :value="font" />
+            <option v-for="font in fontFamilies" :key="font" :value="font" />
           </datalist>
         </template>
       </div>

@@ -42,7 +42,7 @@ use crate::ipc::{
     decode_value as decode_ipc_value, encode_pump_response as encode_ipc_response,
     encode_value as encode_ipc_value,
 };
-use crate::project::ProjectHost;
+use crate::project::{ProjectFontSource, ProjectHost};
 use crate::storage::StorageHost;
 
 #[derive(Clone, Default)]
@@ -486,6 +486,36 @@ async fn read_resource_prefix(
 }
 
 #[tauri::command]
+fn project_font_sources(state: State<'_, AppState>) -> Result<Vec<ProjectFontSource>, String> {
+    Ok(state
+        .project
+        .lock()
+        .map_err(lock_error)?
+        .as_ref()
+        .ok_or_else(|| "no project is open".to_owned())?
+        .font_sources())
+}
+
+#[tauri::command]
+async fn read_project_font(
+    state: State<'_, AppState>,
+    relative_path: String,
+) -> Result<Vec<u8>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .project
+            .lock()
+            .map_err(lock_error)?
+            .as_ref()
+            .ok_or_else(|| "no project is open".to_owned())?
+            .read_font(&relative_path)
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn write_project_configuration(
     state: State<'_, AppState>,
     expected_digest: Vec<u8>,
@@ -839,6 +869,8 @@ pub fn run() {
             reload_project,
             read_resource,
             read_resource_prefix,
+            project_font_sources,
+            read_project_font,
             write_project_configuration,
             storage_request,
             list_fonts,

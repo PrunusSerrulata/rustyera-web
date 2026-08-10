@@ -29,6 +29,7 @@ import {
 } from "@/platform/browserProject";
 import { database, loadBrowserPreferences, saveBrowserPreferences } from "@/platform/database";
 import { WorkerClient } from "@/platform/workerClient";
+import { ProjectFontRegistry } from "@/platform/projectFonts";
 
 const PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 
@@ -54,6 +55,7 @@ export class BrowserBridge implements FrontendBridge {
     writeSlot: (slot, bytes) => this.requireProject().writeTraditionalSave(slot, bytes),
   };
   private readonly worker = new WorkerClient();
+  private readonly projectFontRegistry = new ProjectFontRegistry();
   private project?: BrowserProject;
   private cacheWriter?: FileSystemWritableFileStream;
   private discardCompiledCacheExport = false;
@@ -144,6 +146,7 @@ export class BrowserBridge implements FrontendBridge {
     const quickScanMs = sourcesReady ? 0 : performance.now() - started;
     const loaded = await this.loadSourceProject(project, manifest, sourcesReady);
     this.project = project;
+    const projectFonts = await this.projectFontRegistry.replace(project.fontSources());
     return {
       submittedAtMs,
       quickScanMs,
@@ -151,6 +154,7 @@ export class BrowserBridge implements FrontendBridge {
       sourceReadMs: loaded.sourceReadMs,
       submitMs: loaded.submitMs,
       cacheImported: loaded.cacheImported,
+      projectFonts,
     } satisfies ProjectOpenMetrics;
   }
 
@@ -203,6 +207,7 @@ export class BrowserBridge implements FrontendBridge {
       this.prepareProjectConfigurationUpdate,
     );
     this.project.useEmbeddedManifest(manifest);
+    const projectFonts = await this.projectFontRegistry.replace(this.project.fontSources());
     return {
       submittedAtMs,
       quickScanMs: 0,
@@ -210,6 +215,7 @@ export class BrowserBridge implements FrontendBridge {
       sourceReadMs: 0,
       submitMs: performance.now() - started,
       cacheImported: true,
+      projectFonts,
     };
   }
 
@@ -234,6 +240,7 @@ export class BrowserBridge implements FrontendBridge {
         sourceReadMs: 0,
         submitMs: performance.now() - started,
         cacheImported: true,
+        projectFonts: await this.projectFontRegistry.replace(this.project.fontSources()),
       };
     }
     const started = performance.now();
@@ -253,10 +260,11 @@ export class BrowserBridge implements FrontendBridge {
       sourceReadMs: loaded.sourceReadMs,
       submitMs: loaded.submitMs,
       cacheImported: loaded.cacheImported,
+      projectFonts: await this.projectFontRegistry.replace(this.project.fontSources()),
     };
   }
 
-  async reloadProject(): Promise<void> {
+  async reloadProject() {
     if (!this.project) throw new Error("没有打开的项目");
     await this.submitRuntime({
       type: "reload_project",
@@ -264,6 +272,7 @@ export class BrowserBridge implements FrontendBridge {
         this.projectProgressListener?.({ stage: "scanning", completed, total }),
       ),
     });
+    return this.projectFontRegistry.replace(this.project.fontSources());
   }
 
   private async loadSourceProject(
@@ -631,6 +640,7 @@ export class BrowserBridge implements FrontendBridge {
   }
 
   async close(): Promise<void> {
+    this.projectFontRegistry.clear();
     this.worker.close();
   }
 }
@@ -708,7 +718,7 @@ export async function queryBrowserSystemFonts(
     const unique = new Map<string, string>();
     for (const font of available) {
       const family = font.family.trim();
-      const key = family.toLocaleLowerCase();
+      const key = family.toLowerCase();
       if (family && !unique.has(key)) unique.set(key, family);
     }
     return {

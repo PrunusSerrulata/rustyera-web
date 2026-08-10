@@ -6,7 +6,7 @@ import type { FontAccessStatus } from "@/core/types";
 const props = defineProps<{
   id: string;
   modelValue: string;
-  systemFonts: string[];
+  fontFamilies: string[];
   status: FontAccessStatus;
   error: string;
   hostKind: "browser" | "tauri";
@@ -25,8 +25,8 @@ const message = computed(() => {
         ? "正在等待浏览器授权并读取系统字体…"
         : "正在读取系统字体…";
     case "ready":
-      return props.systemFonts.length > 0
-        ? `已读取 ${props.systemFonts.length} 个系统字体。`
+      return props.fontFamilies.length > 0
+        ? `可选择 ${props.fontFamilies.length} 个项目或系统字体。`
         : "字体访问已授权，但没有返回可用的系统字体。";
     case "unsupported":
       return "此浏览器无法读取系统字体列表，请直接输入字体名称。";

@@ -103,7 +103,7 @@ onMounted(() => void store.initialize());
     <PreferencesDialog
       :open="store.preferencesOpen"
       :value="store.preferences"
-      :system-fonts="store.systemFonts"
+      :font-families="store.availableFontFamilies"
       :font-access-status="store.fontAccessStatus"
       :font-access-error="store.fontAccessError"
       :host-kind="store.bridgeKind"

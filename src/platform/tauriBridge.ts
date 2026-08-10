@@ -7,6 +7,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import type { DiagnosisArchiveInput } from "@/core/diagnosis";
 import { streamDiagnosisArchiveInWorker } from "@/platform/diagnosis";
+import { ProjectFontRegistry, type ProjectFontSource } from "@/platform/projectFonts";
 import type {
   DebugMessage,
   FrontendBridge,
@@ -23,7 +24,8 @@ import type {
 } from "@/core/types";
 
 const IPC_INTEGER_TAG = "$rustyeraInteger";
-type HostProjectOpenMetrics = Omit<ProjectOpenMetrics, "submittedAtMs">;
+type HostProjectOpenMetrics = Omit<ProjectOpenMetrics, "submittedAtMs" | "projectFonts">;
+type HostProjectFontSource = { relativePath: string; contentHash: number[] };
 
 function decodeIpcValue<T>(value: unknown): T {
   if (Array.isArray(value)) return value.map((item) => decodeIpcValue(item)) as T;
@@ -76,6 +78,7 @@ export class TauriBridge implements FrontendBridge {
   private projectProgressListener?: (progress: ProjectProgress) => void;
   private progressUnlisten?: Promise<UnlistenFn>;
   private projectFileExportPath?: string;
+  private readonly projectFontRegistry = new ProjectFontRegistry();
 
   setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void {
     this.projectProgressListener = listener;
@@ -127,7 +130,8 @@ export class TauriBridge implements FrontendBridge {
       const submittedAtMs = performance.now();
       onSubmitted?.(submittedAtMs);
       await prepareAfterSelection?.();
-      const metrics = await invoke<HostProjectOpenMetrics>("open_project", { path: testProject });
+      const response = await invoke<HostProjectOpenMetrics>("open_project", { path: testProject });
+      const metrics = await this.withProjectFonts(response);
       this.projectPath = testProject;
       this.projectIsFile = false;
       return { ...metrics, submittedAtMs };
@@ -139,7 +143,8 @@ export class TauriBridge implements FrontendBridge {
     await prepareAfterSelection?.();
     this.projectProgressListener?.({ stage: "scanning", completed: 0, total: 0 });
     if (this.progressUnlisten) await this.progressUnlisten;
-    const metrics = await invoke<HostProjectOpenMetrics>("open_project", { path });
+    const response = await invoke<HostProjectOpenMetrics>("open_project", { path });
+    const metrics = await this.withProjectFonts(response);
     this.projectPath = path;
     this.projectIsFile = false;
     return { ...metrics, submittedAtMs };
@@ -154,9 +159,10 @@ export class TauriBridge implements FrontendBridge {
       const submittedAtMs = performance.now();
       onSubmitted?.(submittedAtMs);
       await prepareAfterSelection?.();
-      const metrics = await invoke<HostProjectOpenMetrics>("open_project_file", {
+      const response = await invoke<HostProjectOpenMetrics>("open_project_file", {
         path: testProjectFile,
       });
+      const metrics = await this.withProjectFonts(response);
       this.projectPath = testProjectFile;
       this.projectIsFile = true;
       return { ...metrics, submittedAtMs };
@@ -171,7 +177,8 @@ export class TauriBridge implements FrontendBridge {
     const submittedAtMs = performance.now();
     onSubmitted?.(submittedAtMs);
     await prepareAfterSelection?.();
-    const metrics = await invoke<HostProjectOpenMetrics>("open_project_file", { path });
+    const response = await invoke<HostProjectOpenMetrics>("open_project_file", { path });
+    const metrics = await this.withProjectFonts(response);
     this.projectPath = path;
     this.projectIsFile = true;
     return { ...metrics, submittedAtMs };
@@ -182,18 +189,47 @@ export class TauriBridge implements FrontendBridge {
     const submittedAtMs = performance.now();
     onSubmitted?.(submittedAtMs);
     if (this.progressUnlisten) await this.progressUnlisten;
-    const metrics = await invoke<HostProjectOpenMetrics>(
+    const response = await invoke<HostProjectOpenMetrics>(
       this.projectIsFile ? "open_project_file" : "open_project",
       {
         path: this.projectPath,
       },
     );
+    const metrics = await this.withProjectFonts(response);
     return { ...metrics, submittedAtMs };
   }
 
-  async reloadProject(): Promise<void> {
+  private async withProjectFonts(
+    response: HostProjectOpenMetrics,
+  ): Promise<Omit<ProjectOpenMetrics, "submittedAtMs">> {
+    return { ...response, projectFonts: await this.activateProjectFonts() };
+  }
+
+  private async activateProjectFonts() {
+    try {
+      const sources = await invoke<HostProjectFontSource[]>("project_font_sources");
+      const projectSources: ProjectFontSource[] = sources.map((source) => ({
+        relativePath: source.relativePath,
+        contentHash: new Uint8Array(source.contentHash),
+        read: async () =>
+          new Uint8Array(
+            await invoke<number[]>("read_project_font", { relativePath: source.relativePath }),
+          ),
+      }));
+      return await this.projectFontRegistry.replace(projectSources);
+    } catch (error) {
+      const result = await this.projectFontRegistry.replace([]);
+      result.errors.push(
+        `无法枚举项目字体：${error instanceof Error ? error.message : String(error)}`,
+      );
+      return result;
+    }
+  }
+
+  async reloadProject() {
     if (this.progressUnlisten) await this.progressUnlisten;
     await invoke("reload_project");
+    return this.activateProjectFonts();
   }
 
   async submitProjectSource(): Promise<void> {
@@ -368,6 +404,7 @@ export class TauriBridge implements FrontendBridge {
   }
 
   async close(): Promise<void> {
+    this.projectFontRegistry.clear();
     if (this.progressUnlisten) (await this.progressUnlisten)();
     await getCurrentWindow().close();
   }

@@ -82,14 +82,18 @@ vi.mock("@/platform", () => ({ platformBridge: () => bridge }));
 import { useRuntimeStore } from "@/stores/runtime";
 
 function mockProjectSelection(
-  metrics: ProjectOpenMetrics | undefined,
+  metrics:
+    | (Omit<ProjectOpenMetrics, "projectFonts"> & {
+        projectFonts?: ProjectOpenMetrics["projectFonts"];
+      })
+    | undefined,
   method: "openProject" | "openProjectFile" = "openProject",
 ): void {
   bridge[method].mockImplementation(async (onSubmitted, prepareAfterSelection) => {
     if (!metrics) return undefined;
     onSubmitted?.(performance.now());
     await prepareAfterSelection?.();
-    return metrics;
+    return { ...metrics, projectFonts: metrics.projectFonts ?? { fonts: [], errors: [] } };
   });
 }
 
@@ -122,6 +126,7 @@ describe("runtime store session lifecycle", () => {
     bridge.writeCompiledCacheChunk.mockResolvedValue(undefined);
     bridge.cancelCompiledCacheExport.mockResolvedValue(undefined);
     bridge.listFonts.mockResolvedValue({ kind: "ready", fonts: [] });
+    bridge.reloadProject.mockResolvedValue({ fonts: [], errors: [] });
     bridge.savePreferences.mockImplementation(async (value: Preferences) => value);
     bridge.projectConfigurationWritable.mockReturnValue(true);
     bridge.writeProjectConfiguration.mockResolvedValue(undefined);
@@ -133,6 +138,7 @@ describe("runtime store session lifecycle", () => {
       sourceReadMs: 0,
       submitMs: 3,
       cacheImported: true,
+      projectFonts: { fonts: [], errors: [] },
     });
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
       callback(0);
@@ -275,6 +281,41 @@ describe("runtime store session lifecycle", () => {
     expect(bridge.listFonts).toHaveBeenCalledTimes(2);
     expect(store.fontAccessStatus).toBe("ready");
     expect(store.systemFonts).toEqual(["Project Font"]);
+  });
+
+  it("offers loaded project fonts before same-named system fonts", async () => {
+    bridge.kind = "browser";
+    bridge.listFonts.mockResolvedValue({
+      kind: "ready",
+      fonts: ["project font", "System Font"],
+    });
+    mockProjectSelection({
+      submittedAtMs: 0,
+      quickScanMs: 1,
+      cacheReadMs: 0,
+      sourceReadMs: 1,
+      submitMs: 1,
+      cacheImported: false,
+      projectFonts: {
+        fonts: ["Project Font"],
+        errors: ["font/broken.ttf：invalid font"],
+      },
+    });
+    const store = useRuntimeStore();
+
+    await store.openProject();
+    await store.requestSystemFonts();
+
+    expect(store.systemFonts).toEqual(["project font", "System Font"]);
+    expect(store.availableFontFamilies).toEqual(["Project Font", "System Font"]);
+    expect(store.logs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "warning",
+          message: "无法加载项目字体：font/broken.ttf：invalid font",
+        }),
+      ]),
+    );
   });
 
   it("reports the configured game viewport before starting a new game", async () => {
@@ -1427,6 +1468,10 @@ describe("runtime store session lifecycle", () => {
     const cacheWrite = deferred<void>();
     const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
 
+    expect(
+      store.logs.some((entry) => entry.message.includes("compiled project cache preparation")),
+    ).toBe(false);
+    expect(store.logNotifications).toEqual([]);
     expect(bridge.writeCompiledCacheChunk).toHaveBeenCalledOnce();
     expect(store.status).toBe(
       "正在后台生成项目缓存，可继续游戏，但游戏运行和响应速度可能暂时受到影响…",
@@ -2040,6 +2085,27 @@ describe("runtime store session lifecycle", () => {
           (message as { type?: string }).type === "state_export_chunk_request",
       ),
     ).toHaveLength(1);
+  });
+
+  it("cancels a pending compiled-cache writer before reloading the project", async () => {
+    const cacheWrite = deferred<void>();
+    const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
+
+    const reloading = store.reloadProject();
+    await flushMicrotasks();
+
+    expect(bridge.cancelCompiledCacheExport).not.toHaveBeenCalled();
+    expect(bridge.reloadProject).not.toHaveBeenCalled();
+
+    cacheWrite.resolve();
+    await reloading;
+
+    expect(bridge.cancelCompiledCacheExport).toHaveBeenCalledOnce();
+    expect(bridge.reloadProject).toHaveBeenCalledOnce();
+    expect(bridge.cancelCompiledCacheExport.mock.invocationCallOrder[0]).toBeLessThan(
+      bridge.reloadProject.mock.invocationCallOrder[0]!,
+    );
+    expect(store.status).not.toBe("项目缓存已保存。");
   });
 
   it("cleans up a rejected compiled-cache write without requesting another chunk", async () => {
@@ -3393,6 +3459,7 @@ async function storeWithPendingCompiledCacheWrite(write: Promise<void>) {
     cacheImported: false,
   });
   let reportSent = false;
+  let preparationRejected = false;
   let readySent = false;
   let chunkSent = false;
   bridge.pump.mockImplementation(async () => {
@@ -3406,6 +3473,22 @@ async function storeWithPendingCompiledCacheWrite(write: Promise<void>) {
     const commands = bridge.submitRuntime.mock.calls.map(
       ([message]: unknown[]) => (message as { type?: string }).type,
     );
+    if (!preparationRejected && commands.includes("state_export_request")) {
+      preparationRejected = true;
+      return {
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "command_rejected",
+            {
+              code: "invalid_state",
+              message: "compiled project cache preparation started",
+            },
+            1,
+          ),
+        ],
+      };
+    }
     if (!readySent && commands.includes("state_export_request")) {
       readySent = true;
       return {

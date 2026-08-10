@@ -57,7 +57,7 @@ describe("dialog actions", () => {
       props: {
         open: true,
         value: { ...defaultPreferences(), fontSizeOverridePx: 24 },
-        systemFonts: ["Project Font"],
+        fontFamilies: ["Project Font"],
         hostKind: "tauri",
         configurationEntries: [
           {
@@ -124,7 +124,7 @@ describe("dialog actions", () => {
       props: {
         open: true,
         value: defaultPreferences(),
-        systemFonts: [],
+        fontFamilies: [],
         hostKind: "browser",
         viewportMeasurement: {
           width: 900,
@@ -249,7 +249,7 @@ describe("dialog actions", () => {
       props: {
         open: true,
         value: defaultPreferences(),
-        systemFonts: [],
+        fontFamilies: [],
         hostKind: "tauri",
         viewportMeasurement: {
           width: 960,
@@ -312,7 +312,7 @@ describe("dialog actions", () => {
       props: {
         open: true,
         value: defaultPreferences(),
-        systemFonts: ["Alpha Sans", "Beta Serif"],
+        fontFamilies: ["Alpha Sans", "Beta Serif"],
         fontAccessStatus: "loading",
         hostKind: "browser",
         configurationEntries: [configurationEntry("FontName", "Alpha Sans", "string")],
@@ -362,7 +362,7 @@ describe("dialog actions", () => {
       props: {
         open: true,
         value: defaultPreferences(),
-        systemFonts: [],
+        fontFamilies: [],
         hostKind: "browser",
         configurationEntries: [hot, restart],
         configurationReadOnly: true,

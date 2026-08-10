@@ -63,6 +63,7 @@ import {
   type ProjectConfigurationChange,
   type ProjectConfigurationSnapshot,
   type ProjectOpenMetrics,
+  type ProjectFontLoadResult,
   type ProjectProgress,
   type ProjectProgressStage,
   type PumpBatch,
@@ -238,6 +239,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
     error: fontAccessError,
     request: requestSystemFonts,
   } = useSystemFontAccess(bridge, (message) => log("warning", `无法读取系统字体：${message}`));
+  const projectFontFamilies = ref<string[]>([]);
+  const availableFontFamilies = computed(() => {
+    const unique = new Map<string, string>();
+    for (const family of [...projectFontFamilies.value, ...systemFonts.value]) {
+      const key = family.toLowerCase();
+      if (!unique.has(key)) unique.set(key, family);
+    }
+    return [...unique.values()];
+  });
   const phase = ref("negotiating");
   const runtimeEpoch = ref<number | bigint>(0);
   const status = ref("请选择 Era 项目文件夹");
@@ -547,6 +557,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
       clientName: bridge.kind === "tauri" ? "rustyera-vue-tauri" : "rustyera-vue-wasm",
       // This fixed session capability is sampled when the runtime session is created. Browser
       // fonts granted later remain UI choices until the next session negotiates CHKFONT again.
+      // Project fonts are a CSS/settings capability. CHKFONT remains the fixed system-font
+      // capability sampled when the runtime session is created.
       availableFonts: [...(systemFonts.value.length > 0 ? systemFonts.value : sessionFontFallback)],
       preferredLocales: [...preferredRuntimeLocales(navigator.languages)],
       audioAvailable: true,
@@ -554,6 +566,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
       maximumEnvelopeBytes: 512 * 1024 * 1024,
       configurationProfile: bridge.kind,
     };
+  }
+
+  function refreshProjectFontFamilies(projectFonts?: ProjectFontLoadResult): void {
+    projectFonts ??= { fonts: [], errors: [] };
+    projectFontFamilies.value = projectFonts.fonts;
+    for (const error of projectFonts.errors) log("warning", `无法加载项目字体：${error}`);
   }
 
   async function openProject(): Promise<void> {
@@ -613,6 +631,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         status.value = "已取消打开项目";
         return;
       }
+      refreshProjectFontFamilies(metrics.projectFonts);
       projectOpen.value = true;
       activeProjectSelection = selection;
       projectUsedCompiledCache = metrics.cacheImported;
@@ -1011,6 +1030,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
         if (String(correlationId) === startupStartMessageId)
           failStartupTelemetry(value.message ?? "Runtime rejected startup");
         const correlation = String(correlationId);
+        const exportRejection = String(value.message ?? "");
+        const activeExport = exportState;
+        const compiledCachePreparing =
+          (activeExport?.kind === "compiled_cache" ||
+            activeExport?.kind === "diagnosis_artifact") &&
+          activeExport.requestMessageId === correlation &&
+          (exportRejection.includes("compiled project cache preparation started") ||
+            exportRejection.includes("compiled project cache is still being prepared"));
         const staleProjection =
           pendingProjectionMessages.delete(correlation) &&
           [
@@ -1036,10 +1063,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
           pendingGameInput.value = undefined;
         }
         if (pendingInputUndo.value?.messageId === correlation) pendingInputUndo.value = undefined;
-        if (!staleProjection && !willRetryInput) log("warning", formatDiagnostic(value), true);
+        if (!staleProjection && !willRetryInput && !compiledCachePreparing)
+          log("warning", formatDiagnostic(value), true);
         rejectPendingConfiguration(correlationId, value.message ?? "Runtime 拒绝了命令");
-        const exportRejection = String(value.message ?? "");
-        const activeExport = exportState;
         const fullProjectPreparing =
           activeExport?.kind === "project_file" &&
           (exportRejection.includes("full project preparation started") ||
@@ -1601,6 +1627,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       runtimePump.setReady(true);
       await handleBatch(batch);
       const metrics = await bridge.restartProject();
+      refreshProjectFontFamilies(metrics.projectFonts);
       projectUsedCompiledCache = metrics.cacheImported;
       if (!startupTelemetry.value)
         beginStartupTelemetry(metrics.submittedAtMs, activeProjectSelection);
@@ -1717,15 +1744,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function reloadProject(): Promise<void> {
     if (projectLoading.value || runtimePump.transitioning || diagnosisExporting.value) return;
     beginProjectLoad("正在重新加载项目…");
+    runtimePump.setTransitioning(true);
     try {
-      await bridge.reloadProject();
+      await runtimePump.waitUntilIdle();
+      await cancelCompiledCacheExport();
+      refreshProjectFontFamilies(await bridge.reloadProject());
       continueProjectBuildProgress();
-      schedulePump(0);
     } catch (error) {
       finishProjectLoad();
       const message = `重新加载项目失败：${String(error)}`;
       status.value = message;
       log("error", message);
+    } finally {
+      runtimePump.setTransitioning(false);
+      schedulePump(0);
     }
   }
 
@@ -2226,7 +2258,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       } else if (completed.kind === "project_file") {
         await finishProjectFileExport("success", `已导出 ${completed.name}`);
       } else if (completed.kind === "compiled_cache") {
-        status.value = "项目缓存已保存。";
+        if (!projectLoading.value) status.value = "项目缓存已保存。";
         exportState = undefined;
         if (diagnosisExporting.value) await startDiagnosisSnapshot();
       } else if (completed.kind === "diagnosis_snapshot") {
@@ -3279,6 +3311,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     gameTextStyle,
     gameLineHeightPx,
     systemFonts,
+    availableFontFamilies,
     fontAccessStatus,
     fontAccessError,
     phase,
