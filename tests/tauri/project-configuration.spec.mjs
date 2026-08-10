@@ -35,7 +35,7 @@ projectConfiguration("Tauri project-file configuration", () => {
     await dialog.waitForDisplayed();
     assert.doesNotMatch(await dialog.getText(), /仅对当前会话有效.*退出游戏后将丢失/s);
     await dialog.$("button=交互与输出").click();
-    await dialog.$("#setting-AudioVolume").setValue("42");
+    await setRangeValue(await dialog.$("#setting-AudioVolume"), 42);
     await dialog.$("label[for='setting-ReplaceFullWidthSpaces']").click();
     await dialog.$("button=应用").click();
 
@@ -97,6 +97,21 @@ projectConfiguration("Tauri project-file configuration", () => {
     );
   });
 });
+
+async function setRangeValue(element, value) {
+  assert.equal(await element.getAttribute("type"), "range");
+  const minimum = Number(await element.getAttribute("min"));
+  const maximum = Number(await element.getAttribute("max"));
+  const trackWidth = (await element.getSize("width")) - 16;
+  let offset = Math.round(((value - minimum) / (maximum - minimum) - 0.5) * trackWidth);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await element.click({ x: offset });
+    const actual = Number(await element.getValue());
+    if (actual === value) return;
+    offset += Math.round(((value - actual) / (maximum - minimum)) * trackWidth);
+  }
+  assert.equal(await element.getValue(), String(value));
+}
 
 async function snapshot() {
   return browser.execute(() => window.__RUSTYERA_TEST__?.snapshot());

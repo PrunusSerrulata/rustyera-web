@@ -94,9 +94,13 @@ function setBoolean(field: SettingsField, event: Event): void {
 function settingItemClasses(field: SettingsField, groupTitle: string): Record<string, boolean> {
   return {
     "boolean-setting": field.control === "boolean",
+    "long-label-setting": field.code === "ReplaceContinuationBR",
+    "viewport-actions-setting": field.code === "WindowMaximixed" && props.hostKind === "tauri",
     "setting-wide":
-      activeTab.value === "display" &&
-      (groupTitle === "颜色" || field.code === "WindowMaximixed" || field.code === "FontName"),
+      field.code === "AudioVolume" ||
+      field.code === "ReplaceContinuationBR" ||
+      (activeTab.value === "display" &&
+        (groupTitle === "颜色" || field.code === "WindowMaximixed" || field.code === "FontName")),
   };
 }
 
@@ -199,21 +203,32 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
                 class="setting-item"
                 :class="settingItemClasses(field, group.title)"
               >
-                <label
-                  v-if="field.control === 'boolean'"
-                  :for="`setting-${field.code}`"
-                  :title="field.code"
-                >
-                  <input
-                    :id="`setting-${field.code}`"
-                    type="checkbox"
-                    :checked="checked(field)"
-                    :disabled="fieldDisabled(field)"
-                    @change="setBoolean(field, $event)"
-                  />
-                  <span>{{ field.label }}</span>
-                  <small v-if="entries.get(field.code)?.fixed">已固定</small>
-                </label>
+                <template v-if="field.control === 'boolean'">
+                  <label :for="`setting-${field.code}`" :title="field.code">
+                    <input
+                      :id="`setting-${field.code}`"
+                      type="checkbox"
+                      :checked="checked(field)"
+                      :disabled="fieldDisabled(field)"
+                      @change="setBoolean(field, $event)"
+                    />
+                    <span>{{ field.label }}</span>
+                    <small v-if="entries.get(field.code)?.fixed">已固定</small>
+                  </label>
+                  <button
+                    v-if="field.code === 'WindowMaximixed' && hostKind === 'tauri'"
+                    type="button"
+                    class="viewport-size-button"
+                    :disabled="
+                      busy ||
+                      (configurationReadOnly && !configurationSessionOnly) ||
+                      !viewportMeasurement
+                    "
+                    @click="useCurrentViewport"
+                  >
+                    使用当前主视口大小
+                  </button>
+                </template>
                 <label v-else :for="`setting-${field.code}`" :title="field.code">
                   {{ field.label }}<small v-if="entries.get(field.code)?.fixed">已固定</small>
                 </label>
@@ -258,6 +273,20 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
                     :disabled="fieldDisabled(field)"
                     @request-fonts="emit('requestFonts')"
                   />
+                  <div v-else-if="field.control === 'range'" class="range-setting-control">
+                    <input
+                      :id="`setting-${field.code}`"
+                      v-model="configurationDraft[field.code]"
+                      type="range"
+                      :min="field.min"
+                      :max="field.max"
+                      step="1"
+                      :disabled="fieldDisabled(field)"
+                    />
+                    <output :for="`setting-${field.code}`">
+                      {{ configurationDraft[field.code] }}%
+                    </output>
+                  </div>
                   <input
                     v-else
                     :id="`setting-${field.code}`"
@@ -273,18 +302,6 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
                 </div>
               </div>
             </div>
-            <button
-              v-if="
-                activeTab === 'display' && group.title === '窗口与主视口' && hostKind === 'tauri'
-              "
-              type="button"
-              :disabled="
-                busy || (configurationReadOnly && !configurationSessionOnly) || !viewportMeasurement
-              "
-              @click="useCurrentViewport"
-            >
-              使用当前主视口大小
-            </button>
           </fieldset>
           <datalist id="available-game-fonts">
             <option v-for="font in systemFonts" :key="font" :value="font" />

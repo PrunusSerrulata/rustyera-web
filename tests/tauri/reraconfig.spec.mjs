@@ -38,6 +38,7 @@ reraconfig("Tauri reraconfig settings", () => {
     const replaceSpaces = await dialog.$("#setting-ReplaceFullWidthSpaces");
     const widthMode = await dialog.$("#setting-CharacterWidthMode");
     assert.equal(await volume.getValue(), "100");
+    assert.equal(await volume.getAttribute("type"), "range");
     assert.equal(await replaceSpaces.isSelected(), false);
     assert.equal(await widthMode.getValue(), "AUTOMATIC");
     const optionElements = await widthMode.$$("option");
@@ -47,7 +48,7 @@ reraconfig("Tauri reraconfig settings", () => {
     }
     assert.deepEqual(optionValues, ["AUTOMATIC", "AMBIGUOUS_NARROW", "AMBIGUOUS_WIDE"]);
 
-    await volume.setValue("42");
+    await setRangeValue(volume, 42);
     await dialog.$("label[for='setting-ReplaceFullWidthSpaces']").click();
     assert.equal(await replaceSpaces.isSelected(), true);
     await dialog.$("button=应用").click();
@@ -96,3 +97,17 @@ reraconfig("Tauri reraconfig settings", () => {
     );
   });
 });
+
+async function setRangeValue(element, value) {
+  const minimum = Number(await element.getAttribute("min"));
+  const maximum = Number(await element.getAttribute("max"));
+  const trackWidth = (await element.getSize("width")) - 16;
+  let offset = Math.round(((value - minimum) / (maximum - minimum) - 0.5) * trackWidth);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await element.click({ x: offset });
+    const actual = Number(await element.getValue());
+    if (actual === value) return;
+    offset += Math.round(((value - actual) / (maximum - minimum)) * trackWidth);
+  }
+  assert.equal(await element.getValue(), String(value));
+}

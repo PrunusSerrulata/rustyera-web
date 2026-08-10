@@ -5,7 +5,7 @@ export type SettingsTabId = "interaction" | "display" | "project" | "script" | "
 export interface SettingsField {
   code: string;
   label: string;
-  control: "text" | "number" | "boolean" | "enum" | "color";
+  control: "text" | "number" | "boolean" | "enum" | "color" | "range";
   min?: number;
   max?: number;
   options?: { value: string; label: string }[];
@@ -28,6 +28,13 @@ const integer = (code: string, label: string, min?: number, max?: number): Setti
   code,
   label,
   control: "number",
+  min,
+  max,
+});
+const range = (code: string, label: string, min: number, max: number): SettingsField => ({
+  code,
+  label,
+  control: "range",
   min,
   max,
 });
@@ -65,7 +72,7 @@ export const projectSettingsTabs: SettingsTab[] = [
       {
         title: "声音与文本显示",
         fields: [
-          integer("AudioVolume", "游戏音量（%）", 0, 100),
+          range("AudioVolume", "游戏音量（%）", 0, 100),
           yesNo("ReplaceFullWidthSpaces", "以两个半角空格替代全角空格"),
           {
             code: "CharacterWidthMode",

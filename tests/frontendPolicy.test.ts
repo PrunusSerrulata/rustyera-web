@@ -606,6 +606,15 @@ describe("frontend host and image-line policy", () => {
     expect(stylesheet).toMatch(/\.log-list li\s*\{[^}]*white-space:\s*pre;/s);
   });
 
+  it("keeps settings controls flat and the color disk saturated at its edge", () => {
+    const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
+    expect(stylesheet).toMatch(/--settings-control-height:\s*2\.25rem/);
+    expect(stylesheet).toMatch(
+      /\.setting-control > input:not\(\[type="checkbox"\]\):not\(\[type="range"\]\),[\s\S]*?height:\s*var\(--settings-control-height/,
+    );
+    expect(stylesheet).toMatch(/radial-gradient\(circle closest-side, #fff 0%, #fff0 100%\)/);
+  });
+
   it("keeps game output on physical lines and exposes horizontal overflow", () => {
     const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
     expect(stylesheet).toMatch(/\.game-viewport\s*\{[^}]*overflow:\s*auto;/s);

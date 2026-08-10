@@ -15,6 +15,7 @@ describe("settings draft domain", () => {
       "ReplaceFullWidthSpaces",
       "CharacterWidthMode",
     ]);
+    expect(fields?.find((field) => field.code === "AudioVolume")?.control).toBe("range");
   });
 
   it("describes FocusColor as the selected text color", () => {

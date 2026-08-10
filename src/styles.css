@@ -624,6 +624,8 @@ select {
   gap: 10px;
 }
 .settings-dialog {
+  --settings-control-height: 2.25rem;
+
   display: grid;
   grid-template-rows: auto auto auto auto;
   max-height: calc(100vh - 76px);
@@ -722,6 +724,77 @@ select {
 .setting-control > select {
   width: 100%;
 }
+.setting-control > input:not([type="checkbox"]):not([type="range"]),
+.setting-control > select,
+.setting-control > .color-setting,
+.color-picker input {
+  height: var(--settings-control-height, 2.25rem);
+  border: 1px solid #454b57;
+  border-radius: 3px;
+  background: #191b20;
+  box-shadow: none;
+}
+.setting-control > input:not([type="checkbox"]):not([type="range"]):focus-visible,
+.setting-control > select:focus-visible,
+.setting-control > .color-setting:focus-visible,
+.color-picker input:focus-visible {
+  border-color: #6f91f2;
+  outline: 1px solid #6f91f2;
+  outline-offset: 1px;
+}
+.range-setting-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 3.25rem;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--settings-control-height);
+}
+.range-setting-control input[type="range"] {
+  width: 100%;
+  height: var(--settings-control-height);
+  margin: 0;
+  padding: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+.range-setting-control input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: #454b57;
+}
+.range-setting-control input[type="range"]::-webkit-slider-thumb {
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border: 0;
+  border-radius: 50%;
+  appearance: none;
+  background: #6f91f2;
+}
+.range-setting-control input[type="range"]::-moz-range-track {
+  height: 4px;
+  border: 0;
+  border-radius: 2px;
+  background: #454b57;
+}
+.range-setting-control input[type="range"]::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: #5279eb;
+}
+.range-setting-control input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 50%;
+  background: #6f91f2;
+}
+.range-setting-control output {
+  color: #cbd1dd;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
 .setting-item.boolean-setting {
   display: block;
 }
@@ -740,8 +813,33 @@ select {
 .setting-item.boolean-setting label small {
   margin: 0 0 0 auto;
 }
+.setting-item.viewport-actions-setting {
+  display: flex;
+  min-height: var(--settings-control-height);
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.setting-item.viewport-actions-setting > label {
+  min-width: 0;
+  padding-top: 0;
+}
+.viewport-size-button {
+  height: var(--settings-control-height);
+  flex: 0 0 auto;
+  margin-left: auto;
+  border-color: #454b57;
+  border-radius: 3px;
+  background: transparent;
+}
 .setting-item.setting-wide {
   grid-column: 1 / -1;
+}
+.setting-item.long-label-setting {
+  grid-template-columns: max-content minmax(0, 1fr);
+}
+.setting-item.long-label-setting > label {
+  white-space: nowrap;
 }
 .color-settings-grid .setting-item {
   grid-template-columns: 8.5rem minmax(0, 1fr);
@@ -816,7 +914,7 @@ select {
   border: 1px solid #858b98;
   border-radius: 50%;
   background:
-    radial-gradient(circle, #fff 0%, #fff0 100%),
+    radial-gradient(circle closest-side, #fff 0%, #fff0 100%),
     conic-gradient(
       from 90deg,
       #f00 0deg,
@@ -900,6 +998,9 @@ select {
   }
 }
 @media (max-width: 520px) {
+  .setting-item.long-label-setting {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .color-visual {
     grid-template-columns: minmax(180px, 1fr) 22px 56px;
     gap: 10px;

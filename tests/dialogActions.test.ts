@@ -239,6 +239,60 @@ describe("dialog actions", () => {
     wrapper.unmount();
   });
 
+  it("lays out the volume and Tauri viewport actions as full settings rows", async () => {
+    const wrapper = mount(PreferencesDialog, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        value: defaultPreferences(),
+        systemFonts: [],
+        hostKind: "tauri",
+        viewportMeasurement: {
+          width: 960,
+          height: 640,
+          lineColumns: 100,
+          chromeWidth: 0,
+          chromeHeight: 0,
+        },
+        configurationEntries: [
+          configurationEntry("AudioVolume", "80", "integer"),
+          configurationEntry("ReplaceContinuationBR", "<br>", "string"),
+          configurationEntry("WindowMaximixed", "NO", "boolean"),
+          configurationEntry("WindowX", "800", "integer"),
+          configurationEntry("WindowY", "600", "integer"),
+        ],
+      },
+    });
+
+    const volume = document.body.querySelector<HTMLInputElement>("#setting-AudioVolume")!;
+    expect(volume.type).toBe("range");
+    expect(volume.closest(".setting-item")?.classList.contains("setting-wide")).toBe(true);
+    expect(volume.parentElement?.querySelector("output")?.textContent?.trim()).toBe("80%");
+    volume.value = "42";
+    volume.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    expect(volume.parentElement?.querySelector("output")?.textContent?.trim()).toBe("42%");
+
+    await clickButton("项目加载");
+    const continuation = document.body
+      .querySelector("#setting-ReplaceContinuationBR")
+      ?.closest(".setting-item");
+    expect(continuation?.classList.contains("setting-wide")).toBe(true);
+    expect(continuation?.classList.contains("long-label-setting")).toBe(true);
+
+    await clickButton("显示");
+    const maximize = document.body.querySelector("#setting-WindowMaximixed")!;
+    const maximizeRow = maximize.closest(".setting-item")!;
+    const viewportButton = findButton("使用当前主视口大小");
+    expect(maximizeRow.classList.contains("viewport-actions-setting")).toBe(true);
+    expect(viewportButton.closest(".setting-item")).toBe(maximizeRow);
+    viewportButton.click();
+    await nextTick();
+    expect(document.body.querySelector<HTMLInputElement>("#setting-WindowX")?.value).toBe("960");
+    expect(document.body.querySelector<HTMLInputElement>("#setting-WindowY")?.value).toBe("640");
+    wrapper.unmount();
+  });
+
   it("offers an editable system-font list and exposes permission progress", async () => {
     const wrapper = mount(PreferencesDialog, {
       attachTo: document.body,
