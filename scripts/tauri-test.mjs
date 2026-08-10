@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { access, cp, mkdir, mkdtemp, readdir, stat } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -35,6 +35,7 @@ const specProfiles = {
   "reraconfig.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_RERACONFIG",
     copyProject: true,
+    normalizeReraconfig: true,
   },
   "project-configuration.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_PROJECT_CONFIGURATION",
@@ -86,6 +87,16 @@ if (specProfile?.copyProject) {
   const runDirectory = await mkdtemp(path.join(testRuns, "tauri-preferences-"));
   const projectCopy = path.join(runDirectory, path.basename(project));
   await cp(project, projectCopy, { recursive: true });
+  if (specProfile.normalizeReraconfig) {
+    const reraconfigPath = path.join(projectCopy, "reraconfig.toml");
+    const source = await readFile(reraconfigPath, "utf8");
+    const normalized = source
+      .replace(/^schema_version\s*=.*$/m, "schema_version = 1")
+      .replace(/^\s*volume\s*=.*(?:\r?\n|$)/gm, "")
+      .replace(/^\s*replace_full_width_spaces\s*=.*(?:\r?\n|$)/gm, "")
+      .replace(/^\s*character_width_mode\s*=.*(?:\r?\n|$)/gm, "");
+    await writeFile(reraconfigPath, normalized);
+  }
   console.log(JSON.stringify({ type: "test-project-copy", source: project, project: projectCopy }));
   project = projectCopy;
 }

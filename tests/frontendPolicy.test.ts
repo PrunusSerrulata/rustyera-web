@@ -112,6 +112,14 @@ describe("frontend host and image-line policy", () => {
     expect(runner).toContain('new Mocha({ reporter: "spec", timeout: 300_000, bail: true })');
   });
 
+  it("gives the reraconfig Tauri spec a deterministic schema-v1 project copy", () => {
+    const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
+    expect(runner).toContain("normalizeReraconfig: true");
+    expect(runner).toContain('.replace(/^schema_version\\s*=.*$/m, "schema_version = 1")');
+    expect(runner).toContain("replace_full_width_spaces");
+    expect(runner).toContain("character_width_mode");
+  });
+
   it("builds the release Tauri binary without a Windows console", () => {
     const entrypoint = readFileSync(resolve("src-tauri/src/main.rs"), "utf8");
     expect(entrypoint).toMatch(
