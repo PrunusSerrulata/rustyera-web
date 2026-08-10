@@ -469,7 +469,7 @@ describe("runtime store session lifecycle", () => {
   });
 
   it("persists a generated reraconfig with the absent-file precondition", async () => {
-    const generated = "[meta]\nschema_version = 1\n";
+    const generated = "[meta]\nschema_version = 2\n";
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
       events: [
@@ -478,7 +478,7 @@ describe("runtime store session lifecycle", () => {
           diagnostics: [],
           configuration: {
             project_revision: 1,
-            source_digest: blake3(new TextEncoder().encode(generated)),
+            source_digest: new Uint8Array(),
             entries: [],
             restart_pending: false,
             generated_source: generated,
@@ -488,9 +488,127 @@ describe("runtime store session lifecycle", () => {
     });
     const store = useRuntimeStore();
     await store.enableDebug();
+    await Promise.resolve();
 
     expect(bridge.writeProjectConfiguration).toHaveBeenCalledWith(new Uint8Array(), generated);
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      {
+        type: "prepare_configuration_update",
+        value: { project_revision: 1, expected_source_digest: [], changes: [] },
+      },
+      undefined,
+    );
+    expect(store.configurationReadOnly).toBe(true);
+  });
+
+  it("confirms an upgraded reraconfig before accepting another edit", async () => {
+    const original = "[meta]\nschema_version = 1\n[text]\nfont_size = 20\n";
+    const generated = "[meta]\nschema_version = 2\n[text]\nfont_size = 20\n";
+    const digest = blake3(new TextEncoder().encode(original));
+    const generatedDigest = blake3(new TextEncoder().encode(generated));
+    const updated = "[meta]\nschema_version = 2\n[text]\nfont_size = 22\n";
+    const updatedDigest = blake3(new TextEncoder().encode(updated));
+    let messageId = 20;
+    bridge.submitRuntime.mockImplementation(async () => messageId++);
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", {
+          success: true,
+          diagnostics: [],
+          configuration: {
+            project_revision: 1,
+            source_digest: digest,
+            entries: [configurationEntry("FontSize", "20")],
+            restart_pending: false,
+            generated_source: generated,
+          },
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    await Promise.resolve();
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "configuration_update_prepared",
+            {
+              project_revision: 1,
+              expected_source_digest: digest,
+              contents: generated,
+              restart_required: false,
+              prepared_source_digest: generatedDigest,
+            },
+            20,
+          ),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "configuration_update_committed",
+            {
+              configuration: {
+                project_revision: 1,
+                source_digest: generatedDigest,
+                entries: [configurationEntry("FontSize", "20")],
+                restart_pending: false,
+                generated_source: null,
+              },
+            },
+            22,
+          ),
+        ],
+      });
+    await vi.advanceTimersByTimeAsync(64);
     expect(store.configurationReadOnly).toBe(false);
+
+    const saving = store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "22" }]);
+    await Promise.resolve();
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "configuration_update_prepared",
+            {
+              project_revision: 1,
+              expected_source_digest: generatedDigest,
+              contents: updated,
+              restart_required: false,
+              prepared_source_digest: updatedDigest,
+            },
+            23,
+          ),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "configuration_update_committed",
+            {
+              configuration: {
+                project_revision: 1,
+                source_digest: updatedDigest,
+                entries: [configurationEntry("FontSize", "22")],
+                restart_pending: false,
+                generated_source: null,
+              },
+            },
+            24,
+          ),
+        ],
+      });
+    await vi.advanceTimersByTimeAsync(64);
+    await saving;
+
+    expect(bridge.writeProjectConfiguration).toHaveBeenCalledWith(digest, generated);
+    expect(bridge.writeProjectConfiguration).toHaveBeenCalledWith(generatedDigest, updated);
   });
 
   it("continues loading when the host cannot apply a native window setting", async () => {
@@ -3193,22 +3311,24 @@ function projectConfigurationReport(revision: number, digestByte: number, fontSi
       source_digest: new Uint8Array(32).fill(digestByte),
       restart_pending: false,
       generated_source: null,
-      entries: [
-        {
-          code: "FontSize",
-          japanese: "フォントサイズ",
-          english: "Font size",
-          value: fontSize,
-          effective_value: fontSize,
-          default_value: "18",
-          application: "hot",
-          kind: "integer",
-          allowed: [],
-          fixed: false,
-          applicability: 8,
-        },
-      ],
+      entries: [configurationEntry("FontSize", fontSize)],
     },
+  };
+}
+
+function configurationEntry(code: string, value: string) {
+  return {
+    code,
+    japanese: code === "FontSize" ? "フォントサイズ" : code,
+    english: code === "FontSize" ? "Font size" : code,
+    value,
+    effective_value: value,
+    default_value: code === "FontSize" ? "18" : value,
+    application: "hot",
+    kind: "integer",
+    allowed: [],
+    fixed: false,
+    applicability: 8,
   };
 }
 

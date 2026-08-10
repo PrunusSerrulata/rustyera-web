@@ -333,7 +333,7 @@ impl ProjectHost {
                 .replace('\r', "\n")
                 .as_bytes(),
         );
-        if expected_digest.is_empty() && current_digest == requested_digest.as_bytes() {
+        if current_digest == requested_digest.as_bytes() {
             return Ok(());
         }
         if current_digest != expected_digest {
@@ -1053,7 +1053,7 @@ mod tests {
             "[display]\nfont_size = 18\n"
         );
         project
-            .write_configuration(&[], "[display]\r\nfont_size = 18\r\n")
+            .write_configuration(digest.as_bytes(), "[display]\r\nfont_size = 18\r\n")
             .unwrap();
         assert!(
             project

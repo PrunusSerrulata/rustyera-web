@@ -145,6 +145,7 @@ interface PendingConfigurationBase {
   snapshot: ProjectConfigurationSnapshot;
   changedCodes: string[];
   sessionOnly: boolean;
+  automatic: boolean;
   resolve: () => void;
   reject: (error: unknown) => void;
 }
@@ -860,7 +861,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
           writeError == null ? "commit" : "abort",
           writeError,
         );
-        if (writeError == null && pendingConfigurationUpdate?.stage === "finalizing")
+        if (
+          writeError == null &&
+          !pending.automatic &&
+          pendingConfigurationUpdate?.stage === "finalizing"
+        )
           status.value = "正在应用项目配置…";
         break;
       }
@@ -882,16 +887,18 @@ export const useRuntimeStore = defineStore("runtime", () => {
           pending.reject(error);
           break;
         }
-        try {
-          await bridge.applyProjectConfiguration(
-            configurationEntries.value,
-            viewportChrome(viewportMeasurement.value),
-            pending.changedCodes,
-          );
-        } catch (error) {
-          log("warning", `客户端项目配置应用失败：${String(error)}`);
+        if (!pending.automatic) {
+          try {
+            await bridge.applyProjectConfiguration(
+              configurationEntries.value,
+              viewportChrome(viewportMeasurement.value),
+              pending.changedCodes,
+            );
+          } catch (error) {
+            log("warning", `客户端项目配置应用失败：${String(error)}`);
+          }
+          status.value = "项目配置已应用";
         }
-        status.value = "项目配置已应用";
         pending.resolve();
         break;
       }
@@ -1140,11 +1147,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function persistGeneratedConfiguration(): Promise<void> {
-    const source = projectConfiguration.value?.generated_source;
-    if (source == null || !bridge.projectConfigurationWritable()) return;
+    const snapshot = projectConfiguration.value;
+    const source = snapshot?.generated_source;
+    if (snapshot == null || source == null || !bridge.projectConfigurationWritable()) return;
     try {
-      await bridge.writeProjectConfiguration(new Uint8Array(), source);
-      configurationMigrationFailed.value = false;
+      await bridge.writeProjectConfiguration(snapshot.source_digest, source);
+      configurationMigrationFailed.value = true;
+      if (pendingConfigurationUpdate == null) {
+        const { completion } = await beginProjectConfigurationUpdate([], true);
+        void completion.catch((error) => {
+          configurationMigrationFailed.value = true;
+          log("error", `确认 reraconfig.toml 迁移失败：${String(error)}`);
+        });
+      }
     } catch (error) {
       configurationMigrationFailed.value = true;
       log("error", `迁移 reraconfig.toml 失败：${String(error)}`);
@@ -2644,7 +2659,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function saveProjectConfiguration(
     changes: ProjectConfigurationChange[],
+    automatic = false,
   ): Promise<"persistent" | "session"> {
+    const update = await beginProjectConfigurationUpdate(changes, automatic);
+    await update.completion;
+    return update.application;
+  }
+
+  async function beginProjectConfigurationUpdate(
+    changes: ProjectConfigurationChange[],
+    automatic: boolean,
+  ): Promise<{
+    completion: Promise<void>;
+    application: "persistent" | "session";
+  }> {
     const snapshot = projectConfiguration.value;
     if (!snapshot || !configurationProfileValid.value)
       throw new Error(!snapshot ? "项目配置尚未加载" : "当前项目配置不可修改");
@@ -2658,26 +2686,28 @@ export const useRuntimeStore = defineStore("runtime", () => {
     )
       throw new Error("项目文件仅支持当前会话内即时生效的设置");
     if (pendingConfigurationUpdate) throw new Error("项目配置正在保存，请稍候");
-    await new Promise<void>((resolve, reject) => {
-      void send({
-        type: "prepare_configuration_update",
-        value: prepareConfigurationUpdate(snapshot, changes),
-      })
-        .then((messageId) => {
-          pendingConfigurationUpdate = {
-            stage: "preparing",
-            prepareMessageId: messageId,
-            snapshot,
-            changedCodes: changes.map((change) => change.code),
-            sessionOnly,
-            resolve,
-            reject,
-          };
-          status.value = "正在验证项目配置…";
-        })
-        .catch(reject);
+    const prepareMessageId = await send({
+      type: "prepare_configuration_update",
+      value: prepareConfigurationUpdate(snapshot, changes),
     });
-    return sessionOnly ? "session" : "persistent";
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const completion = new Promise<void>((fulfilled, rejected) => {
+      resolve = fulfilled;
+      reject = rejected;
+    });
+    pendingConfigurationUpdate = {
+      stage: "preparing",
+      prepareMessageId,
+      snapshot,
+      changedCodes: changes.map((change) => change.code),
+      sessionOnly,
+      automatic,
+      resolve,
+      reject,
+    };
+    if (!automatic) status.value = "正在验证项目配置…";
+    return { completion, application: sessionOnly ? "session" : "persistent" };
   }
 
   async function beginConfigurationFinalization(

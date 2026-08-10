@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* global document, getComputedStyle, HTMLInputElement, HTMLElement, MutationObserver, navigator, window */
 
+import { appendFileSync, mkdirSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +54,15 @@ let snapshotMonitor;
 let snapshotMonitorError;
 let runError;
 let compatibilityStage = "starting browser session";
+const snapshotDirectory = path.join(
+  repository,
+  ".rustyera",
+  "test-runs",
+  `browser-compat-${browserName}-${Date.now()}`,
+);
+const snapshotPath = path.join(snapshotDirectory, "snapshots.ndjson");
+mkdirSync(snapshotDirectory, { recursive: true });
+console.log(JSON.stringify({ browser: browserName, type: "snapshot-log", path: snapshotPath }));
 
 try {
   server = await createServer({
@@ -79,6 +89,23 @@ try {
     eventType: "browser-compat-snapshot",
     label: `${browserName} compatibility`,
     snapshotContext: () => ({ stage: compatibilityStage }),
+    output(line) {
+      appendFileSync(snapshotPath, `${line}\n`);
+      const snapshot = JSON.parse(line);
+      console.log(
+        JSON.stringify({
+          browser: browserName,
+          type: "browser-compat-snapshot-summary",
+          path: snapshotPath,
+          capturedAt: snapshot.capturedAt,
+          stage: snapshot.operation?.stage,
+          phase: snapshot.runtime?.phase,
+          status: snapshot.runtime?.status,
+          projectOpen: snapshot.runtime?.projectOpen,
+          fault: snapshot.runtime?.fault ?? null,
+        }),
+      );
+    },
   });
   void snapshotMonitor.failure.catch(async () => {
     await browser?.deleteSession().catch(() => undefined);
@@ -625,11 +652,29 @@ try {
     );
   }
 } catch (error) {
+  console.error(
+    JSON.stringify({
+      browser: browserName,
+      type: "browser-compat-error",
+      stage: compatibilityStage,
+      name: error?.name ?? "Error",
+      message: String(error?.message ?? error).slice(0, 2_000),
+    }),
+  );
   runError = error;
 } finally {
   try {
     await snapshotMonitor?.stop();
   } catch (error) {
+    console.error(
+      JSON.stringify({
+        browser: browserName,
+        type: "browser-compat-monitor-error",
+        stage: compatibilityStage,
+        name: error?.name ?? "Error",
+        message: String(error?.message ?? error).slice(0, 2_000),
+      }),
+    );
     snapshotMonitorError = error;
   }
   await browser?.deleteSession().catch(() => {});

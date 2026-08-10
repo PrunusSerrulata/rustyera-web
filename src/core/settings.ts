@@ -189,7 +189,6 @@ export const projectSettingsTabs: SettingsTab[] = [
           integer("SaveDataNos", "每页存档数量", 20, 80),
           yesNo("SystemSaveInBinary", "使用二进制存档"),
           yesNo("ZipSaveData", "压缩二进制存档"),
-          yesNo("EnglishConfigOutput", "以英文输出配置"),
         ],
       },
     ],

@@ -441,6 +441,24 @@ describe("browser project reads", () => {
     expect(() => decodeProjectSource(Uint8Array.of(0x81), "reraconfig.toml")).toThrow("UTF-8");
   });
 
+  it("treats an already-applied schema upgrade as idempotent", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const original = "[meta]\nschema_version = 1\n";
+    const upgraded = "[meta]\nschema_version = 2\n";
+    const writer = await (
+      await root.getFileHandle("reraconfig.toml", { create: true })
+    ).createWritable();
+    await writer.write(new TextEncoder().encode(original));
+    await writer.close();
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const originalDigest = blake3(new TextEncoder().encode(original));
+    await project.writeConfiguration(originalDigest, upgraded);
+    await project.writeConfiguration(originalDigest, upgraded);
+    expect(await (await (await root.getFileHandle("reraconfig.toml")).getFile()).text()).toBe(
+      upgraded,
+    );
+  });
+
   it("keeps packaged configuration read-only without a writable file handle", async () => {
     const project = new BrowserProject(new SaveDirectoryHandle("storage") as any, 1, "game");
     project.useEmbeddedManifest({ project_revision: 1, files: [] });

@@ -157,7 +157,7 @@ export class BrowserProject {
       currentDigest = blake3(new TextEncoder().encode(normalizeLineEndings(text)));
     }
     const requestedDigest = blake3(new TextEncoder().encode(normalizeLineEndings(contents)));
-    if (expectedDigest.length === 0 && equalBytes(currentDigest, requestedDigest)) return;
+    if (equalBytes(currentDigest, requestedDigest)) return;
     if (!equalBytes(currentDigest, expectedDigest))
       throw new Error("reraconfig.toml 已被其他程序修改，请重新打开设置窗口");
     const cachedUpdate = await this.prepareCachedConfigurationUpdate(expectedDigest, contents);
