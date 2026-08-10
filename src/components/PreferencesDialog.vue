@@ -204,7 +204,7 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
                 :class="settingItemClasses(field, group.title)"
               >
                 <template v-if="field.control === 'boolean'">
-                  <label :for="`setting-${field.code}`" :title="field.code">
+                  <label :for="`setting-${field.code}`" :title="field.description">
                     <input
                       :id="`setting-${field.code}`"
                       type="checkbox"
@@ -219,6 +219,7 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
                     v-if="field.code === 'WindowMaximixed' && hostKind === 'tauri'"
                     type="button"
                     class="viewport-size-button"
+                    title="将当前主视口宽高填入下方尺寸设置。"
                     :disabled="
                       busy ||
                       (configurationReadOnly && !configurationSessionOnly) ||
@@ -229,7 +230,7 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
                     使用当前主视口大小
                   </button>
                 </template>
-                <label v-else :for="`setting-${field.code}`" :title="field.code">
+                <label v-else :for="`setting-${field.code}`" :title="field.description">
                   {{ field.label }}<small v-if="entries.get(field.code)?.fixed">已固定</small>
                 </label>
                 <div v-if="field.control !== 'boolean'" class="setting-control">

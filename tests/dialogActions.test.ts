@@ -99,6 +99,10 @@ describe("dialog actions", () => {
     const useMouse = document.body.querySelector<HTMLInputElement>("#setting-UseMouse")!;
     expect(useMouse.parentElement?.firstElementChild).toBe(useMouse);
     expect(useMouse.nextElementSibling?.textContent).toBe("启用鼠标操作");
+    expect(useMouse.parentElement?.getAttribute("title")).toBe(
+      "允许使用鼠标点击游戏按钮并提交交互。",
+    );
+    expect(useMouse.parentElement?.getAttribute("title")).not.toBe("UseMouse");
     useMouse.checked = false;
     useMouse.dispatchEvent(new Event("change", { bubbles: true }));
     await nextTick();
@@ -266,7 +270,11 @@ describe("dialog actions", () => {
 
     const volume = document.body.querySelector<HTMLInputElement>("#setting-AudioVolume")!;
     expect(volume.type).toBe("range");
-    expect(volume.closest(".setting-item")?.classList.contains("setting-wide")).toBe(true);
+    const volumeItem = volume.closest(".setting-item");
+    expect(volumeItem?.classList.contains("setting-wide")).toBe(true);
+    const volumeLabel = volumeItem?.querySelector("label");
+    expect(volumeLabel?.getAttribute("title")).toBe("调整游戏音频的输出音量，0 为静音。");
+    expect(volumeLabel?.getAttribute("title")).not.toBe("AudioVolume");
     expect(volume.parentElement?.querySelector("output")?.textContent?.trim()).toBe("80%");
     volume.value = "42";
     volume.dispatchEvent(new Event("input", { bubbles: true }));
@@ -283,9 +291,14 @@ describe("dialog actions", () => {
     await clickButton("显示");
     const maximize = document.body.querySelector("#setting-WindowMaximixed")!;
     const maximizeRow = maximize.closest(".setting-item")!;
+    const maximizeLabel = maximize.closest("label")!;
     const viewportButton = findButton("使用当前主视口大小");
     expect(maximizeRow.classList.contains("viewport-actions-setting")).toBe(true);
     expect(viewportButton.closest(".setting-item")).toBe(maximizeRow);
+    expect(maximizeRow.getAttribute("title")).toBeNull();
+    expect(maximizeLabel.getAttribute("title")).toBe("启动桌面客户端时将主窗口最大化。");
+    expect(viewportButton.title).toBe("将当前主视口宽高填入下方尺寸设置。");
+    expect(viewportButton.title).not.toBe(maximizeLabel.getAttribute("title"));
     viewportButton.click();
     await nextTick();
     expect(document.body.querySelector<HTMLInputElement>("#setting-WindowX")?.value).toBe("960");
@@ -316,10 +329,15 @@ describe("dialog actions", () => {
       ),
     ).toEqual(["Alpha Sans", "Beta Serif"]);
     expect(document.body.textContent).toContain("正在等待浏览器授权并读取系统字体");
+    expect(input.closest(".setting-item")?.querySelector("label")?.getAttribute("title")).toBe(
+      "设置游戏输出文本使用的字体名称。",
+    );
 
     await wrapper.setProps({ fontAccessStatus: "denied" });
     const liveStatus = document.body.querySelector("[role='status']")!;
-    expect(liveStatus.closest(".font-access-status")?.querySelector("button")).not.toBeNull();
+    const retry = liveStatus.closest(".font-access-status")?.querySelector("button");
+    expect(retry).not.toBeNull();
+    expect(retry?.getAttribute("title")).toBeNull();
     expect(liveStatus.querySelector("button")).toBeNull();
     await clickButton("重试");
     expect(wrapper.emitted("requestFonts")).toHaveLength(1);

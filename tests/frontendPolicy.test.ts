@@ -612,6 +612,9 @@ describe("frontend host and image-line policy", () => {
     expect(stylesheet).toMatch(
       /\.setting-control > input:not\(\[type="checkbox"\]\):not\(\[type="range"\]\),[\s\S]*?height:\s*var\(--settings-control-height/,
     );
+    expect(stylesheet).toMatch(
+      /\.range-setting-control input\[type="range"\]\s*\{[^}]*border:\s*0;/s,
+    );
     expect(stylesheet).toMatch(/radial-gradient\(circle closest-side, #fff 0%, #fff0 100%\)/);
   });
 

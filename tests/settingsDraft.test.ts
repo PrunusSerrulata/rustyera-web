@@ -2,20 +2,48 @@ import { nextTick, reactive } from "vue";
 import { describe, expect, it } from "vitest";
 
 import { useSettingsDraft } from "@/components/useSettingsDraft";
-import { projectSettingsTabs, type SettingsField } from "@/core/settings";
+import { availableProjectTabs, projectSettingsTabs, type SettingsField } from "@/core/settings";
 import type { ProjectConfigurationEntry } from "@/core/types";
 
 describe("settings draft domain", () => {
-  it("adds exactly the three requested project settings", () => {
-    const fields = projectSettingsTabs
-      .flatMap((tab) => tab.groups)
-      .find((group) => group.title === "声音与文本显示")?.fields;
-    expect(fields?.map((field) => field.code)).toEqual([
-      "AudioVolume",
+  it("separates audio from output-text settings and describes every field", () => {
+    const groups = projectSettingsTabs.find((tab) => tab.id === "interaction")?.groups;
+    const audio = groups?.find((group) => group.title === "声音")?.fields;
+    const outputText = groups?.find((group) => group.title === "输出文本")?.fields;
+
+    expect(audio?.map((field) => field.code)).toEqual(["AudioVolume"]);
+    expect(audio?.[0]?.control).toBe("range");
+    expect(outputText?.map((field) => field.code)).toEqual([
       "ReplaceFullWidthSpaces",
       "CharacterWidthMode",
     ]);
-    expect(fields?.find((field) => field.code === "AudioVolume")?.control).toBe("range");
+    expect(
+      projectSettingsTabs
+        .flatMap((tab) => tab.groups)
+        .flatMap((group) => group.fields)
+        .every((field) => field.description.trim().length > 0),
+    ).toBe(true);
+
+    expect(availableProjectTabs([entry("AudioVolume", "100", "integer")])[0]?.groups).toEqual([
+      expect.objectContaining({
+        title: "声音",
+        fields: [expect.objectContaining({ code: "AudioVolume" })],
+      }),
+    ]);
+    expect(
+      availableProjectTabs([
+        entry("ReplaceFullWidthSpaces", "NO", "boolean"),
+        entry("CharacterWidthMode", "AUTOMATIC", "enum"),
+      ])[0]?.groups,
+    ).toEqual([
+      expect.objectContaining({
+        title: "输出文本",
+        fields: [
+          expect.objectContaining({ code: "ReplaceFullWidthSpaces" }),
+          expect.objectContaining({ code: "CharacterWidthMode" }),
+        ],
+      }),
+    ]);
   });
 
   it("describes FocusColor as the selected text color", () => {
@@ -78,10 +106,16 @@ describe("settings draft domain", () => {
     });
     state.open = true;
     await nextTick();
-    const zip: SettingsField = { code: "ZipSaveData", label: "压缩", control: "boolean" };
+    const zip: SettingsField = {
+      code: "ZipSaveData",
+      label: "压缩",
+      description: "压缩存档。",
+      control: "boolean",
+    };
     const warning: SettingsField = {
       code: "WarnFunctionOverloading",
       label: "警告",
+      description: "显示警告。",
       control: "boolean",
     };
 
@@ -116,11 +150,13 @@ describe("settings draft domain", () => {
     const useMouse: SettingsField = {
       code: "UseMouse",
       label: "鼠标",
+      description: "启用鼠标。",
       control: "boolean",
     };
     const autoSave: SettingsField = {
       code: "AutoSave",
       label: "自动保存",
+      description: "启用自动保存。",
       control: "boolean",
     };
 
