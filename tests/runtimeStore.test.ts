@@ -2759,43 +2759,72 @@ describe("runtime store session lifecycle", () => {
     );
   });
 
-  it("retries only the correlated diagnosis full-project preparation", async () => {
+  it("restores interaction when the initial diagnosis project submission fails", async () => {
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 1,
+      submission_token: { epoch: 2, id: 3 },
+    });
+    bridge.submitRuntime.mockImplementation((...args: unknown[]) => {
+      const message = args[0] as { type?: string; value?: { kind?: string } };
+      if (message.type === "state_export_request" && message.value?.kind === "full_project_file")
+        return Promise.reject(new Error("transport failed"));
+      return Promise.resolve(10);
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("state_export_ready", {
+          result: { type: "ready", transfer: { transfer_id: 11, total_bytes: 2 } },
+        }),
+        runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
+      ],
+    });
+
+    await store.exportDiagnosis();
+    await advanceUntil(() => store.diagnosisExporting === false);
+
+    expect(store.diagnosisNotification).toContain("transport failed");
+    expect(store.canInteract).toBe(true);
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      { type: "state_export_cancel", value: { kind: "full_project_file" } },
+      undefined,
+    );
+    expect(bridge.cancelProjectFileExport).toHaveBeenCalledOnce();
+    expect(bridge.saveDiagnosis).not.toHaveBeenCalled();
+  });
+
+  it("registers an early correlated diagnosis retry after a VM snapshot export", async () => {
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 1,
+      submission_token: { epoch: 2, id: 3 },
+    });
+    const retrySubmission = deferred<number>();
     let fullProjectRequests = 0;
-    bridge.submitRuntime.mockImplementation(async (...args: unknown[]) => {
+    bridge.submitRuntime.mockImplementation((...args: unknown[]) => {
       const message = args[0] as { type?: string; value?: { kind?: string } };
       if (message.type === "state_export_request" && message.value?.kind === "full_project_file") {
         fullProjectRequests += 1;
-        return 40 + fullProjectRequests;
+        if (fullProjectRequests === 2) return retrySubmission.promise;
+        return Promise.resolve(40 + fullProjectRequests);
       }
-      return 10;
+      return Promise.resolve(10);
     });
-    let pumpCalls = 0;
+    let normalSnapshotCompleted = false;
+    let diagnosisSnapshotCompleted = false;
     let preparationStartedRejected = false;
     let preparationStillRejected = false;
     let fullProjectCompleted = false;
     bridge.pump.mockImplementation(async () => {
-      pumpCalls += 1;
-      if (pumpCalls === 1)
-        return {
-          ...emptyBatch(),
-          events: [
-            runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
-            runtimeEvent("presentation_snapshot", {
-              revision: 1,
-              title: "diagnosis fixture",
-              history: { logical_lines: [] },
-            }),
-            runtimeEvent("wait_changed", {
-              type: "opened",
-              value: {
-                kind: "integer_value",
-                wait_id: 1,
-                submission_token: { epoch: 2, id: 3 },
-              },
-            }),
-          ],
-        };
-      if (pumpCalls === 2)
+      const snapshotRequests = bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) =>
+          (message as { type?: string; value?: { kind?: string } }).type ===
+            "state_export_request" &&
+          (message as { value?: { kind?: string } }).value?.kind === "vm_snapshot",
+      ).length;
+      if (snapshotRequests >= 1 && !normalSnapshotCompleted) {
+        normalSnapshotCompleted = true;
         return {
           ...emptyBatch(),
           events: [
@@ -2805,12 +2834,24 @@ describe("runtime store session lifecycle", () => {
             runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
           ],
         };
+      }
+      if (snapshotRequests >= 2 && !diagnosisSnapshotCompleted) {
+        diagnosisSnapshotCompleted = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("state_export_ready", {
+              result: { type: "ready", transfer: { transfer_id: 12, total_bytes: 2 } },
+            }),
+            runtimeEvent("state_export_chunk", { offset: 0, data: [3, 4], complete: true }),
+          ],
+        };
+      }
       if (fullProjectRequests === 1 && !preparationStartedRejected) {
         preparationStartedRejected = true;
         return {
           ...emptyBatch(),
           events: [
-            runtimeEvent("command_rejected", { message: "unrelated rejection" }, 999),
             runtimeEvent("command_rejected", { message: "full project preparation started" }, 41),
           ],
         };
@@ -2834,33 +2875,42 @@ describe("runtime store session lifecycle", () => {
           ...emptyBatch(),
           events: [
             runtimeEvent("state_export_ready", {
-              result: { type: "ready", transfer: { transfer_id: 12, total_bytes: 2 } },
+              result: { type: "ready", transfer: { transfer_id: 13, total_bytes: 2 } },
             }),
-            runtimeEvent("state_export_chunk", { offset: 0, data: [3, 4], complete: true }),
+            runtimeEvent("state_export_chunk", { offset: 0, data: [5, 6], complete: true }),
           ],
         };
       }
       return emptyBatch();
     });
-    const store = useRuntimeStore();
-    store.projectOpen = true;
-    await store.enableDebug();
-    await vi.advanceTimersByTimeAsync(0);
 
+    await store.exportSnapshot();
+    await advanceUntil(() => bridge.saveDownload.mock.calls.length === 1);
     await store.exportDiagnosis();
-    await advanceUntil(() => fullProjectRequests === 3, 20);
+    await advanceUntil(() => fullProjectRequests === 2, 20);
+    await advanceUntil(() => preparationStillRejected, 20);
+    expect(store.logs.some((entry) => entry.message.includes("full project"))).toBe(false);
+
+    retrySubmission.resolve(42);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(49);
+    expect(fullProjectRequests).toBe(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await flushMicrotasks();
+    expect(fullProjectRequests).toBe(3);
     await advanceUntil(() => bridge.saveDiagnosis.mock.calls.length === 1, 20);
 
     expect(fullProjectRequests).toBe(3);
-    expect(bridge.saveDiagnosis).toHaveBeenCalledOnce();
+    expect(bridge.saveDiagnosis).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        snapshot: Uint8Array.of(3, 4),
+        projectFile: Uint8Array.of(5, 6),
+      }),
+    );
     expect(store.diagnosisExporting).toBe(false);
     expect(store.canInteract).toBe(true);
-    expect(store.logNotifications).toEqual([
-      expect.objectContaining({
-        level: "warning",
-        message: expect.stringContaining("unrelated rejection"),
-      }),
-    ]);
+    expect(store.logNotifications).toEqual([]);
     for (const progress of [
       "full project preparation started",
       "full project is still being prepared",
@@ -2870,6 +2920,181 @@ describe("runtime store session lifecycle", () => {
         store.logNotifications.some((notification) => notification.message.includes(progress)),
       ).toBe(false);
     }
+  });
+
+  it("does not consume an early full-project preparation rejection with another correlation", async () => {
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 1,
+      submission_token: { epoch: 2, id: 3 },
+    });
+    const retrySubmission = deferred<number>();
+    let fullProjectRequests = 0;
+    bridge.submitRuntime.mockImplementation((...args: unknown[]) => {
+      const message = args[0] as { type?: string; value?: { kind?: string } };
+      if (message.type === "state_export_request" && message.value?.kind === "full_project_file") {
+        fullProjectRequests += 1;
+        if (fullProjectRequests === 2) return retrySubmission.promise;
+        return Promise.resolve(41);
+      }
+      return Promise.resolve(10);
+    });
+    let snapshotCompleted = false;
+    let preparationStartedRejected = false;
+    let mismatchedPreparationRejected = false;
+    let allowCorrelatedFailure = false;
+    bridge.pump.mockImplementation(async () => {
+      const snapshotRequested = bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) =>
+          (message as { type?: string; value?: { kind?: string } }).type ===
+            "state_export_request" &&
+          (message as { value?: { kind?: string } }).value?.kind === "vm_snapshot",
+      );
+      if (snapshotRequested && !snapshotCompleted) {
+        snapshotCompleted = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("state_export_ready", {
+              result: { type: "ready", transfer: { transfer_id: 11, total_bytes: 2 } },
+            }),
+            runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
+          ],
+        };
+      }
+      if (fullProjectRequests === 1 && !preparationStartedRejected) {
+        preparationStartedRejected = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("command_rejected", { message: "full project preparation started" }, 41),
+          ],
+        };
+      }
+      if (fullProjectRequests === 2 && !mismatchedPreparationRejected) {
+        mismatchedPreparationRejected = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent(
+              "command_rejected",
+              { message: "full project is still being prepared" },
+              999,
+            ),
+          ],
+        };
+      }
+      if (allowCorrelatedFailure) {
+        allowCorrelatedFailure = false;
+        return {
+          ...emptyBatch(),
+          events: [runtimeEvent("command_rejected", { message: "full project failed" }, 42)],
+        };
+      }
+      return emptyBatch();
+    });
+
+    await store.exportDiagnosis();
+    await advanceUntil(() => mismatchedPreparationRejected, 20);
+    retrySubmission.resolve(42);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(fullProjectRequests).toBe(2);
+    expect(
+      store.logNotifications.some((notification) =>
+        notification.message.includes("full project is still being prepared"),
+      ),
+    ).toBe(true);
+
+    allowCorrelatedFailure = true;
+    await advanceUntil(() => store.diagnosisExporting === false);
+    expect(store.canInteract).toBe(true);
+  });
+
+  it("unlocks diagnosis when a full-project retry submission fails", async () => {
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 1,
+      submission_token: { epoch: 2, id: 3 },
+    });
+    const retrySubmission = deferred<number>();
+    let fullProjectRequests = 0;
+    bridge.submitRuntime.mockImplementation((...args: unknown[]) => {
+      const message = args[0] as { type?: string; value?: { kind?: string } };
+      if (message.type === "state_export_request" && message.value?.kind === "full_project_file") {
+        fullProjectRequests += 1;
+        if (fullProjectRequests === 2) return retrySubmission.promise;
+        return Promise.resolve(41);
+      }
+      return Promise.resolve(10);
+    });
+    let snapshotCompleted = false;
+    let preparationRejected = false;
+    let earlyRetryRejection = false;
+    bridge.pump.mockImplementation(async () => {
+      const snapshotRequested = bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) =>
+          (message as { type?: string; value?: { kind?: string } }).type ===
+            "state_export_request" &&
+          (message as { value?: { kind?: string } }).value?.kind === "vm_snapshot",
+      );
+      if (snapshotRequested && !snapshotCompleted) {
+        snapshotCompleted = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("state_export_ready", {
+              result: { type: "ready", transfer: { transfer_id: 11, total_bytes: 2 } },
+            }),
+            runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
+          ],
+        };
+      }
+      if (fullProjectRequests === 1 && !preparationRejected) {
+        preparationRejected = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("command_rejected", { message: "full project preparation started" }, 41),
+          ],
+        };
+      }
+      if (fullProjectRequests === 2 && !earlyRetryRejection) {
+        earlyRetryRejection = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent(
+              "command_rejected",
+              { message: "full project is still being prepared" },
+              42,
+            ),
+          ],
+        };
+      }
+      return emptyBatch();
+    });
+
+    await store.exportDiagnosis();
+    await advanceUntil(() => earlyRetryRejection, 20);
+    retrySubmission.reject(new Error("transport failed"));
+    await advanceUntil(() => store.diagnosisExporting === false, 20);
+
+    expect(fullProjectRequests).toBe(2);
+    expect(store.diagnosisNotification).toContain("transport failed");
+    expect(store.canInteract).toBe(true);
+    expect(
+      store.logNotifications.some((notification) =>
+        notification.message.includes("full project is still being prepared"),
+      ),
+    ).toBe(true);
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      { type: "state_export_cancel", value: { kind: "full_project_file" } },
+      undefined,
+    );
+    expect(bridge.cancelProjectFileExport).toHaveBeenCalledOnce();
+    expect(bridge.saveDiagnosis).not.toHaveBeenCalled();
   });
 
   it("cancels both sides when a diagnosis project chunk exceeds its descriptor", async () => {

@@ -132,10 +132,23 @@ interface TransientStatusState {
 
 type FullProjectExportState = ExportState & {
   kind: "project_file" | "diagnosis_project";
+  runtimeRequestMayBeActive?: boolean;
+  requestSubmission?: FullProjectRequestSubmission;
 };
+
+interface FullProjectRequestSubmission {
+  earlyPreparationRejections: Array<{ correlation: string; value: any }>;
+}
 
 function isFullProjectExport(state: ExportState | undefined): state is FullProjectExportState {
   return state?.kind === "project_file" || state?.kind === "diagnosis_project";
+}
+
+function isFullProjectPreparationRejection(message: string): boolean {
+  return (
+    message.includes("full project preparation started") ||
+    message.includes("full project is still being prepared")
+  );
 }
 
 function runtimeDebugVariant(value: unknown): string {
@@ -1244,8 +1257,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
         const fullProjectPreparing =
           isFullProjectExport(activeExport) &&
           activeExport.requestMessageId === correlation &&
-          (exportRejection.includes("full project preparation started") ||
-            exportRejection.includes("full project is still being prepared"));
+          isFullProjectPreparationRejection(exportRejection);
+        let earlyFullProjectPreparation = false;
+        if (
+          isFullProjectExport(activeExport) &&
+          activeExport.requestSubmission &&
+          isFullProjectPreparationRejection(exportRejection)
+        ) {
+          earlyFullProjectPreparation = true;
+          activeExport.requestSubmission.earlyPreparationRejections.push({ correlation, value });
+        }
         const staleProjection =
           pendingProjectionMessages.delete(correlation) &&
           [
@@ -1276,16 +1297,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
           !willRetryInput &&
           !compiledCachePreparing &&
           !fullProjectPreparing &&
+          !earlyFullProjectPreparation &&
           !reloadRejected
         )
           log("warning", formatDiagnostic(value), true);
         rejectPendingConfiguration(correlationId, value.message ?? "Runtime 拒绝了命令");
         if (fullProjectPreparing) {
-          activeExport.requestMessageId = undefined;
-          window.setTimeout(() => {
-            if (exportState !== activeExport || exportState.descriptor) return;
-            void requestFullProjectExport(activeExport);
-          }, 50);
+          scheduleFullProjectExportRetry(activeExport);
         }
         if (
           exportState?.requestMessageId === String(correlationId) &&
@@ -2382,11 +2400,71 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function requestFullProjectExport(activeExport: FullProjectExportState): Promise<void> {
-    const messageId = await send({
-      type: "state_export_request",
-      value: { kind: "full_project_file", snapshot_purpose: "normal" },
-    });
-    if (exportState === activeExport) activeExport.requestMessageId = String(messageId);
+    const submission: FullProjectRequestSubmission = { earlyPreparationRejections: [] };
+    activeExport.requestMessageId = undefined;
+    activeExport.requestSubmission = submission;
+    activeExport.runtimeRequestMayBeActive = true;
+    let messageId: number | bigint;
+    try {
+      messageId = await send({
+        type: "state_export_request",
+        value: { kind: "full_project_file", snapshot_purpose: "normal" },
+      });
+    } catch (error) {
+      settleFullProjectRequestSubmission(activeExport, submission);
+      throw error;
+    }
+    if (exportState !== activeExport) {
+      if (activeExport.requestSubmission === submission) activeExport.requestSubmission = undefined;
+      return;
+    }
+    const preparationRejected = settleFullProjectRequestSubmission(
+      activeExport,
+      submission,
+      messageId,
+    );
+    if (preparationRejected) scheduleFullProjectExportRetry(activeExport);
+  }
+
+  function settleFullProjectRequestSubmission(
+    activeExport: FullProjectExportState,
+    submission: FullProjectRequestSubmission,
+    messageId?: number | bigint,
+  ): boolean {
+    if (activeExport.requestSubmission !== submission) return false;
+    activeExport.requestSubmission = undefined;
+    const correlation = messageId == null ? undefined : String(messageId);
+    if (correlation != null) activeExport.requestMessageId = correlation;
+    let preparationRejected = false;
+    for (const rejection of submission.earlyPreparationRejections) {
+      if (correlation != null && rejection.correlation === correlation) preparationRejected = true;
+      else log("warning", formatDiagnostic(rejection.value), true);
+    }
+    return preparationRejected;
+  }
+
+  function scheduleFullProjectExportRetry(activeExport: FullProjectExportState): void {
+    activeExport.requestMessageId = undefined;
+    window.setTimeout(() => {
+      if (exportState !== activeExport || exportState.descriptor) return;
+      void requestFullProjectExport(activeExport).catch((error) => {
+        void failFullProjectExportRequest(activeExport, error);
+      });
+    }, 50);
+  }
+
+  async function failFullProjectExportRequest(
+    activeExport: FullProjectExportState,
+    error: unknown,
+  ): Promise<void> {
+    if (exportState !== activeExport) return;
+    if (activeExport.kind === "diagnosis_project") {
+      await failDiagnosisExport(activeExport, `诊断信息导出失败：${String(error)}`);
+      return;
+    }
+    const message = `全量项目文件导出失败：${String(error)}`;
+    await finishProjectFileExport("failed", message);
+    log("error", message);
   }
 
   async function requestCompiledCacheExport(activeExport: ExportState): Promise<void> {
@@ -2693,8 +2771,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (exportState !== activeExport || !activeExport.kind.startsWith("diagnosis_")) return;
     exportState = undefined;
     diagnosisState = undefined;
-    if (activeExport.kind === "diagnosis_project") {
-      if (activeExport.requestMessageId || activeExport.descriptor) {
+    if (isFullProjectExport(activeExport) && activeExport.kind === "diagnosis_project") {
+      if (
+        activeExport.requestMessageId ||
+        activeExport.runtimeRequestMayBeActive ||
+        activeExport.descriptor
+      ) {
         try {
           await send({ type: "state_export_cancel", value: { kind: "full_project_file" } });
         } catch (error) {
