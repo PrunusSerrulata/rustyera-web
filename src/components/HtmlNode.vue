@@ -120,15 +120,16 @@ const layeredDivisionStyle = computed(() => {
   if (width == null || height == null) return null;
   const boxModel = projectBoxModel(semantic.box_model);
   if (boxModel == null) return null;
+  const [marginTop, marginRight, marginBottom, marginLeft] = boxModel.margin;
   const depth = Number(semantic.depth);
   return {
-    left: `${projectLength(semantic.x) ?? 0}px`,
-    top: `${projectLength(semantic.y) ?? 0}px`,
-    width: `${Math.abs(width)}px`,
-    height: `${Math.abs(height)}px`,
+    left: `${(projectLength(semantic.x) ?? 0) + marginLeft}px`,
+    top: `${(projectLength(semantic.y) ?? 0) + marginTop}px`,
+    width: `${Math.max(0, Math.abs(width) - marginLeft - marginRight)}px`,
+    height: `${Math.max(0, Math.abs(height) - marginTop - marginBottom)}px`,
     zIndex: Number.isFinite(depth) ? depth : undefined,
     backgroundColor: semantic.color == null ? undefined : htmlColor(semantic.color),
-    ...boxModel,
+    ...boxModel.style,
   };
 });
 const positionedHeight = computed(() => positionedMediaHeight(props.node));
@@ -175,36 +176,35 @@ function htmlColor(value: unknown): string {
   return `rgb(${(color >> 16) & 0xff}, ${(color >> 8) & 0xff}, ${color & 0xff})`;
 }
 
-function projectBoxModel(value: any): Record<string, string | undefined> | null {
-  if (!value) return {};
-  // Era's division margin is part of the declared rectangle: it offsets the
-  // content and reduces the available size. A CSS margin on an absolutely
-  // positioned visual would only move it, so keep those divisions on the
-  // ordinary HTML path until that geometry can be projected faithfully.
-  if (value.margin != null) return null;
-  const lengths = (part: unknown): string | undefined | null => {
+function projectBoxModel(value: any): {
+  margin: [number, number, number, number];
+  style: Record<string, string | undefined>;
+} | null {
+  const lengths = (part: unknown): number[] | undefined | null => {
     if (part == null) return undefined;
     if (!Array.isArray(part) || part.length !== 4) return null;
     const projected = part.map(projectLength);
-    return projected.every((item) => item != null)
-      ? projected.map((item) => `${item}px`).join(" ")
-      : null;
+    return projected.every((item) => item != null) ? (projected as number[]) : null;
   };
-  const borderWidth = lengths(value.border);
-  const borderRadius = lengths(value.radius);
-  const padding = lengths(value.padding);
-  if ([borderWidth, borderRadius, padding].includes(null)) return null;
+  const margin = lengths(value?.margin);
+  const borderWidth = lengths(value?.border);
+  const borderRadius = lengths(value?.radius);
+  const padding = lengths(value?.padding);
+  if ([margin, borderWidth, borderRadius, padding].includes(null)) return null;
   let borderColor: string | undefined;
-  if (value.border_colors != null) {
+  if (value?.border_colors != null) {
     if (!Array.isArray(value.border_colors) || value.border_colors.length !== 4) return null;
     borderColor = value.border_colors.map(htmlColor).join(" ");
   }
   return {
-    borderStyle: borderWidth == null ? undefined : "solid",
-    borderWidth: borderWidth ?? undefined,
-    borderColor,
-    borderRadius: borderRadius ?? undefined,
-    padding: padding ?? undefined,
+    margin: (margin ?? [0, 0, 0, 0]) as [number, number, number, number],
+    style: {
+      borderStyle: borderWidth == null ? undefined : "solid",
+      borderWidth: borderWidth?.map((item) => `${item}px`).join(" "),
+      borderColor,
+      borderRadius: borderRadius?.map((item) => `${item}px`).join(" "),
+      padding: padding?.map((item) => `${item}px`).join(" "),
+    },
   };
 }
 

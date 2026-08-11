@@ -9,6 +9,38 @@
   "actions": [
     {
       "type": "assert_dom",
+      "locator": { "css": ".separator[data-pattern='-']:not(:empty)" },
+      "fields": ["count", "attributes", "visible"],
+      "expect": {
+        "count": 2,
+        "attributes": { "data-pattern": "-" },
+        "visible": true
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".separator[data-pattern='-']:not(:empty)", "nth": 0 },
+      "relative_to": { "css": ".game-viewport" },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "inside": { "tolerance": 0 },
+        "right_aligned_within": 16
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".separator[data-pattern='-']:not(:empty)", "nth": 1 },
+      "relative_to": { "css": ".game-viewport" },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "inside": { "tolerance": 0 },
+        "right_aligned_within": 16
+      }
+    },
+    {
+      "type": "assert_dom",
       "locator": { "css": ".html-shape-space" },
       "fields": ["count", "visible", "attributes"],
       "expect": {
@@ -16,7 +48,7 @@
         "visible": true,
         "attributes": {
           "class": "html-node html-shape html-shape-space",
-          "style": "width: 648px; height: 18px;"
+          "style": "width: 576px; height: 16px;"
         }
       }
     },

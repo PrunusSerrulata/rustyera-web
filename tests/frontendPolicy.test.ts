@@ -309,6 +309,38 @@ describe("frontend host and image-line policy", () => {
     expect(borderedStyle).toContain("border-width: 1px");
     expect(borderedStyle).toContain("border-color: rgb(192, 192, 192)");
 
+    const margined = mount(HtmlNode, {
+      props: {
+        node: {
+          type: "element",
+          kind: "division",
+          semantic: {
+            type: "division",
+            x: { unit: "pixels", value: 10 },
+            y: { unit: "pixels", value: 20 },
+            width: { unit: "pixels", value: 100 },
+            height: { unit: "pixels", value: 80 },
+            depth: 2,
+            color: null,
+            relative: true,
+            box_model: {
+              margin: [1, 2, 3, 4].map((value) => ({ unit: "pixels", value })),
+              padding: Array(4).fill({ unit: "pixels", value: 5 }),
+              border: Array(4).fill({ unit: "pixels", value: 1 }),
+            },
+          },
+          children: [{ type: "text", text: "margined" }],
+        },
+      },
+    });
+    const marginedStyle = margined.get(".html-division-visual").attributes("style");
+    expect(marginedStyle).toContain("left: 14px");
+    expect(marginedStyle).toContain("top: 21px");
+    expect(marginedStyle).toContain("width: 94px");
+    expect(marginedStyle).toContain("height: 76px");
+    expect(marginedStyle).toContain("border-width: 1px");
+    expect(marginedStyle).toContain("padding: 5px");
+
     for (const semantic of [
       {
         type: "division",
@@ -331,24 +363,6 @@ describe("frontend host and image-line policy", () => {
         color: null,
         relative: true,
         box_model: { padding: [{ unit: "pixels", value: 1 }] },
-      },
-      {
-        type: "division",
-        x: { unit: "pixels", value: 10 },
-        y: { unit: "pixels", value: 20 },
-        width: { unit: "pixels", value: 100 },
-        height: { unit: "pixels", value: 80 },
-        depth: 0,
-        color: null,
-        relative: true,
-        box_model: {
-          margin: [
-            { unit: "pixels", value: 1 },
-            { unit: "pixels", value: 2 },
-            { unit: "pixels", value: 3 },
-            { unit: "pixels", value: 4 },
-          ],
-        },
       },
     ]) {
       const unsupported = mount(HtmlNode, {
@@ -689,6 +703,14 @@ describe("frontend host and image-line policy", () => {
     expect(stylesheet).toMatch(
       /\.media-image,[\s\S]*?\.canvas-replay\s*\{[^}]*pointer-events:\s*auto;/s,
     );
+    const separatorRule = stylesheet.match(/\.separator\s*\{([^}]*)\}/s)?.[1];
+    expect(separatorRule).toBeDefined();
+    expect(separatorRule).toMatch(/display:\s*block;/);
+    expect(separatorRule).toMatch(/max-width:\s*100%;/);
+    expect(separatorRule).toMatch(/overflow:\s*hidden;/);
+    expect(separatorRule).toMatch(/line-height:\s*inherit;/);
+    expect(separatorRule).toMatch(/white-space:\s*nowrap;/);
+    expect(separatorRule).not.toMatch(/background:/);
   });
 
   it("uses the embedded Tauri driver without an unsupported external driver", () => {

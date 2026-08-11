@@ -6,7 +6,7 @@ import MediaImage from "@/components/MediaImage.vue";
 import { useRuntimeStore } from "@/stores/runtime";
 
 defineOptions({ name: "RunRenderer" });
-const props = defineProps<{ run: any }>();
+const props = defineProps<{ run: any; viewportColumns?: number }>();
 const store = useRuntimeStore();
 const textStyle = computed(() => {
   const style = props.run.style ?? {};
@@ -51,6 +51,17 @@ const renderedText = computed(() =>
     ? String(props.run.text ?? "").replaceAll("　", "  ")
     : props.run.text,
 );
+const separatorColumns = computed(() => {
+  const columns = Number(props.viewportColumns);
+  return Number.isFinite(columns) ? Math.max(1, Math.floor(columns)) : 1;
+});
+// Generate enough complete pattern units for every viewport column, then let
+// the `ch`-sized element clip wide glyphs and multi-character patterns.
+const separatorText = computed(() =>
+  props.run.type === "separator"
+    ? String(props.run.pattern ?? "").repeat(separatorColumns.value)
+    : "",
+);
 
 function rgba(color: any): string {
   return `rgba(${color.red}, ${color.green}, ${color.blue}, ${Number(color.alpha) / 255})`;
@@ -73,7 +84,12 @@ function rgba(color: any): string {
     :data-era-tooltip="run.title || undefined"
     @click="store.activate(run.token)"
   >
-    <RunRenderer v-for="(child, index) in run.runs" :key="index" :run="child" />
+    <RunRenderer
+      v-for="(child, index) in run.runs"
+      :key="index"
+      :run="child"
+      :viewport-columns="viewportColumns"
+    />
   </button>
   <template v-else-if="run.type === 'html_document'">
     <HtmlNode v-for="(node, index) in run.document.nodes" :key="index" :node="node" />
@@ -85,8 +101,19 @@ function rgba(color: any): string {
     class="column-cell"
     :style="{ textAlign: run.alignment }"
   >
-    <RunRenderer v-for="(child, index) in run.content" :key="index" :run="child" />
+    <RunRenderer
+      v-for="(child, index) in run.content"
+      :key="index"
+      :run="child"
+      :viewport-columns="viewportColumns"
+    />
   </span>
-  <span v-else-if="run.type === 'separator'" class="separator" :data-pattern="run.pattern" />
+  <span
+    v-else-if="run.type === 'separator'"
+    class="separator"
+    :data-pattern="run.pattern"
+    :style="{ width: `${separatorColumns}ch` }"
+    >{{ separatorText }}</span
+  >
   <span v-else-if="run.type === 'space'" class="space" />
 </template>

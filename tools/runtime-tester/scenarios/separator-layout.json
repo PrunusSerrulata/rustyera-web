@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/separator-project",
+  "mode": "fixed",
+  "seed": 123456,
+  "viewport": { "width": 800, "height": 600 },
+  "actions": [
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".separator" },
+      "fields": ["count", "visible"],
+      "expect": { "count": 3, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".separator[data-pattern='-']:not(:empty)" },
+      "fields": ["count", "attributes", "visible"],
+      "expect": { "count": 1, "attributes": { "data-pattern": "-" }, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".separator[data-pattern='*-']:not(:empty)" },
+      "fields": ["count", "attributes", "visible"],
+      "expect": { "count": 1, "attributes": { "data-pattern": "*-" }, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".separator[data-pattern='─']:not(:empty)" },
+      "fields": ["count", "attributes", "visible"],
+      "expect": { "count": 1, "attributes": { "data-pattern": "─" }, "visible": true }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".separator", "nth": 0 },
+      "relative_to": { "css": ".game-viewport" },
+      "expect": { "count": 1, "visible": true, "right_aligned_within": 12 }
+    }
+  ],
+  "goal": { "output_contains": ["SEPARATOR_FIXTURE_AFTER"] },
+  "limits": { "max_steps": 10, "timeout_seconds": 120 }
+}

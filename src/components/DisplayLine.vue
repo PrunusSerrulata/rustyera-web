@@ -49,7 +49,11 @@ const fragments = computed<(SingleRun | ColumnGroup)[]>(() => {
 
 <template>
   <template v-for="fragment in fragments" :key="fragment.key">
-    <RunRenderer v-if="fragment.type === 'run'" :run="fragment.run" />
+    <RunRenderer
+      v-if="fragment.type === 'run'"
+      :run="fragment.run"
+      :viewport-columns="viewportColumns"
+    />
     <span
       v-else
       class="column-group"
@@ -57,7 +61,12 @@ const fragments = computed<(SingleRun | ColumnGroup)[]>(() => {
         gridTemplateColumns: `repeat(${fragment.columns}, ${fragment.columnWidth}ch)`,
       }"
     >
-      <RunRenderer v-for="(cell, index) in fragment.cells" :key="index" :run="cell" />
+      <RunRenderer
+        v-for="(cell, index) in fragment.cells"
+        :key="index"
+        :run="cell"
+        :viewport-columns="viewportColumns"
+      />
     </span>
   </template>
 </template>

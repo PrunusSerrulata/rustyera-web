@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/erafl",
+  "mode": "fixed",
+  "start": { "type": "vm_snapshot" },
+  "viewport": { "width": 1395, "height": 737 },
+  "actions": [
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".html-division > .html-division-visual", "nth": 1 },
+      "fields": ["text", "visible"],
+      "expect": { "text": "◆　公会", "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".html-division > .html-division-visual" },
+      "fields": ["count", "visible"],
+      "expect": { "count": 9, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": "div.html-node" },
+      "fields": ["count"],
+      "expect": { "count": 0 }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".html-division > .html-division-visual", "nth": 5 },
+      "relative_to": { "css": ".html-division > .html-division-visual", "nth": 4 },
+      "expect": { "count": 1, "visible": true, "inside": { "tolerance": 1 } }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".html-division > .html-division-visual", "nth": 6 },
+      "relative_to": { "css": ".html-division > .html-division-visual", "nth": 5 },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "no_overlap": true,
+        "top_aligned_within": 1
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".html-division > .html-division-visual", "nth": 7 },
+      "relative_to": { "css": ".html-division > .html-division-visual", "nth": 6 },
+      "expect": { "count": 1, "visible": true, "below": { "min": 0, "max": 20 } }
+    }
+  ],
+  "limits": { "max_steps": 10, "timeout_seconds": 900 }
+}

@@ -38,4 +38,25 @@ describe("display line column groups", () => {
     expect(group.findAll(".column-cell")).toHaveLength(8);
     expect(wrapper.text()).toContain("prefixoption 0");
   });
+
+  it("repeats and clips each DRAWLINE pattern to the current viewport columns", () => {
+    const wrapper = mount(DisplayLine, {
+      props: {
+        viewportColumns: 6,
+        line: {
+          line_id: 2,
+          temporary: false,
+          logical_line_start: true,
+          line_end: true,
+          alignment: "left",
+          runs: [{ type: "separator", pattern: "*-", role: "rule" }],
+        },
+      },
+    });
+
+    const separator = wrapper.get<HTMLElement>(".separator");
+    expect(separator.attributes("data-pattern")).toBe("*-");
+    expect(separator.attributes("style")).toContain("width: 6ch");
+    expect(separator.text()).toBe("*-".repeat(6));
+  });
 });
