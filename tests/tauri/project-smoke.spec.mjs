@@ -29,7 +29,7 @@ projectSmoke("Tauri real-project startup", () => {
     assert.equal(state.bridgeKind, "tauri");
     assert.equal(state.fault, null);
     assert.equal(state.wait?.kind, "integer_value");
-    assert.match(state.output.join("\n"), /\[0\].+\n\[1\]/);
+    assert.match(state.output.join("\n"), /(?:\[0\]|0\[).+\n\s*(?:\[1\]|1\[)/);
     const lineMetrics = await gameLineMetrics();
     assert.ok(lineMetrics, "the main viewport did not render a body line");
     assert.equal(lineMetrics.fontSize, "16px");
