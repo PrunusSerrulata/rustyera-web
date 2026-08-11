@@ -10,10 +10,11 @@
     {
       "type": "assert_dom",
       "locator": { "css": ".separator[data-pattern='-']:not(:empty)" },
-      "fields": ["count", "attributes", "visible"],
+      "fields": ["count", "attributes", "computed_style", "visible"],
       "expect": {
         "count": 2,
         "attributes": { "data-pattern": "-" },
+        "computed_style": { "color": "rgb(192, 192, 192)" },
         "visible": true
       }
     },

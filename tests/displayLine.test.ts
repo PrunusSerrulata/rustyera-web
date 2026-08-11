@@ -49,7 +49,21 @@ describe("display line column groups", () => {
           logical_line_start: true,
           line_end: true,
           alignment: "left",
-          runs: [{ type: "separator", pattern: "*-", role: "rule" }],
+          runs: [
+            {
+              type: "separator",
+              pattern: "*-",
+              role: "rule",
+              style: {
+                foreground: { red: 18, green: 52, blue: 86, alpha: 255 },
+                bold: false,
+                italic: false,
+                underline: false,
+                strikeout: false,
+                font_millipixels: 16_000,
+              },
+            },
+          ],
         },
       },
     });
@@ -57,6 +71,7 @@ describe("display line column groups", () => {
     const separator = wrapper.get<HTMLElement>(".separator");
     expect(separator.attributes("data-pattern")).toBe("*-");
     expect(separator.attributes("style")).toContain("width: 6ch");
+    expect(separator.attributes("style")).toContain("rgba(18, 52, 86, 1)");
     expect(separator.text()).toBe("*-".repeat(6));
   });
 });

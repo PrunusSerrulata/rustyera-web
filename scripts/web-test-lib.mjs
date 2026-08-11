@@ -815,7 +815,7 @@ async function queryLocator(locator, fields = ["count", "text", "visible", "enab
     if (fields.includes("computed_style"))
       result.computed_style = await first.evaluate((element) => {
         const style = window.getComputedStyle(element);
-        return { font_family: style.fontFamily, font_size: style.fontSize };
+        return { color: style.color, font_family: style.fontFamily, font_size: style.fontSize };
       });
     if (fields.includes("scroll_top"))
       result.scroll_top = await first.evaluate((element) => element.scrollTop);

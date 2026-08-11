@@ -112,7 +112,7 @@ function rgba(color: any): string {
     v-else-if="run.type === 'separator'"
     class="separator"
     :data-pattern="run.pattern"
-    :style="{ width: `${separatorColumns}ch` }"
+    :style="[textStyle, { width: `${separatorColumns}ch` }]"
     >{{ separatorText }}</span
   >
   <span v-else-if="run.type === 'space'" class="space" />

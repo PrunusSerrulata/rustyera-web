@@ -297,7 +297,7 @@ export type DisplayRun =
   | { type: "image"; placement: MediaPlacement; alt_text?: string }
   | { type: "shape"; shape: any }
   | { type: "column_cell"; content: DisplayRun[]; alignment: string; preferred_columns: number }
-  | { type: "separator"; pattern: string; role: string }
+  | { type: "separator"; pattern: string; role: string; style: TextStyle }
   | { type: "space"; width: any };
 
 export interface InteractionToken {
