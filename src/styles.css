@@ -660,6 +660,20 @@ select {
   display: grid;
   gap: 14px;
 }
+.project-reload-form {
+  display: grid;
+  min-width: min(34rem, 75vw);
+  gap: 14px;
+}
+.project-reload-form > p {
+  margin: 0;
+}
+.project-reload-field {
+  display: grid;
+  grid-template-columns: 7em minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
 .traditional-save-form > p {
   margin: 0;
 }

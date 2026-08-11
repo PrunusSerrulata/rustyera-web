@@ -38,6 +38,10 @@ const store = vi.hoisted(() => ({
   fontAccessError: "",
   openProjectConfirmationOpen: false,
   gameProgressLossConfirmation: null as "restart" | "title" | null,
+  projectReloadDialogMode: null as "folder" | "script" | null,
+  projectReloadTargetOptions: [] as string[],
+  projectReloadDialogBusy: false,
+  projectReloadDialogError: "",
   logsOpen: false,
   logs: [],
   initialize: vi.fn(),
@@ -48,6 +52,9 @@ const store = vi.hoisted(() => ({
   requestRestart: vi.fn(),
   requestReturnToTitle: vi.fn(),
   reloadProject: vi.fn(),
+  openProjectReloadDialog: vi.fn(),
+  closeProjectReloadDialog: vi.fn(),
+  confirmProjectReload: vi.fn(),
   exportSnapshot: vi.fn(),
   exportProjectFile: vi.fn(),
   cancelProjectFileExport: vi.fn(),
@@ -148,6 +155,34 @@ describe("application menus", () => {
     await title!.trigger("click");
     expect(store.requestReturnToTitle).toHaveBeenCalledOnce();
     expect(store.returnToTitle).not.toHaveBeenCalled();
+
+    wrapper.unmount();
+  });
+
+  it("routes each script reload menu item to its distinct scope", async () => {
+    store.runtimeReady = true;
+    const wrapper = mountApp();
+
+    await wrapper.get("nav > .menu > button").trigger("click");
+    await wrapper
+      .findAll(".menu-popup button")
+      .find((item) => item.text() === "重新加载全部脚本")!
+      .trigger("click");
+    expect(store.reloadProject).toHaveBeenCalledOnce();
+
+    await wrapper.get("nav > .menu > button").trigger("click");
+    await wrapper
+      .findAll(".menu-popup button")
+      .find((item) => item.text() === "重新加载文件夹…")!
+      .trigger("click");
+    expect(store.openProjectReloadDialog).toHaveBeenCalledWith("folder");
+
+    await wrapper.get("nav > .menu > button").trigger("click");
+    await wrapper
+      .findAll(".menu-popup button")
+      .find((item) => item.text() === "重新加载单个脚本…")!
+      .trigger("click");
+    expect(store.openProjectReloadDialog).toHaveBeenCalledWith("script");
 
     wrapper.unmount();
   });

@@ -109,6 +109,18 @@ export interface ProjectFontLoadResult {
   errors: string[];
 }
 
+export type ProjectReloadScope =
+  { type: "all" } | { type: "folder"; path: string } | { type: "script"; path: string };
+
+export interface ProjectReloadTargets {
+  folders: string[];
+  scripts: string[];
+}
+
+export interface ProjectReloadSubmission extends ProjectFontLoadResult {
+  messageId: number | bigint;
+}
+
 export interface FrontendBridge {
   readonly kind: "tauri" | "browser";
   readonly traditionalSaves?: TraditionalSaveAccess;
@@ -127,7 +139,9 @@ export interface FrontendBridge {
   ): Promise<ProjectOpenMetrics | undefined>;
   restartProject(onSubmitted?: ProjectSubmittedListener): Promise<ProjectOpenMetrics>;
   submitProjectSource(): Promise<void>;
-  reloadProject(): Promise<ProjectFontLoadResult>;
+  prepareProjectReloadBaseline(): Promise<void>;
+  projectReloadTargets(): Promise<ProjectReloadTargets>;
+  reloadProject(scope: ProjectReloadScope): Promise<ProjectReloadSubmission>;
   readResource(relativePath: string): Promise<Uint8Array>;
   readImageMetadata(relativePath: string): Promise<{
     width: number;

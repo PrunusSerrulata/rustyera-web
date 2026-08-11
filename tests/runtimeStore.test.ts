@@ -47,6 +47,8 @@ const bridge = vi.hoisted(() => ({
   openProjectFile: vi.fn(),
   restartProject: vi.fn(),
   submitProjectSource: vi.fn(),
+  prepareProjectReloadBaseline: vi.fn(),
+  projectReloadTargets: vi.fn(),
   reloadProject: vi.fn(),
   readResource: vi.fn(),
   readImageMetadata: vi.fn(),
@@ -109,6 +111,7 @@ describe("runtime store session lifecycle", () => {
     bridge.kind = "tauri";
     bridge.createSession.mockResolvedValue(emptyBatch());
     bridge.submitRuntime.mockResolvedValue(1);
+    bridge.prepareProjectReloadBaseline.mockResolvedValue(undefined);
     let nextDebugMessageId = 1;
     bridge.submitDebug.mockImplementation(async () => nextDebugMessageId++);
     bridge.pump.mockResolvedValue(emptyBatch());
@@ -126,7 +129,11 @@ describe("runtime store session lifecycle", () => {
     bridge.writeCompiledCacheChunk.mockResolvedValue(undefined);
     bridge.cancelCompiledCacheExport.mockResolvedValue(undefined);
     bridge.listFonts.mockResolvedValue({ kind: "ready", fonts: [] });
-    bridge.reloadProject.mockResolvedValue({ fonts: [], errors: [] });
+    bridge.reloadProject.mockResolvedValue({ fonts: [], errors: [], messageId: 77 });
+    bridge.projectReloadTargets.mockResolvedValue({
+      folders: ["ERB/events"],
+      scripts: ["ERB/events/day.erb"],
+    });
     bridge.savePreferences.mockImplementation(async (value: Preferences) => value);
     bridge.projectConfigurationWritable.mockReturnValue(true);
     bridge.writeProjectConfiguration.mockResolvedValue(undefined);
@@ -3252,9 +3259,16 @@ describe("runtime store session lifecycle", () => {
     expect(store.projectLoading).toBe(false);
     expect(store.projectLoadProgressLabel).toBe("");
     expect(store.canOpenProject).toBe(true);
+    expect(bridge.prepareProjectReloadBaseline).toHaveBeenCalledOnce();
     expect(bridge.submitRuntime).toHaveBeenCalledWith(
       { type: "start", value: { mode: { type: "new_game", seed: null } } },
       undefined,
+    );
+    const startCall = bridge.submitRuntime.mock.calls.findIndex(
+      ([message]: unknown[]) => (message as { type?: string }).type === "start",
+    );
+    expect(bridge.prepareProjectReloadBaseline.mock.invocationCallOrder[0]).toBeLessThan(
+      bridge.submitRuntime.mock.invocationCallOrder[startCall]!,
     );
     expect(store.startupTelemetry).toMatchObject({
       scenario: "warm",
@@ -4219,6 +4233,127 @@ describe("runtime store session lifecycle", () => {
     expect(store.presentation.inputWait).toEqual(wait);
     expect(store.canInteract).toBe(true);
     expect(store.promptPlaceholder).toBe("输入内容；Enter 提交");
+  });
+
+  it("lists and submits a scoped script-folder hot reload", async () => {
+    const store = await runningBrowserStore();
+
+    await store.openProjectReloadDialog("folder");
+
+    expect(bridge.projectReloadTargets).toHaveBeenCalledOnce();
+    expect(store.projectReloadDialogMode).toBe("folder");
+    expect(store.projectReloadTargetOptions).toEqual(["ERB/events"]);
+    expect(store.canInteract).toBe(false);
+
+    await store.confirmProjectReload("ERB/events");
+
+    expect(store.projectReloadDialogMode).toBeNull();
+    expect(bridge.reloadProject).toHaveBeenCalledWith({
+      type: "folder",
+      path: "ERB/events",
+    });
+  });
+
+  it("handles a correlated hot-reload report without submitting another game start", async () => {
+    const wait = {
+      kind: "integer_value",
+      wait_id: 12,
+      submission_token: { epoch: 2, id: 12 },
+    };
+    const store = await storeWithInputWait(wait);
+    const startsBefore = bridge.submitRuntime.mock.calls.filter(
+      ([message]: unknown[]) => (message as { type?: string }).type === "start",
+    ).length;
+    bridge.reloadProject.mockResolvedValueOnce({ fonts: [], errors: [], messageId: 77 });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", { success: true, diagnostics: [] }, 77),
+        runtimeEvent("state_changed", { phase: "waiting_input", epoch: 3 }),
+      ],
+    });
+
+    await store.reloadProject({ type: "folder", path: "ERB/events" });
+    await advanceUntil(() => store.runtimeEpoch === 3);
+
+    expect(store.projectLoading).toBe(false);
+    expect(store.status).toBe("游戏运行中");
+    expect(store.presentation.inputWait).toEqual(wait);
+    expect(store.canInteract).toBe(true);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "start",
+      ),
+    ).toHaveLength(startsBefore);
+    expect(store.logs.some((entry) => entry.message.includes("Runtime 拒绝"))).toBe(false);
+  });
+
+  it("settles a correlated hot reload rejected by Runtime", async () => {
+    const store = await runningBrowserStore();
+    bridge.reloadProject.mockResolvedValueOnce({ fonts: [], errors: [], messageId: 78 });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("command_rejected", { message: "reload rejected" }, 78)],
+    });
+
+    await store.reloadProject({ type: "script", path: "ERB/events/day.erb" });
+    await advanceUntil(() => store.status.includes("reload rejected"));
+
+    expect(store.projectLoading).toBe(false);
+    expect(store.logs.filter((entry) => entry.message.includes("reload rejected"))).toHaveLength(1);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "start",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("settles an unsuccessful correlated hot-reload report", async () => {
+    const store = await runningBrowserStore();
+    bridge.reloadProject.mockResolvedValueOnce({ fonts: [], errors: [], messageId: 79 });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "project_load_report",
+          {
+            success: false,
+            diagnostics: [{ level: "error", code: "compile.failed", message: "bad script" }],
+          },
+          79,
+        ),
+      ],
+    });
+
+    await store.reloadProject();
+    await advanceUntil(() => store.status === "重新加载项目失败，请查看日志");
+
+    expect(store.projectLoading).toBe(false);
+    expect(store.logs.some((entry) => entry.message.includes("bad script"))).toBe(true);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "start",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("ignores a stale reload-target request after the game session restarts", async () => {
+    const store = await runningBrowserStore();
+    const targets = deferred<{ folders: string[]; scripts: string[] }>();
+    bridge.projectReloadTargets.mockReturnValueOnce(targets.promise);
+
+    const opening = store.openProjectReloadDialog("folder");
+    await flushMicrotasks();
+    expect(store.projectReloadDialogBusy).toBe(true);
+
+    await store.restart();
+    targets.resolve({ folders: ["ERB/stale"], scripts: ["ERB/stale/main.erb"] });
+    await opening;
+
+    expect(store.projectReloadDialogMode).toBeNull();
+    expect(store.projectReloadTargetOptions).toEqual([]);
+    expect(store.projectReloadDialogBusy).toBe(false);
+    expect(store.projectReloadDialogError).toBe("");
   });
 });
 

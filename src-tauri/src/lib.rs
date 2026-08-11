@@ -42,7 +42,7 @@ use crate::ipc::{
     decode_value as decode_ipc_value, encode_pump_response as encode_ipc_response,
     encode_value as encode_ipc_value,
 };
-use crate::project::{ProjectFontSource, ProjectHost};
+use crate::project::{ProjectFontSource, ProjectHost, ProjectReloadScope, ProjectReloadTargets};
 use crate::storage::StorageHost;
 
 #[derive(Clone, Default)]
@@ -418,7 +418,59 @@ async fn submit_project_source(app: AppHandle, state: State<'_, AppState>) -> Re
 }
 
 #[tauri::command]
-async fn reload_project(app: AppHandle, state: State<'_, AppState>) -> Result<u64, String> {
+async fn project_reload_targets(
+    state: State<'_, AppState>,
+) -> Result<ProjectReloadTargets, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .project
+            .lock()
+            .map_err(lock_error)?
+            .as_ref()
+            .ok_or_else(|| "no project is open".to_owned())?
+            .project_reload_targets()
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn prepare_project_reload_baseline(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let scan_progress = |completed, total| {
+            let _ = app.emit(
+                "project-progress",
+                ProjectProgress {
+                    stage: ProjectProgressStage::Scanning,
+                    completed: u64::try_from(completed).unwrap_or(u64::MAX),
+                    total: u64::try_from(total).unwrap_or(u64::MAX),
+                },
+            );
+        };
+        state
+            .project
+            .lock()
+            .map_err(lock_error)?
+            .as_mut()
+            .ok_or_else(|| "no project is open".to_owned())?
+            .materialize_with_progress(Some(&scan_progress))?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn reload_project(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    scope: ProjectReloadScope,
+) -> Result<u64, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let scan_progress = |completed, total| {
@@ -437,7 +489,7 @@ async fn reload_project(app: AppHandle, state: State<'_, AppState>) -> Result<u6
             .map_err(lock_error)?
             .as_mut()
             .ok_or_else(|| "no project is open".to_owned())?
-            .reload_with_progress(Some(&scan_progress))?;
+            .reload_scoped_with_progress(&scope, Some(&scan_progress))?;
         with_session(&state, |session| {
             session.submit_runtime(&RuntimeMessage::ReloadProject(request), None)
         })
@@ -866,6 +918,8 @@ pub fn run() {
             open_project,
             open_project_file,
             submit_project_source,
+            project_reload_targets,
+            prepare_project_reload_baseline,
             reload_project,
             read_resource,
             read_resource_prefix,

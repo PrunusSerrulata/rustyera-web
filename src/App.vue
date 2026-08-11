@@ -12,6 +12,7 @@ import GameViewport from "@/components/GameViewport.vue";
 import LogDialog from "@/components/LogDialog.vue";
 import OpenProjectDialog from "@/components/OpenProjectDialog.vue";
 import PreferencesDialog from "@/components/PreferencesDialog.vue";
+import ProjectReloadDialog from "@/components/ProjectReloadDialog.vue";
 import TraditionalSaveDialog from "@/components/TraditionalSaveDialog.vue";
 import { useRuntimeStore } from "@/stores/runtime";
 
@@ -134,6 +135,14 @@ onMounted(() => void store.initialize());
       :label="store.projectFileExportProgressLabel"
       :value="store.projectFileExportProgressValue"
       @cancel="store.cancelProjectFileExport"
+    />
+    <ProjectReloadDialog
+      :mode="store.projectReloadDialogMode"
+      :targets="store.projectReloadTargetOptions"
+      :busy="store.projectReloadDialogBusy"
+      :error="store.projectReloadDialogError"
+      @close="store.closeProjectReloadDialog"
+      @confirm="store.confirmProjectReload"
     />
     <TraditionalSaveDialog
       :open="store.traditionalSaveDialogMode != null"

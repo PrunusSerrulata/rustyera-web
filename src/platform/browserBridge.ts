@@ -4,6 +4,8 @@ import type {
   Preferences,
   ProjectProgress,
   ProjectOpenMetrics,
+  ProjectReloadScope,
+  ProjectReloadTargets,
   ProjectSelectionPreparation,
   ProjectSubmittedListener,
   PumpBatch,
@@ -264,15 +266,28 @@ export class BrowserBridge implements FrontendBridge {
     };
   }
 
-  async reloadProject() {
+  async projectReloadTargets(): Promise<ProjectReloadTargets> {
     if (!this.project) throw new Error("没有打开的项目");
-    await this.submitRuntime({
+    return this.project.projectReloadTargets();
+  }
+
+  async prepareProjectReloadBaseline(): Promise<void> {
+    if (!this.project) throw new Error("没有打开的项目");
+    await this.project.prepareReloadBaseline(this.scanProgress);
+  }
+
+  async reloadProject(scope: ProjectReloadScope) {
+    if (!this.project) throw new Error("没有打开的项目");
+    const messageId = await this.submitRuntime({
       type: "reload_project",
-      value: await this.project.reloadRequest((completed, total) =>
+      value: await this.project.reloadRequest(scope, (completed, total) =>
         this.projectProgressListener?.({ stage: "scanning", completed, total }),
       ),
     });
-    return this.projectFontRegistry.replace(this.project.fontSources());
+    return {
+      ...(await this.projectFontRegistry.replace(this.project.fontSources())),
+      messageId,
+    };
   }
 
   private async loadSourceProject(

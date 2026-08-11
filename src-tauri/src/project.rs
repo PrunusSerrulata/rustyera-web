@@ -70,6 +70,58 @@ pub struct ProjectFontSource {
     pub content_hash: Vec<u8>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProjectReloadScope {
+    All,
+    Folder { path: String },
+    Script { path: String },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectReloadTargets {
+    pub folders: Vec<String>,
+    pub scripts: Vec<String>,
+}
+
+enum ProjectReloadSelector {
+    All,
+    Folder(String),
+    Script(String),
+}
+
+impl ProjectReloadSelector {
+    fn new(scope: &ProjectReloadScope) -> Result<Self, String> {
+        let normalize = |path: &str| {
+            validate_relative_path(path)
+                .map(|path| path.trim_end_matches('/').to_owned())
+                .map_err(|error| error.to_string())
+        };
+        match scope {
+            ProjectReloadScope::All => Ok(Self::All),
+            ProjectReloadScope::Folder { path } => Ok(Self::Folder(normalize(path)?)),
+            ProjectReloadScope::Script { path } => Ok(Self::Script(normalize(path)?)),
+        }
+    }
+
+    fn matches(&self, relative_path: &str, category: FileCategory) -> bool {
+        if matches!(self, Self::All) {
+            return true;
+        }
+        if !matches!(category, FileCategory::Erb | FileCategory::Erh) {
+            return false;
+        }
+        match self {
+            Self::All => true,
+            Self::Folder(path) => {
+                relative_path == path || relative_path.starts_with(&format!("{path}/"))
+            }
+            Self::Script(path) => relative_path == path,
+        }
+    }
+}
+
 impl ProjectHost {
     pub fn scan_with_progress(
         root: &Path,
@@ -528,15 +580,51 @@ impl ProjectHost {
         }
     }
 
-    pub fn reload_with_progress(
+    pub fn project_reload_targets(&self) -> Result<ProjectReloadTargets, String> {
+        if self.project_file.is_some() {
+            return Ok(ProjectReloadTargets {
+                folders: Vec::new(),
+                scripts: Vec::new(),
+            });
+        }
+        let canonical_roots = canonical_source_roots(&self.root)?;
+        let mut scripts = self
+            .indexed_files
+            .iter()
+            .filter(|file| matches!(file.category, FileCategory::Erb | FileCategory::Erh))
+            .map(|file| file.relative_path.clone())
+            .collect::<BTreeSet<_>>();
+        for (path, category) in project_entries(&self.root, &canonical_roots)? {
+            if matches!(category, FileCategory::Erb | FileCategory::Erh) {
+                scripts.insert(relative_path(&self.root, &path)?);
+            }
+        }
+        let folders = scripts
+            .iter()
+            .filter_map(|path| path.rsplit_once('/').map(|(folder, _)| folder.to_owned()))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        Ok(ProjectReloadTargets {
+            folders,
+            scripts: scripts.into_iter().collect(),
+        })
+    }
+
+    pub fn reload_scoped_with_progress(
         &mut self,
+        scope: &ProjectReloadScope,
         progress: Option<&dyn Fn(usize, usize)>,
     ) -> Result<ReloadProject, String> {
         if self.project_file.is_some() {
             return Err("a packaged project cannot reload source files".into());
         }
+        let selector = ProjectReloadSelector::new(scope)?;
         let candidate =
             Self::scan_with_progress(&self.root, self.revision.saturating_add(1), progress)?;
+        if let Some(request) = self.hydrate_sparse_reload(&selector, &candidate)? {
+            return Ok(request);
+        }
         let new_manifest = candidate
             .manifest
             .as_ref()
@@ -549,44 +637,141 @@ impl ProjectHost {
             .chain(new.keys())
             .copied()
             .collect::<BTreeSet<_>>();
-        let changes = if self.runtime_manifest_sparse {
-            new_manifest
-                .files
-                .iter()
-                .cloned()
-                .map(|file| FileChange::Upsert { file })
-                .collect()
-        } else {
-            paths
-                .into_iter()
-                .filter_map(|path| match (old.get(path), new.get(path)) {
-                    (Some(previous), Some(current))
-                        if previous.category == current.category
-                            && previous.content_hash == current.content_hash =>
-                    {
-                        None
-                    }
-                    (_, Some(_)) => Some(FileChange::Upsert {
-                        file: (*new_files
-                            .get(path)
-                            .expect("candidate index must match its manifest"))
-                        .clone(),
-                    }),
-                    (Some(previous), None) => Some(FileChange::Remove {
-                        category: previous.category,
-                        relative_path: path.to_owned(),
-                    }),
-                    (None, None) => None,
-                })
-                .collect()
-        };
+        let changes =
+            if self.runtime_manifest_sparse && matches!(&selector, ProjectReloadSelector::All) {
+                new_manifest
+                    .files
+                    .iter()
+                    .cloned()
+                    .map(|file| FileChange::Upsert { file })
+                    .collect()
+            } else {
+                paths
+                    .into_iter()
+                    .filter(|path| {
+                        new.get(path)
+                            .or_else(|| old.get(path))
+                            .is_some_and(|file| selector.matches(path, file.category))
+                    })
+                    .filter_map(|path| match (old.get(path), new.get(path)) {
+                        (Some(previous), Some(current))
+                            if previous.category == current.category
+                                && previous.content_hash == current.content_hash =>
+                        {
+                            None
+                        }
+                        (_, Some(_)) => Some(FileChange::Upsert {
+                            file: (*new_files
+                                .get(path)
+                                .expect("candidate index must match its manifest"))
+                            .clone(),
+                        }),
+                        (Some(previous), None) => Some(FileChange::Remove {
+                            category: previous.category,
+                            relative_path: path.to_owned(),
+                        }),
+                        (None, None) => None,
+                    })
+                    .collect()
+            };
         let request = ReloadProject {
             base_revision: self.revision,
             target_revision: candidate.revision,
             changes,
         };
-        *self = candidate;
+        if matches!(&selector, ProjectReloadSelector::All) {
+            *self = candidate;
+        } else {
+            self.indexed_files
+                .retain(|file| !selector.matches(&file.relative_path, file.category));
+            self.indexed_files.extend(
+                candidate
+                    .indexed_files
+                    .into_iter()
+                    .filter(|file| selector.matches(&file.relative_path, file.category)),
+            );
+            self.indexed_files.sort_by(|left, right| {
+                left.relative_path
+                    .to_lowercase()
+                    .cmp(&right.relative_path.to_lowercase())
+                    .then_with(|| left.relative_path.cmp(&right.relative_path))
+            });
+            self.manifest = None;
+            self.revision = candidate.revision;
+        }
         Ok(request)
+    }
+
+    fn hydrate_sparse_reload(
+        &mut self,
+        selector: &ProjectReloadSelector,
+        candidate: &Self,
+    ) -> Result<Option<ReloadProject>, String> {
+        if !self.runtime_manifest_sparse || matches!(selector, ProjectReloadSelector::All) {
+            return Ok(None);
+        }
+        let baseline = self
+            .manifest
+            .as_ref()
+            .ok_or_else(|| "cached project reload baseline was not materialized".to_owned())?;
+        let candidate_manifest = candidate
+            .manifest
+            .as_ref()
+            .ok_or_else(|| "candidate manifest was not materialized".to_owned())?;
+        let mut files = baseline
+            .files
+            .iter()
+            .filter(|file| !selector.matches(&file.relative_path, file.category))
+            .cloned()
+            .chain(
+                candidate_manifest
+                    .files
+                    .iter()
+                    .filter(|file| selector.matches(&file.relative_path, file.category))
+                    .cloned(),
+            )
+            .collect::<Vec<_>>();
+        files.sort_by(|left, right| {
+            left.relative_path
+                .to_lowercase()
+                .cmp(&right.relative_path.to_lowercase())
+                .then_with(|| left.relative_path.cmp(&right.relative_path))
+        });
+        let hydrated_paths = files
+            .iter()
+            .map(|file| file.relative_path.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut changes = files
+            .iter()
+            .cloned()
+            .map(|file| FileChange::Upsert { file })
+            .collect::<Vec<_>>();
+        changes.extend(
+            baseline
+                .files
+                .iter()
+                .filter(|file| {
+                    selector.matches(&file.relative_path, file.category)
+                        && !hydrated_paths.contains(file.relative_path.as_str())
+                })
+                .map(|file| FileChange::Remove {
+                    category: file.category,
+                    relative_path: file.relative_path.clone(),
+                }),
+        );
+        let request = ReloadProject {
+            base_revision: self.revision,
+            target_revision: candidate.revision,
+            changes,
+        };
+        self.indexed_files = files.iter().map(indexed_file).collect::<Result<_, _>>()?;
+        self.manifest = Some(ProjectManifest {
+            project_revision: candidate.revision,
+            files,
+        });
+        self.revision = candidate.revision;
+        self.runtime_manifest_sparse = false;
+        Ok(Some(request))
     }
 
     pub fn read_resource(&self, relative_path: &str) -> Result<Vec<u8>, String> {
@@ -1373,7 +1558,9 @@ mod tests {
         let mut project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
 
         fs::remove_file(removed).unwrap();
-        let request = project.reload_with_progress(None).unwrap();
+        let request = project
+            .reload_scoped_with_progress(&ProjectReloadScope::All, None)
+            .unwrap();
 
         assert_eq!(request.base_revision, 1);
         assert_eq!(request.target_revision, 2);
@@ -1386,6 +1573,86 @@ mod tests {
             } if relative_path == "font/Project.ttf"
         ));
         assert!(project.font_sources().is_empty());
+    }
+
+    #[test]
+    fn scoped_reload_retains_unselected_disk_changes_for_a_later_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        let selected = directory.path().join("ERB/selected");
+        let other = directory.path().join("ERB/other");
+        fs::create_dir_all(&selected).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        fs::write(
+            selected.join("command.erb"),
+            "@COM0\nPRINTL OLD\nRETURN 1\n",
+        )
+        .unwrap();
+        fs::write(other.join("command.erb"), "@COM1\nPRINTL OLD\nRETURN 1\n").unwrap();
+        let mut project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+        project.mark_runtime_manifest_sparse();
+        project.materialize().unwrap();
+
+        fs::write(
+            selected.join("command.erb"),
+            "@COM0\nPRINTL SELECTED\nRETURN 1\n",
+        )
+        .unwrap();
+        fs::write(other.join("command.erb"), "@COM1\nPRINTL OTHER\nRETURN 1\n").unwrap();
+        let selected_reload = project
+            .reload_scoped_with_progress(
+                &ProjectReloadScope::Folder {
+                    path: "ERB/selected".into(),
+                },
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(selected_reload.changes.len(), 2);
+        assert!(selected_reload.changes.iter().any(|change| matches!(
+            change,
+            FileChange::Upsert { file }
+                if file.relative_path == "ERB/selected/command.erb"
+                    && matches!(&file.payload, FilePayload::Utf8(text) if text.contains("PRINTL SELECTED"))
+        )));
+        assert!(selected_reload.changes.iter().any(|change| matches!(
+            change,
+            FileChange::Upsert { file }
+                if file.relative_path == "ERB/other/command.erb"
+                    && matches!(&file.payload, FilePayload::Utf8(text) if text.contains("PRINTL OLD"))
+        )));
+
+        let remaining_reload = project
+            .reload_scoped_with_progress(
+                &ProjectReloadScope::Script {
+                    path: "ERB/other/command.erb".into(),
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(remaining_reload.changes.len(), 1);
+        assert!(matches!(
+            &remaining_reload.changes[0],
+            FileChange::Upsert { file } if file.relative_path == "ERB/other/command.erb"
+        ));
+    }
+
+    #[test]
+    fn reload_targets_include_current_and_removed_scripts() {
+        let directory = tempfile::tempdir().unwrap();
+        let commands = directory.path().join("ERB/commands");
+        fs::create_dir_all(&commands).unwrap();
+        fs::write(commands.join("hot.erb"), "@COM0\nRETURN 1\n").unwrap();
+        let project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+        fs::remove_file(commands.join("hot.erb")).unwrap();
+        fs::write(commands.join("new.erh"), "#DIM TEST\n").unwrap();
+
+        let targets = project.project_reload_targets().unwrap();
+
+        assert_eq!(targets.folders, ["ERB/commands"]);
+        assert_eq!(
+            targets.scripts,
+            ["ERB/commands/hot.erb", "ERB/commands/new.erh"]
+        );
     }
 
     #[test]

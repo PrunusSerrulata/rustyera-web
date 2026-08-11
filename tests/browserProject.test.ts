@@ -448,6 +448,99 @@ describe("browser project reads", () => {
     await expect(project.readResource("SOUND/主题.MP3")).resolves.toEqual(Uint8Array.of(4, 5, 6));
   });
 
+  it("reloads only the selected script folder and retains other changes for a later reload", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const erb = await root.getDirectoryHandle("ERB", { create: true });
+    const selected = await erb.getDirectoryHandle("selected", { create: true });
+    const other = await erb.getDirectoryHandle("other", { create: true });
+    await writeFixtureFile(selected, "command.erb", "@COM0\nPRINTL OLD\nRETURN 1\n");
+    await writeFixtureFile(other, "command.erb", "@COM1\nPRINTL OLD\nRETURN 1\n");
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    await project.scan();
+    project.markRuntimeManifestSparse();
+    await project.prepareReloadBaseline();
+
+    await writeFixtureFile(selected, "command.erb", "@COM0\nPRINTL SELECTED\nRETURN 1\n");
+    await writeFixtureFile(other, "command.erb", "@COM1\nPRINTL OTHER\nRETURN 1\n");
+    const selectedReload = await project.reloadRequest({
+      type: "folder",
+      path: "ERB/selected",
+    });
+
+    expect(selectedReload.changes).toHaveLength(2);
+    expect(
+      selectedReload.changes.find(
+        (change: any) => change.file.relative_path === "ERB/selected/command.erb",
+      ).file.payload.value,
+    ).toContain("PRINTL SELECTED");
+    expect(
+      selectedReload.changes.find(
+        (change: any) => change.file.relative_path === "ERB/other/command.erb",
+      ).file.payload.value,
+    ).toContain("PRINTL OLD");
+
+    const remainingReload = await project.reloadRequest({
+      type: "script",
+      path: "ERB/other/command.erb",
+    });
+    expect(remainingReload.changes).toHaveLength(1);
+    expect(remainingReload.changes[0].file.relative_path).toBe("ERB/other/command.erb");
+  });
+
+  it("materializes every payload when fully reloading a cached project", async () => {
+    const root = new SaveDirectoryHandle("game");
+    await writeFixtureFile(root, "main.erb", "@SYSTEM_TITLE\nPRINTL OLD\nRETURN\n");
+    await writeFixtureFile(root, "other.erb", "@OTHER\nPRINTL OLD\nRETURN\n");
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    await project.scan();
+    project.markRuntimeManifestSparse();
+    await project.prepareReloadBaseline();
+    await writeFixtureFile(root, "main.erb", "@SYSTEM_TITLE\nPRINTL NEW\nRETURN\n");
+
+    const reload = await project.reloadRequest({ type: "all" });
+
+    expect(reload.changes).toHaveLength(2);
+    expect(reload.changes.every((change: any) => change.file.payload.value.length > 0)).toBe(true);
+    expect(
+      reload.changes.find((change: any) => change.file.relative_path === "other.erb").file.payload
+        .value,
+    ).toContain("PRINTL OLD");
+  });
+
+  it("rejects an invalid reload scope before changing its revision or baseline", async () => {
+    const root = new SaveDirectoryHandle("game");
+    await writeFixtureFile(root, "main.erb", "@SYSTEM_TITLE\nPRINTL OLD\nRETURN\n");
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    await project.scan();
+    await writeFixtureFile(root, "main.erb", "@SYSTEM_TITLE\nPRINTL NEW\nRETURN\n");
+
+    await expect(project.reloadRequest({ type: "script", path: "../main.erb" })).rejects.toThrow(
+      "项目目录内",
+    );
+
+    const reload = await project.reloadRequest({ type: "all" });
+    expect(reload.base_revision).toBe(1);
+    expect(reload.target_revision).toBe(2);
+    expect(reload.changes).toHaveLength(1);
+    expect(reload.changes[0].file.relative_path).toBe("main.erb");
+  });
+
+  it("lists current and removed scripts as selectable reload targets", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const erb = await root.getDirectoryHandle("ERB", { create: true });
+    const commands = await erb.getDirectoryHandle("commands", { create: true });
+    await writeFixtureFile(commands, "hot.erb", "@COM0\nRETURN 1\n");
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    await project.scan();
+    await commands.removeEntry("hot.erb");
+    await writeFixtureFile(commands, "new.erh", "#DIM TEST\n");
+
+    await expect(project.projectReloadTargets()).resolves.toEqual({
+      folders: ["ERB/commands"],
+      scripts: ["ERB/commands/hot.erb", "ERB/commands/new.erh"],
+    });
+  });
+
   it("atomically updates a root reraconfig.toml after checking its normalized digest", async () => {
     const root = new SaveDirectoryHandle("game");
     const handle = await root.getFileHandle("reraconfig.toml", { create: true });

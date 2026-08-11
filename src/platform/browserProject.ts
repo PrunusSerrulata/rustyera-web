@@ -1,5 +1,6 @@
 import { blake3 } from "@noble/hashes/blake3.js";
 
+import type { ProjectReloadScope, ProjectReloadTargets } from "@/core/types";
 import { isPackagedProjectFontPath, type ProjectFontSource } from "@/platform/projectFonts";
 
 const RESOURCE_SUFFIXES = new Set([
@@ -65,6 +66,9 @@ interface PendingBrowserSnapshot {
   files: PendingBrowserFile[];
   topLevel: Set<string>;
 }
+
+type ProjectReloadSelector =
+  { type: "all" } | { type: "folder"; path: string } | { type: "script"; path: string };
 
 export class BrowserProject {
   private readonly files = new Map<string, FileSystemFileHandle>();
@@ -411,16 +415,56 @@ export class BrowserProject {
     }
   }
 
-  async reloadRequest(progress?: FileScanProgress): Promise<any> {
+  async projectReloadTargets(): Promise<ProjectReloadTargets> {
+    if (this.embeddedManifest()) return { folders: [], scripts: [] };
+    const paths = new Set(
+      (this.manifestValue?.files ?? [])
+        .filter((file) => isScriptCategory(file.category))
+        .map((file) => file.relative_path),
+    );
+    const topLevel = new Set<string>();
+    for await (const [name, handle] of this.root.entries()) {
+      if (handle.kind === "directory" && name.toLowerCase() !== ".rustyera") {
+        topLevel.add(name.toLowerCase());
+      }
+    }
+    const current: Array<{
+      relativePath: string;
+      category: string;
+      handle: FileSystemFileHandle;
+    }> = [];
+    await this.walkHandles(this.root, "", topLevel, current);
+    for (const file of current) {
+      if (isScriptCategory(file.category)) paths.add(file.relativePath);
+    }
+    const scripts = [...paths].sort(comparePaths);
+    const folders = [
+      ...new Set(scripts.map((path) => path.slice(0, path.lastIndexOf("/") + 1).slice(0, -1))),
+    ]
+      .filter(Boolean)
+      .sort(comparePaths);
+    return { folders, scripts };
+  }
+
+  async prepareReloadBaseline(progress?: FileScanProgress): Promise<void> {
+    if (this.embeddedManifest()) return;
+    await this.materialize(progress);
+  }
+
+  async reloadRequest(scope: ProjectReloadScope, progress?: FileScanProgress): Promise<any> {
     if (this.embeddedManifest()) throw new Error("项目文件不包含可热重载的外部源码目录");
+    const selector = projectReloadSelector(scope);
     const previous = this.manifestValue ?? (await this.scan(progress));
     this.revision += 1;
-    const current = await this.scan(progress);
+    let current = await this.scan(progress);
+    if (this.runtimeManifestSparse && selector.type === "all") {
+      current = await this.materialize(progress);
+    }
     const oldByPath = new Map(previous.files.map((file) => [file.relative_path, file]));
     const newByPath = new Map(current.files.map((file) => [file.relative_path, file]));
-    const paths = [...new Set([...oldByPath.keys(), ...newByPath.keys()])].sort();
+    const paths = [...new Set([...oldByPath.keys(), ...newByPath.keys()])].sort(comparePaths);
     const changes: any[] = [];
-    if (this.runtimeManifestSparse) {
+    if (this.runtimeManifestSparse && selector.type === "all") {
       this.runtimeManifestSparse = false;
       return {
         base_revision: previous.project_revision,
@@ -428,9 +472,50 @@ export class BrowserProject {
         changes: current.files.map((file) => ({ type: "upsert", file })),
       };
     }
+    if (this.runtimeManifestSparse) {
+      const files = [
+        ...previous.files.filter(
+          (file) => !projectReloadScopeMatches(selector, file.relative_path, file.category),
+        ),
+        ...current.files
+          .filter((file) => projectReloadScopeMatches(selector, file.relative_path, file.category))
+          .map((file) => {
+            const baseline = oldByPath.get(file.relative_path);
+            return baseline &&
+              baseline.category === file.category &&
+              equalBytes(baseline.content_hash, file.content_hash)
+              ? baseline
+              : file;
+          }),
+      ].sort(compareScannedFiles);
+      const hydratedPaths = new Set(files.map((file) => file.relative_path));
+      changes.push(...files.map((file) => ({ type: "upsert", file })));
+      changes.push(
+        ...previous.files
+          .filter(
+            (file) =>
+              projectReloadScopeMatches(selector, file.relative_path, file.category) &&
+              !hydratedPaths.has(file.relative_path),
+          )
+          .map((file) => ({
+            type: "remove",
+            category: file.category,
+            relative_path: file.relative_path,
+          })),
+      );
+      this.runtimeManifestSparse = false;
+      this.manifestValue = { project_revision: current.project_revision, files };
+      return {
+        base_revision: previous.project_revision,
+        target_revision: current.project_revision,
+        changes,
+      };
+    }
     for (const path of paths) {
       const oldFile = oldByPath.get(path);
       const newFile = newByPath.get(path);
+      const category = newFile?.category ?? oldFile?.category;
+      if (!category || !projectReloadScopeMatches(selector, path, category)) continue;
       if (
         oldFile &&
         newFile &&
@@ -446,6 +531,17 @@ export class BrowserProject {
           category: oldFile.category,
           relative_path: oldFile.relative_path,
         });
+    }
+    if (selector.type !== "all") {
+      const files = [
+        ...previous.files.filter(
+          (file) => !projectReloadScopeMatches(selector, file.relative_path, file.category),
+        ),
+        ...current.files.filter((file) =>
+          projectReloadScopeMatches(selector, file.relative_path, file.category),
+        ),
+      ].sort(compareScannedFiles);
+      this.manifestValue = { project_revision: current.project_revision, files };
     }
     return {
       base_revision: previous.project_revision,
@@ -645,6 +741,30 @@ export class BrowserProject {
     if (namespace === "resource") return this.root;
     return this.root.getDirectoryHandle(storageDirectoryName(namespace), { create });
   }
+}
+
+function isScriptCategory(category: string): boolean {
+  return category === "erb" || category === "erh";
+}
+
+function projectReloadScopeMatches(
+  selector: ProjectReloadSelector,
+  relativePath: string,
+  category: string,
+): boolean {
+  if (selector.type === "all") return true;
+  if (!isScriptCategory(category)) return false;
+  const path = relativePath.replaceAll("\\", "/").normalize("NFC");
+  return selector.type === "script"
+    ? path === selector.path
+    : path === selector.path || path.startsWith(`${selector.path}/`);
+}
+
+function projectReloadSelector(scope: ProjectReloadScope): ProjectReloadSelector {
+  if (scope.type === "all") return scope;
+  const path = safePath(scope.path).normalize("NFC");
+  if (!path) throw new Error("重新加载目标不能为空");
+  return { type: scope.type, path };
 }
 
 async function operateBrowserStorage(

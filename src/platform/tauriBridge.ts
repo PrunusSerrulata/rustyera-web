@@ -14,6 +14,8 @@ import type {
   Preferences,
   ProjectProgress,
   ProjectOpenMetrics,
+  ProjectReloadScope,
+  ProjectReloadTargets,
   ProjectSelectionPreparation,
   ProjectSubmittedListener,
   ProjectConfigurationEntry,
@@ -226,10 +228,20 @@ export class TauriBridge implements FrontendBridge {
     }
   }
 
-  async reloadProject() {
+  async projectReloadTargets(): Promise<ProjectReloadTargets> {
     if (this.progressUnlisten) await this.progressUnlisten;
-    await invoke("reload_project");
-    return this.activateProjectFonts();
+    return invoke<ProjectReloadTargets>("project_reload_targets");
+  }
+
+  async prepareProjectReloadBaseline(): Promise<void> {
+    if (this.progressUnlisten) await this.progressUnlisten;
+    await invoke("prepare_project_reload_baseline");
+  }
+
+  async reloadProject(scope: ProjectReloadScope) {
+    if (this.progressUnlisten) await this.progressUnlisten;
+    const messageId = await invoke<number>("reload_project", { scope });
+    return { ...(await this.activateProjectFonts()), messageId };
   }
 
   async submitProjectSource(): Promise<void> {

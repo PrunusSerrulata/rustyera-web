@@ -58,19 +58,19 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
         </button>
         <button
           :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
-          @click="action(store.reloadProject)"
+          @click="action(() => store.reloadProject())"
         >
           重新加载全部脚本
         </button>
         <button
           :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
-          @click="action(store.reloadProject)"
+          @click="action(() => store.openProjectReloadDialog('folder'))"
         >
           重新加载文件夹…
         </button>
         <button
           :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
-          @click="action(store.reloadProject)"
+          @click="action(() => store.openProjectReloadDialog('script'))"
         >
           重新加载单个脚本…
         </button>
