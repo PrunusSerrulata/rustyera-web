@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/fault-diagnosis-project",
+  "mode": "fixed",
+  "seed": 123456,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [
+    {
+      "type": "input",
+      "value": "0",
+      "allow_fault": true
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".fault-message" },
+      "fields": ["count", "visible"],
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "导出诊断信息…", "exact": true },
+      "allow_fault": true
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "diagnosis": { "exporting": false, "canExport": true },
+        "logNotifications": [],
+        "lastDownload": {
+          "name": "Fatal Diagnosis Fixture-diagnosis_20260101-080000.tar.zst",
+          "magic": [40, 181, 47, 253],
+          "projectMagic": [82, 69, 82, 65, 80, 82, 79, 74]
+        }
+      },
+      "allow_fault": true
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".log-notification" },
+      "fields": ["count"],
+      "expect": { "count": 0 },
+      "allow_fault": true
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".diagnosis-notification" },
+      "fields": ["count", "text", "visible"],
+      "expect": {
+        "count": 1,
+        "text": "诊断信息已导出：Fatal Diagnosis Fixture-diagnosis_20260101-080000.tar.zst",
+        "visible": true
+      },
+      "allow_fault": true
+    }
+  ],
+  "limits": {
+    "max_steps": 12,
+    "timeout_seconds": 60
+  }
+}

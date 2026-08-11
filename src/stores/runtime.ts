@@ -1241,6 +1241,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
           activeExport.requestMessageId === correlation &&
           (exportRejection.includes("compiled project cache preparation started") ||
             exportRejection.includes("compiled project cache is still being prepared"));
+        const fullProjectPreparing =
+          isFullProjectExport(activeExport) &&
+          activeExport.requestMessageId === correlation &&
+          (exportRejection.includes("full project preparation started") ||
+            exportRejection.includes("full project is still being prepared"));
         const staleProjection =
           pendingProjectionMessages.delete(correlation) &&
           [
@@ -1266,14 +1271,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
           pendingGameInput.value = undefined;
         }
         if (pendingInputUndo.value?.messageId === correlation) pendingInputUndo.value = undefined;
-        if (!staleProjection && !willRetryInput && !compiledCachePreparing && !reloadRejected)
+        if (
+          !staleProjection &&
+          !willRetryInput &&
+          !compiledCachePreparing &&
+          !fullProjectPreparing &&
+          !reloadRejected
+        )
           log("warning", formatDiagnostic(value), true);
         rejectPendingConfiguration(correlationId, value.message ?? "Runtime 拒绝了命令");
-        const fullProjectPreparing =
-          isFullProjectExport(activeExport) &&
-          activeExport.requestMessageId === correlation &&
-          (exportRejection.includes("full project preparation started") ||
-            exportRejection.includes("full project is still being prepared"));
         if (fullProjectPreparing) {
           activeExport.requestMessageId = undefined;
           window.setTimeout(() => {

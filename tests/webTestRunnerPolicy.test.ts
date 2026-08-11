@@ -119,6 +119,23 @@ describe("browser game runner progress policy", () => {
     expect(scenario).toContain('"count": 0');
   });
 
+  it("uses a deterministic source fixture for fatal diagnosis exports", () => {
+    const scenario = readFileSync(
+      resolve("tools/runtime-tester/scenarios/fault-diagnosis.json"),
+      "utf8",
+    );
+    const fixture = readFileSync(
+      resolve("tests/fixtures/fault-diagnosis-project/erb/fault.erb"),
+      "utf8",
+    );
+
+    expect(scenario).toContain('"project": "../../../tests/fixtures/fault-diagnosis-project"');
+    expect(scenario).not.toContain('"type": "vm_snapshot"');
+    expect(scenario).toContain('"logNotifications": []');
+    expect(scenario).toContain('"css": ".log-notification"');
+    expect(fixture).toContain("THROW INTENTIONAL_FATAL_DIAGNOSIS_FIXTURE");
+  });
+
   it("runs the cache-hit settings regression through the native Tauri host", () => {
     const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
     const spec = readFileSync(resolve("tests/tauri/cache-settings.spec.mjs"), "utf8");

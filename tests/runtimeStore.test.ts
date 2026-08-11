@@ -2765,11 +2765,14 @@ describe("runtime store session lifecycle", () => {
       const message = args[0] as { type?: string; value?: { kind?: string } };
       if (message.type === "state_export_request" && message.value?.kind === "full_project_file") {
         fullProjectRequests += 1;
-        return fullProjectRequests === 1 ? 41 : 42;
+        return 40 + fullProjectRequests;
       }
       return 10;
     });
     let pumpCalls = 0;
+    let preparationStartedRejected = false;
+    let preparationStillRejected = false;
+    let fullProjectCompleted = false;
     bridge.pump.mockImplementation(async () => {
       pumpCalls += 1;
       if (pumpCalls === 1)
@@ -2802,15 +2805,31 @@ describe("runtime store session lifecycle", () => {
             runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
           ],
         };
-      if (pumpCalls === 3)
+      if (fullProjectRequests === 1 && !preparationStartedRejected) {
+        preparationStartedRejected = true;
         return {
           ...emptyBatch(),
           events: [
-            runtimeEvent("command_rejected", { message: "full project preparation started" }, 999),
+            runtimeEvent("command_rejected", { message: "unrelated rejection" }, 999),
             runtimeEvent("command_rejected", { message: "full project preparation started" }, 41),
           ],
         };
-      if (pumpCalls === 7)
+      }
+      if (fullProjectRequests === 2 && !preparationStillRejected) {
+        preparationStillRejected = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent(
+              "command_rejected",
+              { message: "full project is still being prepared" },
+              42,
+            ),
+          ],
+        };
+      }
+      if (fullProjectRequests === 3 && !fullProjectCompleted) {
+        fullProjectCompleted = true;
         return {
           ...emptyBatch(),
           events: [
@@ -2820,6 +2839,7 @@ describe("runtime store session lifecycle", () => {
             runtimeEvent("state_export_chunk", { offset: 0, data: [3, 4], complete: true }),
           ],
         };
+      }
       return emptyBatch();
     });
     const store = useRuntimeStore();
@@ -2828,13 +2848,28 @@ describe("runtime store session lifecycle", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     await store.exportDiagnosis();
-    await vi.advanceTimersByTimeAsync(112);
-    await flushMicrotasks();
+    await advanceUntil(() => fullProjectRequests === 3, 20);
+    await advanceUntil(() => bridge.saveDiagnosis.mock.calls.length === 1, 20);
 
-    expect(fullProjectRequests).toBe(2);
+    expect(fullProjectRequests).toBe(3);
     expect(bridge.saveDiagnosis).toHaveBeenCalledOnce();
     expect(store.diagnosisExporting).toBe(false);
     expect(store.canInteract).toBe(true);
+    expect(store.logNotifications).toEqual([
+      expect.objectContaining({
+        level: "warning",
+        message: expect.stringContaining("unrelated rejection"),
+      }),
+    ]);
+    for (const progress of [
+      "full project preparation started",
+      "full project is still being prepared",
+    ]) {
+      expect(store.logs.some((entry) => entry.message.includes(progress))).toBe(false);
+      expect(
+        store.logNotifications.some((notification) => notification.message.includes(progress)),
+      ).toBe(false);
+    }
   });
 
   it("cancels both sides when a diagnosis project chunk exceeds its descriptor", async () => {
