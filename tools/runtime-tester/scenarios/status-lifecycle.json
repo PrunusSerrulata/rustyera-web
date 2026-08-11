@@ -20,7 +20,7 @@
       "expect": {
         "bridgeKind": "browser",
         "projectOpen": true,
-        "status": "项目编译完成",
+        "status": "游戏运行中",
         "startupTelemetry": { "scenario": "warm", "cacheHit": true, "outcome": "success" },
         "transfer": { "export": null }
       }
@@ -43,7 +43,7 @@
       "expect": {
         "bridgeKind": "browser",
         "projectOpen": true,
-        "status": "项目编译完成",
+        "status": "游戏运行中",
         "transfer": { "export": null }
       }
     }

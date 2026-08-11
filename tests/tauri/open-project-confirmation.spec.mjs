@@ -46,7 +46,7 @@ describe("Tauri project replacement", () => {
     const afterConfirm = await snapshot();
     assert.equal(afterConfirm.bridgeKind, "tauri");
     assert.equal(afterConfirm.fault, null);
-    assert.equal(afterConfirm.status, "项目编译完成");
+    assert.equal(afterConfirm.status, "游戏运行中");
     assert.ok(afterConfirm.output.length > 0);
 
     console.log(

@@ -82,7 +82,7 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain('settingsDialog.$("#setting-FontSize").setValue("19")');
     expect(runner).toContain('style.fontFamily === "monospace"');
     expect(runner).toContain('style.fontSize === "19px"');
-    expect(runner).toContain('state.status === "项目编译完成"');
+    expect(runner).toContain('state.status === "游戏运行中"');
     expect(runner).toContain('snapshot().status === "设置已应用"');
     expect(runner).toContain("cacheUpdate =");
     expect(runner).toContain("cache.prefixDigest !== cacheBeforeSettings.prefixDigest");
@@ -98,7 +98,21 @@ describe("browser game runner progress policy", () => {
     expect(scenario).toContain('"cacheHit": true');
     expect(scenario).toContain('"export": null');
     expect(scenario).toContain('"status": "设置已应用"');
-    expect(scenario).toContain('"status": "项目编译完成"');
+    expect(scenario).toContain('"status": "游戏运行中"');
+  });
+
+  it("covers erarorona cache-hit status settlement without advancing the game", () => {
+    const scenario = readFileSync(
+      resolve("tools/runtime-tester/scenarios/erarorona-cache-status.json"),
+      "utf8",
+    );
+
+    expect(scenario).toContain('"compiled_cache": true');
+    expect(scenario).toContain('"scenario": "warm"');
+    expect(scenario).toContain('"projectLoading": false');
+    expect(scenario).toContain('"status": "游戏运行中"');
+    expect(scenario).toContain('"css": ".project-load-progress"');
+    expect(scenario).toContain('"count": 0');
   });
 
   it("uses the requested mouse button for visible UI click actions", () => {

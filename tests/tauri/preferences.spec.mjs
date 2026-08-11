@@ -54,7 +54,7 @@ preferences("Tauri emuera.config preferences", () => {
     await browser.waitUntil(
       async () => {
         const state = await snapshot();
-        return state?.bridgeKind === "tauri" && state.status === "项目编译完成";
+        return state?.bridgeKind === "tauri" && state.status === "游戏运行中";
       },
       {
         timeout: 10_000,

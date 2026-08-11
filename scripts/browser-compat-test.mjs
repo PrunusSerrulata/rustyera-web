@@ -255,7 +255,7 @@ try {
       }
       if (!progress.active) return;
       const state = window.__RUSTYERA_TEST__?.snapshot();
-      if (state?.canInteract || state?.status === "项目编译完成") {
+      if (state?.canInteract || state?.status === "游戏运行中") {
         progress.active = false;
         progress.completed = true;
       } else {
@@ -405,7 +405,7 @@ try {
         () =>
           browser.execute(() => {
             const state = window.__RUSTYERA_TEST__?.snapshot();
-            return state?.transfer?.export == null && state.status === "项目编译完成";
+            return state?.transfer?.export == null && state.status === "游戏运行中";
           }),
         {
           timeout: 30_000,
@@ -427,7 +427,7 @@ try {
         },
       );
       await browser.waitUntil(
-        () => browser.execute(() => window.__RUSTYERA_TEST__?.snapshot().status === "项目编译完成"),
+        () => browser.execute(() => window.__RUSTYERA_TEST__?.snapshot().status === "游戏运行中"),
         {
           timeout: 10_000,
           interval: 100,

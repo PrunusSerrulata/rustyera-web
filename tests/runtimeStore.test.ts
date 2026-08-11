@@ -858,7 +858,7 @@ describe("runtime store session lifecycle", () => {
     await expect(store.enableDebug()).resolves.toBeUndefined();
 
     expect(store.fault).toBeNull();
-    expect(store.status).toBe("项目编译完成");
+    expect(store.status).toBe("项目加载完成，正在启动游戏…");
     expect(store.logs.at(-1)?.message).toContain("客户端项目配置应用失败");
   });
 
@@ -883,7 +883,7 @@ describe("runtime store session lifecycle", () => {
     await loading;
 
     expect(store.projectLoading).toBe(false);
-    expect(store.status).toBe("项目编译完成");
+    expect(store.status).toBe("项目加载完成，正在启动游戏…");
   });
 
   it("writes and finalizes a Runtime-prepared configuration without forcing a restart", async () => {
@@ -1545,7 +1545,7 @@ describe("runtime store session lifecycle", () => {
     expect(store.testTransferState().export).toBeNull();
     expect(store.status).toBe("项目缓存已保存。");
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(store.status).toBe("项目编译完成");
+    expect(store.status).toBe("游戏运行中");
   });
 
   it("clears a compiled-cache status when the initial request fails", async () => {
@@ -1559,7 +1559,10 @@ describe("runtime store session lifecycle", () => {
     });
     bridge.pump.mockResolvedValueOnce({
       ...emptyBatch(),
-      events: [runtimeEvent("project_load_report", { success: true, diagnostics: [] })],
+      events: [
+        runtimeEvent("project_load_report", { success: true, diagnostics: [] }),
+        runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+      ],
     });
     const store = useRuntimeStore();
     await store.openProject();
@@ -1570,7 +1573,7 @@ describe("runtime store session lifecycle", () => {
     await flushMicrotasks();
 
     expect(store.testTransferState().export).toBeNull();
-    expect(store.status).toBe("项目编译完成");
+    expect(store.status).toBe("游戏运行中");
     expect(store.logs.at(-1)?.message).toContain("项目缓存生成失败");
   });
 
@@ -1590,7 +1593,10 @@ describe("runtime store session lifecycle", () => {
         reportSent = true;
         return {
           ...emptyBatch(),
-          events: [runtimeEvent("project_load_report", { success: true, diagnostics: [] })],
+          events: [
+            runtimeEvent("project_load_report", { success: true, diagnostics: [] }),
+            runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          ],
         };
       }
       const requested = bridge.submitRuntime.mock.calls.some(
@@ -1617,7 +1623,75 @@ describe("runtime store session lifecycle", () => {
     await vi.advanceTimersByTimeAsync(1_100);
 
     expect(store.testTransferState().export).toBeNull();
-    expect(store.status).toBe("项目编译完成");
+    expect(store.status).toBe("游戏运行中");
+    expect(store.logs.at(-1)?.message).toContain("项目缓存生成失败");
+  });
+
+  it("clears a compiled-cache status when cooperative preparation fails", async () => {
+    mockProjectSelection({
+      submittedAtMs: 0,
+      quickScanMs: 1,
+      cacheReadMs: 0,
+      sourceReadMs: 1,
+      submitMs: 1,
+      cacheImported: false,
+    });
+    let reportSent = false;
+    let preparationRejected = false;
+    let failureSent = false;
+    bridge.pump.mockImplementation(async () => {
+      if (!reportSent) {
+        reportSent = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("project_load_report", { success: true, diagnostics: [] }),
+            runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          ],
+        };
+      }
+      const cacheRequested = bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) =>
+          (message as { type?: string; value?: { kind?: string } }).type ===
+            "state_export_request" &&
+          (message as { value?: { kind?: string } }).value?.kind === "compiled_project_cache",
+      );
+      if (cacheRequested && !preparationRejected) {
+        preparationRejected = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent(
+              "command_rejected",
+              { message: "compiled project cache preparation started" },
+              1,
+            ),
+          ],
+        };
+      }
+      if (preparationRejected && !failureSent) {
+        failureSent = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("diagnostic", {
+              code: "runtime.compiled_cache_failed",
+              level: "warning",
+              message: "bytecode source differs from the project manifest",
+            }),
+          ],
+        };
+      }
+      return emptyBatch();
+    });
+    const store = useRuntimeStore();
+
+    await store.openProject();
+    await vi.advanceTimersByTimeAsync(1_100);
+
+    expect(store.testTransferState().export).toBeNull();
+    expect(store.status).toBe("游戏运行中");
+    expect(bridge.cancelCompiledCacheExport).toHaveBeenCalledOnce();
     expect(store.logs.at(-1)?.message).toContain("项目缓存生成失败");
   });
 
@@ -1654,7 +1728,7 @@ describe("runtime store session lifecycle", () => {
     await advanceUntil(() => store.testTransferState().export == null);
     expect(store.status).toBe("项目缓存已保存。");
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(store.status).toBe("项目编译完成");
+    expect(store.status).toBe("游戏运行中");
   });
 
   it("does not let a late cache completion cover active settings", async () => {
@@ -2327,7 +2401,7 @@ describe("runtime store session lifecycle", () => {
     expect(bridge.cancelCompiledCacheExport).toHaveBeenCalledOnce();
     expect(store.testTransferState().export).toBeNull();
     expect(store.logs.at(-1)?.message).toContain("项目缓存生成失败");
-    expect(store.status).toBe("项目编译完成");
+    expect(store.status).toBe("游戏运行中");
     expect(
       bridge.submitRuntime.mock.calls.filter(
         ([message]: unknown[]) =>
@@ -2991,7 +3065,7 @@ describe("runtime store session lifecycle", () => {
       ),
     ).toHaveLength(0);
     expect(store.testTransferState().export).toBeNull();
-    expect(store.status).toBe("项目编译完成");
+    expect(store.status).toBe("游戏运行中");
   });
 
   it("terminates startup telemetry when a bridge fails after submission", async () => {
@@ -3175,6 +3249,63 @@ describe("runtime store session lifecycle", () => {
     });
   });
 
+  it("does not reopen a cache-hit load after Runtime reaches the game first", async () => {
+    stubRunningAudioContext();
+    const hostMetrics = deferred<ProjectOpenMetrics>();
+    bridge.openProject.mockImplementation(async (onSubmitted, prepareAfterSelection) => {
+      onSubmitted?.(performance.now());
+      await prepareAfterSelection?.();
+      return hostMetrics.promise;
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", {
+          success: true,
+          diagnostics: [
+            { code: "runtime.compiled_cache_hit", level: "info", message: "cache hit" },
+          ],
+        }),
+        runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    const opening = store.openProject();
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+
+    expect(store.projectLoading).toBe(false);
+    expect(store.status).toBe("游戏运行中");
+    expect(store.startupTelemetry).toMatchObject({
+      scenario: "warm",
+      cacheHit: true,
+      outcome: "success",
+    });
+
+    hostMetrics.resolve({
+      submittedAtMs: 0,
+      quickScanMs: 1,
+      cacheReadMs: 2,
+      sourceReadMs: 0,
+      submitMs: 3,
+      cacheImported: true,
+      projectFonts: { fonts: [], errors: [] },
+    });
+    await opening;
+
+    expect(store.projectOpen).toBe(true);
+    expect(store.projectLoading).toBe(false);
+    expect(store.projectLoadProgressLabel).toBe("");
+    expect(store.status).toBe("游戏运行中");
+    expect(store.startupTelemetry?.bridge).toEqual({
+      quickScanMs: 1,
+      cacheReadMs: 2,
+      sourceReadMs: 0,
+      submitMs: 3,
+    });
+  });
+
   it("fails the active attempt when Runtime rejects its Start command", async () => {
     stubRunningAudioContext();
     bridge.openProject.mockImplementation(
@@ -3202,15 +3333,48 @@ describe("runtime store session lifecycle", () => {
       .mockResolvedValueOnce({
         ...emptyBatch(),
         events: [runtimeEvent("command_rejected", { message: "start rejected" }, 1)],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 })],
       });
     const store = useRuntimeStore();
 
     await store.openProject();
-    await vi.advanceTimersByTimeAsync(32);
+    await vi.advanceTimersByTimeAsync(48);
 
     expect(store.startupTelemetry).toMatchObject({
       outcome: "failure",
       error: "start rejected",
+    });
+    expect(store.projectLoading).toBe(false);
+    expect(store.status).toBe("项目启动失败：start rejected");
+  });
+
+  it("settles project loading when Runtime faults during startup", async () => {
+    mockProjectSelection({
+      submittedAtMs: 0,
+      quickScanMs: 1,
+      cacheReadMs: 2,
+      sourceReadMs: 0,
+      submitMs: 3,
+      cacheImported: true,
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("state_changed", { phase: "faulted", epoch: 2 })],
+    });
+    const store = useRuntimeStore();
+
+    await store.openProject();
+    expect(store.projectLoading).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.projectLoading).toBe(false);
+    expect(store.projectLoadProgressLabel).toBe("");
+    expect(store.startupTelemetry).toMatchObject({
+      outcome: "failure",
+      error: "Runtime entered faulted during startup",
     });
   });
 
@@ -3856,6 +4020,8 @@ async function runningBrowserStore() {
 
 async function storeWithPendingCompiledCacheWrite(write: Promise<void>) {
   stubRunningAudioContext();
+  let nextRuntimeMessageId = 1;
+  bridge.submitRuntime.mockImplementation(async () => nextRuntimeMessageId++);
   bridge.writeCompiledCacheChunk.mockReturnValueOnce(write);
   mockProjectSelection({
     submittedAtMs: 0,
@@ -3891,7 +4057,7 @@ async function storeWithPendingCompiledCacheWrite(write: Promise<void>) {
               code: "invalid_state",
               message: "compiled project cache preparation started",
             },
-            1,
+            2,
           ),
         ],
       };

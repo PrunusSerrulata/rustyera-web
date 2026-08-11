@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/erarorona",
+  "mode": "fixed",
+  "compiled_cache": true,
+  "clean_saves": true,
+  "seed": 1126218542,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [
+    {
+      "type": "assert_state",
+      "expect": {
+        "bridgeKind": "browser",
+        "projectOpen": true,
+        "projectLoading": false,
+        "status": "游戏运行中",
+        "startupTelemetry": { "scenario": "warm", "cacheHit": true, "outcome": "success" },
+        "transfer": { "export": null },
+        "fault": null
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".project-load-progress" },
+      "fields": ["count"],
+      "expect": { "count": 0 }
+    }
+  ],
+  "limits": { "max_steps": 4, "timeout_seconds": 300 }
+}

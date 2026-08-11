@@ -236,6 +236,8 @@ const DEBUG_VARIABLE_MAX_PAGES = 16;
 const TIME_ADVANCE_INTERVAL_NS = 16_000_000;
 const MAXIMUM_LOG_ENTRIES = 10_000;
 const STATUS_FEEDBACK_DURATION_MS = 2_000;
+const PROJECT_STARTING_STATUS = "项目加载完成，正在启动游戏…";
+const GAME_RUNNING_STATUS = "游戏运行中";
 
 export const useRuntimeStore = defineStore("runtime", () => {
   const bridge = platformBridge();
@@ -889,7 +891,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           }
           await settleProjectViewport();
           completeStartupFrontendReadiness();
-          baseStatus.value = "项目编译完成";
+          baseStatus.value = PROJECT_STARTING_STATUS;
           finishProjectLoad();
           if (pendingStart.type === "new_game") {
             await send({
@@ -924,15 +926,24 @@ export const useRuntimeStore = defineStore("runtime", () => {
           gameProgressLossConfirmation.value = null;
         if (
           startupTelemetry.value?.milestones.startSubmittedMs != null &&
+          startupTelemetry.value.outcome === "loading" &&
           startupTelemetry.value.milestones.firstGamePhaseMs == null &&
           ["running", "waiting_input", "waiting_external"].includes(value.phase)
         ) {
           startupTelemetry.value.milestones.firstGamePhaseMs = startupElapsedMs();
           startupTelemetry.value.outcome = "success";
+          startupStartMessageId = undefined;
+          // Host-side work such as font registration may finish after Runtime has already
+          // entered the game. The first game phase is the authoritative load boundary.
+          finishProjectLoad();
+          baseStatus.value = GAME_RUNNING_STATUS;
         }
         runtimeEpoch.value = value.epoch ?? runtimeEpoch.value;
-        if (value.phase === "faulted" || value.phase === "stopped")
+        if (value.phase === "faulted" || value.phase === "stopped") {
+          const startupWasLoading = startupTelemetry.value?.outcome === "loading";
           failStartupTelemetry(`Runtime entered ${value.phase} during startup`);
+          if (startupWasLoading) finishProjectLoad();
+        }
         if (value.phase !== "debug_paused") debugStop.value = null;
         break;
       case "presentation_snapshot":
@@ -1083,12 +1094,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
         importBytes = undefined;
         importKind = undefined;
         break;
-      case "fault":
+      case "fault": {
         gameProgressLossConfirmation.value = null;
+        const startupWasLoading = startupTelemetry.value?.outcome === "loading";
         failStartupTelemetry(value.message ?? "Runtime fault");
+        if (startupWasLoading) finishProjectLoad();
         fault.value = value;
         log("error", formatRuntimeFault(value), true, "none");
         break;
+      }
       case "diagnostic":
         log(value.level ?? "info", formatDiagnostic(value), true);
         if (
@@ -1102,6 +1116,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
           } catch (error) {
             await failCompiledCacheExport(activeExport, error);
           }
+        } else if (
+          value.code === "runtime.compiled_cache_failed" &&
+          exportState?.kind === "compiled_cache" &&
+          !exportState.descriptor
+        ) {
+          await failCompiledCacheExport(exportState, value.message ?? "Runtime cache build failed");
         }
         break;
       case "log":
@@ -1109,8 +1129,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
           log(value.level ?? "info", value.message, true, suppressNotification ? "none" : "all");
         break;
       case "command_rejected": {
-        if (String(correlationId) === startupStartMessageId)
-          failStartupTelemetry(value.message ?? "Runtime rejected startup");
+        if (
+          startupTelemetry.value?.outcome === "loading" &&
+          String(correlationId) === startupStartMessageId
+        ) {
+          const message = String(value.message ?? "Runtime rejected startup");
+          failStartupTelemetry(message);
+          finishProjectLoad();
+          baseStatus.value = `项目启动失败：${message}`;
+        }
         const correlation = String(correlationId);
         const exportRejection = String(value.message ?? "");
         const activeExport = exportState;
@@ -3256,6 +3283,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function continueProjectBuildProgress(cacheImported = false): void {
+    // Runtime can report project success before the host finishes post-submit work
+    // (notably project-font registration). Never reopen an attempt that already settled.
+    if (!acceptingProjectProgress) return;
     projectLoading.value = true;
     startProjectLoadElapsedTimer();
     if (
@@ -3385,6 +3415,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     finishStartupProgressStage();
     startupTelemetry.value.outcome = "failure";
     startupTelemetry.value.error = String(error);
+    startupStartMessageId = undefined;
   }
 
   function recordStartupProgress(stage: ProjectProgressStage): void {
