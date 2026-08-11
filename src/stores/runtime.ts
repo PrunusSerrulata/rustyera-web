@@ -133,6 +133,77 @@ function isFullProjectExport(state: ExportState | undefined): state is FullProje
   return state?.kind === "project_file" || state?.kind === "diagnosis_project";
 }
 
+function runtimeDebugVariant(value: unknown): string {
+  return String(value ?? "")
+    .split("_")
+    .filter(Boolean)
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join("");
+}
+
+function suppressedMirroredLogNotificationIndexes(events: PumpBatch["events"]): Set<number> {
+  const suppressed = new Set<number>();
+  for (let index = 1; index < events.length; index += 1) {
+    const event = events[index];
+    const previous = events[index - 1];
+    if (
+      event.channel === "runtime" &&
+      event.message.type === "fault" &&
+      previous.channel === "runtime" &&
+      previous.message.type === "log" &&
+      (previous.message as RuntimeMessage).value.level === "error"
+    ) {
+      suppressed.add(index - 1);
+      continue;
+    }
+    if (
+      event.channel === "runtime" &&
+      event.message.type === "log" &&
+      previous.channel === "runtime" &&
+      previous.message.type === "command_rejected"
+    ) {
+      const rejection = (previous.message as RuntimeMessage).value as {
+        code?: unknown;
+        message?: unknown;
+      };
+      const entry = (event.message as RuntimeMessage).value as {
+        level?: unknown;
+        message?: unknown;
+      };
+      const expected = `command rejected [${runtimeDebugVariant(rejection.code)}]: ${String(rejection.message ?? "")}`;
+      if (
+        ["warning", "error"].includes(String(entry.level ?? "")) &&
+        String(entry.message ?? "") === expected
+      )
+        suppressed.add(index);
+      continue;
+    }
+    if (
+      event.channel === "runtime" &&
+      event.message.type === "state_export_ready" &&
+      previous.channel === "runtime" &&
+      previous.message.type === "log"
+    ) {
+      const ready = (event.message as RuntimeMessage).value as {
+        result?: { type?: unknown; reasons?: unknown[] };
+      };
+      const entry = (previous.message as RuntimeMessage).value as {
+        level?: unknown;
+        message?: unknown;
+      };
+      const reasons = ready.result?.reasons ?? [];
+      const expected = `state export is ineligible: [${reasons.map(runtimeDebugVariant).join(", ")}]`;
+      if (
+        ready.result?.type === "ineligible" &&
+        entry.level === "warning" &&
+        entry.message === expected
+      )
+        suppressed.add(index - 1);
+    }
+  }
+  return suppressed;
+}
+
 interface DiagnosisState {
   name: string;
   projectName: string;
@@ -358,7 +429,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let startupStartMessageId: string | undefined;
   let projectLoadStartedAt: number | undefined;
   let projectLoadElapsedTimer: number | undefined;
-  let projectUsedCompiledCache = false;
+  let runtimeManifestSparse = false;
   let acceptingProjectProgress = false;
   let batchMediaDirty = false;
   let debugPausePending = false;
@@ -712,7 +783,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
       refreshProjectFontFamilies(metrics.projectFonts);
       projectOpen.value = true;
       activeProjectSelection = selection;
-      projectUsedCompiledCache = metrics.cacheImported;
       if (!startupTelemetry.value) beginStartupTelemetry(metrics.submittedAtMs, selection);
       applyStartupBridgeMetrics(metrics);
       log(
@@ -778,19 +848,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function handleBatch(batch: PumpBatch): Promise<void> {
     batchMediaDirty = false;
-    const fatalLogIndexes = new Set<number>();
-    for (let index = 1; index < batch.events.length; index += 1) {
-      const event = batch.events[index];
-      const previous = batch.events[index - 1];
-      if (
-        event.channel === "runtime" &&
-        event.message.type === "fault" &&
-        previous.channel === "runtime" &&
-        previous.message.type === "log" &&
-        (previous.message as RuntimeMessage).value.level === "error"
-      )
-        fatalLogIndexes.add(index - 1);
-    }
+    const suppressedLogNotificationIndexes = suppressedMirroredLogNotificationIndexes(batch.events);
     for (let index = 0; index < batch.events.length;) {
       const event = batch.events[index];
       if (event.epoch != null) runtimeEpoch.value = event.epoch;
@@ -821,7 +879,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         await handleRuntime(
           event.message as RuntimeMessage,
           event.correlationId,
-          fatalLogIndexes.has(index),
+          suppressedLogNotificationIndexes.has(index),
         );
       else await handleDebug(event.message as any, event.correlationId);
       index += 1;
@@ -866,7 +924,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         );
         if (startupTelemetry.value && runtimeAcceptedCompiledCache)
           startupTelemetry.value.cacheHit = true;
-        if (runtimeAcceptedCompiledCache) projectUsedCompiledCache = true;
+        runtimeManifestSparse = value.success && runtimeAcceptedCompiledCache;
         appendLogEntries(
           diagnostics.map((diagnostic: any) => ({
             timestamp: new Date(),
@@ -901,11 +959,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
           } else {
             await restoreState(pendingStart.type, pendingStart.bytes!);
           }
-          if (!runtimeAcceptedCompiledCache && !projectUsedCompiledCache)
-            scheduleCompiledCacheExport(1000);
+          if (!runtimeManifestSparse) scheduleCompiledCacheExport(1000);
         } else if (value.payload_required) {
           showProjectLoadTransition("项目缓存未命中，正在读取项目源码…");
-          projectUsedCompiledCache = false;
+          runtimeManifestSparse = false;
           if (startupTelemetry.value) {
             startupTelemetry.value.scenario = "cold";
             startupTelemetry.value.cacheHit = false;
@@ -1121,7 +1178,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
           exportState?.kind === "compiled_cache" &&
           !exportState.descriptor
         ) {
-          await failCompiledCacheExport(exportState, value.message ?? "Runtime cache build failed");
+          await failCompiledCacheExport(
+            exportState,
+            value.message ?? "Runtime cache build failed",
+            "none",
+          );
         }
         break;
       case "log":
@@ -1201,7 +1262,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
             if (projectFileFailed) {
               await finishProjectFileExport("failed", message);
             } else if (compiledCacheFailed) {
-              await failCompiledCacheExport(exportState, message);
+              await failCompiledCacheExport(exportState, message, "none");
             } else {
               exportState = undefined;
             }
@@ -1741,7 +1802,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
       await handleBatch(batch);
       const metrics = await bridge.restartProject();
       refreshProjectFontFamilies(metrics.projectFonts);
-      projectUsedCompiledCache = metrics.cacheImported;
       if (!startupTelemetry.value)
         beginStartupTelemetry(metrics.submittedAtMs, activeProjectSelection);
       applyStartupBridgeMetrics(metrics);
@@ -1847,7 +1907,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     importBytes = undefined;
     importKind = undefined;
     projectConfiguration.value = null;
-    projectUsedCompiledCache = false;
+    runtimeManifestSparse = false;
     if (pendingConfigurationUpdate) {
       const pending = pendingConfigurationUpdate;
       pendingConfigurationUpdate = undefined;
@@ -2142,6 +2202,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function refreshCompiledCacheAfterConfigurationUpdate(): Promise<void> {
     if (exportState?.kind === "compiled_cache") await cancelCompiledCacheExport();
+    // A cache hit leaves Runtime with an intentionally sparse project manifest. It cannot rebuild
+    // bytecode after a configuration edit; the host has already invalidated that cache, so the
+    // next project load will materialize source and produce a replacement safely.
+    if (runtimeManifestSparse) return;
     scheduleCompiledCacheExport();
   }
 
@@ -2344,7 +2408,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
     });
   }
 
-  async function failCompiledCacheExport(activeExport: ExportState, error: unknown): Promise<void> {
+  async function failCompiledCacheExport(
+    activeExport: ExportState,
+    error: unknown,
+    notificationPolicy: LogNotificationPolicy = "all",
+  ): Promise<void> {
     if (exportState !== activeExport) return;
     finishCompiledCacheExport(activeExport, "failed");
     try {
@@ -2352,7 +2420,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } catch (cancelError) {
       log("warning", `清理项目缓存失败：${String(cancelError)}`);
     }
-    log("warning", `项目缓存生成失败：${String(error)}`);
+    log("warning", `项目缓存生成失败：${String(error)}`, false, notificationPolicy);
   }
 
   function finishCompiledCacheExport(

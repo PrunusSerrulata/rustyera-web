@@ -24,7 +24,61 @@
       "locator": { "css": ".project-load-progress" },
       "fields": ["count"],
       "expect": { "count": 0 }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "文件", "exact": true },
+      "observe": false
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "设置…", "exact": true },
+      "observe": false
+    },
+    {
+      "type": "click",
+      "locator": { "css": "#settings-tab-display" },
+      "observe": false
+    },
+    { "type": "fill", "locator": { "css": "#setting-FontSize" }, "value": "17" },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "应用", "exact": true },
+      "settle_ms": 50
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "status": "游戏运行中",
+        "transfer": { "export": null },
+        "logNotifications": [],
+        "fault": null
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".log-notification" },
+      "fields": ["count"],
+      "expect": { "count": 0 }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "取消", "exact": true },
+      "settle_ms": 50,
+      "observe": false
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "bridgeKind": "browser",
+        "projectOpen": true,
+        "projectLoading": false,
+        "status": "游戏运行中",
+        "transfer": { "export": null },
+        "logNotifications": [],
+        "fault": null
+      }
     }
   ],
-  "limits": { "max_steps": 4, "timeout_seconds": 300 }
+  "limits": { "max_steps": 16, "timeout_seconds": 300 }
 }

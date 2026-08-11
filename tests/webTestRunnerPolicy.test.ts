@@ -101,7 +101,7 @@ describe("browser game runner progress policy", () => {
     expect(scenario).toContain('"status": "游戏运行中"');
   });
 
-  it("covers erarorona cache-hit status settlement without advancing the game", () => {
+  it("covers erarorona cache-hit settings without rebuilding a sparse cache", () => {
     const scenario = readFileSync(
       resolve("tools/runtime-tester/scenarios/erarorona-cache-status.json"),
       "utf8",
@@ -112,7 +112,22 @@ describe("browser game runner progress policy", () => {
     expect(scenario).toContain('"projectLoading": false');
     expect(scenario).toContain('"status": "游戏运行中"');
     expect(scenario).toContain('"css": ".project-load-progress"');
+    expect(scenario).toContain('"css": "#setting-FontSize"');
+    expect(scenario).toContain('"css": "#settings-tab-display"');
+    expect(scenario).toContain('"logNotifications": []');
+    expect(scenario).toContain('"css": ".log-notification"');
     expect(scenario).toContain('"count": 0');
+  });
+
+  it("runs the cache-hit settings regression through the native Tauri host", () => {
+    const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
+    const spec = readFileSync(resolve("tests/tauri/cache-settings.spec.mjs"), "utf8");
+
+    expect(runner).toContain('"cache-settings.spec.mjs"');
+    expect(runner).toContain('environmentFlag: "VITE_RUSTYERA_TAURI_CACHE_SETTINGS"');
+    expect(spec).toContain("startupTelemetry?.cacheHit === true");
+    expect(spec).toContain('entry.message).includes("runtime.compiled_cache_failed")');
+    expect(spec).toContain('state.status, "游戏运行中"');
   });
 
   it("uses the requested mouse button for visible UI click actions", () => {

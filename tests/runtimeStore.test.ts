@@ -483,6 +483,47 @@ describe("runtime store session lifecycle", () => {
     expect(store.logs).toHaveLength(6);
   });
 
+  it.each([
+    {
+      label: "suppresses the exact mirrored Runtime log",
+      logCode: "InvalidState",
+      expectedNotifications: 1,
+    },
+    {
+      label: "keeps a near-match with a different rejection code",
+      logCode: "StaleRequest",
+      expectedNotifications: 2,
+    },
+  ])("$label", async ({ logCode, expectedNotifications }) => {
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("command_rejected", {
+          code: "invalid_state",
+          message: "operation is unavailable",
+        }),
+        runtimeEvent("log", {
+          level: "warning",
+          message: `command rejected [${logCode}]: operation is unavailable`,
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+
+    expect(store.logs.map((entry) => entry.message)).toEqual([
+      "[invalid_state] operation is unavailable",
+      `command rejected [${logCode}]: operation is unavailable`,
+    ]);
+    expect(store.logNotifications).toHaveLength(expectedNotifications);
+    expect(store.logNotifications[0]).toEqual({
+      id: 1,
+      level: "warning",
+      message: "[invalid_state] operation is unavailable",
+    });
+  });
+
   it("suppresses compile warnings while surfacing compile errors", async () => {
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
@@ -886,7 +927,24 @@ describe("runtime store session lifecycle", () => {
     expect(store.status).toBe("项目加载完成，正在启动游戏…");
   });
 
-  it("writes and finalizes a Runtime-prepared configuration without forcing a restart", async () => {
+  it.each([
+    {
+      label: "refreshes the compiled cache after a full-source configuration update",
+      diagnostics: [],
+      requestsCompiledCache: true,
+    },
+    {
+      label: "defers cache replacement after a cache-hit configuration update",
+      diagnostics: [
+        {
+          code: "runtime.compiled_cache_hit",
+          level: "info",
+          message: "loaded the exact compiled project cache",
+        },
+      ],
+      requestsCompiledCache: false,
+    },
+  ])("$label", async ({ diagnostics, requestsCompiledCache }) => {
     let messageId = 20;
     bridge.submitRuntime.mockImplementation(async () => messageId++);
     bridge.createSession.mockResolvedValueOnce({
@@ -894,7 +952,7 @@ describe("runtime store session lifecycle", () => {
       events: [
         runtimeEvent("project_load_report", {
           success: true,
-          diagnostics: [],
+          diagnostics,
           configuration: {
             project_revision: 3,
             source_digest: new Uint8Array(32).fill(7),
@@ -984,15 +1042,123 @@ describe("runtime store session lifecycle", () => {
       },
       undefined,
     );
-    expect(bridge.submitRuntime).toHaveBeenCalledWith(
-      {
-        type: "state_export_request",
-        value: { kind: "compiled_project_cache", snapshot_purpose: "normal" },
-      },
-      undefined,
-    );
+    expect(
+      bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) =>
+          (message as { type?: string; value?: { kind?: string } }).type ===
+            "state_export_request" &&
+          (message as { value?: { kind?: string } }).value?.kind === "compiled_project_cache",
+      ),
+    ).toBe(requestsCompiledCache);
     expect(store.status).toBe("设置已应用");
+    expect(
+      store.logs.some((entry) => entry.message.includes("runtime.compiled_cache_failed")),
+    ).toBe(false);
     expect(bridge.restartProject).not.toHaveBeenCalled();
+
+    if (!requestsCompiledCache) {
+      const cacheRequestCount = () =>
+        bridge.submitRuntime.mock.calls.filter(
+          ([message]: unknown[]) =>
+            (message as { type?: string; value?: { kind?: string } }).type ===
+              "state_export_request" &&
+            (message as { value?: { kind?: string } }).value?.kind === "compiled_project_cache",
+        ).length;
+      const requestsBeforeReload = cacheRequestCount();
+      bridge.pump.mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("project_load_report", {
+            success: true,
+            diagnostics: [],
+            configuration: {
+              project_revision: 3,
+              source_digest: blake3(new TextEncoder().encode("[text]\nfont_size = 18\n")),
+              entries: [
+                {
+                  code: "FontSize",
+                  japanese: "フォントサイズ",
+                  english: "Font size",
+                  value: "18",
+                  effective_value: "18",
+                  default_value: "18",
+                  application: "hot",
+                  kind: "integer",
+                  allowed: [],
+                  fixed: false,
+                  applicability: 8,
+                },
+              ],
+            },
+          }),
+        ],
+      });
+
+      await store.reloadProject();
+      await vi.advanceTimersByTimeAsync(16);
+
+      const secondContents = "[text]\nfont_size = 20\n";
+      const savingAgain = store.savePreferences(defaultPreferences(), [
+        { code: "FontSize", value: "20" },
+      ]);
+      await Promise.resolve();
+      const secondPrepareMessageId = messageId - 1;
+      bridge.pump.mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "configuration_update_prepared",
+            {
+              project_revision: 3,
+              expected_source_digest: blake3(new TextEncoder().encode("[text]\nfont_size = 18\n")),
+              contents: secondContents,
+              restart_required: false,
+              prepared_source_digest: blake3(new TextEncoder().encode(secondContents)),
+            },
+            secondPrepareMessageId,
+          ),
+        ],
+      });
+      await vi.advanceTimersByTimeAsync(16);
+      const secondFinalizeMessageId = messageId - 1;
+      bridge.pump.mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "configuration_update_committed",
+            {
+              configuration: {
+                project_revision: 3,
+                source_digest: blake3(new TextEncoder().encode(secondContents)),
+                restart_pending: false,
+                generated_source: null,
+                entries: [
+                  {
+                    code: "FontSize",
+                    japanese: "フォントサイズ",
+                    english: "Font size",
+                    value: "20",
+                    effective_value: "20",
+                    default_value: "20",
+                    application: "hot",
+                    kind: "integer",
+                    allowed: [],
+                    fixed: false,
+                    applicability: 8,
+                  },
+                ],
+              },
+            },
+            secondFinalizeMessageId,
+          ),
+        ],
+      });
+      await vi.advanceTimersByTimeAsync(16);
+      await savingAgain;
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(cacheRequestCount()).toBeGreaterThan(requestsBeforeReload);
+    }
   });
 
   it("lets hot project fonts take effect after migrating hidden legacy overrides", async () => {
@@ -1420,6 +1586,41 @@ describe("runtime store session lifecycle", () => {
     );
   });
 
+  it.each([
+    {
+      label: "suppresses the exact state-export warning mirror",
+      runtimeWarning: "state export is ineligible: [StableWaitRequired]",
+      expectedNotifications: 1,
+    },
+    {
+      label: "keeps an unrelated adjacent state-export warning",
+      runtimeWarning: "an unrelated export warning",
+      expectedNotifications: 2,
+    },
+  ])("$label", async ({ runtimeWarning, expectedNotifications }) => {
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    await store.exportSnapshot();
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("log", { level: "warning", message: runtimeWarning }),
+        runtimeEvent("state_export_ready", {
+          result: { type: "ineligible", reasons: ["stable_wait_required"] },
+        }),
+      ],
+    });
+
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(store.testTransferState().export).toBeNull();
+    expect(store.logs.map((entry) => entry.message).slice(-2)).toEqual([
+      runtimeWarning,
+      "当前状态不能导出快照：stable_wait_required",
+    ]);
+    expect(store.logNotifications).toHaveLength(expectedNotifications);
+  });
+
   it("streams a titled project file through the host export boundary", async () => {
     bridge.pump
       .mockResolvedValueOnce({
@@ -1577,56 +1778,6 @@ describe("runtime store session lifecycle", () => {
     expect(store.logs.at(-1)?.message).toContain("项目缓存生成失败");
   });
 
-  it("clears a compiled-cache status when Runtime reports it ineligible", async () => {
-    mockProjectSelection({
-      submittedAtMs: 0,
-      quickScanMs: 1,
-      cacheReadMs: 0,
-      sourceReadMs: 1,
-      submitMs: 1,
-      cacheImported: false,
-    });
-    let reportSent = false;
-    let ineligibleSent = false;
-    bridge.pump.mockImplementation(async () => {
-      if (!reportSent) {
-        reportSent = true;
-        return {
-          ...emptyBatch(),
-          events: [
-            runtimeEvent("project_load_report", { success: true, diagnostics: [] }),
-            runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
-          ],
-        };
-      }
-      const requested = bridge.submitRuntime.mock.calls.some(
-        ([message]: unknown[]) =>
-          (message as { type?: string; value?: { kind?: string } }).type ===
-            "state_export_request" &&
-          (message as { value?: { kind?: string } }).value?.kind === "compiled_project_cache",
-      );
-      if (requested && !ineligibleSent) {
-        ineligibleSent = true;
-        return {
-          ...emptyBatch(),
-          events: [
-            runtimeEvent("state_export_ready", {
-              result: { type: "ineligible", reasons: ["running"] },
-            }),
-          ],
-        };
-      }
-      return emptyBatch();
-    });
-    const store = useRuntimeStore();
-    await store.openProject();
-    await vi.advanceTimersByTimeAsync(1_100);
-
-    expect(store.testTransferState().export).toBeNull();
-    expect(store.status).toBe("游戏运行中");
-    expect(store.logs.at(-1)?.message).toContain("项目缓存生成失败");
-  });
-
   it("clears a compiled-cache status when cooperative preparation fails", async () => {
     mockProjectSelection({
       submittedAtMs: 0,
@@ -1693,6 +1844,17 @@ describe("runtime store session lifecycle", () => {
     expect(store.status).toBe("游戏运行中");
     expect(bridge.cancelCompiledCacheExport).toHaveBeenCalledOnce();
     expect(store.logs.at(-1)?.message).toContain("项目缓存生成失败");
+    expect(
+      store.logNotifications.filter((notification) =>
+        notification.message.includes("runtime.compiled_cache_failed"),
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        level: "warning",
+        message:
+          "[runtime.compiled_cache_failed] bytecode source differs from the project manifest",
+      }),
+    ]);
   });
 
   it("keeps settings status above an active compiled-cache export", async () => {

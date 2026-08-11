@@ -32,6 +32,10 @@ const specProfiles = {
     environmentFlag: "VITE_RUSTYERA_TAURI_PREFERENCES",
     copyProject: true,
   },
+  "cache-settings.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_CACHE_SETTINGS",
+    copyProject: true,
+  },
   "reraconfig.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_RERACONFIG",
     copyProject: true,
