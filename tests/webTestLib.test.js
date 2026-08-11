@@ -71,6 +71,57 @@ describe("web game test scenario", () => {
     ).toEqual([]);
   });
 
+  it("accepts Firefox progress labels coalesced away after a successful cold startup", () => {
+    expect(
+      browserProjectProgressErrors({
+        active: false,
+        completed: false,
+        gaps: 3,
+        cacheHit: false,
+        labels: [],
+        portableImport: {
+          fallback: true,
+          focusBeforeChange: true,
+          directoryPicker: true,
+        },
+        startupTelemetry: {
+          scenario: "cold",
+          cacheHit: false,
+          outcome: "success",
+          observedStages: { importing: 11, compiling: 19, finalizing: 16 },
+        },
+      }),
+    ).toEqual([]);
+  });
+
+  it("rejects missing progress labels when cold-start telemetry is incomplete", () => {
+    expect(
+      browserProjectProgressErrors({
+        active: false,
+        completed: false,
+        gaps: 3,
+        cacheHit: false,
+        labels: [],
+        portableImport: {
+          fallback: true,
+          focusBeforeChange: true,
+          directoryPicker: true,
+        },
+        startupTelemetry: {
+          scenario: "cold",
+          cacheHit: false,
+          outcome: "success",
+          observedStages: { importing: 11, compiling: 0, finalizing: 16 },
+        },
+      }),
+    ).toEqual([
+      "project discovery",
+      "continuous progress",
+      "completed progress",
+      "runtime preparation",
+    ]);
+  });
+
   it("rejects progress that disappears before runtime preparation completes", () => {
     expect(
       browserProjectProgressErrors({

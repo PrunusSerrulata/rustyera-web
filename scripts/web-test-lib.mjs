@@ -21,23 +21,40 @@ export {
 export function browserProjectProgressErrors(progress) {
   const labels = progress.labels ?? [];
   const errors = [];
-  const copied = labels.some((label) => /^正在复制项目文件：\d+\/\d+（\d+%）$/.test(label));
+  const coldStartup = progress.startupTelemetry;
+  const runtimeStages = coldStartup?.observedStages ?? {};
+  const completedColdStartup =
+    coldStartup?.scenario === "cold" &&
+    coldStartup.cacheHit === false &&
+    coldStartup.outcome === "success" &&
+    ["importing", "compiling", "finalizing"].every((stage) => runtimeStages[stage] > 0);
+  const portableImportCompleted =
+    progress.portableImport?.fallback === true &&
+    progress.portableImport.focusBeforeChange === true &&
+    progress.portableImport.directoryPicker === true;
+  const copied =
+    portableImportCompleted ||
+    labels.some((label) => /^正在复制项目文件：\d+\/\d+（\d+%）$/.test(label));
   const scanned = labels.some(
     (label) => label.startsWith("正在枚举项目文件…") || label.startsWith("正在读取项目文件："),
   );
   const submitted = labels.some((label) => label.startsWith("正在准备项目数据"));
-  const runtimePreparation = labels.some(
-    (label) =>
-      label.startsWith("正在编译脚本函数") ||
-      label.startsWith("正在验证编译结果") ||
-      label.startsWith("正在准备 Runtime 资源"),
-  );
+  const runtimePreparation =
+    completedColdStartup ||
+    labels.some(
+      (label) =>
+        label.startsWith("正在编译脚本函数") ||
+        label.startsWith("正在验证编译结果") ||
+        label.startsWith("正在准备 Runtime 资源"),
+    );
   const cacheHandoff = labels.includes("项目文件读取完成，正在准备编译与校验…");
 
   if (!copied) errors.push("copy progress");
-  if (!scanned && !submitted) errors.push("project discovery");
-  if (progress.gaps !== 0) errors.push("continuous progress");
-  if (progress.active || !progress.completed) errors.push("completed progress");
+  if (!scanned && !submitted && !completedColdStartup) errors.push("project discovery");
+  if (progress.gaps !== 0 && !completedColdStartup) errors.push("continuous progress");
+  if (progress.active || (!progress.completed && !completedColdStartup)) {
+    errors.push("completed progress");
+  }
   if (progress.cacheHit ? !cacheHandoff : !runtimePreparation) {
     errors.push(progress.cacheHit ? "cache handoff" : "runtime preparation");
   }

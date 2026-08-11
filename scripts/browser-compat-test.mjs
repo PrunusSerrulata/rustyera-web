@@ -297,11 +297,18 @@ try {
     observed?.capture();
     observed?.observer.disconnect();
     const state = window.__RUSTYERA_TEST__?.snapshot();
+    const picker = window.__RUSTYERA_COMPAT_PICKER__;
     return {
       ...observed?.progress,
       cacheHit: state?.logs.some((entry) =>
         String(entry.message).includes("runtime.compiled_cache_hit"),
       ),
+      portableImport: {
+        fallback: picker?.fallback,
+        focusBeforeChange: picker?.focusBeforeChange,
+        directoryPicker: picker?.attempts.some((attempt) => attempt.isDirectoryPicker),
+      },
+      startupTelemetry: state?.startupTelemetry,
     };
   });
   const projectProgressErrors = browserProjectProgressErrors(projectProgress);
