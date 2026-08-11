@@ -1112,9 +1112,11 @@ name = "erabasic-vm"
 version = "0.3.0"
 dependencies = [
  "blake3",
+ "erabasic-ast",
  "erabasic-bytecode",
  "erabasic-data",
  "erabasic-html",
+ "erabasic-parser",
  "erabasic-validator",
  "quick-xml 0.38.4",
  "regex",
