@@ -407,15 +407,16 @@ select {
 :is(.game-button, .html-node:is(button)):hover:not(:disabled) .html-font {
   --game-interaction-foreground: var(--game-button-foreground);
 }
-:is(.game-button, .html-node:is(button)):hover:not(:disabled) .html-shape-rect-visual {
+:is(.game-button, .html-node:is(button)):hover:not(:disabled)
+  :is(.shape-rect-visual, .html-shape-rect-visual) {
   --game-shape-foreground: var(--game-button-shape-foreground);
 }
-.html-shape-rect {
+:is(.shape-rect, .html-shape-rect) {
   display: inline-block;
   position: relative;
   vertical-align: top;
 }
-.html-shape-rect-visual {
+:is(.shape-rect-visual, .html-shape-rect-visual) {
   position: absolute;
   display: block;
   pointer-events: none;
@@ -454,14 +455,7 @@ select {
 }
 .space {
   display: inline-block;
-  width: 1ch;
-}
-.shape {
-  display: inline-block;
-  width: 2em;
-  height: 1em;
-  border: 1px solid currentColor;
-  vertical-align: middle;
+  vertical-align: top;
 }
 .html-shape-space {
   display: inline-block;

@@ -27,6 +27,9 @@ const configuredSpec = requestedSpec;
 const specName = configuredSpec ? path.basename(configuredSpec) : undefined;
 const specProfiles = {
   "project-smoke.spec.mjs": { environmentFlag: "VITE_RUSTYERA_TAURI_PROJECT_SMOKE" },
+  "erafl-save-load-shapes.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_ERAFL_SAVE_LOAD_SHAPES",
+  },
   "tooltip.spec.mjs": { environmentFlag: "VITE_RUSTYERA_TAURI_TOOLTIP" },
   "preferences.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_PREFERENCES",

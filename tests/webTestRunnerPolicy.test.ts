@@ -147,6 +147,21 @@ describe("browser game runner progress policy", () => {
     expect(spec).toContain('state.status, "游戏运行中"');
   });
 
+  it("runs the eraFL COLOR_LINE regression through the visible native Tauri host", () => {
+    const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
+    const support = readFileSync(resolve("scripts/tauri-test-support.mjs"), "utf8");
+    const spec = readFileSync(resolve("tests/tauri/erafl-save-load-shapes.spec.mjs"), "utf8");
+
+    expect(runner).toContain('"erafl-save-load-shapes.spec.mjs"');
+    expect(runner).toContain('environmentFlag: "VITE_RUSTYERA_TAURI_ERAFL_SAVE_LOAD_SHAPES"');
+    expect(runner).toContain("startTauriSessionMonitor(browser");
+    expect(support).toContain("const SNAPSHOT_INTERVAL_MS = 5_000");
+    expect(spec).toContain('assert.equal((await snapshot()).bridgeKind, "tauri")');
+    expect(spec).toContain('await input.setValue("1")');
+    expect(spec).toContain("assert.deepEqual(row.slotWidths, [992, 16, 16])");
+    expect(spec).toContain('assert.ok(row.borderWidths.every((width) => width === "0px")');
+  });
+
   it("uses the requested mouse button for visible UI click actions", () => {
     const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
     const fullProjectExport = readFileSync(

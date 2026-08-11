@@ -3,6 +3,7 @@ import { computed } from "vue";
 
 import HtmlNode from "@/components/HtmlNode.vue";
 import MediaImage from "@/components/MediaImage.vue";
+import { projectRectangleShape, projectSpaceShape } from "@/core/shapeProjection";
 import { useRuntimeStore } from "@/stores/runtime";
 
 defineOptions({ name: "RunRenderer" });
@@ -62,9 +63,37 @@ const separatorText = computed(() =>
     ? String(props.run.pattern ?? "").repeat(separatorColumns.value)
     : "",
 );
+const directRectangleShapeStyle = computed(() => {
+  const run = props.run;
+  if (run.type !== "shape" || String(run.shape.kind).toLowerCase() !== "rect") return null;
+  const shape = projectRectangleShape(run.shape.parameters ?? [], store.gameTextStyle.fontSizePx);
+  if (shape == null) return null;
+  return {
+    slot: pixelStyle(shape.slot),
+    visual: {
+      ...pixelStyle(shape.visual),
+      left: `${shape.visual.left}px`,
+      top: `${shape.visual.top}px`,
+      backgroundColor: `var(--game-shape-foreground, ${
+        run.shape.foreground == null ? "currentColor" : rgba(run.shape.foreground)
+      })`,
+      "--game-button-shape-foreground":
+        run.shape.background == null ? "var(--game-focus)" : rgba(run.shape.background),
+    },
+  };
+});
+const directSpaceStyle = computed(() => {
+  if (props.run.type !== "space") return undefined;
+  const shape = projectSpaceShape(props.run.width, store.gameTextStyle.fontSizePx);
+  return shape == null ? undefined : pixelStyle(shape);
+});
 
 function rgba(color: any): string {
   return `rgba(${color.red}, ${color.green}, ${color.blue}, ${Number(color.alpha) / 255})`;
+}
+
+function pixelStyle(box: { width: number; height: number }): { width: string; height: string } {
+  return { width: `${box.width}px`, height: `${box.height}px` };
 }
 </script>
 
@@ -95,7 +124,19 @@ function rgba(color: any): string {
     <HtmlNode v-for="(node, index) in run.document.nodes" :key="index" :node="node" />
   </template>
   <MediaImage v-else-if="run.type === 'image'" :placement="run.placement" :alt="run.alt_text" />
-  <span v-else-if="run.type === 'shape'" class="shape" :data-shape="run.shape.kind" />
+  <span
+    v-else-if="run.type === 'shape' && directRectangleShapeStyle"
+    class="shape shape-rect"
+    :data-shape="run.shape.kind"
+    :style="directRectangleShapeStyle.slot"
+  >
+    <span class="shape-rect-visual" :style="directRectangleShapeStyle.visual" />
+  </span>
+  <span
+    v-else-if="run.type === 'shape'"
+    class="shape shape-unsupported"
+    :data-shape="run.shape.kind"
+  />
   <span
     v-else-if="run.type === 'column_cell'"
     class="column-cell"
@@ -115,5 +156,5 @@ function rgba(color: any): string {
     :style="[textStyle, { width: `${separatorColumns}ch` }]"
     >{{ separatorText }}</span
   >
-  <span v-else-if="run.type === 'space'" class="space" />
+  <span v-else-if="run.type === 'space'" class="space" :style="directSpaceStyle" />
 </template>

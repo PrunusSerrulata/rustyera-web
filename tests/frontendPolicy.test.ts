@@ -496,15 +496,22 @@ describe("frontend host and image-line policy", () => {
     );
 
     const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
-    expect(stylesheet).toMatch(
-      /:is\(\.game-button, \.html-node:is\(button\)\):hover:not\(:disabled\) \.html-shape-rect-visual\s*\{[^}]*--game-shape-foreground:\s*var\(--game-button-shape-foreground\);/s,
-    );
-    expect(stylesheet).toMatch(
-      /\.html-shape-rect\s*\{[^}]*display:\s*inline-block;[^}]*position:\s*relative;[^}]*vertical-align:\s*top;/s,
-    );
-    expect(stylesheet).toMatch(
-      /\.html-shape-rect-visual\s*\{[^}]*position:\s*absolute;[^}]*pointer-events:\s*none;/s,
-    );
+    const slotRule = stylesheet.match(/:is\(\.shape-rect, \.html-shape-rect\)\s*\{([^}]*)\}/s)?.[1];
+    expect(slotRule).toMatch(/display:\s*inline-block;/);
+    expect(slotRule).toMatch(/position:\s*relative;/);
+    expect(slotRule).toMatch(/vertical-align:\s*top;/);
+    expect(slotRule).not.toMatch(/border:/);
+    const visualRule = stylesheet.match(
+      /(?:^|\n):is\(\.shape-rect-visual, \.html-shape-rect-visual\)\s*\{([^}]*)\}/s,
+    )?.[1];
+    expect(visualRule).toMatch(/position:\s*absolute;/);
+    expect(visualRule).toMatch(/pointer-events:\s*none;/);
+    expect(visualRule).not.toMatch(/border:/);
+    expect(stylesheet).not.toMatch(/(?:^|\n)\.shape\s*\{[^}]*border:/s);
+    const hoverRule = stylesheet.match(
+      /:is\(\.game-button, \.html-node:is\(button\)\):hover:not\(:disabled\)\s+:is\(\.shape-rect-visual, \.html-shape-rect-visual\)\s*\{([^}]*)\}/s,
+    )?.[1];
+    expect(hoverRule).toMatch(/--game-shape-foreground:\s*var\(--game-button-shape-foreground\);/);
   });
 
   it("reserves one configured console row for an overflowing HTML image", () => {

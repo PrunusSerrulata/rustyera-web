@@ -2,6 +2,12 @@
 import { computed } from "vue";
 
 import MediaImage from "@/components/MediaImage.vue";
+import {
+  projectPresentationLength,
+  projectRectangleShape,
+  projectSpaceShape,
+} from "@/core/shapeProjection";
+import type { PresentationLength } from "@/core/types";
 import { useRuntimeStore } from "@/stores/runtime";
 
 defineOptions({ name: "HtmlNode" });
@@ -44,51 +50,20 @@ const imagePlacement = computed(() =>
 const spaceShapeStyle = computed(() => {
   const semantic = props.node.semantic;
   if (semantic?.type !== "shape" || semantic.kind?.toLowerCase() !== "space") return null;
-  const width = projectLength(semantic.parameters?.[0]);
-  return width == null
-    ? null
-    : {
-        width: `${Math.max(0, width)}px`,
-        height: `${store.gameTextStyle.fontSizePx}px`,
-      };
+  const shape = projectSpaceShape(semantic.parameters?.[0], store.gameTextStyle.fontSizePx);
+  return shape == null ? null : pixelStyle(shape);
 });
 const rectangleShapeStyle = computed(() => {
   const semantic = props.node.semantic;
   if (semantic?.type !== "shape" || semantic.kind?.toLowerCase() !== "rect") return null;
-  const parameters = semantic.parameters ?? [];
-  let x: number | undefined = 0;
-  let y: number | undefined = 0;
-  let width: number | undefined;
-  let height: number | undefined = store.gameTextStyle.fontSizePx;
-  if (parameters.length === 1) {
-    width = projectLength(parameters[0]);
-  } else if (parameters.length === 4) {
-    [x, y, width, height] = parameters.map(projectLength);
-  } else {
-    return null;
-  }
-  if (
-    x == null ||
-    y == null ||
-    width == null ||
-    height == null ||
-    x < 0 ||
-    width <= 0 ||
-    height <= 0
-  )
-    return null;
-  const top = Math.min(0, y);
-  const bottom = Math.max(store.gameTextStyle.fontSizePx, y + height);
+  const shape = projectRectangleShape(semantic.parameters ?? [], store.gameTextStyle.fontSizePx);
+  if (shape == null) return null;
   return {
-    slot: {
-      width: `${x + width}px`,
-      height: `${bottom - top}px`,
-    },
+    slot: pixelStyle(shape.slot),
     visual: {
-      left: `${x}px`,
-      top: `${y - top}px`,
-      width: `${width}px`,
-      height: `${height}px`,
+      ...pixelStyle(shape.visual),
+      left: `${shape.visual.left}px`,
+      top: `${shape.visual.top}px`,
       backgroundColor: `var(--game-shape-foreground, ${
         semantic.color == null ? "currentColor" : htmlColor(semantic.color)
       })`,
@@ -158,16 +133,12 @@ function activate(): void {
     void store.activate({ epoch: interaction.epoch, id: interaction.id });
 }
 
-function projectLength(value: { unit?: string; value?: unknown } | undefined): number | undefined {
-  if (!value) return undefined;
-  const raw = Number(value.value);
-  const result =
-    value.unit === "pixels" || value.unit === "logical"
-      ? value.unit === "logical"
-        ? raw / 1000
-        : raw
-      : (raw * store.gameTextStyle.fontSizePx) / 100;
-  return Number.isFinite(result) ? result : undefined;
+function projectLength(value: PresentationLength | undefined): number | undefined {
+  return projectPresentationLength(value, store.gameTextStyle.fontSizePx);
+}
+
+function pixelStyle(box: { width: number; height: number }): { width: string; height: string } {
+  return { width: `${box.width}px`, height: `${box.height}px` };
 }
 
 function htmlColor(value: unknown): string {

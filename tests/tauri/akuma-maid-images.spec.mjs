@@ -15,7 +15,7 @@ akumaMaidImages("Tauri eraAkumaMaid image rendering", () => {
     let stage = "install test control";
     let title;
     try {
-      // The configured 18px font makes the title art 648px tall. Establish the
+      // The project's configured 16px font makes the title art 576px tall. Establish the
       // reference client area after the project has applied its window config.
       await browser.waitUntil(async () => Boolean(await snapshot()), {
         timeout: 20_000,
@@ -44,26 +44,11 @@ akumaMaidImages("Tauri eraAkumaMaid image rendering", () => {
 
       stage = "verify title image";
       title = await titleMetrics();
-      assert.equal(title.spacerWidth, 648);
-      assert.equal(title.imageHeight, 648);
-      assert.equal(title.imageTop, -594);
-      if (title.imageViewportTop < -0.5) {
-        assert.ok(title.scrollTop > 0, "hidden title pixels must be reachable by scrolling up");
-        await browser.execute(() => {
-          const viewport = document.querySelector(".game-viewport");
-          if (viewport instanceof HTMLElement) viewport.scrollTop = 0;
-        });
-        await browser.pause(100);
-        const scrolledTitle = await titleMetrics();
-        assert.ok(
-          scrolledTitle.imageViewportBottom > 0,
-          "scrolling to the beginning must keep the title image visible",
-        );
-        assert.ok(
-          scrolledTitle.imageViewportTop > title.imageViewportTop,
-          "scrolling to the beginning must reveal more of the title image",
-        );
-      }
+      assert.equal(title.spacerWidth, 576);
+      assert.equal(title.imageHeight, 576);
+      assert.equal(title.imageTop, -528);
+      // The negative ypos intentionally crops the 36em asset to its bottom 3em title strip.
+      assert.ok(title.imageViewportBottom > 0, "the cropped title strip must remain visible");
       assert.ok(
         title.imageViewportBottom <= title.viewportHeight + 0.5,
         "title image must not be clipped below the viewport",

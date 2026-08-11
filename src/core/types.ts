@@ -295,10 +295,18 @@ export type DisplayRun =
     }
   | { type: "html_document"; document: any }
   | { type: "image"; placement: MediaPlacement; alt_text?: string }
-  | { type: "shape"; shape: any }
+  | {
+      type: "shape";
+      shape: {
+        kind: string;
+        parameters: PresentationLength[];
+        foreground?: Color;
+        background?: Color;
+      };
+    }
   | { type: "column_cell"; content: DisplayRun[]; alignment: string; preferred_columns: number }
   | { type: "separator"; pattern: string; role: string; style: TextStyle }
-  | { type: "space"; width: any };
+  | { type: "space"; width: PresentationLength };
 
 export interface InteractionToken {
   epoch: number;
