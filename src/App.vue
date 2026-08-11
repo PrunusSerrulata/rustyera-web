@@ -109,6 +109,7 @@ onMounted(() => void store.initialize());
       :host-kind="store.bridgeKind"
       :viewport-measurement="store.viewportMeasurement"
       :configuration-entries="store.configurationEntries"
+      :project-source="store.projectSource"
       :configuration-read-only="store.configurationReadOnly"
       :configuration-session-only="store.configurationSessionOnly"
       :restart-pending="store.configurationRestartPending"

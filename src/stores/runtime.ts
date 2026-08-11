@@ -363,7 +363,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const openProjectConfirmationOpen = ref(false);
   const gameProgressLossConfirmation = ref<"restart" | "title" | null>(null);
   let pendingProjectSelection: "directory" | "file" = "directory";
-  let activeProjectSelection: "directory" | "file" = "directory";
+  const projectSource = ref<"directory" | "file">("directory");
+  const configurationWritable = ref(false);
   const prompt = ref("");
   const inputUndo = ref<any>(null);
   const fault = ref<any>(null);
@@ -469,14 +470,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const configurationReadOnly = computed(
     () =>
       projectConfiguration.value != null &&
-      (!bridge.projectConfigurationWritable() ||
+      (!configurationWritable.value ||
         !configurationProfileValid.value ||
         configurationMigrationFailed.value),
   );
   const configurationSessionOnly = computed(
     () =>
       projectConfiguration.value != null &&
-      !bridge.projectConfigurationWritable() &&
+      !configurationWritable.value &&
       configurationProfileValid.value,
   );
   const configurationRestartPending = computed(
@@ -780,9 +781,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
         baseStatus.value = "已取消打开项目";
         return;
       }
+      configurationWritable.value = bridge.projectConfigurationWritable();
+      await persistGeneratedConfiguration();
       refreshProjectFontFamilies(metrics.projectFonts);
       projectOpen.value = true;
-      activeProjectSelection = selection;
+      projectSource.value = selection;
       if (!startupTelemetry.value) beginStartupTelemetry(metrics.submittedAtMs, selection);
       applyStartupBridgeMetrics(metrics);
       log(
@@ -934,6 +937,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           })),
           "errors_only",
         );
+        configurationWritable.value = bridge.projectConfigurationWritable();
         updateProjectConfiguration(value.configuration);
         await persistGeneratedConfiguration();
         if (value.success) {
@@ -1400,7 +1404,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function persistGeneratedConfiguration(): Promise<void> {
     const snapshot = projectConfiguration.value;
     const source = snapshot?.generated_source;
-    if (snapshot == null || source == null || !bridge.projectConfigurationWritable()) return;
+    if (snapshot == null || source == null || !configurationWritable.value) return;
     try {
       await bridge.writeProjectConfiguration(snapshot.source_digest, source);
       configurationMigrationFailed.value = true;
@@ -1785,7 +1789,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     )
       return;
     startupTelemetry.value = undefined;
-    beginStartupTelemetry(performance.now(), activeProjectSelection);
+    beginStartupTelemetry(performance.now(), projectSource.value);
     beginProjectLoad("正在创建新的 Runtime session…");
     runtimePump.setTransitioning(true);
     try {
@@ -1801,9 +1805,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
       runtimePump.setReady(true);
       await handleBatch(batch);
       const metrics = await bridge.restartProject();
+      configurationWritable.value = bridge.projectConfigurationWritable();
+      await persistGeneratedConfiguration();
       refreshProjectFontFamilies(metrics.projectFonts);
       if (!startupTelemetry.value)
-        beginStartupTelemetry(metrics.submittedAtMs, activeProjectSelection);
+        beginStartupTelemetry(metrics.submittedAtMs, projectSource.value);
       applyStartupBridgeMetrics(metrics);
       log(
         "info",
@@ -1907,6 +1913,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     importBytes = undefined;
     importKind = undefined;
     projectConfiguration.value = null;
+    configurationWritable.value = false;
     runtimeManifestSparse = false;
     if (pendingConfigurationUpdate) {
       const pending = pendingConfigurationUpdate;
@@ -3106,7 +3113,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const snapshot = projectConfiguration.value;
     if (!snapshot || !configurationProfileValid.value)
       throw new Error(!snapshot ? "项目配置尚未加载" : "当前项目配置不可修改");
-    const sessionOnly = !bridge.projectConfigurationWritable();
+    const sessionOnly = !configurationWritable.value;
     if (
       sessionOnly &&
       changes.some((change) => {
@@ -3572,6 +3579,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     presentation,
     preferences,
     configurationEntries,
+    projectSource,
     configurationReadOnly,
     configurationSessionOnly,
     configurationRestartPending,

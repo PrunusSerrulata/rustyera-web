@@ -1330,10 +1330,23 @@ describe("runtime store session lifecycle", () => {
       ...emptyBatch(),
       events: [runtimeEvent("project_load_report", projectConfigurationReport(4, 5, "16"))],
     });
+    mockProjectSelection(
+      {
+        submittedAtMs: 0,
+        quickScanMs: 1,
+        cacheReadMs: 0,
+        sourceReadMs: 0,
+        submitMs: 1,
+        cacheImported: true,
+      },
+      "openProjectFile",
+    );
     const store = useRuntimeStore();
-    await store.enableDebug();
+    await store.openProjectFile();
+    await vi.advanceTimersByTimeAsync(64);
     expect(store.configurationReadOnly).toBe(true);
     expect(store.configurationSessionOnly).toBe(true);
+    expect(store.projectSource).toBe("file");
 
     const saving = store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "18" }]);
     await Promise.resolve();
@@ -1387,6 +1400,34 @@ describe("runtime store session lifecycle", () => {
       ),
     ).toBe(false);
     expect(store.configurationEntries[0]?.effective_value).toBe("18");
+  });
+
+  it("refreshes directory writability after an early project configuration report", async () => {
+    bridge.projectConfigurationWritable.mockReturnValue(false);
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("project_load_report", projectConfigurationReport(4, 5, "16"))],
+    });
+    bridge.openProject.mockImplementation(async (onSubmitted, prepareAfterSelection) => {
+      onSubmitted?.(performance.now());
+      await prepareAfterSelection?.();
+      bridge.projectConfigurationWritable.mockReturnValue(true);
+      return {
+        submittedAtMs: performance.now(),
+        quickScanMs: 1,
+        cacheReadMs: 0,
+        sourceReadMs: 1,
+        submitMs: 1,
+        cacheImported: false,
+      };
+    });
+    const store = useRuntimeStore();
+
+    await store.openProject();
+
+    expect(store.projectSource).toBe("directory");
+    expect(store.configurationReadOnly).toBe(false);
+    expect(store.configurationSessionOnly).toBe(false);
   });
 
   it("rejects non-hot project-file changes before starting a Runtime transaction", async () => {
@@ -3020,8 +3061,13 @@ describe("runtime store session lifecycle", () => {
     bridge.listFonts.mockResolvedValue({ kind: "ready", fonts: ["Late Browser Font"] });
     const store = useRuntimeStore();
     store.projectOpen = true;
+    store.projectSource = "file";
     bridge.restartProject.mockImplementationOnce(async () => {
-      expect(store.startupTelemetry).toMatchObject({ outcome: "loading", client: "browser" });
+      expect(store.startupTelemetry).toMatchObject({
+        outcome: "loading",
+        client: "browser",
+        selection: "file",
+      });
       return {
         submittedAtMs: performance.now(),
         quickScanMs: 1,
@@ -3050,6 +3096,7 @@ describe("runtime store session lifecycle", () => {
       "monospace",
     ]);
     expect(bridge.restartProject).toHaveBeenCalledOnce();
+    expect(store.projectSource).toBe("file");
     expect(bridge.submitRuntime).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "start" }),
       expect.anything(),
@@ -3142,6 +3189,7 @@ describe("runtime store session lifecycle", () => {
     );
     const store = useRuntimeStore();
     store.projectOpen = true;
+    store.projectSource = "file";
     store.presentation.lines.push({ id: "old-line", runs: [] } as any);
 
     await store.openProject();
@@ -3153,6 +3201,7 @@ describe("runtime store session lifecycle", () => {
     expect(store.openProjectConfirmationOpen).toBe(false);
     expect(store.presentation.lines).toHaveLength(1);
     expect(store.projectOpen).toBe(true);
+    expect(store.projectSource).toBe("file");
 
     await store.openProject();
 
@@ -3166,6 +3215,7 @@ describe("runtime store session lifecycle", () => {
     expect(bridge.createSession).toHaveBeenCalledOnce();
     expect(bridge.openProject).toHaveBeenCalledOnce();
     expect(store.projectOpen).toBe(true);
+    expect(store.projectSource).toBe("directory");
     expect(store.projectLoading).toBe(true);
     expect(store.canOpenProject).toBe(false);
     expect(store.projectLoadProgressLabel).toBe("项目缓存命中，正在加载缓存…");
@@ -3296,7 +3346,7 @@ describe("runtime store session lifecycle", () => {
     ["file", "openProjectFile", "openProjectFile"],
   ] as const)(
     "opens the %s picker before session preparation",
-    async (_selection, storeMethod, bridgeMethod) => {
+    async (selection, storeMethod, bridgeMethod) => {
       stubRunningAudioContext();
       let confirmSelection!: () => void;
       const selected = new Promise<void>((resolve) => {
@@ -3326,6 +3376,7 @@ describe("runtime store session lifecycle", () => {
       await opening;
 
       expect(bridge.createSession).toHaveBeenCalledOnce();
+      expect(store.projectSource).toBe(selection);
     },
   );
 
@@ -3334,18 +3385,21 @@ describe("runtime store session lifecycle", () => {
     mockProjectSelection(undefined);
     const store = useRuntimeStore();
     store.projectOpen = true;
+    store.projectSource = "file";
 
     await store.openProject();
     await store.confirmOpenProject();
 
     expect(bridge.createSession).not.toHaveBeenCalled();
     expect(store.projectOpen).toBe(true);
+    expect(store.projectSource).toBe("file");
     expect(store.status).toBe("已取消打开项目");
   });
 
   it("does not overwrite the previous project telemetry when the picker fails", async () => {
     stubRunningAudioContext();
     const store = useRuntimeStore();
+    store.projectSource = "file";
     const previousTelemetry = {
       scenario: "warm",
       selection: "directory",
@@ -3357,6 +3411,7 @@ describe("runtime store session lifecycle", () => {
     await store.openProject();
 
     expect(store.startupTelemetry).toEqual(previousTelemetry);
+    expect(store.projectSource).toBe("file");
     expect(store.status).toBe("Error: picker failed");
   });
 

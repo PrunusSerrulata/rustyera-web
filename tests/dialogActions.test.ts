@@ -365,12 +365,15 @@ describe("dialog actions", () => {
         fontFamilies: [],
         hostKind: "browser",
         configurationEntries: [hot, restart],
+        projectSource: "file",
         configurationReadOnly: true,
         configurationSessionOnly: true,
       },
     });
 
-    expect(document.body.textContent).toContain("无需重启的设置仅对当前会话有效，退出游戏后将丢失");
+    expect(document.body.textContent).toContain(
+      "当前运行的是项目文件；无需重启的设置仅对当前会话有效，退出游戏后将丢失。",
+    );
     expect(document.body.textContent).not.toContain("项目设置不可修改");
     await clickButton("显示");
     const fontSize = document.body.querySelector<HTMLInputElement>("#setting-FontSize")!;
@@ -384,6 +387,47 @@ describe("dialog actions", () => {
     expect(wrapper.emitted("save")?.at(-1)?.[1]).toEqual([{ code: "FontSize", value: "18" }]);
     wrapper.unmount();
   });
+
+  it.each([
+    [
+      "file session",
+      "file",
+      true,
+      "当前运行的是项目文件；无需重启的设置仅对当前会话有效，退出游戏后将丢失。",
+    ],
+    [
+      "directory session",
+      "directory",
+      true,
+      "当前项目文件夹无法直接写入；无需重启的设置仅对当前会话有效，退出游戏后将丢失。",
+    ],
+    ["file read-only", "file", false, "当前项目文件为只读，项目设置不可修改。"],
+    ["directory read-only", "directory", false, "当前项目文件夹的设置为只读，项目设置不可修改。"],
+  ] as const)(
+    "identifies the %s configuration source precisely",
+    async (_case, source, sessionOnly, expected) => {
+      const hot = configurationEntry("FontSize", "16", "integer");
+      const wrapper = mount(PreferencesDialog, {
+        attachTo: document.body,
+        props: {
+          open: true,
+          value: defaultPreferences(),
+          fontFamilies: [],
+          hostKind: "browser",
+          configurationEntries: [hot],
+          projectSource: source,
+          configurationReadOnly: true,
+          configurationSessionOnly: sessionOnly,
+        },
+      });
+
+      const warnings = [...document.body.querySelectorAll<HTMLElement>(".settings-warning")].map(
+        (warning) => warning.textContent?.trim(),
+      );
+      expect(warnings).toContain(expected);
+      wrapper.unmount();
+    },
+  );
 
   it("keeps invalid color edits visible and disables confirmation", async () => {
     const wrapper = mount(ColorPickerDialog, {

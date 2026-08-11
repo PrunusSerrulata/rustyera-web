@@ -29,6 +29,10 @@ preferences("Tauri emuera.config preferences", () => {
 
     const dialog = await $(".dialog-panel[aria-label='RustyEra Tauri · 设置']");
     await dialog.waitForDisplayed();
+    const settingsText = await dialog.getText();
+    assert.doesNotMatch(settingsText, /当前运行的是项目文件/);
+    assert.doesNotMatch(settingsText, /当前项目文件为只读/);
+    assert.doesNotMatch(settingsText, /当前项目文件夹(?:无法直接写入|的设置为只读)/);
     await dialog.$("button=显示").click();
     assert.equal(await dialog.$("#setting-WindowX").isDisplayed(), true);
     assert.equal(await dialog.$("button=使用当前主视口大小").isDisplayed(), true);

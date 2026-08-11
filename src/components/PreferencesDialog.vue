@@ -24,6 +24,7 @@ const props = withDefaults(
     hostKind: "browser" | "tauri";
     viewportMeasurement?: GameViewportMeasurement;
     configurationEntries?: ProjectConfigurationEntry[];
+    projectSource?: "directory" | "file";
     configurationReadOnly?: boolean;
     configurationSessionOnly?: boolean;
     restartPending?: boolean;
@@ -32,6 +33,7 @@ const props = withDefaults(
   }>(),
   {
     configurationEntries: () => [],
+    projectSource: "directory",
     fontAccessStatus: "idle",
     fontAccessError: "",
     configurationReadOnly: false,
@@ -71,6 +73,17 @@ const {
 });
 const tabs = computed(() => projectTabs.value.map((tab) => ({ id: tab.id, label: tab.label })));
 const title = computed(() => `RustyEra ${props.hostKind === "tauri" ? "Tauri" : "Web"} · 设置`);
+const configurationWarning = computed(() => {
+  if (props.configurationSessionOnly) {
+    const source =
+      props.projectSource === "file" ? "当前运行的是项目文件" : "当前项目文件夹无法直接写入";
+    return `${source}；无需重启的设置仅对当前会话有效，退出游戏后将丢失。`;
+  }
+  if (!props.configurationReadOnly) return undefined;
+  return props.projectSource === "file"
+    ? "当前项目文件为只读，项目设置不可修改。"
+    : "当前项目文件夹的设置为只读，项目设置不可修改。";
+});
 
 function close(): void {
   if (props.busy) return;
@@ -161,11 +174,8 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
           <p v-if="activeProjectTab.warning" class="settings-warning" role="note">
             {{ activeProjectTab.warning }}
           </p>
-          <p v-if="configurationSessionOnly" class="settings-warning" role="note">
-            当前运行的是项目文件；无需重启的设置仅对当前会话有效，退出游戏后将丢失。
-          </p>
-          <p v-else-if="configurationReadOnly" class="settings-warning" role="note">
-            当前项目文件为只读，项目设置不可修改。
+          <p v-if="configurationWarning" class="settings-warning" role="note">
+            {{ configurationWarning }}
           </p>
 
           <p v-if="restartPending" class="settings-warning" role="note">
