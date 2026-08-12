@@ -39,31 +39,36 @@ enabled("Tauri incremental and hot script reload", () => {
     state = await reloadSelected("folder", "ERB/folder", state.runtimeEpoch);
     assert.equal(state.wait?.kind, "integer_value");
     let previousWait = waitIdentity(state.wait);
-    await submitCommand("1", previousWait);
+    await activateCommand("folder reload");
     state = await waitForOutput("FOLDER_VERSION=2 STATE=40", previousWait);
+    state = await continueAfterCommand(state);
 
     // The other changed script must still execute the cached generation until its own reload.
     previousWait = waitIdentity(state.wait);
-    await submitCommand("2", previousWait);
+    await activateCommand("single reload");
     state = await waitForOutput("SINGLE_VERSION=1 STATE=41", previousWait);
+    state = await continueAfterCommand(state);
 
     await replaceVersion("ERB/all/command.erb", "ALL_VERSION=1", "ALL_VERSION=2");
     state = await reloadSelected("script", "ERB/single/command.erb", state.runtimeEpoch);
     assert.equal(state.wait?.kind, "integer_value");
     previousWait = waitIdentity(state.wait);
-    await submitCommand("2", previousWait);
+    await activateCommand("single reload");
     state = await waitForOutput("SINGLE_VERSION=2 STATE=42", previousWait);
+    state = await continueAfterCommand(state);
 
     // A single-script reload must not absorb a simultaneous change in another folder.
     previousWait = waitIdentity(state.wait);
-    await submitCommand("0", previousWait);
+    await activateCommand("all reload");
     state = await waitForOutput("ALL_VERSION=1 STATE=43", previousWait);
+    state = await continueAfterCommand(state);
 
     state = await reloadAll(state.runtimeEpoch);
     assert.equal(state.wait?.kind, "integer_value");
     previousWait = waitIdentity(state.wait);
-    await submitCommand("0", previousWait);
+    await activateCommand("all reload");
     state = await waitForOutput("ALL_VERSION=2 STATE=44", previousWait);
+    state = await continueAfterCommand(state);
 
     assert.equal(state.fault, null);
     assert.equal(state.phase, "waiting_input");
@@ -73,15 +78,10 @@ enabled("Tauri incremental and hot script reload", () => {
       1,
       "hot reload unexpectedly restarted the running game",
     );
-    assert.equal(
-      state.logs.some((entry) =>
-        /runtime\.input_undo_invalidated|重新加载项目失败|项目启动失败|content_hash_mismatch|command rejected \[(?!StaleRequest\].*projection observation)/i.test(
-          String(entry?.message ?? entry),
-        ),
-      ),
-      false,
-      `hot reload emitted a rejection: ${JSON.stringify(state.logs.slice(-12))}`,
-    );
+    const unexpectedLogs = state.logs
+      .map((entry) => String(entry?.message ?? entry))
+      .filter(unexpectedHotReloadLog);
+    assert.deepEqual(unexpectedLogs, [], "hot reload emitted an unexpected diagnostic");
     console.log(
       JSON.stringify({
         project: process.env.VITE_RUSTYERA_TEST_PROJECT,
@@ -139,6 +139,28 @@ async function waitForOutput(expected, previousWait) {
   });
 }
 
+async function continueAfterCommand(state) {
+  assert.equal(state.wait?.kind, "enter_key", "command did not reach EVENTCOMEND confirmation");
+  const previousWait = waitIdentity(state.wait);
+  const submit = await $(".prompt-bar button[type='submit']");
+  await submit.waitForEnabled({ timeout: 2_000 });
+  await submit.click();
+  return waitForRuntimeProgress({
+    browser: driver,
+    snapshot,
+    label: "training flow did not return to its command wait after EVENTCOMEND",
+    totalTimeout: 4_000,
+    stallTimeout: 4_000,
+    pollInterval: 50,
+    accept: (next) =>
+      next?.phase === "waiting_input" &&
+      next.canInteract &&
+      next.wait?.kind === "integer_value" &&
+      waitIdentity(next.wait) !== previousWait &&
+      next.output.some((line) => line.includes("HOT_RELOAD_COMMANDS")),
+  });
+}
+
 function waitIdentity(wait) {
   return `${wait?.wait_id}:${wait?.submission_token?.epoch}:${wait?.submission_token?.id}`;
 }
@@ -155,7 +177,28 @@ async function reloadSelected(mode, target, previousEpoch) {
   const label = mode === "folder" ? "重新加载脚本文件夹" : "重新加载单个脚本";
   const dialog = await $(`.dialog-panel[aria-label='${label}']`);
   await dialog.waitForDisplayed();
-  await dialog.$("select").setValue(target);
+  const select = await dialog.$("select");
+  await select.waitForEnabled({ timeout: 2_000 });
+  const selection = await driver.execute(
+    (dialogLabel, selectedTarget) => {
+      const select = document.querySelector(`.dialog-panel[aria-label='${dialogLabel}'] select`);
+      if (!(select instanceof HTMLSelectElement) || select.disabled) {
+        throw new Error(`reload target selector is unavailable: ${dialogLabel}`);
+      }
+      const options = [...select.options].map((option) => option.value);
+      if (!options.includes(selectedTarget)) {
+        throw new Error(`reload target is absent: ${selectedTarget}: ${JSON.stringify(options)}`);
+      }
+      select.value = selectedTarget;
+      select.dispatchEvent(new Event("input", { bubbles: true }));
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      return { value: select.value, options };
+    },
+    label,
+    target,
+  );
+  assert.equal(selection.value, target, `reload dialog did not select ${target}`);
+  assert.equal(await select.getValue(), target, `reload dialog reverted ${target}`);
   await dialog.$("button=重新加载").click();
   return waitForReload(previousEpoch, `${target} did not finish hot reloading`);
 }
@@ -184,40 +227,50 @@ async function waitForReload(previousEpoch, label) {
   });
 }
 
-async function submitCommand(value, previousWait) {
-  const input = await $(".prompt-bar input");
-  const submit = await $(".prompt-bar button[type='submit']");
-  await input.waitForEnabled({ timeout: 2_000 });
-  await submit.waitForEnabled({ timeout: 2_000 });
-  const submittedValue = await driver.execute((nextValue) => {
-    const input = document.querySelector(".prompt-bar input");
-    if (!(input instanceof HTMLInputElement)) throw new Error("visible game input is unavailable");
-    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-    if (!valueSetter || input.disabled) throw new Error("visible game input is disabled");
-    input.focus();
-    valueSetter.call(input, nextValue);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    if (input.value !== nextValue) throw new Error("visible game input value was not retained");
-    return input.value;
-  }, value);
-  assert.equal(submittedValue, value, `visible game input did not retain ${value}`);
-  await driver.execute(() => {
-    const button = document.querySelector(".prompt-bar button[type='submit']");
-    if (!(button instanceof HTMLButtonElement) || button.disabled) {
-      throw new Error("visible game submit button is unavailable");
+async function activateCommand(label) {
+  const activated = await driver.execute((expected) => {
+    const candidates = [...document.querySelectorAll("button.game-button")].filter((candidate) =>
+      String(candidate.textContent ?? "")
+        .trim()
+        .startsWith(`${expected}[`),
+    );
+    const button = candidates.find(
+      (candidate) => candidate instanceof HTMLButtonElement && !candidate.disabled,
+    );
+    if (!(button instanceof HTMLButtonElement)) {
+      const observed = candidates.map((candidate) => ({
+        text: String(candidate.textContent ?? "").trim(),
+        disabled: candidate instanceof HTMLButtonElement ? candidate.disabled : null,
+      }));
+      throw new Error(
+        `visible game command is unavailable: ${expected}: ${JSON.stringify(observed)}`,
+      );
     }
     button.click();
-  });
-  await driver.waitUntil(
-    async () => {
-      const state = await snapshot();
-      return waitIdentity(state.wait) !== previousWait;
-    },
-    {
-      timeout: 2_000,
-      interval: 25,
-      timeoutMsg: `game input ${value} did not enter Runtime from wait ${previousWait}`,
-    },
+    return String(button.textContent ?? "").trim();
+  }, label);
+  assert.match(activated, new RegExp(`^${escapeRegExp(label)}\\[`));
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function unexpectedHotReloadLog(message) {
+  if (
+    /runtime\.input_undo_invalidated|重新加载项目失败|项目启动失败|content_hash_mismatch/i.test(
+      message,
+    )
+  )
+    return true;
+  if (!/command rejected \[/i.test(message)) return false;
+  return !(
+    /command rejected \[StaleRequest\]: projection observation does not match the canonical presentation/i.test(
+      message,
+    ) ||
+    /command rejected \[InvalidState\]: compiled project cache (?:preparation started|is still being prepared)/i.test(
+      message,
+    )
   );
 }
 
