@@ -357,7 +357,16 @@ try {
       if (!(await confirmation.getText()).includes("可能会丢失尚未保存的游戏进度")) {
         throw new Error(`${action.title} confirmation did not warn about progress loss`);
       }
-      await confirmation.$("button=取消").click();
+      const cancelled = await browser.execute((title) => {
+        const dialog = document.querySelector(`section[aria-label='${title}']`);
+        const button = [...(dialog?.querySelectorAll("button") ?? [])].find(
+          (candidate) => candidate.textContent?.trim() === "取消",
+        );
+        if (!(button instanceof HTMLElement)) return false;
+        button.click();
+        return true;
+      }, action.title);
+      if (!cancelled) throw new Error(`${action.title} confirmation has no cancel button`);
       await confirmation.waitForDisplayed({ reverse: true, timeout: 30_000 });
       const afterCancellation = await browser.execute(() => window.__RUSTYERA_TEST__?.snapshot());
       if (

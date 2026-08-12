@@ -51,8 +51,9 @@ Use JSON `schema_version: 1`. The format is a compatible superset of the TUI sce
 - `mode`: `fixed` or `autonomous`.
 - `start.type`: `new_game`, `traditional_save`, or `vm_snapshot`; restores require `path` or CLI
   `--state`.
-- `seed`: Optional non-negative signed 32-bit integer for `new_game`. If absent, the runner creates
-  and records a random seed. Restored state owns its RNG and ignores `seed`.
+- `seed`: Optional unsigned 64-bit integer for `new_game`. Use a decimal string above JavaScript's
+  safe integer range. If absent, the runner creates and records a random seed. Restored state owns
+  its RNG and ignores `seed`.
 - `clock`: Optional ISO timestamp; default `2026-01-01T00:00:00Z`.
 - `compiled_cache`: Copy an existing v8 project cache into the isolated browser fixture and verify
   the browser import path; absent or false forces a cold source load.

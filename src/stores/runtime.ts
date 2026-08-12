@@ -107,7 +107,13 @@ const sessionFontFallback = ["system-ui", "sans-serif", "serif", "monospace"];
 
 interface ExportState {
   name: string;
-  kind: "download" | "project_file" | "compiled_cache" | "diagnosis_snapshot" | "diagnosis_project";
+  kind:
+    | "download"
+    | "project_file"
+    | "compiled_cache"
+    | "diagnosis_replay"
+    | "diagnosis_snapshot"
+    | "diagnosis_project";
   chunks: Uint8Array[];
   buffer?: Uint8Array;
   received: number;
@@ -116,6 +122,23 @@ interface ExportState {
   hostWrite?: Promise<void>;
   hostWriteFailure?: { error: unknown };
   statusToken?: number;
+}
+
+type DiagnosisStateExportKind = "diagnosis_replay" | "diagnosis_snapshot";
+
+function runtimeExportKind(state: ExportState): string {
+  switch (state.kind) {
+    case "diagnosis_replay":
+      return "input_replay";
+    case "download":
+    case "diagnosis_snapshot":
+      return "vm_snapshot";
+    case "compiled_cache":
+      return "compiled_project_cache";
+    case "project_file":
+    case "diagnosis_project":
+      return "full_project_file";
+  }
 }
 
 type TransientStatusOwner = "settings" | "compiled_cache";
@@ -227,6 +250,7 @@ interface DiagnosisState {
   projectName: string;
   logs: string;
   exportedAt: Date;
+  inputReplay?: Uint8Array;
   snapshot?: Uint8Array;
 }
 
@@ -277,7 +301,7 @@ export type RuntimeStartKind = "new_game" | "traditional_save" | "vm_snapshot";
 export interface RuntimeTestConfiguration {
   start: {
     type: RuntimeStartKind;
-    seed?: number;
+    seed?: number | string | bigint;
     bytes?: Uint8Array;
   };
   clock?: string;
@@ -692,13 +716,28 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (import.meta.env.VITE_RUSTYERA_TEST !== "1")
       throw new Error("测试运行配置只能在 VITE_RUSTYERA_TEST 中使用");
     const { start } = configuration;
+    let normalizedSeed = start.seed;
     if (start.type === "new_game") {
-      if (!Number.isInteger(start.seed) || start.seed! < 0 || start.seed! > 0x7fff_ffff)
-        throw new Error("new_game 测试必须提供非负 32 位 seed");
+      if (typeof normalizedSeed === "string") {
+        if (!/^\d+$/.test(normalizedSeed)) throw new Error("new_game 测试必须提供十进制 u64 seed");
+        normalizedSeed = BigInt(normalizedSeed);
+      }
+      if (
+        (typeof normalizedSeed === "number" &&
+          (!Number.isSafeInteger(normalizedSeed) || normalizedSeed < 0)) ||
+        (typeof normalizedSeed === "bigint" &&
+          (normalizedSeed < 0n || normalizedSeed > 0xffff_ffff_ffff_ffffn)) ||
+        normalizedSeed == null
+      )
+        throw new Error("new_game 测试必须提供十进制 u64 seed");
     } else if (!start.bytes?.length) {
       throw new Error(`${start.type} 测试必须提供状态文件`);
     }
-    pendingStart = { ...start, bytes: start.bytes ? new Uint8Array(start.bytes) : undefined };
+    pendingStart = {
+      ...start,
+      seed: normalizedSeed,
+      bytes: start.bytes ? new Uint8Array(start.bytes) : undefined,
+    };
     testClock = configuration.clock
       ? new Date(configuration.clock)
       : new Date("2026-01-01T00:00:00Z");
@@ -1173,7 +1212,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         await handleService(value, safeNumber(correlationId));
         break;
       case "state_export_ready":
-        await handleExportReady(value);
+        await handleExportReady(value, correlationId);
         break;
       case "state_export_chunk":
         await handleExportChunk(value);
@@ -1325,7 +1364,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
               exportState = undefined;
             }
             if (!projectFileFailed && !compiledCacheFailed) baseStatus.value = message;
-            if (diagnosisExporting.value) void startDiagnosisSnapshot();
+            if (diagnosisExporting.value) void startDiagnosisReplay();
           }
         }
         break;
@@ -1789,6 +1828,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function settlePendingGameInput(): Promise<void> {
+    if (diagnosisExporting.value) return;
     const pending = pendingGameInput.value;
     if (!pending) return;
     if (!pending.retryPending) {
@@ -1834,6 +1874,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function advanceTimedWait(): Promise<void> {
+    if (diagnosisExporting.value) return;
     const wait = currentPresentation().inputWait;
     if (
       wait?.deadline_ns == null ||
@@ -2118,27 +2159,39 @@ export const useRuntimeStore = defineStore("runtime", () => {
     };
     diagnosisExporting.value = true;
     showDiagnosisNotification("诊断信息导出中……", true);
-    if (!exportState) await startDiagnosisSnapshot();
+    if (!exportState) await startDiagnosisReplay();
+  }
+
+  async function startDiagnosisReplay(): Promise<void> {
+    await startDiagnosisStateExport("diagnosis_replay", "input_replay", "normal");
   }
 
   async function startDiagnosisSnapshot(): Promise<void> {
+    await startDiagnosisStateExport("diagnosis_snapshot", "vm_snapshot", "diagnosis");
+  }
+
+  async function startDiagnosisStateExport(
+    kind: DiagnosisStateExportKind,
+    runtimeKind: "input_replay" | "vm_snapshot",
+    snapshotPurpose: "normal" | "diagnosis",
+  ): Promise<void> {
     if (!diagnosisState || !diagnosisExporting.value) return;
-    exportState = {
+    const activeExport: ExportState = {
       name: diagnosisState.name,
-      kind: "diagnosis_snapshot",
+      kind,
       chunks: [],
       received: 0,
     };
+    exportState = activeExport;
     try {
       const messageId = await send({
         type: "state_export_request",
-        value: { kind: "vm_snapshot", snapshot_purpose: "diagnosis" },
+        value: { kind: runtimeKind, snapshot_purpose: snapshotPurpose },
       });
-      if (exportState?.kind === "diagnosis_snapshot")
-        exportState.requestMessageId = String(messageId);
+      if (exportState === activeExport) activeExport.requestMessageId = String(messageId);
     } catch (error) {
-      if (exportState?.kind === "diagnosis_snapshot")
-        await failDiagnosisExport(exportState, `诊断信息导出失败：${String(error)}`);
+      if (exportState === activeExport)
+        await failDiagnosisExport(activeExport, `诊断信息导出失败：${String(error)}`);
     }
   }
 
@@ -2475,15 +2528,29 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (exportState === activeExport) activeExport.requestMessageId = String(messageId);
   }
 
-  async function handleExportReady(ready: any): Promise<void> {
-    if (!exportState) return;
+  async function handleExportReady(ready: any, correlationId: unknown): Promise<void> {
+    const activeExport = exportState;
+    if (!activeExport) return;
+    const expectedKind = runtimeExportKind(activeExport);
+    if (
+      activeExport.requestMessageId !== String(correlationId) ||
+      ready.kind !== expectedKind ||
+      (ready.result.type === "ready" && ready.result.transfer?.kind !== expectedKind)
+    ) {
+      const message = "Runtime 状态导出响应与当前传输不匹配";
+      if (activeExport.kind.startsWith("diagnosis_")) {
+        await failDiagnosisExport(activeExport, `诊断信息导出失败：${message}`);
+        return;
+      }
+      throw new Error(message);
+    }
+    activeExport.requestMessageId = undefined;
     if (ready.result.type !== "ready") {
       const message = `当前状态不能导出快照：${(ready.result.reasons ?? []).join(", ")}`;
-      const activeExport = exportState;
       const failedKind = activeExport.kind;
       if (failedKind !== "compiled_cache") log("warning", message);
       if (failedKind.startsWith("diagnosis_")) {
-        await failDiagnosisExport(exportState, message);
+        await failDiagnosisExport(activeExport, message);
         return;
       }
       if (failedKind === "project_file") {
@@ -2495,19 +2562,18 @@ export const useRuntimeStore = defineStore("runtime", () => {
       }
       return;
     }
-    exportState.descriptor = ready.result.transfer;
+    activeExport.descriptor = ready.result.transfer;
     const totalBytes = Number(ready.result.transfer.total_bytes);
-    if (exportState.kind === "project_file") {
+    if (activeExport.kind === "project_file") {
       projectFileExportProgress.value = { stage: "packaging", completed: 0, total: totalBytes };
     }
     if (
-      exportState.kind !== "compiled_cache" &&
-      exportState.kind !== "project_file" &&
+      activeExport.kind !== "compiled_cache" &&
+      activeExport.kind !== "project_file" &&
       Number.isSafeInteger(totalBytes) &&
       totalBytes >= 0
     )
-      exportState.buffer = new Uint8Array(totalBytes);
-    const activeExport = exportState;
+      activeExport.buffer = new Uint8Array(totalBytes);
     try {
       await requestExportChunk();
     } catch (error) {
@@ -2537,7 +2603,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function handleExportChunk(chunk: any): Promise<void> {
     const activeExport = exportState;
-    if (!activeExport?.descriptor || Number(chunk.offset) !== activeExport.received) return;
+    if (!activeExport?.descriptor) return;
+    if (
+      String(chunk.transfer_id) !== String(activeExport.descriptor.transfer_id) ||
+      Number(chunk.offset) !== activeExport.received
+    ) {
+      if (activeExport.kind.startsWith("diagnosis_")) {
+        await failDiagnosisExport(activeExport, "诊断信息导出失败：Runtime 分块关联或顺序无效");
+        return;
+      }
+      throw new Error("Runtime 状态导出分块关联或顺序无效");
+    }
     const bytes = Uint8Array.from(chunk.data, (value: number | bigint) => Number(value));
     const reset = activeExport.received === 0;
     activeExport.received += bytes.length;
@@ -2577,7 +2653,26 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } else {
       try {
         if (!chunk.complete) await requestExportChunk();
-        else await finishExportTransfer(activeExport);
+        else if (activeExport.kind.startsWith("diagnosis_")) {
+          const expectedLength = Number(activeExport.descriptor.total_bytes);
+          const bytes =
+            activeExport.buffer ?? concatenateChunks(activeExport.chunks, activeExport.received);
+          const expectedDigest = Uint8Array.from(
+            activeExport.descriptor.digest ?? [],
+            (value: number | bigint) => Number(value),
+          );
+          const actualDigest = blake3(bytes);
+          if (
+            !Number.isSafeInteger(expectedLength) ||
+            activeExport.received !== expectedLength ||
+            expectedDigest.length !== actualDigest.length ||
+            expectedDigest.some((value, index) => value !== actualDigest[index])
+          ) {
+            await failDiagnosisExport(activeExport, "诊断信息导出失败：Runtime 分块长度或摘要无效");
+            return;
+          }
+          await finishExportTransfer(activeExport);
+        } else await finishExportTransfer(activeExport);
       } catch (error) {
         if (activeExport.kind.startsWith("diagnosis_")) {
           await failDiagnosisExport(activeExport, `诊断信息导出失败：${String(error)}`);
@@ -2629,6 +2724,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       log("warning", `清理项目缓存失败：${String(cancelError)}`);
     }
     log("warning", `项目缓存生成失败：${String(error)}`, false, notificationPolicy);
+    if (diagnosisExporting.value && !exportState) await startDiagnosisReplay();
   }
 
   function finishCompiledCacheExport(
@@ -2687,6 +2783,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (message) baseStatus.value = message;
     if (resumeCacheAfterProjectExport) scheduleCompiledCacheExport();
     resumeCacheAfterProjectExport = false;
+    if (diagnosisExporting.value && !exportState) await startDiagnosisReplay();
   }
 
   async function finishExportTransfer(completed = exportState): Promise<void> {
@@ -2705,12 +2802,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
         const saved = await bridge.saveDownload(completed.name, result);
         baseStatus.value = saved ? `已导出 ${completed.name}` : "已取消导出 VM 快照";
         exportState = undefined;
-        if (diagnosisExporting.value) await startDiagnosisSnapshot();
+        if (diagnosisExporting.value) await startDiagnosisReplay();
       } else if (completed.kind === "project_file") {
         await finishProjectFileExport("success", `已导出 ${completed.name}`);
       } else if (completed.kind === "compiled_cache") {
         finishCompiledCacheExport(completed, "success");
-        if (diagnosisExporting.value) await startDiagnosisSnapshot();
+        if (diagnosisExporting.value) await startDiagnosisReplay();
+      } else if (completed.kind === "diagnosis_replay") {
+        if (!diagnosisState) throw new Error("诊断导出状态缺失");
+        diagnosisState.inputReplay = result;
+        exportState = undefined;
+        await startDiagnosisSnapshot();
       } else if (completed.kind === "diagnosis_snapshot") {
         if (!diagnosisState) throw new Error("诊断导出状态缺失");
         diagnosisState.snapshot = result;
@@ -2724,10 +2826,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
         await bridge.stageFullProjectManifest();
         if (exportState === activeExport) await requestFullProjectExport(activeExport);
       } else {
-        if (!diagnosisState?.snapshot) throw new Error("诊断快照缺失");
+        if (!diagnosisState?.snapshot || !diagnosisState.inputReplay)
+          throw new Error("诊断归档输入缺失");
         const saved = await bridge.saveDiagnosis(diagnosisState.name, {
           projectName: diagnosisState.projectName,
           snapshot: diagnosisState.snapshot,
+          inputReplay: diagnosisState.inputReplay,
           logs: diagnosisState.logs,
           projectFile: result,
           exportedAt: diagnosisState.exportedAt,
@@ -2771,7 +2875,25 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (exportState !== activeExport || !activeExport.kind.startsWith("diagnosis_")) return;
     exportState = undefined;
     diagnosisState = undefined;
-    if (isFullProjectExport(activeExport) && activeExport.kind === "diagnosis_project") {
+    if (activeExport.kind === "diagnosis_replay" || activeExport.kind === "diagnosis_snapshot") {
+      try {
+        if (activeExport.descriptor?.transfer_id != null) {
+          await send({
+            type: "state_transfer_cancel",
+            value: { transfer_id: activeExport.descriptor.transfer_id },
+          });
+        } else if (activeExport.requestMessageId) {
+          await send({
+            type: "state_export_cancel",
+            value: {
+              kind: activeExport.kind === "diagnosis_replay" ? "input_replay" : "vm_snapshot",
+            },
+          });
+        }
+      } catch (error) {
+        log("warning", `取消 Runtime 诊断状态导出失败：${String(error)}`);
+      }
+    } else if (isFullProjectExport(activeExport) && activeExport.kind === "diagnosis_project") {
       if (
         activeExport.requestMessageId ||
         activeExport.runtimeRequestMayBeActive ||
@@ -3449,7 +3571,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function sendClientState(): Promise<void> {
-    if (!runtimePump.ready) return;
+    if (!runtimePump.ready || diagnosisExporting.value) return;
     await send({
       type: "client_state_changed",
       value: {

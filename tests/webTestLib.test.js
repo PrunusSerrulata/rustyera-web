@@ -203,6 +203,19 @@ describe("web game test scenario", () => {
     vi.unstubAllGlobals();
   });
 
+  it("preserves a full u64 seed supplied as a decimal string", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "web-scenario-"));
+    const project = path.join(root, "project");
+    await mkdir(project);
+    const scenario = path.join(root, "scenario.json");
+    await writeFile(
+      scenario,
+      JSON.stringify({ schema_version: 1, project, seed: "18446744073709551615" }),
+    );
+
+    expect((await loadScenario(scenario)).seed).toBe("18446744073709551615");
+  });
+
   it("reports semantic output and wait differences", () => {
     const rust = { output_delta: { added: ["left"] }, wait: { kind: "integer" } };
     const reference = { output_delta: { added: ["right"] }, wait: { kind: "StrValue" } };

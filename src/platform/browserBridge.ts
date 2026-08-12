@@ -559,6 +559,7 @@ export class BrowserBridge implements FrontendBridge {
     if (import.meta.env.VITE_RUSTYERA_TEST === "1") {
       const prefix = new Uint8Array(4);
       const projectMagic = input.projectFile.slice(0, 8);
+      const inputReplay = new Uint8Array(input.inputReplay);
       let size = 0;
       await streamDiagnosisArchiveInWorker(input, async (chunk) => {
         const prefixLength = Math.min(chunk.length, prefix.length - Math.min(size, prefix.length));
@@ -570,6 +571,7 @@ export class BrowserBridge implements FrontendBridge {
         bytes: prefix,
         size,
         projectMagic,
+        inputReplay,
       });
       return true;
     }

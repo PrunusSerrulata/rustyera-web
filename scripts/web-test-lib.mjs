@@ -81,9 +81,16 @@ export async function loadScenario(file, projectOverride, stateOverride) {
       ? undefined
       : configuredSeed == null
         ? crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fff_ffff
-        : Number(configuredSeed);
-  if (seed != null && (!Number.isInteger(seed) || seed < 0 || seed > 0x7fff_ffff))
-    throw new Error("seed must be a non-negative 32-bit integer");
+        : typeof configuredSeed === "number"
+          ? configuredSeed
+          : String(configuredSeed);
+  if (seed != null) {
+    const text = String(seed);
+    if (!/^\d+$/.test(text) || BigInt(text) > 0xffff_ffff_ffff_ffffn)
+      throw new Error("seed must be a decimal unsigned 64-bit integer");
+    if (typeof seed === "number" && !Number.isSafeInteger(seed))
+      throw new Error("numeric seed must be a safe integer; use a decimal string for full u64");
+  }
   const viewport = raw.viewport ?? { width: 1280, height: 800 };
   if (
     !Number.isInteger(viewport.width) ||

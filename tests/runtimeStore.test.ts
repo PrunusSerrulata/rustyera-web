@@ -1653,9 +1653,14 @@ describe("runtime store session lifecycle", () => {
       ...emptyBatch(),
       events: [
         runtimeEvent("log", { level: "warning", message: runtimeWarning }),
-        runtimeEvent("state_export_ready", {
-          result: { type: "ineligible", reasons: ["stable_wait_required"] },
-        }),
+        runtimeEvent(
+          "state_export_ready",
+          {
+            kind: "vm_snapshot",
+            result: { type: "ineligible", reasons: ["stable_wait_required"] },
+          },
+          1,
+        ),
       ],
     });
 
@@ -1685,10 +1690,8 @@ describe("runtime store session lifecycle", () => {
       .mockResolvedValueOnce({
         ...emptyBatch(),
         events: [
-          runtimeEvent("state_export_ready", {
-            result: { type: "ready", transfer: { transfer_id: 7, total_bytes: 3 } },
-          }),
-          runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2, 3], complete: true }),
+          stateExportReadyEvent("full_project_file", 7, [1, 2, 3]),
+          stateExportChunkEvent(7, [1, 2, 3]),
         ],
       });
     const store = useRuntimeStore();
@@ -1780,6 +1783,7 @@ describe("runtime store session lifecycle", () => {
       ...emptyBatch(),
       events: [
         runtimeEvent("state_export_chunk", {
+          transfer_id: 7,
           offset: 3,
           data: [4, 5, 6],
           complete: true,
@@ -1927,6 +1931,7 @@ describe("runtime store session lifecycle", () => {
       ...emptyBatch(),
       events: [
         runtimeEvent("state_export_chunk", {
+          transfer_id: 7,
           offset: 3,
           data: [4, 5, 6],
           complete: true,
@@ -1951,6 +1956,7 @@ describe("runtime store session lifecycle", () => {
       ...emptyBatch(),
       events: [
         runtimeEvent("state_export_chunk", {
+          transfer_id: 7,
           offset: 3,
           data: [4, 5, 6],
           complete: true,
@@ -2644,14 +2650,12 @@ describe("runtime store session lifecycle", () => {
       .mockResolvedValueOnce({
         ...emptyBatch(),
         events: [
-          runtimeEvent("state_export_ready", {
-            result: { type: "ready", transfer: { transfer_id: 11, total_bytes: 2 } },
-          }),
-          runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
-          runtimeEvent("state_export_ready", {
-            result: { type: "ready", transfer: { transfer_id: 12, total_bytes: 2 } },
-          }),
-          runtimeEvent("state_export_chunk", { offset: 0, data: [3, 4], complete: true }),
+          stateExportReadyEvent("input_replay", 11, [1, 2]),
+          stateExportChunkEvent(11, [1, 2]),
+          stateExportReadyEvent("vm_snapshot", 12, [3, 4]),
+          stateExportChunkEvent(12, [3, 4]),
+          stateExportReadyEvent("full_project_file", 13, [5, 6]),
+          stateExportChunkEvent(13, [5, 6]),
         ],
       });
     const store = useRuntimeStore();
@@ -2677,6 +2681,13 @@ describe("runtime store session lifecycle", () => {
     expect(bridge.submitRuntime).toHaveBeenCalledWith(
       {
         type: "state_export_request",
+        value: { kind: "input_replay", snapshot_purpose: "normal" },
+      },
+      undefined,
+    );
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      {
+        type: "state_export_request",
         value: { kind: "vm_snapshot", snapshot_purpose: "diagnosis" },
       },
       undefined,
@@ -2693,8 +2704,9 @@ describe("runtime store session lifecycle", () => {
       "eraThe World-diagnosis_20260729-140506.tar.zst",
       expect.objectContaining({
         projectName: "eraThe World",
-        snapshot: Uint8Array.of(1, 2),
-        projectFile: Uint8Array.of(3, 4),
+        inputReplay: Uint8Array.of(1, 2),
+        snapshot: Uint8Array.of(3, 4),
+        projectFile: Uint8Array.of(5, 6),
         logs: expect.stringContaining("INFO  diagnostic detail"),
       }),
     );
@@ -2703,6 +2715,109 @@ describe("runtime store session lifecycle", () => {
     expect(store.diagnosisNotification).toContain("诊断信息已导出");
     await vi.advanceTimersByTimeAsync(5000);
     expect(store.diagnosisNotification).toBe("");
+  });
+
+  it.each([
+    ["correlation", stateExportReadyEvent("input_replay", 11, [1, 2], 99)],
+    ["outer kind", stateExportReadyEvent("vm_snapshot", 11, [1, 2])],
+    [
+      "descriptor kind",
+      runtimeEvent(
+        "state_export_ready",
+        {
+          kind: "input_replay",
+          result: {
+            type: "ready",
+            transfer: {
+              transfer_id: 11,
+              kind: "vm_snapshot",
+              total_bytes: 2,
+              digest: [...blake3(Uint8Array.of(1, 2))],
+            },
+          },
+        },
+        1,
+      ),
+    ],
+  ])("restores interaction after a mismatched diagnosis ready %s", async (_label, event) => {
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 1,
+      submission_token: { epoch: 2, id: 3 },
+    });
+    bridge.pump.mockResolvedValueOnce({ ...emptyBatch(), events: [event] });
+
+    await store.exportDiagnosis();
+    await advanceUntil(() => store.diagnosisExporting === false);
+
+    expect(store.canInteract).toBe(true);
+    expect(bridge.saveDiagnosis).not.toHaveBeenCalled();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      { type: "state_export_cancel", value: { kind: "input_replay" } },
+      undefined,
+    );
+  });
+
+  it.each([
+    ["transfer", { transfer_id: 99, offset: 0, data: [1, 2], complete: true }],
+    ["offset", { transfer_id: 11, offset: 1, data: [1, 2], complete: true }],
+    ["truncated", { transfer_id: 11, offset: 0, data: [1], complete: true }],
+    ["digest", { transfer_id: 11, offset: 0, data: [2, 1], complete: true }],
+  ])("restores interaction after an invalid diagnosis chunk %s", async (_label, chunk) => {
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 1,
+      submission_token: { epoch: 2, id: 3 },
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        stateExportReadyEvent("input_replay", 11, [1, 2]),
+        runtimeEvent("state_export_chunk", chunk),
+      ],
+    });
+
+    await store.exportDiagnosis();
+    await advanceUntil(() => store.diagnosisExporting === false);
+
+    expect(store.canInteract).toBe(true);
+    expect(bridge.saveDiagnosis).not.toHaveBeenCalled();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      { type: "state_transfer_cancel", value: { transfer_id: 11 } },
+      undefined,
+    );
+  });
+
+  it("restores interaction even when diagnosis cancellation fails", async () => {
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 1,
+      submission_token: { epoch: 2, id: 3 },
+    });
+    bridge.submitRuntime.mockImplementation(async (...args: unknown[]) => {
+      const message = args[0] as { type?: string };
+      if (message.type === "state_transfer_cancel") throw new Error("cancel failed");
+      return 1;
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        stateExportReadyEvent("input_replay", 11, [1, 2]),
+        runtimeEvent("state_export_chunk", {
+          transfer_id: 99,
+          offset: 0,
+          data: [1, 2],
+          complete: true,
+        }),
+      ],
+    });
+
+    await store.exportDiagnosis();
+    await advanceUntil(() => store.diagnosisExporting === false);
+
+    expect(store.canInteract).toBe(true);
+    expect(store.diagnosisNotification).toContain("分块关联");
+    expect(bridge.saveDiagnosis).not.toHaveBeenCalled();
   });
 
   it("restores interaction when diagnosis project staging fails", async () => {
@@ -2730,10 +2845,10 @@ describe("runtime store session lifecycle", () => {
       .mockResolvedValueOnce({
         ...emptyBatch(),
         events: [
-          runtimeEvent("state_export_ready", {
-            result: { type: "ready", transfer: { transfer_id: 11, total_bytes: 2 } },
-          }),
-          runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
+          stateExportReadyEvent("input_replay", 11, [1, 2]),
+          stateExportChunkEvent(11, [1, 2]),
+          stateExportReadyEvent("vm_snapshot", 12, [3, 4]),
+          stateExportChunkEvent(12, [3, 4]),
         ],
       });
     const store = useRuntimeStore();
@@ -2774,10 +2889,10 @@ describe("runtime store session lifecycle", () => {
     bridge.pump.mockResolvedValueOnce({
       ...emptyBatch(),
       events: [
-        runtimeEvent("state_export_ready", {
-          result: { type: "ready", transfer: { transfer_id: 11, total_bytes: 2 } },
-        }),
-        runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
+        stateExportReadyEvent("input_replay", 11, [1, 2], 10),
+        stateExportChunkEvent(11, [1, 2]),
+        stateExportReadyEvent("vm_snapshot", 12, [3, 4], 10),
+        stateExportChunkEvent(12, [3, 4]),
       ],
     });
 
@@ -2812,6 +2927,7 @@ describe("runtime store session lifecycle", () => {
       return Promise.resolve(10);
     });
     let normalSnapshotCompleted = false;
+    let diagnosisReplayCompleted = false;
     let diagnosisSnapshotCompleted = false;
     let preparationStartedRejected = false;
     let preparationStillRejected = false;
@@ -2823,15 +2939,29 @@ describe("runtime store session lifecycle", () => {
             "state_export_request" &&
           (message as { value?: { kind?: string } }).value?.kind === "vm_snapshot",
       ).length;
+      const replayRequested = bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) =>
+          (message as { type?: string; value?: { kind?: string } }).type ===
+            "state_export_request" &&
+          (message as { value?: { kind?: string } }).value?.kind === "input_replay",
+      );
       if (snapshotRequests >= 1 && !normalSnapshotCompleted) {
         normalSnapshotCompleted = true;
         return {
           ...emptyBatch(),
           events: [
-            runtimeEvent("state_export_ready", {
-              result: { type: "ready", transfer: { transfer_id: 11, total_bytes: 2 } },
-            }),
-            runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
+            stateExportReadyEvent("vm_snapshot", 11, [1, 2], 10),
+            stateExportChunkEvent(11, [1, 2]),
+          ],
+        };
+      }
+      if (replayRequested && !diagnosisReplayCompleted) {
+        diagnosisReplayCompleted = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            stateExportReadyEvent("input_replay", 14, [9, 10], 10),
+            stateExportChunkEvent(14, [9, 10]),
           ],
         };
       }
@@ -2840,10 +2970,8 @@ describe("runtime store session lifecycle", () => {
         return {
           ...emptyBatch(),
           events: [
-            runtimeEvent("state_export_ready", {
-              result: { type: "ready", transfer: { transfer_id: 12, total_bytes: 2 } },
-            }),
-            runtimeEvent("state_export_chunk", { offset: 0, data: [3, 4], complete: true }),
+            stateExportReadyEvent("vm_snapshot", 12, [3, 4], 10),
+            stateExportChunkEvent(12, [3, 4]),
           ],
         };
       }
@@ -2874,10 +3002,8 @@ describe("runtime store session lifecycle", () => {
         return {
           ...emptyBatch(),
           events: [
-            runtimeEvent("state_export_ready", {
-              result: { type: "ready", transfer: { transfer_id: 13, total_bytes: 2 } },
-            }),
-            runtimeEvent("state_export_chunk", { offset: 0, data: [5, 6], complete: true }),
+            stateExportReadyEvent("full_project_file", 13, [5, 6], 43),
+            stateExportChunkEvent(13, [5, 6]),
           ],
         };
       }
@@ -2904,6 +3030,7 @@ describe("runtime store session lifecycle", () => {
     expect(bridge.saveDiagnosis).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
+        inputReplay: Uint8Array.of(9, 10),
         snapshot: Uint8Array.of(3, 4),
         projectFile: Uint8Array.of(5, 6),
       }),
@@ -2939,11 +3066,28 @@ describe("runtime store session lifecycle", () => {
       }
       return Promise.resolve(10);
     });
+    let replayCompleted = false;
     let snapshotCompleted = false;
     let preparationStartedRejected = false;
     let mismatchedPreparationRejected = false;
     let allowCorrelatedFailure = false;
     bridge.pump.mockImplementation(async () => {
+      const replayRequested = bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) =>
+          (message as { type?: string; value?: { kind?: string } }).type ===
+            "state_export_request" &&
+          (message as { value?: { kind?: string } }).value?.kind === "input_replay",
+      );
+      if (replayRequested && !replayCompleted) {
+        replayCompleted = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            stateExportReadyEvent("input_replay", 14, [9, 10], 10),
+            stateExportChunkEvent(14, [9, 10]),
+          ],
+        };
+      }
       const snapshotRequested = bridge.submitRuntime.mock.calls.some(
         ([message]: unknown[]) =>
           (message as { type?: string; value?: { kind?: string } }).type ===
@@ -2955,10 +3099,8 @@ describe("runtime store session lifecycle", () => {
         return {
           ...emptyBatch(),
           events: [
-            runtimeEvent("state_export_ready", {
-              result: { type: "ready", transfer: { transfer_id: 11, total_bytes: 2 } },
-            }),
-            runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
+            stateExportReadyEvent("vm_snapshot", 11, [1, 2], 10),
+            stateExportChunkEvent(11, [1, 2]),
           ],
         };
       }
@@ -3029,10 +3171,27 @@ describe("runtime store session lifecycle", () => {
       }
       return Promise.resolve(10);
     });
+    let replayCompleted = false;
     let snapshotCompleted = false;
     let preparationRejected = false;
     let earlyRetryRejection = false;
     bridge.pump.mockImplementation(async () => {
+      const replayRequested = bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) =>
+          (message as { type?: string; value?: { kind?: string } }).type ===
+            "state_export_request" &&
+          (message as { value?: { kind?: string } }).value?.kind === "input_replay",
+      );
+      if (replayRequested && !replayCompleted) {
+        replayCompleted = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            stateExportReadyEvent("input_replay", 14, [9, 10], 10),
+            stateExportChunkEvent(14, [9, 10]),
+          ],
+        };
+      }
       const snapshotRequested = bridge.submitRuntime.mock.calls.some(
         ([message]: unknown[]) =>
           (message as { type?: string; value?: { kind?: string } }).type ===
@@ -3044,10 +3203,8 @@ describe("runtime store session lifecycle", () => {
         return {
           ...emptyBatch(),
           events: [
-            runtimeEvent("state_export_ready", {
-              result: { type: "ready", transfer: { transfer_id: 11, total_bytes: 2 } },
-            }),
-            runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
+            stateExportReadyEvent("vm_snapshot", 11, [1, 2], 10),
+            stateExportChunkEvent(11, [1, 2]),
           ],
         };
       }
@@ -3121,14 +3278,27 @@ describe("runtime store session lifecycle", () => {
       .mockResolvedValueOnce({
         ...emptyBatch(),
         events: [
-          runtimeEvent("state_export_ready", {
-            result: { type: "ready", transfer: { transfer_id: 11, total_bytes: 2 } },
-          }),
-          runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2], complete: true }),
-          runtimeEvent("state_export_ready", {
-            result: { type: "ready", transfer: { transfer_id: 12, total_bytes: 1 } },
-          }),
-          runtimeEvent("state_export_chunk", { offset: 0, data: [3, 4], complete: true }),
+          stateExportReadyEvent("input_replay", 11, [1, 2]),
+          stateExportChunkEvent(11, [1, 2]),
+          stateExportReadyEvent("vm_snapshot", 12, [3, 4]),
+          stateExportChunkEvent(12, [3, 4]),
+          runtimeEvent(
+            "state_export_ready",
+            {
+              kind: "full_project_file",
+              result: {
+                type: "ready",
+                transfer: {
+                  transfer_id: 13,
+                  kind: "full_project_file",
+                  total_bytes: 1,
+                  digest: [...blake3(Uint8Array.of(5, 6))],
+                },
+              },
+            },
+            1,
+          ),
+          stateExportChunkEvent(13, [5, 6]),
         ],
       });
     const store = useRuntimeStore();
@@ -3150,7 +3320,10 @@ describe("runtime store session lifecycle", () => {
     expect(bridge.cancelProjectFileExport).toHaveBeenCalledOnce();
   });
 
-  it("starts a test new game with the configured deterministic seed", async () => {
+  it.each([
+    [42, 42],
+    ["18446744073709551615", 18446744073709551615n],
+  ])("starts a test new game with the configured deterministic seed %s", async (seed, expected) => {
     vi.stubEnv("VITE_RUSTYERA_TEST", "1");
     mockProjectSelection({
       submittedAtMs: 0,
@@ -3165,14 +3338,14 @@ describe("runtime store session lifecycle", () => {
       events: [runtimeEvent("project_load_report", { success: true, diagnostics: [] })],
     });
     const store = useRuntimeStore();
-    store.configureTestRun({ start: { type: "new_game", seed: 42 } });
+    store.configureTestRun({ start: { type: "new_game", seed } });
 
     await store.enableDebug();
 
     expect(bridge.submitRuntime).toHaveBeenCalledWith(
       {
         type: "start",
-        value: { mode: { type: "new_game", seed: 42 } },
+        value: { mode: { type: "new_game", seed: expected } },
       },
       undefined,
     );
@@ -4633,7 +4806,13 @@ async function runningBrowserStore() {
 async function storeWithPendingCompiledCacheWrite(write: Promise<void>) {
   stubRunningAudioContext();
   let nextRuntimeMessageId = 1;
-  bridge.submitRuntime.mockImplementation(async () => nextRuntimeMessageId++);
+  let activeExportMessageId = 0;
+  bridge.submitRuntime.mockImplementation(async (...args: unknown[]) => {
+    const message = args[0] as { type?: string };
+    const messageId = nextRuntimeMessageId++;
+    if (message.type === "state_export_request") activeExportMessageId = messageId;
+    return messageId;
+  });
   bridge.writeCompiledCacheChunk.mockReturnValueOnce(write);
   mockProjectSelection({
     submittedAtMs: 0,
@@ -4669,7 +4848,7 @@ async function storeWithPendingCompiledCacheWrite(write: Promise<void>) {
               code: "invalid_state",
               message: "compiled project cache preparation started",
             },
-            2,
+            activeExportMessageId,
           ),
         ],
       };
@@ -4679,9 +4858,21 @@ async function storeWithPendingCompiledCacheWrite(write: Promise<void>) {
       return {
         ...emptyBatch(),
         events: [
-          runtimeEvent("state_export_ready", {
-            result: { type: "ready", transfer: { transfer_id: 7, total_bytes: 6 } },
-          }),
+          runtimeEvent(
+            "state_export_ready",
+            {
+              kind: "compiled_project_cache",
+              result: {
+                type: "ready",
+                transfer: {
+                  transfer_id: 7,
+                  kind: "compiled_project_cache",
+                  total_bytes: 6,
+                },
+              },
+            },
+            activeExportMessageId,
+          ),
         ],
       };
     }
@@ -4690,7 +4881,12 @@ async function storeWithPendingCompiledCacheWrite(write: Promise<void>) {
       return {
         ...emptyBatch(),
         events: [
-          runtimeEvent("state_export_chunk", { offset: 0, data: [1, 2, 3], complete: false }),
+          runtimeEvent("state_export_chunk", {
+            transfer_id: 7,
+            offset: 0,
+            data: [1, 2, 3],
+            complete: false,
+          }),
           runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
           runtimeEvent("wait_changed", {
             type: "opened",
@@ -4747,6 +4943,39 @@ function runtimeEvent(type: string, value: unknown, correlationId?: number, epoc
     epoch,
     message: { type, value },
   };
+}
+
+function stateExportReadyEvent(
+  kind: string,
+  transferId: number,
+  bytes: number[],
+  correlationId = 1,
+) {
+  return runtimeEvent(
+    "state_export_ready",
+    {
+      kind,
+      result: {
+        type: "ready",
+        transfer: {
+          transfer_id: transferId,
+          kind,
+          total_bytes: bytes.length,
+          digest: [...blake3(Uint8Array.from(bytes))],
+        },
+      },
+    },
+    correlationId,
+  );
+}
+
+function stateExportChunkEvent(transferId: number, bytes: number[], offset = 0) {
+  return runtimeEvent("state_export_chunk", {
+    transfer_id: transferId,
+    offset,
+    data: bytes,
+    complete: true,
+  });
 }
 
 function deferred<T>(): {

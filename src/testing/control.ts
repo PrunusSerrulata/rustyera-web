@@ -193,13 +193,24 @@ function downloadSummary(download?: {
   bytes: Uint8Array;
   size?: number;
   projectMagic?: Uint8Array;
+  inputReplay?: Uint8Array;
 }): unknown {
   if (!download) return null;
+  const replayRecords = download.inputReplay
+    ? new TextDecoder()
+        .decode(download.inputReplay)
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+    : undefined;
   return {
     name: download.name,
     size: download.size ?? download.bytes.length,
     magic: [...download.bytes.slice(0, 4)],
     ...(download.projectMagic ? { projectMagic: [...download.projectMagic] } : {}),
+    ...(replayRecords
+      ? { replayHeader: replayRecords[0], replaySteps: replayRecords.slice(1) }
+      : {}),
   };
 }
 

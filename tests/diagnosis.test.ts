@@ -17,6 +17,7 @@ describe("diagnosis archive", () => {
     const archive = createDiagnosisArchive({
       projectName: "eraThe World",
       snapshot: Uint8Array.of(1, 2),
+      inputReplay: new TextEncoder().encode('{"record":"header"}\n'),
       logs: "[14:05:06] INFO  ready\n",
       projectFile,
       exportedAt,
@@ -25,6 +26,7 @@ describe("diagnosis archive", () => {
     expect(unpackTar(decodeRawZstd(archive))).toEqual({
       "runtime.snapshot": [1, 2],
       "runtime.log": [...new TextEncoder().encode("[14:05:06] INFO  ready\n")],
+      "input-replay.jsonl": [...new TextEncoder().encode('{"record":"header"}\n')],
       "eraThe World.reraproj": [...projectFile],
     });
   });
@@ -34,6 +36,7 @@ describe("diagnosis archive", () => {
       ...diagnosisArchiveChunks({
         projectName: "unsafe/project",
         snapshot: new Uint8Array(512 * 1024),
+        inputReplay: new Uint8Array(512 * 1024),
         logs: "",
         projectFile: new Uint8Array(512 * 1024),
         exportedAt: new Date(2026, 6, 29, 14, 5, 6),

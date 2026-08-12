@@ -36,6 +36,10 @@ export function streamDiagnosisArchiveInWorker(
       worker.terminate();
       reject(new Error(event.message || "诊断归档 Worker 失败"));
     };
-    worker.postMessage(input, [input.snapshot.buffer, input.projectFile.buffer]);
+    worker.postMessage(input, [
+      input.snapshot.buffer,
+      input.inputReplay.buffer,
+      input.projectFile.buffer,
+    ]);
   });
 }

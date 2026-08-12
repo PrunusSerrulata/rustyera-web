@@ -1,10 +1,11 @@
 {
   "schema_version": 1,
-  "project": "../../../../emuera.em/emuera-reference-cli/tests/fixture",
+  "project": "../../../tests/fixtures/diagnosis-project",
   "mode": "fixed",
   "seed": 123456,
   "clock": "2026-01-01T00:00:00Z",
   "actions": [
+    { "type": "input", "value": "7" },
     { "type": "click", "locator": { "role": "button", "name": "帮助", "exact": true } },
     {
       "type": "click",
@@ -16,9 +17,32 @@
         "canInteract": true,
         "diagnosis": { "exporting": false, "canExport": true },
         "lastDownload": {
-          "name": "Oracle CSV-diagnosis_20260101-080000.tar.zst",
+          "name": "Replay Diagnosis Fixture-diagnosis_20260101-080000.tar.zst",
           "magic": [40, 181, 47, 253],
-          "projectMagic": [82, 69, 82, 65, 80, 82, 79, 74]
+          "projectMagic": [82, 69, 82, 65, 80, 82, 79, 74],
+          "replayHeader": {
+            "record": "header",
+            "schema_version": 1,
+            "fidelity": "manual_path",
+            "status": "available",
+            "step_count": 1,
+            "origin": {
+              "kind": "new_game",
+              "seed": "123456",
+              "trigger": "start"
+            }
+          },
+          "replaySteps": [
+            {
+              "record": "step",
+              "sequence": 1,
+              "action": "text",
+              "wait_kind": "integer_value",
+              "result": { "kind": "integer", "value": "7" },
+              "message_skip": false,
+              "text": "7"
+            }
+          ]
         }
       }
     },
@@ -28,7 +52,7 @@
       "fields": ["count", "text", "visible"],
       "expect": {
         "count": 1,
-        "text": "诊断信息已导出：Oracle CSV-diagnosis_20260101-080000.tar.zst",
+        "text": "诊断信息已导出：Replay Diagnosis Fixture-diagnosis_20260101-080000.tar.zst",
         "visible": true
       }
     }

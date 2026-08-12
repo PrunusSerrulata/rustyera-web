@@ -1,6 +1,7 @@
 export interface DiagnosisArchiveInput {
   projectName: string;
   snapshot: Uint8Array;
+  inputReplay: Uint8Array;
   logs: string;
   projectFile: Uint8Array;
   exportedAt: Date;
@@ -39,6 +40,7 @@ export function* diagnosisArchiveChunks(input: DiagnosisArchiveInput): Generator
   const tarParts = [
     ...tarMemberParts("runtime.snapshot", input.snapshot, timestamp),
     ...tarMemberParts("runtime.log", encoder.encode(input.logs), timestamp),
+    ...tarMemberParts("input-replay.jsonl", input.inputReplay, timestamp),
     ...tarMemberParts(`${projectName}.reraproj`, input.projectFile, timestamp),
     new Uint8Array(TAR_BLOCK_BYTES * 2),
   ];
