@@ -6,10 +6,10 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createServer } from "vite";
 import { remote } from "webdriverio";
 
 import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs";
+import { createLoopbackViteServer, viteServerPort } from "./vite-test-server.mjs";
 
 import {
   browserProjectProgressErrors,
@@ -65,15 +65,12 @@ mkdirSync(snapshotDirectory, { recursive: true });
 console.log(JSON.stringify({ browser: browserName, type: "snapshot-log", path: snapshotPath }));
 
 try {
-  server = await createServer({
+  server = await createLoopbackViteServer({
     root: repository,
     mode: "test",
     define: { "import.meta.env.VITE_RUSTYERA_TEST": JSON.stringify("1") },
-    server: { host: "127.0.0.1", port: 0, strictPort: false },
   });
-  await server.listen();
-  const address = server.httpServer.address();
-  const port = typeof address === "object" ? address.port : 1420;
+  const port = viteServerPort(server);
   browser = await remote({
     logLevel: "warn",
     capabilities:

@@ -22,6 +22,7 @@ import {
 } from "./web-test-lib.mjs";
 import { finalizeBrowserGameRun } from "./web-test-lifecycle.mjs";
 import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs";
+import { createLoopbackViteServer, viteServerPort } from "./vite-test-server.mjs";
 
 const repository = fileURLToPath(new URL("..", import.meta.url));
 const OBSERVATION_SLICE_MS = 5_000;
@@ -135,11 +136,8 @@ async function execute(args) {
   async function runScenario() {
     process.env.VITE_RUSTYERA_TEST = "1";
     process.env.PLAYWRIGHT_BROWSERS_PATH ||= path.join(repository, ".playwright-browsers");
-    const [{ createServer }, { chromium }] = await Promise.all([
-      import("vite"),
-      import("@playwright/test"),
-    ]);
-    server = await createServer({
+    const { chromium } = await import("@playwright/test");
+    server = await createLoopbackViteServer({
       root: repository,
       mode: "test",
       define: { "import.meta.env.VITE_RUSTYERA_TEST": JSON.stringify("1") },
@@ -186,16 +184,9 @@ async function execute(args) {
           },
         },
       ],
-      server: {
-        host: "127.0.0.1",
-        port: 0,
-        strictPort: false,
-        watch: { ignored: ["**/.rustyera/**"] },
-      },
+      server: { watch: { ignored: ["**/.rustyera/**"] } },
     });
-    await server.listen();
-    const address = server.httpServer.address();
-    const port = typeof address === "object" ? address.port : 1420;
+    const port = viteServerPort(server);
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
       locale: "zh-CN",
