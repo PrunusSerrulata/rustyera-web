@@ -15,9 +15,9 @@ describe("Tauri help menu", () => {
     await dialog.waitForDisplayed();
     const aboutText = await dialog.getText();
     assert.match(aboutText, /PrunusSerrulata/);
-    assert.match(aboutText, /前端版本0\.3\.0-tauri/);
+    assert.match(aboutText, /前端版本0\.4\.0-tauri/);
     const coreRevision = readFileSync("rustyera-core.rev", "utf8").trim().slice(0, 8);
-    assert.match(aboutText, new RegExp(`core 版本0\\.3\\.0 \\(${coreRevision}\\)`));
+    assert.match(aboutText, new RegExp(`core 版本0\\.4\\.0 \\(${coreRevision}\\)`));
     assert.match(aboutText, /GPL-3\.0-only/);
     await dialog.$("button=确定").click();
 

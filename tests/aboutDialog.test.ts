@@ -14,10 +14,10 @@ describe("AboutDialog", () => {
 
     expect(document.body.textContent).toContain("PrunusSerrulata");
     expect(document.body.textContent).toContain("前端版本");
-    expect(document.body.textContent).toContain("0.3.0-wasm");
+    expect(document.body.textContent).toContain("0.4.0-wasm");
     expect(document.body.textContent).toContain("core 版本");
     const coreRevision = readFileSync("rustyera-core.rev", "utf8").trim().slice(0, 8);
-    expect(document.body.textContent).toContain(`0.3.0 (${coreRevision})`);
+    expect(document.body.textContent).toContain(`0.4.0 (${coreRevision})`);
     expect(document.body.textContent).toContain("GPL-3.0-only");
 
     document.body.querySelector<HTMLButtonElement>("button.primary")!.click();
@@ -33,7 +33,7 @@ describe("AboutDialog", () => {
       props: { open: true },
     });
 
-    expect(document.body.textContent).toContain("0.3.0-tauri");
+    expect(document.body.textContent).toContain("0.4.0-tauri");
 
     wrapper.unmount();
     delete window.__TAURI_INTERNALS__;

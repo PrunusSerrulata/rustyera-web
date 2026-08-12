@@ -7,17 +7,17 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "GPL-3.0-only"
 
 [workspace.dependencies]
 blake3 = "1.5.5"
-era-debug-protocol = { git = "https://github.com/PrunusSerrulata/rustyera-core.git", rev = "6b410b7e4b51b5ddd6e66a2b822670ba6944bc47" }
-era-protocol = { git = "https://github.com/PrunusSerrulata/rustyera-core.git", rev = "6b410b7e4b51b5ddd6e66a2b822670ba6944bc47" }
-era-runtime = { git = "https://github.com/PrunusSerrulata/rustyera-core.git", rev = "6b410b7e4b51b5ddd6e66a2b822670ba6944bc47" }
-era-runtime-protocol = { git = "https://github.com/PrunusSerrulata/rustyera-core.git", rev = "6b410b7e4b51b5ddd6e66a2b822670ba6944bc47" }
-erabasic-vm = { git = "https://github.com/PrunusSerrulata/rustyera-core.git", rev = "6b410b7e4b51b5ddd6e66a2b822670ba6944bc47" }
+era-debug-protocol = { git = "https://github.com/PrunusSerrulata/rustyera-core.git", rev = "f2e04514c11fc62cd656d8b515a752f1b2e43aa9" }
+era-protocol = { git = "https://github.com/PrunusSerrulata/rustyera-core.git", rev = "f2e04514c11fc62cd656d8b515a752f1b2e43aa9" }
+era-runtime = { git = "https://github.com/PrunusSerrulata/rustyera-core.git", rev = "f2e04514c11fc62cd656d8b515a752f1b2e43aa9" }
+era-runtime-protocol = { git = "https://github.com/PrunusSerrulata/rustyera-core.git", rev = "f2e04514c11fc62cd656d8b515a752f1b2e43aa9" }
+erabasic-vm = { git = "https://github.com/PrunusSerrulata/rustyera-core.git", rev = "f2e04514c11fc62cd656d8b515a752f1b2e43aa9" }
 minicbor = { version = "2.2.2", features = ["derive", "std"] }
 serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.112"
