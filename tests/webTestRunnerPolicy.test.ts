@@ -159,7 +159,7 @@ describe("browser game runner progress policy", () => {
     expect(spec).toContain('assert.equal((await snapshot()).bridgeKind, "tauri")');
     expect(spec).toContain('await input.setValue("1")');
     expect(spec).toContain("assert.deepEqual(row.slotWidths, [992, 16, 16])");
-    expect(spec).toContain('assert.ok(row.borderWidths.every((width) => width === "0px")');
+    expect(spec).toMatch(/assert\.ok\(\s*row\.borderWidths\.every\(\(width\) => width === "0px"\)/);
   });
 
   it("uses the requested mouse button for visible UI click actions", () => {

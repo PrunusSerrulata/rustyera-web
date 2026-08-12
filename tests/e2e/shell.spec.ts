@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { expect, test } from "@playwright/test";
 
 test("shared shell exposes menus and the unified settings dialog", async ({ page }) => {
@@ -17,7 +19,8 @@ test("shared shell exposes menus and the unified settings dialog", async ({ page
   const about = page.getByRole("dialog", { name: "关于 RustyEra" });
   await expect(about).toBeVisible();
   await expect(about.getByText("PrunusSerrulata")).toBeVisible();
-  await expect(about.getByText("0.3.0 (4b04024d)")).toBeVisible();
+  const coreRevision = readFileSync("rustyera-core.rev", "utf8").trim().slice(0, 8);
+  await expect(about.getByText(`0.3.0 (${coreRevision})`)).toBeVisible();
   await expect(about.getByText("GPL-3.0-only")).toBeVisible();
   await about.getByRole("button", { name: "确定" }).click();
   await expect(about).toBeHidden();

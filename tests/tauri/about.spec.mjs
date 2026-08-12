@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 describe("Tauri help menu", () => {
   it("shows build information and gates diagnosis export until a project opens", async () => {
@@ -15,7 +16,8 @@ describe("Tauri help menu", () => {
     const aboutText = await dialog.getText();
     assert.match(aboutText, /PrunusSerrulata/);
     assert.match(aboutText, /前端版本0\.3\.0-tauri/);
-    assert.match(aboutText, /core 版本0\.3\.0 \(4b04024d\)/);
+    const coreRevision = readFileSync("rustyera-core.rev", "utf8").trim().slice(0, 8);
+    assert.match(aboutText, new RegExp(`core 版本0\\.3\\.0 \\(${coreRevision}\\)`));
     assert.match(aboutText, /GPL-3\.0-only/);
     await dialog.$("button=确定").click();
 
