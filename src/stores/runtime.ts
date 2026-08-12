@@ -23,7 +23,10 @@ import {
 } from "@/core/debug";
 import { preferredRuntimeLocales, resolveGameTextStyle } from "@/core/gameText";
 import { decodeImageMetadata } from "@/core/imageMetadata";
-import type { LogNotificationState } from "@/core/log";
+import {
+  suppressedMirroredLogNotificationIndexes,
+  type LogNotificationState,
+} from "@/core/log";
 import {
   isMessageContinuationWait,
   isMessageSkipWait,
@@ -172,77 +175,6 @@ function isFullProjectPreparationRejection(message: string): boolean {
     message.includes("full project preparation started") ||
     message.includes("full project is still being prepared")
   );
-}
-
-function runtimeDebugVariant(value: unknown): string {
-  return String(value ?? "")
-    .split("_")
-    .filter(Boolean)
-    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
-    .join("");
-}
-
-function suppressedMirroredLogNotificationIndexes(events: PumpBatch["events"]): Set<number> {
-  const suppressed = new Set<number>();
-  for (let index = 1; index < events.length; index += 1) {
-    const event = events[index];
-    const previous = events[index - 1];
-    if (
-      event.channel === "runtime" &&
-      event.message.type === "fault" &&
-      previous.channel === "runtime" &&
-      previous.message.type === "log" &&
-      (previous.message as RuntimeMessage).value.level === "error"
-    ) {
-      suppressed.add(index - 1);
-      continue;
-    }
-    if (
-      event.channel === "runtime" &&
-      event.message.type === "log" &&
-      previous.channel === "runtime" &&
-      previous.message.type === "command_rejected"
-    ) {
-      const rejection = (previous.message as RuntimeMessage).value as {
-        code?: unknown;
-        message?: unknown;
-      };
-      const entry = (event.message as RuntimeMessage).value as {
-        level?: unknown;
-        message?: unknown;
-      };
-      const expected = `command rejected [${runtimeDebugVariant(rejection.code)}]: ${String(rejection.message ?? "")}`;
-      if (
-        ["warning", "error"].includes(String(entry.level ?? "")) &&
-        String(entry.message ?? "") === expected
-      )
-        suppressed.add(index);
-      continue;
-    }
-    if (
-      event.channel === "runtime" &&
-      event.message.type === "state_export_ready" &&
-      previous.channel === "runtime" &&
-      previous.message.type === "log"
-    ) {
-      const ready = (event.message as RuntimeMessage).value as {
-        result?: { type?: unknown; reasons?: unknown[] };
-      };
-      const entry = (previous.message as RuntimeMessage).value as {
-        level?: unknown;
-        message?: unknown;
-      };
-      const reasons = ready.result?.reasons ?? [];
-      const expected = `state export is ineligible: [${reasons.map(runtimeDebugVariant).join(", ")}]`;
-      if (
-        ready.result?.type === "ineligible" &&
-        entry.level === "warning" &&
-        entry.message === expected
-      )
-        suppressed.add(index - 1);
-    }
-  }
-  return suppressed;
 }
 
 interface DiagnosisState {
