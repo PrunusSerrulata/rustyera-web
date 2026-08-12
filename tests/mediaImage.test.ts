@@ -171,6 +171,49 @@ describe("Era sprite images", () => {
     expect(wrapper.get<HTMLElement>(".media-visual").attributes("style")).toContain("top: -4px");
   });
 
+  it("flips a negative requested width inside its positive-width line slot", async () => {
+    const wrapper = mount(MediaImage, {
+      props: {
+        placement: {
+          resource_id: "portrait",
+          width: 0,
+          height: 20_000,
+          depth: 0,
+          opacity: { numerator: 1, denominator: 1 },
+          revision: 5,
+          requested_width: { unit: "pixels", value: -64 },
+          requested_height: { unit: "pixels", value: 48 },
+        },
+      },
+    });
+    await flushPromises();
+
+    const slot = wrapper.get<HTMLElement>(".media-positioned");
+    expect(slot.attributes("style")).toContain("width: 64px");
+    expect(getComputedStyle(slot.element).transform).toBe("scaleX(-1)");
+    expect(wrapper.get<HTMLElement>(".media-visual").attributes("style")).toContain("width: 64px");
+  });
+
+  it("does not flip a positive requested width", async () => {
+    const wrapper = mount(MediaImage, {
+      props: {
+        placement: {
+          resource_id: "portrait",
+          width: 0,
+          height: 20_000,
+          depth: 0,
+          opacity: { numerator: 1, denominator: 1 },
+          revision: 5,
+          requested_width: { unit: "pixels", value: 64 },
+          requested_height: { unit: "pixels", value: 48 },
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(getComputedStyle(wrapper.get(".media-positioned").element).transform).toBe("");
+  });
+
   it("marks ypos=-height images for Emuera bottom-row anchoring", async () => {
     const wrapper = mount(MediaImage, {
       props: {

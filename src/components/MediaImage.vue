@@ -78,6 +78,8 @@ const dimensions = computed(() => {
   }
   return { width, height };
 });
+const horizontallyFlipped = computed(() => Number(props.placement.requested_width?.value) < 0);
+const horizontalTransform = computed(() => (horizontallyFlipped.value ? "scaleX(-1)" : undefined));
 
 const opacity = computed(() =>
   props.placement.opacity?.denominator
@@ -91,6 +93,7 @@ const directStyle = computed(() => ({
   top: verticalOffset(),
   opacity: opacity.value,
   zIndex: props.placement.depth,
+  transform: horizontalTransform.value,
 }));
 const positionedSlotStyle = computed(() => ({
   width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
@@ -98,6 +101,7 @@ const positionedSlotStyle = computed(() => ({
   "--media-row-offset": `${-(logicalPixels(props.placement.height) ?? store.gameTextStyle.fontSizePx) * scale.value}px`,
   opacity: opacity.value,
   zIndex: props.placement.depth,
+  transform: horizontalTransform.value,
 }));
 const positionedVisualStyle = computed(() => ({
   width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
@@ -118,6 +122,7 @@ const spriteStyle = computed(() => ({
   top: verticalOffset(),
   opacity: opacity.value,
   zIndex: props.placement.depth,
+  transform: horizontalTransform.value,
 }));
 const spriteSourceStyle = computed(() => {
   const rectangle = frame.value?.source_rectangle ?? [0, 0, 0, 0];
@@ -239,6 +244,7 @@ function stopHover(): void {
     v-else-if="canvasReplay"
     :replay="canvasReplay"
     :scale="store.effectivePreferences.imageScale"
+    :style="{ transform: horizontalTransform }"
   />
   <span
     v-else-if="sprite && frame && source && dimensions.width && dimensions.height"
