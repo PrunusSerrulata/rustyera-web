@@ -383,6 +383,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   });
   const phase = ref("negotiating");
   const runtimeEpoch = ref<number | bigint>(0);
+  const projectResourceGeneration = ref(0);
   const baseStatus = ref("请选择 Era 项目文件夹");
   const transientStatuses = reactive<Partial<Record<TransientStatusOwner, TransientStatusState>>>(
     {},
@@ -1399,6 +1400,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       log("error", baseStatus.value, true);
       return;
     }
+    projectResourceGeneration.value += 1;
     configurationWritable.value = bridge.projectConfigurationWritable();
     updateProjectConfiguration(value.configuration);
     await persistGeneratedConfiguration();
@@ -2017,6 +2019,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimePump.setReady(false);
     phase.value = "negotiating";
     runtimeEpoch.value = 0;
+    projectResourceGeneration.value += 1;
     lastTimeAdvanceNs = undefined;
     inputUndo.value = null;
     fault.value = null;
@@ -3924,6 +3927,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     fontAccessError,
     phase,
     runtimeEpoch,
+    projectResourceGeneration,
     status,
     projectOpen,
     projectLoading,

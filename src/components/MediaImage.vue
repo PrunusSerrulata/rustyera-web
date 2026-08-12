@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watchEffect } from "vue";
+import { computed, onBeforeUnmount, ref, shallowRef, watch, watchEffect } from "vue";
 
 import CanvasReplay from "@/components/CanvasReplay.vue";
 import { resourceUrl } from "@/core/resources";
@@ -33,12 +33,51 @@ const canvasReplay = computed(() => {
     ? undefined
     : store.presentation.resources.canvases?.find((item: any) => item.canvas_id === canvasId);
 });
+const resourceIdentity = computed(() =>
+  JSON.stringify([
+    Number(store.projectResourceGeneration ?? 0),
+    activeResourceId.value,
+    frame.value?.resource_id ?? activeResourceId.value,
+    frame.value?.source_rectangle ?? null,
+    props.placement.revision,
+  ]),
+);
+// Emuera paints complete frames into a double-buffered control. Generated portraits instead
+// arrive here as a canvas-backed sprite followed by their final file-backed sprite. Retain the
+// last canvas in a stable container while that final image loads, then switch the two layers in
+// one patch at a frame boundary. At most one layer contributes pixels at any time.
+const retainedCanvasReplay = shallowRef<any>();
+const sourceIdentity = ref("");
+const handoffIdentity = ref("");
+const handoffImageVisible = ref(false);
+const handoffSource = computed(() =>
+  sourceIdentity.value === handoffIdentity.value ? source.value : undefined,
+);
+let canvasHandoffFrame: number | undefined;
+let mediaStopped = false;
+
+watch(
+  [canvasReplay, resourceIdentity],
+  ([value, identity]) => {
+    cancelCanvasHandoff();
+    handoffImageVisible.value = false;
+    if (value) {
+      retainedCanvasReplay.value = value;
+      handoffIdentity.value = "";
+    } else if (retainedCanvasReplay.value) {
+      handoffIdentity.value = identity;
+    }
+  },
+  { immediate: true, flush: "sync" },
+);
 
 watchEffect((onCleanup) => {
   const resourceId = frame.value?.resource_id ?? activeResourceId.value;
+  const identity = resourceIdentity.value;
   naturalSize.value = undefined;
   if (!resourceId || canvasReplay.value) {
     source.value = "";
+    sourceIdentity.value = "";
     failed.value = false;
     return;
   }
@@ -46,9 +85,17 @@ watchEffect((onCleanup) => {
   // Keep the current visual mounted while a hover replacement loads. Otherwise
   // the pointer leaves a positioned image as soon as its one-row slot is exposed.
   failed.value = false;
-  void resourceUrl(platformBridge(), resourceId, props.placement.revision)
+  void resourceUrl(
+    platformBridge(),
+    resourceId,
+    props.placement.revision,
+    Number(store.projectResourceGeneration ?? 0),
+  )
     .then((value) => {
-      if (active) source.value = value;
+      if (active) {
+        source.value = value;
+        sourceIdentity.value = identity;
+      }
     })
     .catch(() => {
       if (active) failed.value = true;
@@ -171,6 +218,44 @@ function imageLoaded(event: Event): void {
   if (image.naturalWidth > 0 && image.naturalHeight > 0) {
     naturalSize.value = { width: image.naturalWidth, height: image.naturalHeight };
   }
+  if (!canvasReplay.value && retainedCanvasReplay.value) {
+    const identity = image.dataset.handoffIdentity;
+    if (
+      !identity ||
+      identity !== handoffIdentity.value ||
+      identity !== resourceIdentity.value ||
+      identity !== sourceIdentity.value ||
+      image.naturalWidth <= 0 ||
+      image.naturalHeight <= 0
+    )
+      return;
+    cancelCanvasHandoff();
+    canvasHandoffFrame = requestAnimationFrame(() => {
+      canvasHandoffFrame = undefined;
+      if (
+        !canvasReplay.value &&
+        retainedCanvasReplay.value &&
+        identity === handoffIdentity.value &&
+        identity === resourceIdentity.value &&
+        identity === sourceIdentity.value &&
+        !mediaStopped
+      )
+        handoffImageVisible.value = true;
+    });
+  }
+}
+
+function imageFailed(event: Event): void {
+  const image = event.currentTarget as HTMLImageElement;
+  if (image.dataset.handoffIdentity !== handoffIdentity.value) return;
+  cancelCanvasHandoff();
+  handoffImageVisible.value = false;
+}
+
+function cancelCanvasHandoff(): void {
+  if (canvasHandoffFrame == null) return;
+  cancelAnimationFrame(canvasHandoffFrame);
+  canvasHandoffFrame = undefined;
 }
 
 function startHover(): void {
@@ -180,23 +265,45 @@ function startHover(): void {
 function stopHover(): void {
   hovered.value = false;
 }
+
+onBeforeUnmount(() => {
+  mediaStopped = true;
+  cancelCanvasHandoff();
+});
 </script>
 
 <template>
   <span
-    v-if="lineSlot && canvasReplay"
+    v-if="lineSlot && retainedCanvasReplay"
     class="media-image media-positioned"
     :style="positionedSlotStyle"
   >
     <span
       class="media-visual"
-      :class="{ 'media-bottom-anchored': bottomAnchored }"
+      :class="{
+        'media-bottom-anchored': bottomAnchored,
+        'media-sprite': !canvasReplay && sprite && frame,
+        'media-canvas-handoff': !canvasReplay,
+      }"
       :style="positionedVisualStyle"
     >
       <CanvasReplay
-        :replay="canvasReplay"
+        :replay="retainedCanvasReplay"
         :display-width="dimensions.width ? dimensions.width * scale : undefined"
         :display-height="dimensions.height ? dimensions.height * scale : undefined"
+        :visible="!handoffImageVisible"
+      />
+      <img
+        v-if="!canvasReplay"
+        class="media-canvas-handoff-image"
+        :class="{ 'media-canvas-handoff-image-visible': handoffImageVisible }"
+        :src="handoffSource"
+        :data-handoff-identity="handoffIdentity"
+        :alt="alt ?? ''"
+        :style="frame ? spriteSourceStyle : undefined"
+        draggable="false"
+        @error="imageFailed"
+        @load="imageLoaded"
       />
     </span>
   </span>
@@ -240,12 +347,34 @@ function stopHover(): void {
       @load="imageLoaded"
     />
   </span>
-  <CanvasReplay
-    v-else-if="canvasReplay"
-    :replay="canvasReplay"
-    :scale="store.effectivePreferences.imageScale"
-    :style="{ transform: horizontalTransform }"
-  />
+  <span
+    v-else-if="retainedCanvasReplay"
+    class="media-image"
+    :class="{
+      'media-sprite': !canvasReplay && sprite && frame,
+      'media-canvas-handoff': !canvasReplay,
+    }"
+    :style="frame ? spriteStyle : directStyle"
+  >
+    <CanvasReplay
+      :replay="retainedCanvasReplay"
+      :scale="store.effectivePreferences.imageScale"
+      :visible="!handoffImageVisible"
+      :style="{ transform: horizontalTransform }"
+    />
+    <img
+      v-if="!canvasReplay"
+      class="media-canvas-handoff-image"
+      :class="{ 'media-canvas-handoff-image-visible': handoffImageVisible }"
+      :src="handoffSource"
+      :data-handoff-identity="handoffIdentity"
+      :alt="alt ?? ''"
+      :style="frame ? spriteSourceStyle : undefined"
+      draggable="false"
+      @error="imageFailed"
+      @load="imageLoaded"
+    />
+  </span>
   <span
     v-else-if="sprite && frame && source && dimensions.width && dimensions.height"
     class="media-image media-sprite"

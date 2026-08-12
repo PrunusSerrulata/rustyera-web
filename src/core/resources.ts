@@ -6,8 +6,9 @@ export function resourceUrl(
   bridge: FrontendBridge,
   resourceId: string,
   revision = 0,
+  generation = 0,
 ): Promise<string> {
-  const key = `${resourceId}\0${revision}`;
+  const key = `${resourceId}\0${generation}\0${revision}`;
   const cached = cache.get(key);
   if (cached) return cached;
   const value = bridge

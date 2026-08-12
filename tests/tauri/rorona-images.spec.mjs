@@ -83,11 +83,15 @@ roronaImages("Tauri erarorona image rendering", () => {
     assert.ok(workshop.statusGap >= 0, "workshop image must start below the status header");
     assert.ok(workshop.dialogueGap >= 0, "workshop image must end above the dialogue");
 
-    automaticTimedWaits += await advanceEnterWaitsUntil("师傅还没回来啊", 1600);
+    const roronaEntry = await observeGeneratedPortraitEntry("师傅还没回来啊", 1600);
+    automaticTimedWaits += roronaEntry.automaticTimedWaits;
+    assertSmoothPortraitEntry(roronaEntry.samples, "Rorona");
     const firstDialogue = await dialoguePortraitMetrics();
     assertDialoguePortraits(firstDialogue, 1);
 
-    automaticTimedWaits += await advanceEnterWaitsUntil("抱歉，请问您是", 400);
+    const astridEntry = await observeGeneratedPortraitEntry("抱歉，请问您是", 400);
+    automaticTimedWaits += astridEntry.automaticTimedWaits;
+    assertSmoothPortraitEntry(astridEntry.samples, "Astrid");
     const secondDialogue = await dialoguePortraitMetrics();
     assertDialoguePortraits(secondDialogue, 2);
     await enableMessageSkip();
@@ -122,6 +126,8 @@ roronaImages("Tauri erarorona image rendering", () => {
       JSON.stringify({
         firstDialogue,
         secondDialogue,
+        roronaEntry,
+        astridEntry,
         actionScreen,
         friendPanel: friendPanel.metrics,
         backgroundMusic,
@@ -132,6 +138,141 @@ roronaImages("Tauri erarorona image rendering", () => {
     );
   });
 });
+
+async function observeGeneratedPortraitEntry(expectedText, maximum) {
+  await startGeneratedPortraitMonitor();
+  let automaticTimedWaits;
+  let samples;
+  try {
+    automaticTimedWaits = await advanceEnterWaitsUntil(expectedText, maximum);
+  } finally {
+    samples = await stopGeneratedPortraitMonitor();
+  }
+  return { automaticTimedWaits, samples };
+}
+
+async function startGeneratedPortraitMonitor() {
+  await browser.execute(() => {
+    const baselineActive = new WeakSet();
+    const probe = document.createElement("canvas");
+    probe.width = 4;
+    probe.height = 4;
+    const probeContext = probe.getContext("2d", { willReadFrequently: true });
+    const monitor = { active: true, target: null, samples: [] };
+    window.__RUSTYERA_PORTRAIT_MONITOR__ = monitor;
+    const visible = (element) => {
+      if (!element) return false;
+      const bounds = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return (
+        bounds.width > 0 &&
+        bounds.height > 0 &&
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        Number.parseFloat(style.opacity || "1") > 0
+      );
+    };
+    for (const stack of document.querySelectorAll(".canvas-replay-stack")) {
+      if (visible(stack.querySelector("canvas.canvas-replay"))) baselineActive.add(stack);
+    }
+    const sampleAlpha = (canvas) => {
+      // One scaled draw/read per animation frame observes backing-store continuity while adding
+      // far less main-thread pressure than probing individual source pixels. Native compositor
+      // continuity is still verified by the user's live observation of the Tauri window.
+      if (!probeContext || canvas.width === 0 || canvas.height === 0) return 0;
+      probeContext.clearRect(0, 0, 4, 4);
+      probeContext.drawImage(canvas, 0, 0, 4, 4);
+      const pixels = probeContext.getImageData(0, 0, 4, 4).data;
+      let maximum = 0;
+      for (let index = 3; index < pixels.length; index += 4)
+        maximum = Math.max(maximum, pixels[index]);
+      return maximum;
+    };
+    const capture = (time) => {
+      if (!monitor.active) return;
+      if (!monitor.target) {
+        monitor.target = [...document.querySelectorAll(".canvas-replay-stack")]
+          .filter((stack) => !baselineActive.has(stack))
+          .find((stack) => visible(stack.querySelector("canvas.canvas-replay")))?.parentElement;
+      }
+      const visual = monitor.target;
+      if (visual?.isConnected) {
+        const canvas = visual.querySelector("canvas.canvas-replay");
+        const canvasVisible = Boolean(canvas && visible(canvas));
+        const image = visual.querySelector(".media-canvas-handoff-image");
+        const imageLoaded = Boolean(image?.complete && image.naturalWidth > 0);
+        const imageVisible = Boolean(image && visible(image));
+        const bounds = visual.getBoundingClientRect();
+        monitor.samples.push({
+          time,
+          left: Math.round(bounds.left * 100) / 100,
+          canvasVisible,
+          maximumAlpha: canvasVisible ? sampleAlpha(canvas) : 0,
+          imagePresent: Boolean(image),
+          imageLoaded,
+          imageVisible,
+          contributors: Number(canvasVisible) + Number(imageLoaded && imageVisible),
+        });
+      }
+      requestAnimationFrame(capture);
+    };
+    requestAnimationFrame(capture);
+  });
+}
+
+async function stopGeneratedPortraitMonitor() {
+  return browser.execute(() => {
+    const monitor = window.__RUSTYERA_PORTRAIT_MONITOR__;
+    if (!monitor) return [];
+    monitor.active = false;
+    delete window.__RUSTYERA_PORTRAIT_MONITOR__;
+    return monitor.samples;
+  });
+}
+
+function assertSmoothPortraitEntry(samples, name) {
+  assert.ok(samples.length >= 5, `${name} entry must expose at least five paint samples`);
+  assert.ok(
+    samples.every((sample) => sample.contributors === 1),
+    `${name} entry exposed zero or overlapping visual layers: ${JSON.stringify(samples)}`,
+  );
+  const firstCompletion = samples.findIndex(
+    (sample) => !sample.canvasVisible && sample.imageLoaded && sample.imageVisible,
+  );
+  assert.ok(firstCompletion >= 0, `${name} entry never completed its final-image handoff`);
+  const animationSamples = samples.slice(0, firstCompletion);
+  assert.ok(
+    animationSamples.length >= 1 &&
+      animationSamples.every((sample) => sample.canvasVisible && !sample.imageVisible),
+    `${name} entry exposed an incomplete or overlapping canvas handoff: ${JSON.stringify(samples)}`,
+  );
+  const firstVisible = animationSamples.findIndex((frame) => frame.maximumAlpha > 0);
+  assert.ok(firstVisible >= 0, `${name} entry never painted a visible generated frame`);
+  const visible = animationSamples.slice(firstVisible);
+  for (let index = 1; index < visible.length; index += 1) {
+    assert.ok(
+      visible[index].left >= visible[index - 1].left,
+      `${name} entry moved backwards: ${JSON.stringify(visible)}`,
+    );
+    assert.ok(
+      visible[index].maximumAlpha >= visible[index - 1].maximumAlpha,
+      `${name} entry faded backwards or blanked: ${JSON.stringify(visible)}`,
+    );
+  }
+  const progress = visible.filter(
+    (frame, index) =>
+      index === 0 ||
+      frame.left !== visible[index - 1].left ||
+      frame.maximumAlpha !== visible[index - 1].maximumAlpha,
+  );
+  if (progress.length >= 2) {
+    assert.ok(
+      progress.at(-1).left > progress[0].left &&
+        progress.at(-1).maximumAlpha > progress[0].maximumAlpha,
+      `${name} entry did not advance position and opacity: ${JSON.stringify(samples)}`,
+    );
+  }
+}
 
 async function enableMessageSkip() {
   const buttons = await $$(".game-button");

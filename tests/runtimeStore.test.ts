@@ -4694,6 +4694,7 @@ describe("runtime store session lifecycle", () => {
       submission_token: { epoch: 2, id: 12 },
     };
     const store = await storeWithInputWait(wait);
+    const resourceGenerationBefore = store.projectResourceGeneration;
     const startsBefore = bridge.submitRuntime.mock.calls.filter(
       ([message]: unknown[]) => (message as { type?: string }).type === "start",
     ).length;
@@ -4712,6 +4713,7 @@ describe("runtime store session lifecycle", () => {
     expect(store.projectLoading).toBe(false);
     expect(store.status).toBe("游戏运行中");
     expect(store.presentation.inputWait).toEqual(wait);
+    expect(store.projectResourceGeneration).toBe(resourceGenerationBefore + 1);
     expect(store.canInteract).toBe(true);
     expect(
       bridge.submitRuntime.mock.calls.filter(
@@ -4743,6 +4745,7 @@ describe("runtime store session lifecycle", () => {
 
   it("settles an unsuccessful correlated hot-reload report", async () => {
     const store = await runningBrowserStore();
+    const resourceGenerationBefore = store.projectResourceGeneration;
     bridge.reloadProject.mockResolvedValueOnce({ fonts: [], errors: [], messageId: 79 });
     bridge.pump.mockResolvedValueOnce({
       ...emptyBatch(),
@@ -4762,6 +4765,7 @@ describe("runtime store session lifecycle", () => {
     await advanceUntil(() => store.status === "重新加载项目失败，请查看日志");
 
     expect(store.projectLoading).toBe(false);
+    expect(store.projectResourceGeneration).toBe(resourceGenerationBefore);
     expect(store.logs.some((entry) => entry.message.includes("bad script"))).toBe(true);
     expect(
       bridge.submitRuntime.mock.calls.filter(

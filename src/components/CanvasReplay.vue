@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import { platformBridge } from "@/platform";
 import { resourceUrl } from "@/core/resources";
@@ -10,38 +10,80 @@ const props = defineProps<{
   scale?: number;
   displayWidth?: number;
   displayHeight?: number;
+  visible?: boolean;
 }>();
 const store = useRuntimeStore();
-const canvas = ref<HTMLCanvasElement>();
-let renderVersion = 0;
-let committedVersion = 0;
+const firstSurface = ref<HTMLCanvasElement>();
+const secondSurface = ref<HTMLCanvasElement>();
+const activeSurface = ref(-1);
+const decodedImages = new Map<string, Promise<HTMLImageElement>>();
 type CanvasDrawable = Parameters<CanvasRenderingContext2D["drawImage"]>[0];
+interface RenderRequest {
+  replay: any;
+  resources: any;
+  resourceGeneration: number;
+  token: number;
+}
 
-async function render(): Promise<void> {
-  const version = ++renderVersion;
-  await nextTick();
-  const element = canvas.value;
-  if (!element) return;
-  const projected = document.createElement("canvas");
-  projected.width = canvasDimension(props.replay.size.width);
-  projected.height = canvasDimension(props.replay.size.height);
-  const context = projected.getContext("2d", { willReadFrequently: true });
-  if (!context) return;
-  await replayCommands(context, props.replay, new Set([Number(props.replay.canvas_id)]));
-  // Resource presentations can be refreshed while their image layers decode. Let an
-  // in-flight replay paint until a newer replay has actually committed; cancelling it
-  // merely because another render started can starve animated/generated canvases.
-  if (element !== canvas.value || version < committedVersion) return;
-  committedVersion = version;
-  element.width = projected.width;
-  element.height = projected.height;
-  element.getContext("2d", { willReadFrequently: true })?.drawImage(projected, 0, 0);
+let pendingRender: RenderRequest | undefined;
+let rendering = false;
+let stopped = false;
+let latestRenderToken = 0;
+
+function requestRender(): void {
+  if (stopped) return;
+  // Animation frames can arrive faster than image decoding. Keep one in-flight replay and
+  // coalesce its backlog to the newest frame so older work can never commit out of order.
+  pendingRender = {
+    replay: props.replay,
+    resources: store.presentation.resources,
+    resourceGeneration: Number(store.projectResourceGeneration ?? 0),
+    token: ++latestRenderToken,
+  };
+  if (!rendering) void drainRenders();
+}
+
+async function drainRenders(): Promise<void> {
+  rendering = true;
+  try {
+    while (!stopped && pendingRender) {
+      const request = pendingRender;
+      pendingRender = undefined;
+      await nextTick();
+      if (stopped || !firstSurface.value || !secondSurface.value) return;
+      const projected = document.createElement("canvas");
+      projected.width = canvasDimension(request.replay.size.width);
+      projected.height = canvasDimension(request.replay.size.height);
+      const context = projected.getContext("2d");
+      if (!context) continue;
+      try {
+        await replayCommands(
+          context,
+          request.replay,
+          new Set([Number(request.replay.canvas_id)]),
+          request.resources,
+          request.resourceGeneration,
+        );
+      } catch (error) {
+        console.warn("Unable to replay generated canvas", error);
+        continue;
+      }
+      if (stopped || request.resourceGeneration !== Number(store.projectResourceGeneration ?? 0))
+        continue;
+      await presentCanvas(projected, request);
+    }
+  } finally {
+    rendering = false;
+    if (!stopped && pendingRender) void drainRenders();
+  }
 }
 
 async function replayCommands(
   context: CanvasRenderingContext2D,
   replay: any,
   ancestors: Set<number>,
+  resources: any,
+  resourceGeneration: number,
 ): Promise<void> {
   let brush = "#000";
   let pen = "#000";
@@ -113,7 +155,13 @@ async function replayCommands(
         break;
       }
       case "draw_sprite": {
-        const source = await spriteSource(command.name, ancestors);
+        const source = await spriteSource(
+          command.name,
+          ancestors,
+          resources,
+          replay.revision,
+          resourceGeneration,
+        );
         if (source)
           drawProjected(context, source.image, source.rectangle, command.destination, {
             colorMatrix: command.color_matrix,
@@ -121,12 +169,22 @@ async function replayCommands(
         break;
       }
       case "draw_canvas": {
-        const source = await canvasSource(Number(command.source_canvas_id), ancestors);
+        const source = await canvasSource(
+          Number(command.source_canvas_id),
+          ancestors,
+          resources,
+          resourceGeneration,
+        );
         if (!source) break;
         const mask =
           command.mask_canvas_id == null
             ? undefined
-            : await canvasSource(Number(command.mask_canvas_id), ancestors);
+            : await canvasSource(
+                Number(command.mask_canvas_id),
+                ancestors,
+                resources,
+                resourceGeneration,
+              );
         drawProjected(context, source, command.source, command.destination, {
           colorMatrix: command.color_matrix,
           mask,
@@ -142,12 +200,20 @@ async function replayCommands(
 async function spriteSource(
   name: string,
   ancestors: Set<number>,
+  resources: any,
+  revision: unknown,
+  resourceGeneration: number,
 ): Promise<{ image: CanvasDrawable; rectangle: Rectangle } | undefined> {
-  const sprite = store.presentation.resources.sprites?.find(
+  const sprite = resources.sprites?.find(
     (item: any) => String(item.name).toUpperCase() === String(name).toUpperCase(),
   );
   if (sprite?.canvas_id != null) {
-    const image = await canvasSource(Number(sprite.canvas_id), ancestors);
+    const image = await canvasSource(
+      Number(sprite.canvas_id),
+      ancestors,
+      resources,
+      resourceGeneration,
+    );
     if (!image) return undefined;
     return {
       image,
@@ -161,39 +227,108 @@ async function spriteSource(
   }
   const frame = sprite?.frames?.[0];
   if (frame?.canvas_id != null) {
-    const image = await canvasSource(Number(frame.canvas_id), ancestors);
+    const image = await canvasSource(
+      Number(frame.canvas_id),
+      ancestors,
+      resources,
+      resourceGeneration,
+    );
     if (!image) return undefined;
     return { image, rectangle: tupleRectangle(frame.source_rectangle, image) };
   }
   const resourceId = frame?.resource_id ?? name;
   try {
-    const image = new Image();
-    image.src = await resourceUrl(platformBridge(), resourceId, props.replay.revision);
-    await image.decode();
+    const image = await decodedImage(resourceId, Number(revision), resourceGeneration);
     return { image, rectangle: tupleRectangle(frame?.source_rectangle, image) };
   } catch (error) {
     console.warn(`Unable to load canvas sprite resource: ${resourceId}`, error);
-    return undefined;
+    throw error;
   }
+}
+
+function decodedImage(
+  resourceId: string,
+  revision: number,
+  resourceGeneration: number,
+): Promise<HTMLImageElement> {
+  // A generated animation creates a fresh canvas revision for every frame, but its file-backed
+  // source belongs to the same project resource graph. Keep resource IDs case-sensitive and
+  // include the project generation so a hot reload cannot reuse an obsolete decoded file.
+  const key = `${resourceGeneration}\0${resourceId}`;
+  const cached = decodedImages.get(key);
+  if (cached) return cached;
+  const image = resourceUrl(platformBridge(), resourceId, revision, resourceGeneration)
+    .then(async (source) => {
+      const image = new Image();
+      image.src = source;
+      await image.decode();
+      return image;
+    })
+    .catch((error) => {
+      decodedImages.delete(key);
+      throw error;
+    });
+  decodedImages.set(key, image);
+  return image;
+}
+
+function commitCanvas(element: HTMLCanvasElement, projected: HTMLCanvasElement): boolean {
+  // Only the hidden back surface is ever mutated. Resizing or replacing pixels on WebKit's
+  // currently composited canvas can expose an intermediate transparent surface.
+  try {
+    if (element.width !== projected.width) element.width = projected.width;
+    if (element.height !== projected.height) element.height = projected.height;
+    const context = element.getContext("2d");
+    if (!context) return false;
+    context.save();
+    try {
+      context.globalCompositeOperation = "copy";
+      context.drawImage(projected, 0, 0);
+    } finally {
+      context.restore();
+    }
+    return true;
+  } catch (error) {
+    console.warn("Unable to commit generated canvas", error);
+    return false;
+  }
+}
+
+async function presentCanvas(projected: HTMLCanvasElement, request: RenderRequest): Promise<void> {
+  const targetIndex = activeSurface.value === 0 ? 1 : 0;
+  const target = targetIndex === 0 ? firstSurface.value : secondSurface.value;
+  if (!target) return;
+  if (!commitCanvas(target, projected)) return;
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  if (
+    stopped ||
+    target !== (targetIndex === 0 ? firstSurface.value : secondSurface.value) ||
+    request.resourceGeneration !== Number(store.projectResourceGeneration ?? 0) ||
+    request.token !== latestRenderToken
+  )
+    return;
+  activeSurface.value = targetIndex;
+  // Apply both visibility changes before the other surface can become the next back buffer.
+  await nextTick();
 }
 
 async function canvasSource(
   canvasId: number,
   ancestors: Set<number>,
+  resources: any,
+  resourceGeneration: number,
 ): Promise<HTMLCanvasElement | undefined> {
   if (ancestors.has(canvasId)) return undefined;
-  const replay = store.presentation.resources.canvases?.find(
-    (item: any) => Number(item.canvas_id) === canvasId,
-  );
+  const replay = resources.canvases?.find((item: any) => Number(item.canvas_id) === canvasId);
   if (!replay) return undefined;
   const element = document.createElement("canvas");
   element.width = canvasDimension(replay.size.width);
   element.height = canvasDimension(replay.size.height);
-  const context = element.getContext("2d", { willReadFrequently: true });
+  const context = element.getContext("2d");
   if (!context) return undefined;
   const next = new Set(ancestors);
   next.add(canvasId);
-  await replayCommands(context, replay, next);
+  await replayCommands(context, replay, next, resources, resourceGeneration);
   return element;
 }
 
@@ -239,8 +374,17 @@ function drawProjected(
   const projected = document.createElement("canvas");
   projected.width = Math.max(1, Math.abs(Number(destination.width)));
   projected.height = Math.max(1, Math.abs(Number(destination.height)));
-  const context = projected.getContext("2d", { willReadFrequently: true });
+  const opacity = simpleOpacity(options.colorMatrix);
+  const readsPixels = opacity == null && options.colorMatrix?.length === 25;
+  const context = projected.getContext(
+    "2d",
+    readsPixels ? { willReadFrequently: true } : undefined,
+  );
   if (!context) return;
+  if (opacity != null) {
+    context.save();
+    context.globalAlpha = opacity;
+  }
   context.drawImage(
     image,
     Number(source.x),
@@ -252,7 +396,8 @@ function drawProjected(
     projected.width,
     projected.height,
   );
-  if (options.colorMatrix?.length === 25) applyColorMatrix(context, options.colorMatrix);
+  if (opacity != null) context.restore();
+  else if (options.colorMatrix?.length === 25) applyColorMatrix(context, options.colorMatrix);
   if (options.mask) applyMask(context, options.mask, source, projected.width, projected.height);
 
   const rotation = Number(options.rotationDegrees ?? 0);
@@ -270,6 +415,20 @@ function drawProjected(
   target.translate(-Number(center.x), -Number(center.y));
   target.drawImage(projected, Number(destination.x), Number(destination.y));
   target.restore();
+}
+
+function simpleOpacity(values: number[] | undefined): number | undefined {
+  if (values?.length !== 25) return undefined;
+  for (let row = 0; row < 5; row += 1) {
+    for (let column = 0; column < 5; column += 1) {
+      const index = row * 5 + column;
+      if (index === 18) continue;
+      const expected = row === column ? 256 : 0;
+      if (Number(values[index]) !== expected) return undefined;
+    }
+  }
+  const opacity = Number(values[18]) / 256;
+  return Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : undefined;
 }
 
 function applyMask(
@@ -344,17 +503,45 @@ function argb(value: unknown): string {
   return `rgba(${(unsigned >>> 16) & 0xff}, ${(unsigned >>> 8) & 0xff}, ${unsigned & 0xff}, ${alpha})`;
 }
 
-watch(() => props.replay, render, { deep: true });
-onMounted(render);
+watch(() => props.replay, requestRender, { deep: true });
+watch(
+  () => store.projectResourceGeneration,
+  () => {
+    decodedImages.clear();
+    requestRender();
+  },
+  { flush: "sync" },
+);
+onMounted(requestRender);
+onBeforeUnmount(() => {
+  stopped = true;
+  pendingRender = undefined;
+  decodedImages.clear();
+});
 </script>
 
 <template>
-  <canvas
-    ref="canvas"
-    class="canvas-replay"
+  <span
+    class="canvas-replay-stack"
     :style="{
+      display: visible === false ? 'none' : undefined,
       width: `${displayWidth ?? Number(replay.size.width) * (scale ?? 1)}px`,
       height: `${displayHeight ?? Number(replay.size.height) * (scale ?? 1)}px`,
     }"
-  />
+  >
+    <canvas
+      ref="firstSurface"
+      class="canvas-replay-surface"
+      :class="{ 'canvas-replay': activeSurface === 0 }"
+      :style="{ visibility: activeSurface === 0 ? 'visible' : 'hidden' }"
+      :aria-hidden="activeSurface !== 0"
+    />
+    <canvas
+      ref="secondSurface"
+      class="canvas-replay-surface"
+      :class="{ 'canvas-replay': activeSurface === 1 }"
+      :style="{ visibility: activeSurface === 1 ? 'visible' : 'hidden' }"
+      :aria-hidden="activeSurface !== 1"
+    />
+  </span>
 </template>
