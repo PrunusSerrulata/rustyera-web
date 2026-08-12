@@ -575,9 +575,9 @@ async fn write_project_configuration(
 ) -> Result<(), String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let project = state.project.lock().map_err(lock_error)?;
+        let mut project = state.project.lock().map_err(lock_error)?;
         let project = project
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| "no project is open".to_owned())?;
         project.write_configuration(&expected_digest, &contents)?;
         project.invalidate_compiled_cache();

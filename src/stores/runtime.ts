@@ -1240,7 +1240,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       }
       case "diagnostic":
-        log(value.level ?? "info", formatDiagnostic(value), true);
+        log(
+          value.level ?? "info",
+          formatDiagnostic(value),
+          true,
+          value.code === "runtime.html.nonstandard_crossed_closing_tag" ? "none" : "all",
+        );
         if (
           value.code === "runtime.compiled_cache_ready" &&
           exportState?.kind === "compiled_cache" &&
@@ -2138,8 +2143,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     fault.value = null;
     baseStatus.value = action === "title" ? "正在返回主菜单…" : "正在重启并重新编译…";
     try {
-      if (action === "title") await returnToTitle();
-      else await reloadProject();
+      if (action === "title") {
+        await returnToTitle();
+        baseStatus.value = GAME_RUNNING_STATUS;
+      } else await reloadProject();
     } catch (error) {
       const message = `错误恢复失败：${String(error)}`;
       fault.value = { code: "frontend.recovery_failed", message };

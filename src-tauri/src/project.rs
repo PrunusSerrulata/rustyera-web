@@ -371,7 +371,7 @@ impl ProjectHost {
     }
 
     pub fn write_configuration(
-        &self,
+        &mut self,
         expected_digest: &[u8],
         contents: &str,
     ) -> Result<(), String> {
@@ -417,10 +417,13 @@ impl ProjectHost {
             .indexed_files
             .iter()
             .find(|file| file.relative_path.eq_ignore_ascii_case("reraconfig.toml"))
-            .map_or("reraconfig.toml", |file| file.relative_path.as_str());
-        let target = self.root.join(relative_path);
+            .map_or_else(
+                || "reraconfig.toml".to_owned(),
+                |file| file.relative_path.clone(),
+            );
+        let target = self.root.join(&relative_path);
         let current_digest =
-            match normalized_file_bytes(&target, relative_path, FileCategory::Configuration) {
+            match normalized_file_bytes(&target, &relative_path, FileCategory::Configuration) {
                 Ok(bytes) => {
                     let text = String::from_utf8(bytes)
                         .map_err(|_| "reraconfig.toml is not valid UTF-8".to_owned())?;
@@ -431,12 +434,8 @@ impl ProjectHost {
                 Err(_) if !target.exists() => Vec::new(),
                 Err(error) => return Err(error),
             };
-        let requested_digest = blake3::hash(
-            contents
-                .replace("\r\n", "\n")
-                .replace('\r', "\n")
-                .as_bytes(),
-        );
+        let normalized_contents = contents.replace("\r\n", "\n").replace('\r', "\n");
+        let requested_digest = blake3::hash(normalized_contents.as_bytes());
         if current_digest == requested_digest.as_bytes() {
             return Ok(());
         }
@@ -453,9 +452,57 @@ impl ProjectHost {
             .sync_all()
             .map_err(|error| format!("cannot sync configuration file: {error}"))?;
         temporary
-            .persist(target)
+            .persist(&target)
             .map_err(|error| format!("cannot replace configuration file: {}", error.error))?;
+        self.refresh_configuration_index(
+            &relative_path,
+            target,
+            normalized_contents,
+            *requested_digest.as_bytes(),
+        );
         Ok(())
+    }
+
+    fn refresh_configuration_index(
+        &mut self,
+        relative_path: &str,
+        source_path: PathBuf,
+        contents: String,
+        content_hash: [u8; 32],
+    ) {
+        let source_signature = fs::metadata(&source_path)
+            .ok()
+            .map(|metadata| metadata_signature(&metadata));
+        let pending_file = SubmittedFile {
+            relative_path: relative_path.to_owned(),
+            category: FileCategory::Configuration,
+            payload: FilePayload::Utf8(contents),
+            content_hash: Some(ProtocolBytes::new(content_hash.to_vec())),
+        };
+        let updated = IndexedFile {
+            relative_path: relative_path.to_owned(),
+            source_path: Some(source_path),
+            category: FileCategory::Configuration,
+            content_hash,
+            pending_file: Some(pending_file),
+            source_signature,
+        };
+        if let Some(index) = self
+            .indexed_files
+            .iter()
+            .position(|file| file.relative_path.eq_ignore_ascii_case(relative_path))
+        {
+            self.indexed_files[index] = updated;
+        } else {
+            self.indexed_files.push(updated);
+            self.indexed_files.sort_by(|left, right| {
+                left.relative_path
+                    .to_lowercase()
+                    .cmp(&right.relative_path.to_lowercase())
+                    .then_with(|| left.relative_path.cmp(&right.relative_path))
+            });
+        }
+        self.manifest = None;
     }
 
     pub fn invalidate_compiled_cache(&self) {
@@ -1660,7 +1707,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("reraconfig.toml");
         fs::write(&path, "[display]\r\nfont_size = 12\r\n").unwrap();
-        let project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+        let mut project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
         let digest = blake3::hash("[display]\nfont_size = 12\n".as_bytes());
 
         project
@@ -1680,6 +1727,44 @@ mod tests {
                 .unwrap_err()
                 .contains("其他程序修改")
         );
+    }
+
+    #[test]
+    fn configuration_write_refreshes_the_manifest_used_for_full_project_export() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("main.erb"), "@SYSTEM_TITLE\nRETURN\n").unwrap();
+        fs::write(
+            directory.path().join("reraconfig.toml"),
+            "[display]\nfont_size = 12\n",
+        )
+        .unwrap();
+        let mut project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+        let initial_identity = era_web_bridge::project_identity(project.materialize().unwrap())
+            .expect("initial manifest has an identity");
+        let digest = blake3::hash("[display]\nfont_size = 12\n".as_bytes());
+
+        project
+            .write_configuration(digest.as_bytes(), "[display]\nfont_size = 18\n")
+            .unwrap();
+
+        let (refreshed_identity, has_updated_configuration) = {
+            let refreshed = project.materialize().unwrap();
+            (
+                era_web_bridge::project_identity(refreshed)
+                    .expect("refreshed manifest has an identity"),
+                refreshed.files.iter().any(|file| {
+                    matches!(
+                        &file.payload,
+                        FilePayload::Utf8(contents)
+                            if file.relative_path.eq_ignore_ascii_case("reraconfig.toml")
+                                && contents == "[display]\nfont_size = 18\n"
+                    )
+                }),
+            )
+        };
+        assert_ne!(refreshed_identity, initial_identity);
+        assert_eq!(refreshed_identity, project.identity());
+        assert!(has_updated_configuration);
     }
 
     #[test]

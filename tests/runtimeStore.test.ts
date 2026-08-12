@@ -558,6 +558,32 @@ describe("runtime store session lifecycle", () => {
     ]);
   });
 
+  it("retains crossed HTML closing-tag diagnostics without showing a notification", async () => {
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("diagnostic", {
+          code: "runtime.html.nonstandard_crossed_closing_tag",
+          level: "warning",
+          message: "PRINTHTML normalized non-standard crossed closing tag",
+          source: { relative_path: "ERB/HTML.ERB", line: 4, byte_column: 2 },
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+
+    expect(store.logs).toEqual([
+      expect.objectContaining({
+        level: "warning",
+        message:
+          "ERB/HTML.ERB:5:3: [runtime.html.nonstandard_crossed_closing_tag] PRINTHTML normalized non-standard crossed closing tag",
+      }),
+    ]);
+    expect(store.logNotifications).toEqual([]);
+  });
+
   it("does not notify for a standalone fatal fault", async () => {
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
@@ -623,6 +649,19 @@ describe("runtime store session lifecycle", () => {
     });
     expect(store.logs.at(-1)?.message).toBe("错误恢复失败：Error: recovery failed");
     expect(store.logNotifications).toEqual([]);
+  });
+
+  it("clears the returning-to-title status after fault recovery is accepted", async () => {
+    const store = useRuntimeStore();
+    store.fault = { code: "vm_fault", message: "original fault" };
+
+    await store.recoverFromFault("title");
+
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "return_to_title", value: {} }),
+      undefined,
+    );
+    expect(store.status).toBe("游戏运行中");
   });
 
   it("exposes applicable reraconfig entries and asks Runtime to validate changes", async () => {
