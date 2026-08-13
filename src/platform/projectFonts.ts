@@ -1,4 +1,11 @@
 import { blake3 } from "@noble/hashes/blake3.js";
+import {
+  checkedAdd,
+  checkedMultiply,
+  decodeUtf16Be,
+  requireRange,
+  requireSubrange,
+} from "@/platform/projectFonts/bounds";
 
 import type { ProjectFontLoadResult } from "@/core/types";
 
@@ -223,33 +230,6 @@ function fontFaceDescriptors(view: DataView, os2?: TableRange): FontFaceDescript
     stretch: stretches[width - 1] ?? "normal",
     style: selection & 1 ? "italic" : "normal",
   };
-}
-
-function decodeUtf16Be(view: DataView, offset: number, length: number): string {
-  let result = "";
-  for (let index = 0; index < length; index += 2)
-    result += String.fromCharCode(view.getUint16(offset + index));
-  return result.replaceAll("\0", "").trim();
-}
-
-function requireRange(view: DataView, offset: number, length: number, message: string): void {
-  if (offset < 0 || length < 0 || offset > view.byteLength - length) throw new Error(message);
-}
-
-function requireSubrange(table: TableRange, offset: number, length: number, message: string): void {
-  if (offset < table.start || length < 0 || offset > table.end - length) throw new Error(message);
-}
-
-function checkedAdd(left: number, right: number): number {
-  const result = left + right;
-  if (!Number.isSafeInteger(result)) throw new Error("字体偏移溢出");
-  return result;
-}
-
-function checkedMultiply(left: number, right: number): number {
-  const result = left * right;
-  if (!Number.isSafeInteger(result)) throw new Error("字体长度溢出");
-  return result;
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
