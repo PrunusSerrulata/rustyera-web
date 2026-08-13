@@ -2735,6 +2735,7 @@ describe("runtime store session lifecycle", () => {
       });
     const store = useRuntimeStore();
     store.projectOpen = true;
+    store.gameInformation = { title: "GameBase title" };
     await store.enableDebug();
     await vi.advanceTimersByTimeAsync(0);
     expect(store.canInteract).toBe(true);
@@ -2777,9 +2778,9 @@ describe("runtime store session lifecycle", () => {
     );
     expect(bridge.stageFullProjectManifest).toHaveBeenCalledOnce();
     expect(bridge.saveDiagnosis).toHaveBeenCalledWith(
-      "eraThe World-diagnosis_20260729-140506.tar.zst",
+      "GameBase title-diagnosis_20260729-140506.tar.zst",
       expect.objectContaining({
-        projectName: "eraThe World",
+        projectName: "GameBase title",
         inputReplay: Uint8Array.of(1, 2),
         snapshot: Uint8Array.of(3, 4),
         projectFile: Uint8Array.of(5, 6),

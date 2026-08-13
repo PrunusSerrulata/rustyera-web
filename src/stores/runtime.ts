@@ -10,7 +10,11 @@ import {
   parseProjectConfiguration,
   prepareConfigurationUpdate,
 } from "@/core/configuration";
-import { diagnosisArchiveName, diagnosisProjectName } from "@/core/diagnosis";
+import {
+  diagnosisArchiveName,
+  diagnosisProjectName,
+  diagnosisProjectTitle,
+} from "@/core/diagnosis";
 import {
   debugStopToken,
   debugVariableKey,
@@ -409,7 +413,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let exportState: ExportState | undefined;
   let resumeCacheAfterProjectExport = false;
   let diagnosisState: DiagnosisState | undefined;
-  let projectTitleCaptured = false;
   let logNotificationId = 0;
   let importBytes: Uint8Array | undefined;
   let importKind: Exclude<RuntimeStartKind, "new_game"> | undefined;
@@ -1052,12 +1055,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "presentation_snapshot":
         batchMediaDirty = projectPresentationSnapshot(value) || batchMediaDirty;
-        captureProjectTitle(currentPresentation());
         break;
       case "presentation_delta":
         try {
           batchMediaDirty = projectPresentationDelta(value) || batchMediaDirty;
-          captureProjectTitle(currentPresentation());
         } catch (error) {
           stagedPresentation = undefined;
           stagedPresentationReady = false;
@@ -1074,7 +1075,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
         applyInputUndo(value.input_undo ?? null);
         updateProjectConfiguration(value.configuration);
         await persistGeneratedConfiguration();
-        captureProjectTitle(currentPresentation());
         break;
       case "configuration_update_prepared": {
         const pending = pendingConfigurationUpdate;
@@ -2019,7 +2019,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
     pendingProjectionMessages.clear();
     exportState = compiledCacheExport;
     diagnosisState = undefined;
-    projectTitleCaptured = false;
     diagnosisExporting.value = false;
     diagnosisProgress.value = undefined;
     diagnosisResult.value = "";
@@ -2134,7 +2133,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function exportDiagnosis(): Promise<void> {
     if (!canExportDiagnosis.value) return;
-    const projectName = diagnosisProjectName(projectTitleCaptured ? presentation.title : "project");
+    const projectName = diagnosisProjectName(
+      diagnosisProjectTitle(
+        gameInformation.value?.title,
+        presentation.title === "RustyEra" ? undefined : presentation.title,
+        bridge.projectName(),
+      ),
+    );
     const exportedAt = testClock ?? new Date();
     diagnosisState = {
       name: diagnosisArchiveName(projectName, exportedAt),
@@ -2915,13 +2920,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
       }
     }
     finishDiagnosis(false, message);
-  }
-
-  function captureProjectTitle(source: PresentationState = presentation): void {
-    if (projectTitleCaptured || !projectOpen.value) return;
-    const title = source.title.trim();
-    if (!title || title === "RustyEra") return;
-    projectTitleCaptured = true;
   }
 
   function setDiagnosisProgress(stage: DiagnosisProgressStage, completed = 0, total = 0): void {

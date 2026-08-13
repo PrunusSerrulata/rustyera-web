@@ -4,9 +4,21 @@ import {
   createDiagnosisArchive,
   diagnosisArchiveChunks,
   diagnosisArchiveName,
+  diagnosisProjectTitle,
 } from "@/core/diagnosis";
 
 describe("diagnosis archive", () => {
+  it("selects project titles in the shared frontend fallback order", () => {
+    expect(diagnosisProjectTitle("GameBase title", "Presentation title", "folder-name")).toBe(
+      "GameBase title",
+    );
+    expect(diagnosisProjectTitle(" ", "Presentation title", "folder-name")).toBe(
+      "Presentation title",
+    );
+    expect(diagnosisProjectTitle(undefined, "", " packed-game ")).toBe("packed-game");
+    expect(diagnosisProjectTitle()).toBe("project");
+  });
+
   it("matches the TUI name and tar.zst member contract", () => {
     const exportedAt = new Date(2026, 6, 29, 14, 5, 6);
     expect(diagnosisArchiveName("eraThe World", exportedAt)).toBe(

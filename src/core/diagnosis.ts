@@ -39,6 +39,18 @@ export function diagnosisProjectName(projectName: string): string {
   return sanitized || "project";
 }
 
+export function diagnosisProjectTitle(
+  gameTitle?: string,
+  presentationTitle?: string,
+  projectPathName?: string,
+): string {
+  return (
+    [gameTitle, presentationTitle, projectPathName]
+      .map((candidate) => candidate?.trim())
+      .find((candidate): candidate is string => Boolean(candidate)) ?? "project"
+  );
+}
+
 export function createDiagnosisArchive(input: DiagnosisArchiveInput): Uint8Array {
   return concatenate([...diagnosisArchiveChunks(input)].map((chunk) => chunk.bytes));
 }
