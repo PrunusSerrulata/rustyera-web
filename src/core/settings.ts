@@ -1,5 +1,7 @@
 import type { ProjectConfigurationEntry } from "@/core/types";
 
+import { integer, range, warningField, yesNo } from "./settings/fields";
+
 export type SettingsTabId = "interaction" | "display" | "project" | "script" | "save";
 
 export interface SettingsField {
@@ -23,41 +25,6 @@ export interface SettingsTab {
   warning?: string;
   groups: SettingsGroup[];
 }
-
-const yesNo = (code: string, label: string, description: string): SettingsField => ({
-  code,
-  label,
-  description,
-  control: "boolean",
-});
-const integer = (
-  code: string,
-  label: string,
-  description: string,
-  min?: number,
-  max?: number,
-): SettingsField => ({
-  code,
-  label,
-  description,
-  control: "number",
-  min,
-  max,
-});
-const range = (
-  code: string,
-  label: string,
-  description: string,
-  min: number,
-  max: number,
-): SettingsField => ({
-  code,
-  label,
-  description,
-  control: "range",
-  min,
-  max,
-});
 
 export const projectSettingsTabs: SettingsTab[] = [
   {
@@ -304,21 +271,6 @@ export const projectSettingsTabs: SettingsTab[] = [
     ],
   },
 ];
-
-function warningField(code: string, label: string, description: string): SettingsField {
-  return {
-    code,
-    label,
-    description,
-    control: "enum",
-    options: [
-      { value: "IGNORE", label: "忽略" },
-      { value: "LATER", label: "延后显示" },
-      { value: "ONCE", label: "每文件一次" },
-      { value: "DISPLAY", label: "立即显示" },
-    ],
-  };
-}
 
 export function availableProjectTabs(entries: ProjectConfigurationEntry[]): SettingsTab[] {
   const codes = new Set(entries.map((entry) => entry.code));
