@@ -52,6 +52,7 @@ import { currentGameViewportMeasurement } from "@/platform/viewportMeasurement";
 import { RuntimePumpCoordinator } from "@/stores/runtimePump";
 import { RuntimePresentationProjection } from "@/stores/runtimePresentation";
 import { RuntimeConfigurationState } from "@/stores/runtimeConfiguration";
+import { RuntimeCompiledCacheExportState } from "@/stores/runtimeCompiledCache";
 import { normalizeProjectProgress, RuntimeProjectLoadState } from "@/stores/runtimeProjectLoad";
 import { RuntimeProjectReloadState } from "@/stores/runtimeProjectReload";
 import { RuntimeProjectFileExportState } from "@/stores/runtimeProjectFileExport";
@@ -219,8 +220,26 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const settingsBusy = runtimeSettings.busy;
   const settingsError = runtimeSettings.error;
   bridge.setProjectProgressListener(handleProjectProgress);
-  let compiledCacheTimer: number | undefined;
   let exportState: ExportState | undefined;
+  const compiledCacheExport = new RuntimeCompiledCacheExportState({
+    bridge,
+    exportState: () => exportState,
+    replaceExportState: (state) => (exportState = state),
+    request: requestCompiledCacheExport,
+    requestNextChunk: requestExportChunk,
+    finishTransfer: finishExportTransfer,
+    cancelRuntimeExport: async () => {
+      await send({ type: "state_export_cancel", value: { kind: "compiled_project_cache" } });
+    },
+    beginStatus: (message) => runtimeStatus.begin("compiled_cache", message),
+    finishStatus: (token, message) => runtimeStatus.finish("compiled_cache", token, message),
+    clearStatus: (token) => runtimeStatus.clear("compiled_cache", token),
+    projectLoading: () => projectLoading.value,
+    diagnosisExporting: () => diagnosisExporting.value,
+    resumeDiagnosisExport: () => startDiagnosisStateExport("diagnosis_replay"),
+    logWarning: (message, notificationPolicy = "all") =>
+      log("warning", message, false, notificationPolicy),
+  });
   let pendingStart: RuntimeTestConfiguration["start"] = { type: "new_game" };
   let runtimeManifestSparse = false;
   let batchMediaDirty = false;
@@ -575,7 +594,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         .synchronize([])
         .catch((error) => log("warning", `更换项目时停止音频失败：${String(error)}`));
       await runtimePump.waitUntilIdle();
-      await cancelCompiledCacheExport();
+      await compiledCacheExport.cancel();
       resetSessionState();
       const batch = await bridge.createSession(sessionOptions());
       runtimePump.setReady(true);
@@ -594,10 +613,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   function clearSessionTimers(): void {
     runtimePump.clearTimer();
-    if (compiledCacheTimer != null) {
-      window.clearTimeout(compiledCacheTimer);
-      compiledCacheTimer = undefined;
-    }
+    compiledCacheExport.clearTimer();
   }
 
   function schedulePump(delay = 16): void {
@@ -857,14 +873,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
           try {
             await requestCompiledCacheExport(activeExport);
           } catch (error) {
-            await failCompiledCacheExport(activeExport, error);
+            await compiledCacheExport.fail(activeExport, error);
           }
         } else if (
           value.code === "runtime.compiled_cache_failed" &&
           exportState?.kind === "compiled_cache" &&
           !exportState.descriptor
         ) {
-          await failCompiledCacheExport(
+          await compiledCacheExport.fail(
             exportState,
             value.message ?? "Runtime cache build failed",
             "none",
@@ -941,7 +957,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
             if (projectFileFailed) {
               await finishProjectFileExport("failed", message);
             } else if (compiledCacheFailed) {
-              await failCompiledCacheExport(exportState, message, "none");
+              await compiledCacheExport.fail(exportState, message, "none");
             } else {
               exportState = undefined;
             }
@@ -1156,7 +1172,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       clearSessionTimers();
       resetSessionState(true);
       await runtimePump.waitUntilIdle();
-      await cancelCompiledCacheExport();
+      await compiledCacheExport.cancel();
       await audio
         .synchronize([])
         .catch((error) => log("warning", `重新开始时停止音频失败：${String(error)}`));
@@ -1271,7 +1287,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimePump.setTransitioning(true);
     try {
       await runtimePump.waitUntilIdle();
-      await cancelCompiledCacheExport();
+      await compiledCacheExport.cancel();
       const submission = await bridge.reloadProject(scope);
       projectReload.begin(submission.messageId);
       continueProjectBuildProgress();
@@ -1439,36 +1455,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await traditionalSaves.confirmOverwrite();
   }
 
-  async function beginCompiledCacheExport(): Promise<void> {
-    if (exportState) return;
-    const activeExport: ExportState = {
-      name: "compiled-project.reracache",
-      kind: "compiled_cache",
-      chunks: [],
-      received: 0,
-    };
-    exportState = activeExport;
-    activeExport.statusToken = runtimeStatus.begin(
-      "compiled_cache",
-      "正在后台生成项目缓存，可继续游戏，但游戏运行和响应速度可能暂时受到影响…",
-    );
-    try {
-      await requestCompiledCacheExport(activeExport);
-    } catch (error) {
-      await failCompiledCacheExport(activeExport, error);
-    }
-  }
-
   function scheduleCompiledCacheExport(delayMs = 0): void {
-    if (compiledCacheTimer != null) return;
-    compiledCacheTimer = window.setTimeout(() => {
-      compiledCacheTimer = undefined;
-      void beginCompiledCacheExport();
-    }, delayMs);
+    compiledCacheExport.schedule(delayMs);
   }
 
   async function refreshCompiledCacheAfterConfigurationUpdate(): Promise<void> {
-    if (exportState?.kind === "compiled_cache") await cancelCompiledCacheExport();
+    if (exportState?.kind === "compiled_cache") await compiledCacheExport.cancel();
     // A cache hit leaves Runtime with an intentionally sparse project manifest. It cannot rebuild
     // bytecode after a configuration edit; the host has already invalidated that cache, so the
     // next project load will materialize source and produce a replacement safely.
@@ -1490,7 +1482,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (exportState?.kind === "compiled_cache") {
       projectFileExportState.resumeCacheWhenFinished();
       try {
-        await cancelCompiledCacheExport();
+        await compiledCacheExport.cancel();
       } catch (error) {
         await bridge.cancelProjectFileExport();
         throw error;
@@ -1621,7 +1613,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       if (failedKind === "project_file") {
         await finishProjectFileExport("failed", message);
       } else if (failedKind === "compiled_cache") {
-        await failCompiledCacheExport(activeExport, message);
+        await compiledCacheExport.fail(activeExport, message);
       } else {
         exportState = undefined;
       }
@@ -1650,7 +1642,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         return;
       }
       if (activeExport.kind === "compiled_cache") {
-        await failCompiledCacheExport(activeExport, error);
+        await compiledCacheExport.fail(activeExport, error);
         return;
       }
       throw error;
@@ -1701,7 +1693,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
     try {
       if (activeExport.kind === "compiled_cache") {
-        enqueueCompiledCacheWrite(activeExport, bytes, reset, chunk.complete);
+        compiledCacheExport.enqueueHostWrite(activeExport, bytes, reset, chunk.complete);
       } else if (activeExport.kind === "project_file") {
         await bridge.writeProjectFileChunk(bytes, reset, chunk.complete);
       } else if (activeExport.buffer) {
@@ -1715,7 +1707,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       } else if (activeExport.kind.startsWith("diagnosis_")) {
         await failDiagnosisExport(activeExport, `诊断信息导出失败：${String(error)}`);
       } else if (activeExport.kind === "compiled_cache") {
-        await failCompiledCacheExport(activeExport, error);
+        await compiledCacheExport.fail(activeExport, error);
       } else {
         exportState = undefined;
       }
@@ -1724,7 +1716,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       return;
     }
     if (activeExport.kind === "compiled_cache") {
-      continueCompiledCacheExport(activeExport, chunk.complete);
+      compiledCacheExport.continue(activeExport, chunk.complete);
     } else {
       try {
         if (!chunk.complete) await requestExportChunk();
@@ -1755,77 +1747,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
         }
         throw error;
       }
-    }
-  }
-
-  function enqueueCompiledCacheWrite(
-    activeExport: ExportState,
-    bytes: Uint8Array,
-    reset: boolean,
-    complete: boolean,
-  ): void {
-    activeExport.hostWrite = (activeExport.hostWrite ?? Promise.resolve()).then(async () => {
-      if (activeExport.hostWriteFailure) return;
-      try {
-        await bridge.writeCompiledCacheChunk(bytes, reset, complete);
-      } catch (error) {
-        activeExport.hostWriteFailure = { error };
-      }
-    });
-  }
-
-  function continueCompiledCacheExport(activeExport: ExportState, complete: boolean): void {
-    void (async () => {
-      await activeExport.hostWrite;
-      if (exportState !== activeExport) return;
-      if (activeExport.hostWriteFailure) throw activeExport.hostWriteFailure.error;
-      if (complete) await finishExportTransfer(activeExport);
-      else await requestExportChunk();
-    })().catch((error) => {
-      void failCompiledCacheExport(activeExport, error);
-    });
-  }
-
-  async function failCompiledCacheExport(
-    activeExport: ExportState,
-    error: unknown,
-    notificationPolicy: LogNotificationPolicy = "all",
-  ): Promise<void> {
-    if (exportState !== activeExport) return;
-    finishCompiledCacheExport(activeExport, "failed");
-    try {
-      await bridge.cancelCompiledCacheExport();
-    } catch (cancelError) {
-      log("warning", `清理项目缓存失败：${String(cancelError)}`);
-    }
-    log("warning", `项目缓存生成失败：${String(error)}`, false, notificationPolicy);
-    if (diagnosisExporting.value && !exportState)
-      await startDiagnosisStateExport("diagnosis_replay");
-  }
-
-  function finishCompiledCacheExport(
-    activeExport: ExportState,
-    outcome: "success" | "cancelled" | "failed",
-  ): void {
-    if (exportState !== activeExport || activeExport.kind !== "compiled_cache") return;
-    exportState = undefined;
-    if (outcome === "success" && !projectLoading.value)
-      runtimeStatus.finish("compiled_cache", activeExport.statusToken, "项目缓存已保存。");
-    else runtimeStatus.clear("compiled_cache", activeExport.statusToken);
-  }
-
-  async function cancelCompiledCacheExport(): Promise<void> {
-    const activeExport = exportState?.kind === "compiled_cache" ? exportState : undefined;
-    if (activeExport) {
-      finishCompiledCacheExport(activeExport, "cancelled");
-      await activeExport.hostWrite;
-    } else {
-      runtimeStatus.clear("compiled_cache");
-    }
-    try {
-      await send({ type: "state_export_cancel", value: { kind: "compiled_project_cache" } });
-    } finally {
-      await bridge.cancelCompiledCacheExport();
     }
   }
 
@@ -1881,7 +1802,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       } else if (completed.kind === "project_file") {
         await finishProjectFileExport("success", `已导出 ${completed.name}`);
       } else if (completed.kind === "compiled_cache") {
-        finishCompiledCacheExport(completed, "success");
+        compiledCacheExport.finish(completed, "success");
         if (diagnosisExporting.value) await startDiagnosisStateExport("diagnosis_replay");
       } else if (completed.kind === "diagnosis_replay") {
         if (!runtimeDiagnosis.active) throw new Error("诊断导出状态缺失");
@@ -1930,7 +1851,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         if (completed.kind === "project_file") {
           await finishProjectFileExport("failed");
         } else if (completed.kind === "compiled_cache") {
-          await failCompiledCacheExport(completed, error);
+          await compiledCacheExport.fail(completed, error);
           return;
         } else {
           exportState = undefined;
