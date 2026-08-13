@@ -364,6 +364,37 @@ describe("runtime store session lifecycle", () => {
     });
   });
 
+  it("projects only defined game information from a successful project report", async () => {
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", {
+          success: true,
+          diagnostics: [],
+          configuration: null,
+          game_information: {
+            title: "Demo",
+            author: "   ",
+            version: "1.001",
+            year: null,
+            information: "Notes",
+          },
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+
+    expect(store.gameInformation).toEqual({
+      title: "Demo",
+      author: undefined,
+      version: "1.001",
+      year: undefined,
+      information: "Notes",
+    });
+  });
+
   it("continues startup when the host suspends animation frames", async () => {
     vi.stubGlobal(
       "requestAnimationFrame",

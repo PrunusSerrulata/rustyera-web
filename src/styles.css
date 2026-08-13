@@ -296,6 +296,26 @@ select {
 .about-details dd {
   margin: 0;
 }
+.about-details a {
+  color: #7dd3fc;
+}
+.license-scope {
+  display: block;
+  margin-top: 0.2rem;
+  color: #aeb3bf;
+  font-size: 0.88rem;
+}
+.about-separator {
+  border: 0;
+  border-top: 1px solid #4b5563;
+  margin: 0 0 1rem;
+}
+.about-game-title {
+  margin: 0 0 0.5rem;
+}
+.game-details {
+  margin-top: 0;
+}
 
 .welcome {
   grid-row: 2 / 4;

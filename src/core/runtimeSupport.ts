@@ -1,4 +1,4 @@
-import type { DiagnosisProgress, ProjectProgress } from "@/core/types";
+import type { DiagnosisProgress, ProjectGameInformation, ProjectProgress } from "@/core/types";
 
 export interface DiagnosisLogEntry {
   timestamp: Date;
@@ -73,6 +73,23 @@ export function mapOf(...entries: [number, unknown][]): Map<number, unknown> {
 
 export function safeNumber(value: number | bigint | undefined): number | undefined {
   return value == null ? undefined : Number(value);
+}
+
+export function projectGameInformation(value: unknown): ProjectGameInformation | null {
+  if (value == null || typeof value !== "object") return null;
+  const source = value as Record<string, unknown>;
+  const text = (key: keyof ProjectGameInformation): string | undefined => {
+    const field = source[key];
+    return typeof field === "string" && field.trim() ? field : undefined;
+  };
+  const information = {
+    title: text("title"),
+    author: text("author"),
+    version: text("version"),
+    year: text("year"),
+    information: text("information"),
+  } satisfies ProjectGameInformation;
+  return Object.values(information).some((field) => field != null) ? information : null;
 }
 
 export function concatenateChunks(chunks: Uint8Array[], total: number): Uint8Array {

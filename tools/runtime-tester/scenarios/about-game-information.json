@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "project": "../../../../emuera.em/emuera-reference-cli/tests/fixture",
+  "mode": "fixed",
+  "seed": 123456,
+  "actions": [
+    { "type": "click", "locator": { "role": "button", "name": "帮助", "exact": true } },
+    { "type": "click", "locator": { "role": "button", "name": "关于…", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "dialog", "name": "关于 RustyEra", "exact": true },
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "Oracle CSV", "exact": true },
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "1.234", "exact": true },
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "游戏作者", "exact": true },
+      "expect": { "count": 0 }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "游戏开发时间", "exact": true },
+      "expect": { "count": 0 }
+    }
+  ],
+  "goal": { "output_contains": ["TITLE_CHARANUM=0"] },
+  "limits": { "max_steps": 10, "timeout_seconds": 60 }
+}

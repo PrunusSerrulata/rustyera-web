@@ -55,6 +55,14 @@ export interface ProjectOpenMetrics {
   projectFonts: ProjectFontLoadResult;
 }
 
+export interface ProjectGameInformation {
+  title?: string;
+  author?: string;
+  version?: string;
+  year?: string;
+  information?: string;
+}
+
 export type ProjectSubmittedListener = (submittedAtMs: number) => void;
 export type ProjectSelectionPreparation = () => Promise<void>;
 

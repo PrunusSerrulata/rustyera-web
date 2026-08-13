@@ -176,6 +176,10 @@ onMounted(() => void store.initialize());
     />
     <DebugDialogs />
     <FaultDialog />
-    <AboutDialog :open="aboutOpen" @close="aboutOpen = false" />
+    <AboutDialog
+      :open="aboutOpen"
+      :game-information="store.gameInformation"
+      @close="aboutOpen = false"
+    />
   </div>
 </template>

@@ -40,6 +40,7 @@ import {
   formatProjectProgress,
   isRecoverableStaleDebugLog,
   mapOf,
+  projectGameInformation,
   safeNumber,
   saveSlotFileName,
   snapshotFileName,
@@ -66,6 +67,7 @@ import {
   type Preferences,
   type ProjectConfigurationChange,
   type ProjectConfigurationSnapshot,
+  type ProjectGameInformation,
   type ProjectOpenMetrics,
   type ProjectFontLoadResult,
   type ProjectProgress,
@@ -342,6 +344,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       baseStatus.value,
   );
   const projectOpen = ref(false);
+  const gameInformation = ref<ProjectGameInformation | null>(null);
   const projectLoading = ref(false);
   const projectSelecting = ref(false);
   const projectProgress = ref<ProjectProgress>();
@@ -949,6 +952,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         baseStatus.value = "Runtime 已就绪";
         break;
       case "project_load_report": {
+        if (value.success) gameInformation.value = projectGameInformation(value.game_information);
         if (pendingProjectReload && String(correlationId) === pendingProjectReload.messageId) {
           await handleProjectReloadReport(value);
           break;
@@ -2029,6 +2033,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     importBytes = undefined;
     importKind = undefined;
     projectConfiguration.value = null;
+    gameInformation.value = null;
     configurationWritable.value = false;
     runtimeManifestSparse = false;
     if (pendingConfigurationUpdate) {
@@ -3942,6 +3947,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     projectResourceGeneration,
     status,
     projectOpen,
+    gameInformation,
     projectLoading,
     startupTelemetry,
     projectLoadProgressLabel,

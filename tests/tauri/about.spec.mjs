@@ -19,6 +19,15 @@ describe("Tauri help menu", () => {
     const coreRevision = readFileSync("rustyera-core.rev", "utf8").trim().slice(0, 8);
     assert.match(aboutText, new RegExp(`core 版本0\\.4\\.0 \\(${coreRevision}\\)`));
     assert.match(aboutText, /GPL-3\.0-only/);
+    assert.match(aboutText, /仅适用于 RustyEra 相关组件/);
+    assert.equal(
+      await dialog.$("a=rustyera-core").getAttribute("href"),
+      "https://github.com/PrunusSerrulata/rustyera-core",
+    );
+    assert.equal(
+      await dialog.$("a=rustyera-web").getAttribute("href"),
+      "https://github.com/PrunusSerrulata/rustyera-web",
+    );
     await dialog.$("button=确定").click();
 
     await $(".menu:nth-child(3) > button").click();
