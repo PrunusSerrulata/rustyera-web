@@ -1,3 +1,7 @@
+mod bytes;
+
+use bytes::{be_u16, be_u32, le_i32, le_u16, le_u32, uint24_le};
+
 pub struct ImageMetadata {
     pub width: u32,
     pub height: u32,
@@ -169,44 +173,6 @@ fn webp(data: &[u8]) -> Option<ImageMetadata> {
         offset = end.checked_add(length & 1)?;
     }
     None
-}
-
-fn be_u16(data: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_be_bytes(
-        data.get(offset..offset + 2)?.try_into().ok()?,
-    ))
-}
-
-fn be_u32(data: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_be_bytes(
-        data.get(offset..offset + 4)?.try_into().ok()?,
-    ))
-}
-
-fn le_u16(data: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(
-        data.get(offset..offset + 2)?.try_into().ok()?,
-    ))
-}
-
-fn le_u32(data: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(
-        data.get(offset..offset + 4)?.try_into().ok()?,
-    ))
-}
-
-fn le_i32(data: &[u8], offset: usize) -> Option<i32> {
-    Some(i32::from_le_bytes(
-        data.get(offset..offset + 4)?.try_into().ok()?,
-    ))
-}
-
-fn uint24_le(data: &[u8], offset: usize) -> Option<u32> {
-    Some(
-        u32::from(*data.get(offset)?)
-            | (u32::from(*data.get(offset + 1)?) << 8)
-            | (u32::from(*data.get(offset + 2)?) << 16),
-    )
 }
 
 #[cfg(test)]
