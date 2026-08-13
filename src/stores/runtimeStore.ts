@@ -54,6 +54,7 @@ import { RuntimePresentationProjection } from "@/stores/runtimePresentation";
 import { RuntimeConfigurationState } from "@/stores/runtimeConfiguration";
 import { normalizeProjectProgress, RuntimeProjectLoadState } from "@/stores/runtimeProjectLoad";
 import { RuntimeProjectReloadState } from "@/stores/runtimeProjectReload";
+import { RuntimeProjectFileExportState } from "@/stores/runtimeProjectFileExport";
 import { classifyRuntimeRejection } from "@/stores/runtimeRejections";
 import { RuntimeLogState } from "@/stores/runtimeLogs";
 import { RuntimeInputState } from "@/stores/runtimeInput";
@@ -132,8 +133,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const projectLoading = projectLoad.loading;
   const projectSelecting = ref(false);
   const projectProgress = projectLoad.progress;
-  const projectFileExporting = ref(false);
-  const projectFileExportProgress = ref<ProjectProgress>();
+  const projectFileExportState = new RuntimeProjectFileExportState();
+  const projectFileExporting = projectFileExportState.exporting;
+  const projectFileExportProgress = projectFileExportState.progress;
   const projectLoadElapsedSeconds = projectLoad.elapsedSeconds;
   const startupTelemetryState = new RuntimeStartupTelemetryState();
   const startupTelemetry = startupTelemetryState.current;
@@ -219,7 +221,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   bridge.setProjectProgressListener(handleProjectProgress);
   let compiledCacheTimer: number | undefined;
   let exportState: ExportState | undefined;
-  let resumeCacheAfterProjectExport = false;
   let pendingStart: RuntimeTestConfiguration["start"] = { type: "new_game" };
   let runtimeManifestSparse = false;
   let batchMediaDirty = false;
@@ -1487,7 +1488,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       return;
     }
     if (exportState?.kind === "compiled_cache") {
-      resumeCacheAfterProjectExport = true;
+      projectFileExportState.resumeCacheWhenFinished();
       try {
         await cancelCompiledCacheExport();
       } catch (error) {
@@ -1495,8 +1496,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         throw error;
       }
     }
-    projectFileExporting.value = true;
-    projectFileExportProgress.value = { stage: "scanning", completed: 0, total: 0 };
+    projectFileExportState.begin();
     const activeExport: FullProjectExportState = {
       name,
       kind: "project_file",
@@ -1563,12 +1563,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   function scheduleFullProjectExportRetry(activeExport: FullProjectExportState): void {
     activeExport.requestMessageId = undefined;
-    window.setTimeout(() => {
+    projectFileExportState.scheduleRetry(() => {
       if (exportState !== activeExport || exportState.descriptor) return;
       void requestFullProjectExport(activeExport).catch((error) => {
         void failFullProjectExportRequest(activeExport, error);
       });
-    }, 50);
+    });
   }
 
   async function failFullProjectExportRequest(
@@ -1633,7 +1633,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       runtimeDiagnosis.setProgress(diagnosisProgressStage(activeExport.kind), 0, totalBytes);
     }
     if (activeExport.kind === "project_file") {
-      projectFileExportProgress.value = { stage: "packaging", completed: 0, total: totalBytes };
+      projectFileExportState.beginPackaging(totalBytes);
     }
     if (
       activeExport.kind !== "compiled_cache" &&
@@ -1694,11 +1694,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
       );
     }
     if (activeExport.kind === "project_file") {
-      projectFileExportProgress.value = {
-        stage: "packaging",
-        completed: activeExport.received,
-        total: Number(activeExport.descriptor.total_bytes),
-      };
+      projectFileExportState.updatePackaging(
+        activeExport.received,
+        Number(activeExport.descriptor.total_bytes),
+      );
     }
     try {
       if (activeExport.kind === "compiled_cache") {
@@ -1841,8 +1840,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     cancelRuntime = outcome !== "success",
   ): Promise<void> {
     exportState = undefined;
-    projectFileExporting.value = false;
-    projectFileExportProgress.value = undefined;
+    const resumeCache = projectFileExportState.finish();
     if (outcome !== "success") {
       try {
         if (cancelRuntime)
@@ -1858,8 +1856,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       }
     }
     if (message) baseStatus.value = message;
-    if (resumeCacheAfterProjectExport) scheduleCompiledCacheExport();
-    resumeCacheAfterProjectExport = false;
+    if (resumeCache) scheduleCompiledCacheExport();
     if (diagnosisExporting.value && !exportState)
       await startDiagnosisStateExport("diagnosis_replay");
   }
@@ -2455,7 +2452,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       return;
     }
     if (projectFileExporting.value) {
-      projectFileExportProgress.value = progress;
+      projectFileExportState.setProgress(progress);
       baseStatus.value = formatProjectProgress(progress);
       return;
     }
