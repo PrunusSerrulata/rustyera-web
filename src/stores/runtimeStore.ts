@@ -1,6 +1,6 @@
 import { blake3 } from "@noble/hashes/blake3.js";
 import { defineStore } from "pinia";
-import { computed, nextTick, ref, shallowReactive } from "vue";
+import { computed, nextTick, ref } from "vue";
 
 import { AudioEngine } from "@/core/audio";
 import {
@@ -26,7 +26,7 @@ import {
   sourceLineStepCommand,
 } from "@/core/debug";
 import { preferredRuntimeLocales, resolveGameTextStyle } from "@/core/gameText";
-import { suppressedMirroredLogNotificationIndexes, type LogNotificationState } from "@/core/log";
+import { suppressedMirroredLogNotificationIndexes } from "@/core/log";
 import {
   isMessageContinuationWait,
   isMessageSkipWait,
@@ -71,6 +71,7 @@ import {
 } from "@/platform/viewportMeasurement";
 import { RuntimePumpCoordinator } from "@/stores/runtimePump";
 import { RuntimePresentationProjection } from "@/stores/runtimePresentation";
+import { RuntimeLogState } from "@/stores/runtimeLogs";
 import { handleRuntimeService } from "@/stores/runtimeServices";
 import { RuntimeStatusState } from "@/stores/runtimeStatus";
 import { RuntimeStartupTelemetryState } from "@/stores/runtimeStartupTelemetry";
@@ -166,7 +167,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const fault = ref<any>(null);
   const faultMessage = computed(() => formatRuntimeFault(fault.value));
   const faultActionBusy = ref(false);
-  const logs = shallowReactive<LogEntry[]>([]);
+  const runtimeLogs = new RuntimeLogState(MAXIMUM_LOG_ENTRIES);
+  const logs = runtimeLogs.entries;
   const preferencesOpen = ref(false);
   const settingsBusy = ref(false);
   const settingsError = ref("");
@@ -189,7 +191,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const diagnosisExporting = ref(false);
   const diagnosisProgress = ref<DiagnosisProgress>();
   const diagnosisResult = ref("");
-  const logNotifications = shallowReactive<LogNotificationState[]>([]);
+  const logNotifications = runtimeLogs.notifications;
   const traditionalSaveDialogMode = ref<"export" | "import" | null>(null);
   const traditionalSaveSlots = ref<TraditionalSaveSlot[]>([]);
   const traditionalSaveImportName = ref("");
@@ -209,7 +211,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let exportState: ExportState | undefined;
   let resumeCacheAfterProjectExport = false;
   let diagnosisState: DiagnosisState | undefined;
-  let logNotificationId = 0;
   let importBytes: Uint8Array | undefined;
   let importKind: Exclude<RuntimeStartKind, "new_game"> | undefined;
   let traditionalSaveImportBytes: Uint8Array | undefined;
@@ -3171,40 +3172,18 @@ export const useRuntimeStore = defineStore("runtime", () => {
     authoritative = false,
     notificationPolicy: LogNotificationPolicy = "all",
   ): void {
-    appendLogEntries(
-      [{ timestamp: new Date(), level, message, authoritative }],
-      notificationPolicy,
-    );
+    runtimeLogs.record(level, message, authoritative, notificationPolicy);
   }
 
   function appendLogEntries(
     entries: LogEntry[],
     notificationPolicy: LogNotificationPolicy = "all",
   ): void {
-    const retained =
-      entries.length > MAXIMUM_LOG_ENTRIES
-        ? entries.slice(entries.length - MAXIMUM_LOG_ENTRIES)
-        : entries;
-    const overflow = Math.max(0, logs.length + retained.length - MAXIMUM_LOG_ENTRIES);
-    if (overflow > 0) logs.splice(0, overflow);
-    if (retained.length > 0) logs.push(...retained);
-    if (notificationPolicy === "none") return;
-    for (const entry of retained) {
-      if (entry.level !== "error" && !(entry.level === "warning" && notificationPolicy === "all"))
-        continue;
-      logNotifications.push({
-        id: ++logNotificationId,
-        level: entry.level,
-        message: entry.message,
-      });
-    }
-    const notificationOverflow = Math.max(0, logNotifications.length - MAXIMUM_LOG_ENTRIES);
-    if (notificationOverflow > 0) logNotifications.splice(0, notificationOverflow);
+    runtimeLogs.append(entries, notificationPolicy);
   }
 
   function dismissLogNotification(id: number): void {
-    const index = logNotifications.findIndex((notification) => notification.id === id);
-    if (index >= 0) logNotifications.splice(index, 1);
+    runtimeLogs.dismiss(id);
   }
 
   function beginProjectLoad(message: string): void {
