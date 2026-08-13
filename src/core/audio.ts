@@ -1,31 +1,18 @@
 import type { FrontendBridge, Preferences } from "@/core/types";
-
-interface ActiveChannel {
-  source: AudioBufferSourceNode;
-  gain: GainNode;
-  channelId: number;
-  resourceId: string;
-  repeatCount: number;
-  recoverable: boolean;
-}
-
-interface PendingChannel {
-  state: any;
-  token: symbol;
-  channelId: number;
-  recoverable: boolean;
-}
+import {
+  SOUND_CHANNEL_ID,
+  SOUND_VOICE_COUNT,
+  type ActiveAudioChannel,
+  type PendingAudioChannel,
+} from "@/core/audio/model";
 
 export type AudioPlaybackEvent = "started" | "ended";
-
-const SOUND_CHANNEL_ID = 0;
-const SOUND_VOICE_COUNT = 10;
 
 export class AudioEngine {
   private context?: AudioContext;
   private master?: GainNode;
-  private readonly channels = new Map<number, ActiveChannel>();
-  private readonly pending = new Map<number, PendingChannel>();
+  private readonly channels = new Map<number, ActiveAudioChannel>();
+  private readonly pending = new Map<number, PendingAudioChannel>();
   private readonly buffers = new Map<string, Promise<AudioBuffer>>();
   private readonly groupVolumes = new Map<number, number>();
   private gameVolume = 1;
@@ -210,7 +197,7 @@ export class AudioEngine {
   private releaseActive(
     playbackId: number,
     source: AudioBufferSourceNode,
-  ): ActiveChannel | undefined {
+  ): ActiveAudioChannel | undefined {
     const active = this.channels.get(playbackId);
     if (active?.source !== source) return undefined;
     this.channels.delete(playbackId);
