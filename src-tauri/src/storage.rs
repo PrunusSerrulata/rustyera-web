@@ -2,13 +2,18 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use era_protocol::ProtocolBytes;
 use era_runtime_protocol::{
-    FrontendIoError, FrontendIoErrorKind, StorageEntry, StorageMetadata, StorageNamespace,
-    StorageOperation, StoragePrecondition, StorageRequest, StorageResponse, StorageResult,
-    validate_relative_path,
+    StorageEntry, StorageMetadata, StorageNamespace, StorageOperation, StorageRequest,
+    StorageResponse, StorageResult,
+};
+
+mod path;
+
+use path::{
+    change_token, conflict, ensure_inside, frontend_error, invalid_path, resolve, revision,
+    validate_read_path, verify_precondition,
 };
 
 pub struct StorageHost {
@@ -218,106 +223,10 @@ impl StorageHost {
     }
 }
 
-fn validate_read_path(root: &Path, path: PathBuf) -> Result<(PathBuf, PathBuf), std::io::Error> {
-    if !path.try_exists()? {
-        return Ok((root.to_owned(), path));
-    }
-    let root = root.canonicalize()?;
-    let path = path.canonicalize()?;
-    if path != root && !path.starts_with(&root) {
-        return Err(invalid_path());
-    }
-    Ok((root, path))
-}
-
-fn resolve(root: &Path, relative_path: &str) -> Result<PathBuf, std::io::Error> {
-    if relative_path.is_empty() {
-        return Ok(root.to_owned());
-    }
-    let relative = validate_relative_path(relative_path)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
-    Ok(root.join(relative))
-}
-
-fn ensure_inside(root: &Path, parent: &Path) -> Result<(), std::io::Error> {
-    let project = root.canonicalize().or_else(|_| {
-        fs::create_dir_all(root)?;
-        root.canonicalize()
-    })?;
-    let parent = parent.canonicalize()?;
-    if parent == project || parent.starts_with(project) {
-        Ok(())
-    } else {
-        Err(invalid_path())
-    }
-}
-
-fn verify_precondition(
-    path: &Path,
-    precondition: &StoragePrecondition,
-) -> Result<(), std::io::Error> {
-    let current = match fs::read(path) {
-        Ok(bytes) => Some(revision(&bytes)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
-    };
-    let matches = match precondition {
-        StoragePrecondition::Any => true,
-        StoragePrecondition::Missing => current.is_none(),
-        StoragePrecondition::Revision(expected) => current.as_ref() == Some(expected),
-    };
-    if matches {
-        Ok(())
-    } else {
-        Err(conflict("storage precondition did not hold"))
-    }
-}
-
-fn revision(data: &[u8]) -> String {
-    blake3::hash(data).to_hex().to_string()
-}
-
-fn change_token(metadata: &fs::Metadata) -> String {
-    let modified = metadata
-        .modified()
-        .ok()
-        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |value| value.as_nanos());
-    format!("{}:{modified}", metadata.len())
-}
-
-fn conflict(message: &str) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::AlreadyExists, message)
-}
-
-fn invalid_path() -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::InvalidInput,
-        "storage path escapes its namespace",
-    )
-}
-
-fn frontend_error(error: &std::io::Error) -> FrontendIoError {
-    let kind = match error.kind() {
-        std::io::ErrorKind::NotFound => FrontendIoErrorKind::NotFound,
-        std::io::ErrorKind::PermissionDenied => FrontendIoErrorKind::PermissionDenied,
-        std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput => {
-            FrontendIoErrorKind::InvalidData
-        }
-        std::io::ErrorKind::Interrupted => FrontendIoErrorKind::Interrupted,
-        std::io::ErrorKind::AlreadyExists => FrontendIoErrorKind::Conflict,
-        _ => FrontendIoErrorKind::Other,
-    };
-    FrontendIoError {
-        kind,
-        message: error.to_string(),
-        platform_code: error.raw_os_error().map(i64::from),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use era_runtime_protocol::{FrontendIoErrorKind, StoragePrecondition};
 
     #[test]
     fn traversal_is_rejected() {
