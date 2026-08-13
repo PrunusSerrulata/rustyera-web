@@ -64,6 +64,7 @@ import { RuntimeProjectReloadState } from "@/stores/runtimeProjectReload";
 import { classifyRuntimeRejection } from "@/stores/runtimeRejections";
 import { RuntimeLogState } from "@/stores/runtimeLogs";
 import { RuntimeInputState } from "@/stores/runtimeInput";
+import { RuntimeImportState } from "@/stores/runtimeImport";
 import { RuntimeDebugRequestState } from "@/stores/runtimeDebugRequests";
 import { handleRuntimeService } from "@/stores/runtimeServices";
 import { RuntimeSettingsState } from "@/stores/runtimeSettings";
@@ -224,8 +225,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let exportState: ExportState | undefined;
   let resumeCacheAfterProjectExport = false;
   let diagnosisState: DiagnosisState | undefined;
-  let importBytes: Uint8Array | undefined;
-  let importKind: Exclude<RuntimeStartKind, "new_game"> | undefined;
   let pendingStart: RuntimeTestConfiguration["start"] = { type: "new_game" };
   let runtimeManifestSparse = false;
   let batchMediaDirty = false;
@@ -240,6 +239,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const pendingGameInput = runtimeInput.pending;
   const pendingInputUndo = runtimeInput.pendingUndo;
   const pendingProjectionMessages = runtimeViewport.pendingMessages;
+  const runtimeImport = new RuntimeImportState(bridge, send);
   const runtimePump = new RuntimePumpCoordinator(bridge, {
     handleBatch,
     advanceTimedWait,
@@ -830,16 +830,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
         await handleExportChunk(value, dataBytes);
         break;
       case "state_import_accepted":
-        await handleImportAccepted(value);
+        await runtimeImport.accept(value);
         break;
       case "state_import_ready":
-        if (!importKind) throw new Error("状态导入完成但没有待启动的状态类型");
-        await send({
-          type: "start",
-          value: { mode: { type: importKind, transfer_id: value.transfer_id } },
-        });
-        importBytes = undefined;
-        importKind = undefined;
+        await runtimeImport.ready(value);
         break;
       case "fault": {
         gameProgressLossConfirmation.value = null;
@@ -1267,8 +1261,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     diagnosisProgress.value = undefined;
     diagnosisResult.value = "";
     traditionalSaves.reset();
-    importBytes = undefined;
-    importKind = undefined;
+    runtimeImport.reset();
     runtimeConfiguration.reset();
     gameInformation.value = null;
     runtimeManifestSparse = false;
@@ -1424,8 +1417,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
             descriptor: exportState.descriptor,
           }
         : null,
-      importKind,
-      importBytes: importBytes?.length ?? 0,
+      ...runtimeImport.testState(),
     };
   }
 
@@ -2048,41 +2040,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function restoreSnapshot(): Promise<void> {
     if (diagnosisExporting.value) return;
-    const bytes = await bridge.openUpload();
-    if (!bytes) return;
-    await restoreState("vm_snapshot", bytes);
+    await runtimeImport.pickSnapshot();
   }
 
   async function restoreState(
     kind: Exclude<RuntimeStartKind, "new_game">,
     bytes: Uint8Array,
   ): Promise<void> {
-    importBytes = bytes;
-    importKind = kind;
-    await send({
-      type: "state_import_begin",
-      value: {
-        kind,
-        total_bytes: bytes.length,
-        digest: blake3(bytes),
-        artifact_id: null,
-      },
-    });
-  }
-
-  async function handleImportAccepted(value: any): Promise<void> {
-    if (!importBytes) return;
-    for (let offset = 0; offset < importBytes.length; offset += 1024 * 1024) {
-      await send({
-        type: "state_import_chunk",
-        value: {
-          transfer_id: value.transfer_id,
-          offset,
-          data: importBytes.slice(offset, offset + 1024 * 1024),
-        },
-      });
-    }
-    await send({ type: "state_import_commit", value: { transfer_id: value.transfer_id } });
+    await runtimeImport.begin(kind, bytes);
   }
 
   async function enableDebug(): Promise<void> {
