@@ -16,6 +16,12 @@ import type {
 } from "@/core/types";
 import type { PendingConfigurationUpdate } from "@/stores/runtimeState";
 
+import {
+  configurationBoolean,
+  configurationValue,
+  sameMessageId,
+} from "./runtimeConfiguration/values";
+
 interface RuntimeConfigurationContext {
   bridge: FrontendBridge;
   send(message: RuntimeMessage): Promise<number | bigint>;
@@ -101,13 +107,11 @@ export class RuntimeConfigurationState {
   }
 
   value(code: string): string | undefined {
-    return this.snapshot.value?.entries.find((entry) => entry.code === code)?.effective_value;
+    return configurationValue(this.snapshot.value, code);
   }
 
   boolean(code: string, fallback: boolean): boolean {
-    const value = this.value(code)?.toUpperCase();
-    if (value == null) return fallback;
-    return value === "YES" || value === "TRUE" || value === "1";
+    return configurationBoolean(this.snapshot.value, code, fallback);
   }
 
   async save(
@@ -165,10 +169,7 @@ export class RuntimeConfigurationState {
 
   async handlePrepared(value: any, correlationId?: number | bigint): Promise<void> {
     const pending = this.pending;
-    if (
-      pending?.stage !== "preparing" ||
-      String(pending.prepareMessageId) !== String(correlationId)
-    ) {
+    if (pending?.stage !== "preparing" || !sameMessageId(pending.prepareMessageId, correlationId)) {
       this.context.log("warning", "忽略了过期的项目配置保存响应");
       return;
     }
@@ -202,7 +203,7 @@ export class RuntimeConfigurationState {
     const pending = this.pending;
     if (
       pending?.stage !== "finalizing" ||
-      String(pending.finalizeMessageId) !== String(correlationId)
+      !sameMessageId(pending.finalizeMessageId, correlationId)
     ) {
       this.context.log("warning", "忽略了过期的项目配置提交响应");
       return;
@@ -236,7 +237,7 @@ export class RuntimeConfigurationState {
     if (!pending || correlationId == null) return;
     const messageId =
       pending.stage === "preparing" ? pending.prepareMessageId : pending.finalizeMessageId;
-    if (String(messageId) !== String(correlationId)) return;
+    if (!sameMessageId(messageId, correlationId)) return;
     this.pending = undefined;
     pending.reject(new Error(`项目配置未保存：${message}`));
   }
