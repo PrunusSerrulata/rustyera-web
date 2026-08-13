@@ -64,6 +64,7 @@ import { RuntimePresentationProjection } from "@/stores/runtimePresentation";
 import { RuntimeConfigurationState } from "@/stores/runtimeConfiguration";
 import { normalizeProjectProgress, RuntimeProjectLoadState } from "@/stores/runtimeProjectLoad";
 import { RuntimeProjectReloadState } from "@/stores/runtimeProjectReload";
+import { classifyRuntimeRejection } from "@/stores/runtimeRejections";
 import { RuntimeLogState } from "@/stores/runtimeLogs";
 import { handleRuntimeService } from "@/stores/runtimeServices";
 import { RuntimeStatusState } from "@/stores/runtimeStatus";
@@ -79,7 +80,6 @@ import {
   runtimeExportKind,
   diagnosisProgressStage,
   isFullProjectExport,
-  isFullProjectPreparationRejection,
   DEBUG_VARIABLE_PAGE_LIMIT,
   DEBUG_VARIABLE_MAX_PAGES,
   TIME_ADVANCE_INTERVAL_NS,
@@ -908,47 +908,22 @@ export const useRuntimeStore = defineStore("runtime", () => {
           baseStatus.value = `重新加载项目失败：${message}`;
           log("error", baseStatus.value, true);
         }
-        const exportRejection = String(value.message ?? "");
-        const activeExport = exportState;
-        const compiledCachePreparing =
-          activeExport?.kind === "compiled_cache" &&
-          activeExport.requestMessageId === correlation &&
-          (exportRejection.includes("compiled project cache preparation started") ||
-            exportRejection.includes("compiled project cache is still being prepared"));
-        const fullProjectPreparing =
-          isFullProjectExport(activeExport) &&
-          activeExport.requestMessageId === correlation &&
-          isFullProjectPreparationRejection(exportRejection);
-        let earlyFullProjectPreparation = false;
-        if (
-          isFullProjectExport(activeExport) &&
-          activeExport.requestSubmission &&
-          isFullProjectPreparationRejection(exportRejection)
-        ) {
-          earlyFullProjectPreparation = true;
-          activeExport.requestSubmission.earlyPreparationRejections.push({ correlation, value });
-        }
-        const staleProjection =
-          pendingProjectionMessages.delete(correlation) &&
-          [
-            "projection environment revision is not newer",
-            "projection observation does not match the canonical presentation",
-          ].includes(String(value.message ?? ""));
-        const rejectedInput =
-          pendingGameInput.value?.messageId === correlation ? pendingGameInput.value : undefined;
-        const staleInput =
-          rejectedInput != null &&
-          ["input wait identity is stale", "no input is pending"].includes(
-            String(value.message ?? ""),
-          );
-        const willRetryInput =
-          staleInput && rejectedInput != null && rejectedInput.staleRetries === 0;
-        if (willRetryInput) {
-          rejectedInput.messageId = undefined;
-          rejectedInput.retryPending = true;
-          rejectedInput.waitClosed = false;
-          rejectedInput.retryError = String(value.message ?? "Runtime 拒绝了输入");
-        } else if (rejectedInput) {
+        const {
+          activeExport,
+          compiledCachePreparing,
+          fullProjectPreparing,
+          earlyFullProjectPreparation,
+          staleProjection,
+          rejectedInput,
+          willRetryInput,
+        } = classifyRuntimeRejection(
+          value,
+          correlation,
+          exportState,
+          pendingProjectionMessages,
+          pendingGameInput.value,
+        );
+        if (rejectedInput && !willRetryInput) {
           restoreButtons(currentPresentation(), rejectedInput.retiredButtonTokens);
           pendingGameInput.value = undefined;
         }
@@ -963,7 +938,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         )
           log("warning", formatDiagnostic(value), true);
         runtimeConfiguration.reject(correlationId, value.message ?? "Runtime 拒绝了命令");
-        if (fullProjectPreparing) {
+        if (fullProjectPreparing && isFullProjectExport(activeExport)) {
           scheduleFullProjectExportRetry(activeExport);
         }
         if (
