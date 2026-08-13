@@ -4,13 +4,6 @@ import { computed, nextTick, ref } from "vue";
 
 import { AudioEngine } from "@/core/audio";
 import {
-  clientConfigurationEntries,
-  equalConfigurationIdentity,
-  parsePreparedConfiguration,
-  parseProjectConfiguration,
-  prepareConfigurationUpdate,
-} from "@/core/configuration";
-import {
   diagnosisArchiveName,
   diagnosisProjectName,
   diagnosisProjectTitle,
@@ -53,7 +46,6 @@ import {
   type DiagnosisProgressStage,
   type Preferences,
   type ProjectConfigurationChange,
-  type ProjectConfigurationSnapshot,
   type ProjectGameInformation,
   type ProjectFontLoadResult,
   type ProjectProgress,
@@ -69,6 +61,7 @@ import {
 } from "@/platform/viewportMeasurement";
 import { RuntimePumpCoordinator } from "@/stores/runtimePump";
 import { RuntimePresentationProjection } from "@/stores/runtimePresentation";
+import { RuntimeConfigurationState } from "@/stores/runtimeConfiguration";
 import { normalizeProjectProgress, RuntimeProjectLoadState } from "@/stores/runtimeProjectLoad";
 import { RuntimeLogState } from "@/stores/runtimeLogs";
 import { handleRuntimeService } from "@/stores/runtimeServices";
@@ -106,7 +99,6 @@ import type {
   DiagnosisState,
   PendingGameInput,
   PendingInputUndo,
-  PendingConfigurationUpdate,
   RuntimeStartKind,
   RuntimeTestConfiguration,
 } from "@/stores/runtimeState";
@@ -117,10 +109,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const presentation = presentationProjection.presentation;
   const presentationStaged = presentationProjection.staged;
   const preferences = ref<Preferences>(defaultPreferences());
-  const projectConfiguration = ref<ProjectConfigurationSnapshot | null>(null);
-  let pendingConfigurationUpdate: PendingConfigurationUpdate | undefined;
-  const configurationProfileValid = ref(true);
-  const configurationMigrationFailed = ref(false);
   const viewportMeasurement = ref<GameViewportMeasurement>();
   const previewPreferences = ref<Preferences | null>(null);
   const {
@@ -163,7 +151,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const projectReloadDialogError = ref("");
   let pendingProjectSelection: "directory" | "file" = "directory";
   const projectSource = ref<"directory" | "file">("directory");
-  const configurationWritable = ref(false);
   const prompt = ref("");
   const inputUndo = ref<any>(null);
   const fault = ref<any>(null);
@@ -213,6 +200,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
     (error) => log("warning", `音频播放失败：${String(error)}`),
     import.meta.env.VITE_RUSTYERA_TEST === "1" ? recordTestAudioPlayback : undefined,
   );
+  const runtimeConfiguration = new RuntimeConfigurationState({
+    bridge,
+    send,
+    setVolume: (volume) => audio.setGameVolume(volume),
+    log,
+    updateSettingsStatus: (token, message) => runtimeStatus.update("settings", token, message),
+    viewportChrome: () => viewportChrome(viewportMeasurement.value),
+    refreshCompiledCache: refreshCompiledCacheAfterConfigurationUpdate,
+  });
+  const projectConfiguration = runtimeConfiguration.snapshot;
   bridge.setProjectProgressListener(handleProjectProgress);
   let compiledCacheTimer: number | undefined;
   let exportState: ExportState | undefined;
@@ -267,39 +264,24 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   const effectivePreferences = computed(() => previewPreferences.value ?? preferences.value);
-  const configurationEntries = computed(() =>
-    clientConfigurationEntries(projectConfiguration.value, bridge.kind),
-  );
-  const configurationReadOnly = computed(
-    () =>
-      projectConfiguration.value != null &&
-      (!configurationWritable.value ||
-        !configurationProfileValid.value ||
-        configurationMigrationFailed.value),
-  );
-  const configurationSessionOnly = computed(
-    () =>
-      projectConfiguration.value != null &&
-      !configurationWritable.value &&
-      configurationProfileValid.value,
-  );
-  const configurationRestartPending = computed(
-    () => projectConfiguration.value?.restart_pending ?? false,
-  );
-  const useMenu = computed(() => configurationBoolean("UseMenu", true));
-  const useMouse = computed(() => configurationBoolean("UseMouse", true));
+  const configurationEntries = runtimeConfiguration.entries;
+  const configurationReadOnly = runtimeConfiguration.readOnly;
+  const configurationSessionOnly = runtimeConfiguration.sessionOnly;
+  const configurationRestartPending = runtimeConfiguration.restartPending;
+  const useMenu = computed(() => runtimeConfiguration.boolean("UseMenu", true));
+  const useMouse = computed(() => runtimeConfiguration.boolean("UseMouse", true));
   const replaceFullWidthSpaces = computed(() =>
-    configurationBoolean("ReplaceFullWidthSpaces", false),
+    runtimeConfiguration.boolean("ReplaceFullWidthSpaces", false),
   );
   const scrollHeight = computed(() => {
-    const value = Number(configurationValue("ScrollHeight") ?? 1);
+    const value = Number(runtimeConfiguration.value("ScrollHeight") ?? 1);
     return Number.isSafeInteger(value) ? Math.max(1, value) : 1;
   });
   const gameTextStyle = computed(() =>
     resolveGameTextStyle(
       effectivePreferences.value,
       presentation.lines,
-      configurationValue("FontName"),
+      runtimeConfiguration.value("FontName"),
     ),
   );
   const gameLineHeightPx = computed(() => {
@@ -567,8 +549,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
         baseStatus.value = "已取消打开项目";
         return;
       }
-      configurationWritable.value = bridge.projectConfigurationWritable();
-      await persistGeneratedConfiguration();
+      runtimeConfiguration.refreshWritable();
+      await runtimeConfiguration.persistGenerated();
       refreshProjectFontFamilies(metrics.projectFonts);
       projectOpen.value = true;
       projectSource.value = selection;
@@ -696,8 +678,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const value = message.value;
     switch (message.type) {
       case "server_hello":
-        configurationProfileValid.value = value.configuration_profile === bridge.kind;
-        if (!configurationProfileValid.value)
+        if (!runtimeConfiguration.acceptProfile(value.configuration_profile))
           log("error", "Runtime 返回的设置宿主类别与当前客户端不一致，项目设置已停用");
         baseStatus.value = "Runtime 已就绪";
         break;
@@ -727,9 +708,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
           })),
           "errors_only",
         );
-        configurationWritable.value = bridge.projectConfigurationWritable();
-        updateProjectConfiguration(value.configuration);
-        await persistGeneratedConfiguration();
+        runtimeConfiguration.refreshWritable();
+        runtimeConfiguration.update(value.configuration);
+        await runtimeConfiguration.persistGenerated();
         if (value.success) {
           if (runtimeAcceptedCompiledCache) {
             showProjectLoadTransition("项目缓存命中，正在准备脚本热重载…");
@@ -819,85 +800,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
         batchMediaDirty =
           presentationProjection.projectSnapshot(value.presentation) || batchMediaDirty;
         applyInputUndo(value.input_undo ?? null);
-        updateProjectConfiguration(value.configuration);
-        await persistGeneratedConfiguration();
+        runtimeConfiguration.update(value.configuration);
+        await runtimeConfiguration.persistGenerated();
         break;
-      case "configuration_update_prepared": {
-        const pending = pendingConfigurationUpdate;
-        if (
-          pending?.stage !== "preparing" ||
-          String(pending.prepareMessageId) !== String(correlationId)
-        ) {
-          log("warning", "忽略了过期的项目配置保存响应");
-          break;
-        }
-        let writeError: unknown;
-        try {
-          const prepared = parsePreparedConfiguration(value);
-          if (!equalConfigurationIdentity(prepared, pending.snapshot))
-            throw new Error("项目配置在保存前已经变化");
-          const contentsDigest = blake3(new TextEncoder().encode(prepared.contents));
-          if (
-            contentsDigest.length !== prepared.prepared_source_digest.length ||
-            !contentsDigest.every((byte, index) => byte === prepared.prepared_source_digest[index])
-          )
-            throw new Error("Runtime 返回的项目配置摘要无效");
-          if (pending.sessionOnly && prepared.restart_required)
-            throw new Error("项目文件仅支持当前会话内即时生效的设置");
-          if (!pending.sessionOnly)
-            await bridge.writeProjectConfiguration(
-              prepared.expected_source_digest,
-              prepared.contents,
-            );
-        } catch (error) {
-          writeError = error;
-        }
-        await beginConfigurationFinalization(
-          pending,
-          writeError == null ? "commit" : "abort",
-          writeError,
-        );
-        if (
-          writeError == null &&
-          !pending.automatic &&
-          pendingConfigurationUpdate?.stage === "finalizing"
-        )
-          runtimeStatus.update("settings", pending.statusToken, "正在应用项目配置…");
+      case "configuration_update_prepared":
+        await runtimeConfiguration.handlePrepared(value, correlationId);
         break;
-      }
-      case "configuration_update_committed": {
-        const pending = pendingConfigurationUpdate;
-        if (
-          pending?.stage !== "finalizing" ||
-          String(pending.finalizeMessageId) !== String(correlationId)
-        ) {
-          log("warning", "忽略了过期的项目配置提交响应");
-          break;
-        }
-        pendingConfigurationUpdate = undefined;
-        updateProjectConfiguration(value.configuration);
-        if (pending.outcome === "abort") {
-          const error = new Error(`保存项目配置失败：${String(pending.writeError)}`);
-          log("error", error.message);
-          pending.reject(error);
-          break;
-        }
-        if (!pending.automatic) {
-          try {
-            await bridge.applyProjectConfiguration(
-              configurationEntries.value,
-              viewportChrome(viewportMeasurement.value),
-              pending.changedCodes,
-            );
-          } catch (error) {
-            log("warning", `客户端项目配置应用失败：${String(error)}`);
-          }
-          runtimeStatus.update("settings", pending.statusToken, "正在保存客户端偏好…");
-          if (!pending.sessionOnly) await refreshCompiledCacheAfterConfigurationUpdate();
-        }
-        pending.resolve();
+      case "configuration_update_committed":
+        await runtimeConfiguration.handleCommitted(value, correlationId);
         break;
-      }
       case "wait_changed":
         if (value.type === "opened" || value.type === "updated") {
           if (
@@ -1061,7 +972,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           !reloadRejected
         )
           log("warning", formatDiagnostic(value), true);
-        rejectPendingConfiguration(correlationId, value.message ?? "Runtime 拒绝了命令");
+        runtimeConfiguration.reject(correlationId, value.message ?? "Runtime 拒绝了命令");
         if (fullProjectPreparing) {
           scheduleFullProjectExportRetry(activeExport);
         }
@@ -1122,9 +1033,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
     refreshProjectFontFamilies(committedFonts);
     projectResourceGeneration.value += 1;
-    configurationWritable.value = bridge.projectConfigurationWritable();
-    updateProjectConfiguration(value.configuration);
-    await persistGeneratedConfiguration();
+    runtimeConfiguration.refreshWritable();
+    runtimeConfiguration.update(value.configuration);
+    await runtimeConfiguration.persistGenerated();
     if (projectConfiguration.value) {
       try {
         await bridge.applyProjectConfiguration(
@@ -1153,57 +1064,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   function currentPresentation() {
     return presentationProjection.current();
-  }
-
-  function updateProjectConfiguration(value: unknown): void {
-    if (value == null) {
-      projectConfiguration.value = null;
-      configurationMigrationFailed.value = false;
-      audio.setGameVolume(1);
-      return;
-    }
-    try {
-      projectConfiguration.value = parseProjectConfiguration(value);
-      if (projectConfiguration.value.generated_source == null)
-        configurationMigrationFailed.value = false;
-      const volume = Number(configurationValue("AudioVolume") ?? 100);
-      audio.setGameVolume(Number.isFinite(volume) ? volume / 100 : 1);
-    } catch (error) {
-      projectConfiguration.value = null;
-      log("error", `项目配置响应无效：${String(error)}`);
-    }
-  }
-
-  async function persistGeneratedConfiguration(): Promise<void> {
-    const snapshot = projectConfiguration.value;
-    const source = snapshot?.generated_source;
-    if (snapshot == null || source == null || !configurationWritable.value) return;
-    try {
-      await bridge.writeProjectConfiguration(snapshot.source_digest, source);
-      configurationMigrationFailed.value = true;
-      if (pendingConfigurationUpdate == null) {
-        const { completion } = await beginProjectConfigurationUpdate([], true);
-        void completion.catch((error) => {
-          configurationMigrationFailed.value = true;
-          log("error", `确认 reraconfig.toml 迁移失败：${String(error)}`);
-        });
-      }
-    } catch (error) {
-      configurationMigrationFailed.value = true;
-      log("error", `迁移 reraconfig.toml 失败：${String(error)}`);
-      throw error;
-    }
-  }
-
-  function configurationValue(code: string): string | undefined {
-    return projectConfiguration.value?.entries.find((entry) => entry.code === code)
-      ?.effective_value;
-  }
-
-  function configurationBoolean(code: string, fallback: boolean): boolean {
-    const value = configurationValue(code)?.toUpperCase();
-    if (value == null) return fallback;
-    return value === "YES" || value === "TRUE" || value === "1";
   }
 
   async function handleEffects(effects: any[]): Promise<void> {
@@ -1437,8 +1297,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
       runtimePump.setReady(true);
       await handleBatch(batch);
       const metrics = await bridge.restartProject();
-      configurationWritable.value = bridge.projectConfigurationWritable();
-      await persistGeneratedConfiguration();
+      runtimeConfiguration.refreshWritable();
+      await runtimeConfiguration.persistGenerated();
       refreshProjectFontFamilies(metrics.projectFonts);
       if (!startupTelemetry.value)
         startupTelemetryState.begin(metrics.submittedAtMs, projectSource.value, bridge.kind);
@@ -1542,15 +1402,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     traditionalSaves.reset();
     importBytes = undefined;
     importKind = undefined;
-    projectConfiguration.value = null;
+    runtimeConfiguration.reset();
     gameInformation.value = null;
-    configurationWritable.value = false;
     runtimeManifestSparse = false;
-    if (pendingConfigurationUpdate) {
-      const pending = pendingConfigurationUpdate;
-      pendingConfigurationUpdate = undefined;
-      pending.reject(new Error("项目会话已重置，配置事务已取消"));
-    }
     nextEnvironmentRevision = 1;
   }
 
@@ -2785,7 +2639,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       if (changes.length) {
         if (restartAfterApply && configurationSessionOnly.value)
           throw new Error("项目文件的会话设置无法通过重启应用");
-        projectApplication = await saveProjectConfiguration(changes, false, statusToken);
+        projectApplication = await runtimeConfiguration.save(changes, false, statusToken);
       }
       runtimeStatus.update("settings", statusToken, "正在保存客户端偏好…");
       preferences.value = await bridge.savePreferences(value);
@@ -2836,100 +2690,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
       window.clearInterval(settingsElapsedTimer);
       settingsElapsedTimer = undefined;
     }
-  }
-
-  async function saveProjectConfiguration(
-    changes: ProjectConfigurationChange[],
-    automatic = false,
-    statusToken?: number,
-  ): Promise<"persistent" | "session"> {
-    const update = await beginProjectConfigurationUpdate(changes, automatic, statusToken);
-    await update.completion;
-    return update.application;
-  }
-
-  async function beginProjectConfigurationUpdate(
-    changes: ProjectConfigurationChange[],
-    automatic: boolean,
-    statusToken?: number,
-  ): Promise<{
-    completion: Promise<void>;
-    application: "persistent" | "session";
-  }> {
-    const snapshot = projectConfiguration.value;
-    if (!snapshot || !configurationProfileValid.value)
-      throw new Error(!snapshot ? "项目配置尚未加载" : "当前项目配置不可修改");
-    const sessionOnly = !configurationWritable.value;
-    if (
-      sessionOnly &&
-      changes.some((change) => {
-        const entry = configurationEntries.value.find((item) => item.code === change.code);
-        return !entry || entry.fixed || entry.application !== "hot";
-      })
-    )
-      throw new Error("项目文件仅支持当前会话内即时生效的设置");
-    if (pendingConfigurationUpdate) throw new Error("项目配置正在保存，请稍候");
-    const prepareMessageId = await send({
-      type: "prepare_configuration_update",
-      value: prepareConfigurationUpdate(snapshot, changes),
-    });
-    let resolve!: () => void;
-    let reject!: (error: unknown) => void;
-    const completion = new Promise<void>((fulfilled, rejected) => {
-      resolve = fulfilled;
-      reject = rejected;
-    });
-    pendingConfigurationUpdate = {
-      stage: "preparing",
-      prepareMessageId,
-      snapshot,
-      changedCodes: changes.map((change) => change.code),
-      sessionOnly,
-      automatic,
-      statusToken,
-      resolve,
-      reject,
-    };
-    if (!automatic) runtimeStatus.update("settings", statusToken, "正在验证项目配置…");
-    return { completion, application: sessionOnly ? "session" : "persistent" };
-  }
-
-  async function beginConfigurationFinalization(
-    pending: Extract<PendingConfigurationUpdate, { stage: "preparing" }>,
-    outcome: "commit" | "abort",
-    writeError?: unknown,
-  ): Promise<void> {
-    try {
-      const finalizeMessageId = await send({
-        type: "finalize_configuration_update",
-        value: { preparation_message_id: pending.prepareMessageId, outcome },
-      });
-      if (pendingConfigurationUpdate !== pending) return;
-      pendingConfigurationUpdate = {
-        ...pending,
-        stage: "finalizing",
-        finalizeMessageId,
-        outcome,
-        writeError,
-      };
-    } catch (error) {
-      if (pendingConfigurationUpdate === pending) pendingConfigurationUpdate = undefined;
-      pending.reject(new Error(`项目配置事务无法完成：${String(error)}`));
-    }
-  }
-
-  function rejectPendingConfiguration(
-    correlationId: number | bigint | undefined,
-    message: string,
-  ): void {
-    const pending = pendingConfigurationUpdate;
-    if (!pending || correlationId == null) return;
-    const messageId =
-      pending.stage === "preparing" ? pending.prepareMessageId : pending.finalizeMessageId;
-    if (String(messageId) !== String(correlationId)) return;
-    pendingConfigurationUpdate = undefined;
-    const error = new Error(`项目配置未保存：${message}`);
-    pending.reject(error);
   }
 
   function preview(value: Preferences | null): void {
