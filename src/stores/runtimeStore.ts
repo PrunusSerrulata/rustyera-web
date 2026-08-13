@@ -26,7 +26,6 @@ import {
   sourceLineStepCommand,
 } from "@/core/debug";
 import { preferredRuntimeLocales, resolveGameTextStyle } from "@/core/gameText";
-import { decodeImageMetadata } from "@/core/imageMetadata";
 import { suppressedMirroredLogNotificationIndexes, type LogNotificationState } from "@/core/log";
 import {
   isMessageContinuationWait,
@@ -34,7 +33,6 @@ import {
   messageWaitIntent,
 } from "@/core/messageSkip";
 import {
-  at,
   concatenateChunks,
   diagnosisProgressPercentage,
   formatDiagnostic,
@@ -42,21 +40,13 @@ import {
   formatDiagnosisProgress,
   formatProjectProgress,
   isRecoverableStaleDebugLog,
-  mapOf,
   projectGameInformation,
   safeNumber,
   saveSlotFileName,
   snapshotFileName,
 } from "@/core/runtimeSupport";
 import { formatRuntimeFault } from "@/core/runtimeFault";
-import {
-  hasEnabledButton,
-  plainLine,
-  printedHtmlLine,
-  restoreButtons,
-  retireEnabledButtons,
-} from "@/core/presentation";
-import { decodeServicePayload, encodeServicePayload } from "@/core/serviceCodec";
+import { hasEnabledButton, restoreButtons, retireEnabledButtons } from "@/core/presentation";
 import {
   defaultPreferences,
   type InteractionToken,
@@ -81,6 +71,7 @@ import {
 } from "@/platform/viewportMeasurement";
 import { RuntimePumpCoordinator } from "@/stores/runtimePump";
 import { RuntimePresentationProjection } from "@/stores/runtimePresentation";
+import { handleRuntimeService } from "@/stores/runtimeServices";
 import { RuntimeStatusState } from "@/stores/runtimeStatus";
 import { RuntimeStartupTelemetryState } from "@/stores/runtimeStartupTelemetry";
 import { useSystemFontAccess } from "@/stores/systemFontAccess";
@@ -1246,151 +1237,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function handleService(request: any, correlationId?: number): Promise<void> {
-    try {
-      const query = decodeServicePayload(request.payload);
-      const servicePresentation = currentPresentation();
-      let response: Map<number, unknown>;
-      switch (`${request.kind}/${request.operation}`) {
-        case "entropy/random_seed": {
-          if (testEntropyState != null) {
-            testEntropyState =
-              (testEntropyState * 6364136223846793005n + 1442695040888963407n) &
-              0xffff_ffff_ffff_ffffn;
-            response = mapOf([0, testEntropyState]);
-          } else {
-            const bytes = crypto.getRandomValues(new Uint32Array(2));
-            response = mapOf([0, (BigInt(bytes[0]) << 32n) | BigInt(bytes[1])]);
-          }
-          break;
-        }
-        case "clock/local_date_time": {
-          const now = testClock ?? new Date();
-          response = mapOf(
-            [0, now.getFullYear()],
-            [1, now.getMonth() + 1],
-            [2, now.getDate()],
-            [3, now.getHours()],
-            [4, now.getMinutes()],
-            [5, now.getSeconds()],
-            [6, now.getMilliseconds()],
-            [7, -now.getTimezoneOffset()],
-          );
-          break;
-        }
-        case "input_state/get_key_state": {
-          const code = Number(at(query, 0));
-          response = mapOf([0, document.hasFocus()], [1, heldKeys.has(code)], [2, false]);
-          break;
-        }
-        case "image/image_metadata": {
-          const resource = String(at(query, 0));
-          const metadata = await bridge.readImageMetadata(resource);
-          response = mapOf(
-            [0, metadata.width],
-            [1, metadata.height],
-            [2, metadata.format],
-            [3, metadata.animated],
-          );
-          break;
-        }
-        case "image/image_pixel": {
-          const resource = String(at(query, 0));
-          const bitmap = await createImageBitmap(
-            new Blob([(await bridge.readResource(resource)) as BlobPart]),
-          );
-          const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-          const context = canvas.getContext("2d", { willReadFrequently: true })!;
-          context.drawImage(bitmap, 0, 0);
-          const pixel = context.getImageData(Number(at(query, 2)), Number(at(query, 3)), 1, 1).data;
-          response = mapOf([
-            0,
-            ((pixel[3] << 24) | (pixel[0] << 16) | (pixel[1] << 8) | pixel[2]) >>> 0,
-          ]);
-          bitmap.close();
-          break;
-        }
-        case "canvas/decode_canvas_image": {
-          const metadata = decodeImageMetadata(at(query, 0) as Uint8Array);
-          response = mapOf([0, metadata.width], [1, metadata.height]);
-          break;
-        }
-        case "presentation_query/get_display_line": {
-          const index = Number(at(query, 1));
-          response = mapOf(
-            [0, at(query, 0)],
-            [
-              1,
-              servicePresentation.lines[index] ? plainLine(servicePresentation.lines[index]) : "",
-            ],
-          );
-          break;
-        }
-        case "presentation_query/html_get_printed_str": {
-          const index = Number(at(query, 1));
-          const text = servicePresentation.lines.at(-(index + 1));
-          response = mapOf(
-            [0, at(query, 0)],
-            [
-              1,
-              text
-                ? printedHtmlLine(text, Number(servicePresentation.settings.line_height ?? 0))
-                : "",
-            ],
-          );
-          break;
-        }
-        case "presentation_query/serialize_physical_history": {
-          const body = servicePresentation.lines.map(plainLine).join("\n");
-          response = mapOf(
-            [0, at(query, 0)],
-            [1, at(query, 2) ? body : `${at(query, 1)}\n\n${body}`],
-          );
-          break;
-        }
-        case "font_metrics/gget_text_size": {
-          const text = String(at(query, 1));
-          const canvas = document.createElement("canvas");
-          const context = canvas.getContext("2d")!;
-          context.font = `${Number(at(query, 3)) / 1000}pt ${String(at(query, 2))}`;
-          const metrics = context.measureText(text);
-          response = mapOf(
-            [0, at(query, 0)],
-            [1, Math.ceil(metrics.width)],
-            [2, Math.ceil(metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent)],
-          );
-          break;
-        }
-        default:
-          throw new Error(`不支持的前端服务：${request.kind}/${request.operation}`);
-      }
-      await send(
-        {
-          type: "service_response",
-          value: {
-            request_id: request.request_id,
-            result: { type: "ready", payload: [...encodeServicePayload(response)] },
-          },
-        },
-        correlationId,
-      );
-    } catch (error) {
-      await send(
-        {
-          type: "service_response",
-          value: {
-            request_id: request.request_id,
-            result: {
-              type: "error",
-              error: {
-                code: "frontend.unsupported_service",
-                message: `${request.kind}/${request.operation}: ${String(error)}`,
-              },
-            },
-          },
-        },
-        correlationId,
-      );
-    }
+    await handleRuntimeService(request, correlationId, {
+      bridge,
+      currentPresentation,
+      heldKeys,
+      clock: () => testClock,
+      nextEntropy: () => {
+        if (testEntropyState == null) return undefined;
+        testEntropyState =
+          (testEntropyState * 6364136223846793005n + 1442695040888963407n) & 0xffff_ffff_ffff_ffffn;
+        return testEntropyState;
+      },
+      send,
+    });
   }
 
   async function submitText(): Promise<void> {
