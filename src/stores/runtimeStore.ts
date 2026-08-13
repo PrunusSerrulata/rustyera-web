@@ -1,4 +1,3 @@
-import { blake3 } from "@noble/hashes/blake3.js";
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
@@ -53,6 +52,7 @@ import { RuntimePumpCoordinator } from "@/stores/runtimePump";
 import { RuntimePresentationProjection } from "@/stores/runtimePresentation";
 import { RuntimeConfigurationState } from "@/stores/runtimeConfiguration";
 import { RuntimeCompiledCacheExportState } from "@/stores/runtimeCompiledCache";
+import { RuntimeExportTransferState } from "@/stores/runtimeExportTransfer";
 import { normalizeProjectProgress, RuntimeProjectLoadState } from "@/stores/runtimeProjectLoad";
 import { RuntimeProjectReloadState } from "@/stores/runtimeProjectReload";
 import { RuntimeProjectFileExportState } from "@/stores/runtimeProjectFileExport";
@@ -76,14 +76,12 @@ import { transportValue } from "@/stores/runtimeTransport";
 import {
   sessionFontFallback,
   diagnosisStateExportRequest,
-  runtimeExportKind,
   diagnosisProgressStage,
   isFullProjectExport,
   DEBUG_VARIABLE_PAGE_LIMIT,
   DEBUG_VARIABLE_MAX_PAGES,
   TIME_ADVANCE_INTERVAL_NS,
   MAXIMUM_LOG_ENTRIES,
-  STATE_EXPORT_CHUNK_BYTES,
   PROJECT_STARTING_STATUS,
   GAME_RUNNING_STATUS,
 } from "@/stores/runtimeState";
@@ -226,7 +224,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     exportState: () => exportState,
     replaceExportState: (state) => (exportState = state),
     request: requestCompiledCacheExport,
-    requestNextChunk: requestExportChunk,
+    requestNextChunk,
     finishTransfer: finishExportTransfer,
     cancelRuntimeExport: async () => {
       await send({ type: "state_export_cancel", value: { kind: "compiled_project_cache" } });
@@ -239,6 +237,27 @@ export const useRuntimeStore = defineStore("runtime", () => {
     resumeDiagnosisExport: () => startDiagnosisStateExport("diagnosis_replay"),
     logWarning: (message, notificationPolicy = "all") =>
       log("warning", message, false, notificationPolicy),
+  });
+  const exportTransfer = new RuntimeExportTransferState({
+    exportState: () => exportState,
+    clearExportState: () => (exportState = undefined),
+    send,
+    setDiagnosisProgress: (kind, completed, total) =>
+      runtimeDiagnosis.setProgress(diagnosisProgressStage(kind), completed, total),
+    failDiagnosis: failDiagnosisExport,
+    beginProjectFilePackaging: (total) => projectFileExportState.beginPackaging(total),
+    updateProjectFilePackaging: (completed, total) =>
+      projectFileExportState.updatePackaging(completed, total),
+    writeProjectFileChunk: (bytes, reset, complete) =>
+      bridge.writeProjectFileChunk(bytes, reset, complete),
+    failProjectFile: (message) => finishProjectFileExport("failed", message),
+    enqueueCompiledCacheWrite: (activeExport, bytes, reset, complete) =>
+      compiledCacheExport.enqueueHostWrite(activeExport, bytes, reset, complete),
+    continueCompiledCache: (activeExport, complete) =>
+      compiledCacheExport.continue(activeExport, complete),
+    failCompiledCache: (activeExport, error) => compiledCacheExport.fail(activeExport, error),
+    finishExport: finishExportTransfer,
+    logWarning: (message) => log("warning", message),
   });
   let pendingStart: RuntimeTestConfiguration["start"] = { type: "new_game" };
   let runtimeManifestSparse = false;
@@ -620,6 +639,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimePump.schedule(delay);
   }
 
+  function requestNextChunk(): Promise<void> {
+    return exportTransfer.requestChunk();
+  }
+
   async function handleBatch(batch: PumpBatch): Promise<void> {
     batchMediaDirty = false;
     const suppressedLogNotificationIndexes = suppressedMirroredLogNotificationIndexes(batch.events);
@@ -836,10 +859,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
         await handleService(value, safeNumber(correlationId));
         break;
       case "state_export_ready":
-        await handleExportReady(value, correlationId);
+        await exportTransfer.handleReady(value, correlationId);
         break;
       case "state_export_chunk":
-        await handleExportChunk(value, dataBytes);
+        await exportTransfer.handleChunk(value, dataBytes);
         break;
       case "state_import_accepted":
         await runtimeImport.accept(value);
@@ -1583,171 +1606,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
       value: { kind: "compiled_project_cache", snapshot_purpose: "normal" },
     });
     if (exportState === activeExport) activeExport.requestMessageId = String(messageId);
-  }
-
-  async function handleExportReady(ready: any, correlationId: unknown): Promise<void> {
-    const activeExport = exportState;
-    if (!activeExport) return;
-    const expectedKind = runtimeExportKind(activeExport);
-    if (
-      activeExport.requestMessageId !== String(correlationId) ||
-      ready.kind !== expectedKind ||
-      (ready.result.type === "ready" && ready.result.transfer?.kind !== expectedKind)
-    ) {
-      const message = "Runtime 状态导出响应与当前传输不匹配";
-      if (activeExport.kind.startsWith("diagnosis_")) {
-        await failDiagnosisExport(activeExport, `诊断信息导出失败：${message}`);
-        return;
-      }
-      throw new Error(message);
-    }
-    activeExport.requestMessageId = undefined;
-    if (ready.result.type !== "ready") {
-      const message = `当前状态不能导出快照：${(ready.result.reasons ?? []).join(", ")}`;
-      const failedKind = activeExport.kind;
-      if (failedKind !== "compiled_cache") log("warning", message);
-      if (failedKind.startsWith("diagnosis_")) {
-        await failDiagnosisExport(activeExport, message);
-        return;
-      }
-      if (failedKind === "project_file") {
-        await finishProjectFileExport("failed", message);
-      } else if (failedKind === "compiled_cache") {
-        await compiledCacheExport.fail(activeExport, message);
-      } else {
-        exportState = undefined;
-      }
-      return;
-    }
-    activeExport.descriptor = ready.result.transfer;
-    const totalBytes = Number(ready.result.transfer.total_bytes);
-    if (activeExport.kind.startsWith("diagnosis_") && Number.isSafeInteger(totalBytes)) {
-      runtimeDiagnosis.setProgress(diagnosisProgressStage(activeExport.kind), 0, totalBytes);
-    }
-    if (activeExport.kind === "project_file") {
-      projectFileExportState.beginPackaging(totalBytes);
-    }
-    if (
-      activeExport.kind !== "compiled_cache" &&
-      activeExport.kind !== "project_file" &&
-      Number.isSafeInteger(totalBytes) &&
-      totalBytes >= 0
-    )
-      activeExport.buffer = new Uint8Array(totalBytes);
-    try {
-      await requestExportChunk();
-    } catch (error) {
-      if (activeExport.kind.startsWith("diagnosis_")) {
-        await failDiagnosisExport(activeExport, `诊断信息导出失败：${String(error)}`);
-        return;
-      }
-      if (activeExport.kind === "compiled_cache") {
-        await compiledCacheExport.fail(activeExport, error);
-        return;
-      }
-      throw error;
-    }
-  }
-
-  async function requestExportChunk(): Promise<void> {
-    if (!exportState?.descriptor) return;
-    await send({
-      type: "state_export_chunk_request",
-      value: {
-        transfer_id: exportState.descriptor.transfer_id,
-        offset: exportState.received,
-        maximum_bytes: STATE_EXPORT_CHUNK_BYTES,
-      },
-    });
-  }
-
-  async function handleExportChunk(chunk: any, dataBytes?: Uint8Array): Promise<void> {
-    const activeExport = exportState;
-    if (!activeExport?.descriptor) return;
-    if (
-      String(chunk.transfer_id) !== String(activeExport.descriptor.transfer_id) ||
-      Number(chunk.offset) !== activeExport.received
-    ) {
-      if (activeExport.kind.startsWith("diagnosis_")) {
-        await failDiagnosisExport(activeExport, "诊断信息导出失败：Runtime 分块关联或顺序无效");
-        return;
-      }
-      throw new Error("Runtime 状态导出分块关联或顺序无效");
-    }
-    const bytes =
-      dataBytes ?? Uint8Array.from(chunk.data, (value: number | bigint) => Number(value));
-    const reset = activeExport.received === 0;
-    activeExport.received += bytes.length;
-    if (activeExport.kind.startsWith("diagnosis_")) {
-      runtimeDiagnosis.setProgress(
-        diagnosisProgressStage(activeExport.kind),
-        activeExport.received,
-        Number(activeExport.descriptor.total_bytes),
-      );
-    }
-    if (activeExport.kind === "project_file") {
-      projectFileExportState.updatePackaging(
-        activeExport.received,
-        Number(activeExport.descriptor.total_bytes),
-      );
-    }
-    try {
-      if (activeExport.kind === "compiled_cache") {
-        compiledCacheExport.enqueueHostWrite(activeExport, bytes, reset, chunk.complete);
-      } else if (activeExport.kind === "project_file") {
-        await bridge.writeProjectFileChunk(bytes, reset, chunk.complete);
-      } else if (activeExport.buffer) {
-        activeExport.buffer.set(bytes, Number(chunk.offset));
-      } else {
-        activeExport.chunks.push(bytes);
-      }
-    } catch (error) {
-      if (activeExport.kind === "project_file") {
-        await finishProjectFileExport("failed");
-      } else if (activeExport.kind.startsWith("diagnosis_")) {
-        await failDiagnosisExport(activeExport, `诊断信息导出失败：${String(error)}`);
-      } else if (activeExport.kind === "compiled_cache") {
-        await compiledCacheExport.fail(activeExport, error);
-      } else {
-        exportState = undefined;
-      }
-      if (activeExport.kind !== "compiled_cache" && !activeExport.kind.startsWith("diagnosis_"))
-        throw error;
-      return;
-    }
-    if (activeExport.kind === "compiled_cache") {
-      compiledCacheExport.continue(activeExport, chunk.complete);
-    } else {
-      try {
-        if (!chunk.complete) await requestExportChunk();
-        else if (activeExport.kind.startsWith("diagnosis_")) {
-          const expectedLength = Number(activeExport.descriptor.total_bytes);
-          const bytes =
-            activeExport.buffer ?? concatenateChunks(activeExport.chunks, activeExport.received);
-          const expectedDigest = Uint8Array.from(
-            activeExport.descriptor.digest ?? [],
-            (value: number | bigint) => Number(value),
-          );
-          const actualDigest = blake3(bytes);
-          if (
-            !Number.isSafeInteger(expectedLength) ||
-            activeExport.received !== expectedLength ||
-            expectedDigest.length !== actualDigest.length ||
-            expectedDigest.some((value, index) => value !== actualDigest[index])
-          ) {
-            await failDiagnosisExport(activeExport, "诊断信息导出失败：Runtime 分块长度或摘要无效");
-            return;
-          }
-          await finishExportTransfer(activeExport);
-        } else await finishExportTransfer(activeExport);
-      } catch (error) {
-        if (activeExport.kind.startsWith("diagnosis_")) {
-          await failDiagnosisExport(activeExport, `诊断信息导出失败：${String(error)}`);
-          return;
-        }
-        throw error;
-      }
-    }
   }
 
   async function cancelProjectFileExport(): Promise<void> {
