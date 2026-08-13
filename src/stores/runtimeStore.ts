@@ -63,6 +63,7 @@ import { RuntimePumpCoordinator } from "@/stores/runtimePump";
 import { RuntimePresentationProjection } from "@/stores/runtimePresentation";
 import { RuntimeConfigurationState } from "@/stores/runtimeConfiguration";
 import { normalizeProjectProgress, RuntimeProjectLoadState } from "@/stores/runtimeProjectLoad";
+import { RuntimeProjectReloadState } from "@/stores/runtimeProjectReload";
 import { RuntimeLogState } from "@/stores/runtimeLogs";
 import { handleRuntimeService } from "@/stores/runtimeServices";
 import { RuntimeStatusState } from "@/stores/runtimeStatus";
@@ -93,7 +94,6 @@ import type {
   RuntimeInputIntent,
   ExportState,
   DiagnosisStateExportKind,
-  PendingProjectReload,
   FullProjectExportState,
   FullProjectRequestSubmission,
   DiagnosisState,
@@ -145,10 +145,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const startupTelemetry = startupTelemetryState.current;
   const openProjectConfirmationOpen = ref(false);
   const gameProgressLossConfirmation = ref<"restart" | "title" | null>(null);
-  const projectReloadDialogMode = ref<"folder" | "script" | null>(null);
-  const projectReloadTargetOptions = ref<string[]>([]);
-  const projectReloadDialogBusy = ref(false);
-  const projectReloadDialogError = ref("");
+  const projectReload = new RuntimeProjectReloadState(bridge);
+  const projectReloadDialogMode = projectReload.dialogMode;
+  const projectReloadTargetOptions = projectReload.targetOptions;
+  const projectReloadDialogBusy = projectReload.dialogBusy;
+  const projectReloadDialogError = projectReload.dialogError;
   let pendingProjectSelection: "directory" | "file" = "directory";
   const projectSource = ref<"directory" | "file">("directory");
   const prompt = ref("");
@@ -220,8 +221,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let pendingStart: RuntimeTestConfiguration["start"] = { type: "new_game" };
   let nextEnvironmentRevision = 1;
   let runtimeManifestSparse = false;
-  let pendingProjectReload: PendingProjectReload | undefined;
-  let projectReloadTargetRequest = 0;
   let batchMediaDirty = false;
   let debugPausePending = false;
   let debugPauseWanted = false;
@@ -246,22 +245,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
     advanceTimedWait,
     handleError(error) {
       gameProgressLossConfirmation.value = null;
-      void finalizePendingProjectReload(false);
+      void projectReload.finalize(false);
       startupTelemetryState.fail(error);
       finishProjectLoad();
       fault.value = { code: "frontend", message: String(error) };
       log("error", String(error), false, "none");
     },
   });
-
-  async function finalizePendingProjectReload(success: boolean): Promise<ProjectFontLoadResult> {
-    if (!pendingProjectReload) return { fonts: [], errors: [] };
-    try {
-      return await bridge.finalizeProjectReload(success);
-    } finally {
-      pendingProjectReload = undefined;
-    }
-  }
 
   const effectivePreferences = computed(() => previewPreferences.value ?? preferences.value);
   const configurationEntries = runtimeConfiguration.entries;
@@ -684,7 +674,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "project_load_report": {
         if (value.success) gameInformation.value = projectGameInformation(value.game_information);
-        if (pendingProjectReload && String(correlationId) === pendingProjectReload.messageId) {
+        if (projectReload.matches(correlationId)) {
           await handleProjectReloadReport(value);
           break;
         }
@@ -910,10 +900,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
           baseStatus.value = `项目启动失败：${message}`;
         }
         const correlation = String(correlationId);
-        const reloadRejected = pendingProjectReload?.messageId === correlation;
+        const reloadRejected = projectReload.matches(correlationId);
         if (reloadRejected) {
           const message = String(value.message ?? "Runtime 拒绝了热重载");
-          await finalizePendingProjectReload(false);
+          await projectReload.finalize(false);
           finishProjectLoad();
           baseStatus.value = `重新加载项目失败：${message}`;
           log("error", baseStatus.value, true);
@@ -1013,7 +1003,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function handleProjectReloadReport(value: any): Promise<void> {
-    if (!pendingProjectReload) return;
+    if (!projectReload.pending) return;
     const diagnostics = value.diagnostics ?? [];
     appendLogEntries(
       diagnostics.map((diagnostic: any) => ({
@@ -1024,7 +1014,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       })),
       "errors_only",
     );
-    const committedFonts = await finalizePendingProjectReload(Boolean(value.success));
+    const committedFonts = await projectReload.finalize(Boolean(value.success));
     if (!value.success) {
       finishProjectLoad();
       baseStatus.value = "重新加载项目失败，请查看日志";
@@ -1352,12 +1342,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   function resetSessionState(preserveCompiledCacheExport = false): void {
     gameProgressLossConfirmation.value = null;
-    projectReloadTargetRequest += 1;
-    void finalizePendingProjectReload(false);
-    projectReloadDialogMode.value = null;
-    projectReloadTargetOptions.value = [];
-    projectReloadDialogBusy.value = false;
-    projectReloadDialogError.value = "";
+    projectReload.reset();
     resetTransientStatuses();
     const compiledCacheExport =
       preserveCompiledCacheExport && exportState?.kind === "compiled_cache"
@@ -1409,42 +1394,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function openProjectReloadDialog(mode: "folder" | "script"): Promise<void> {
-    if (!runtimeReady.value || gameInteractionsBlocked.value) return;
-    const request = ++projectReloadTargetRequest;
-    projectReloadDialogMode.value = mode;
-    projectReloadTargetOptions.value = [];
-    projectReloadDialogError.value = "";
-    projectReloadDialogBusy.value = true;
-    try {
-      const targets = await bridge.projectReloadTargets();
-      if (request !== projectReloadTargetRequest || projectReloadDialogMode.value !== mode) return;
-      projectReloadTargetOptions.value = mode === "folder" ? targets.folders : targets.scripts;
-      if (projectReloadTargetOptions.value.length === 0) {
-        projectReloadDialogError.value =
-          mode === "folder" ? "当前项目没有可重新加载的脚本文件夹" : "当前项目没有可重新加载的脚本";
-      }
-    } catch (error) {
-      if (request !== projectReloadTargetRequest || projectReloadDialogMode.value !== mode) return;
-      projectReloadDialogError.value = `无法读取脚本列表：${String(error)}`;
-    } finally {
-      if (request === projectReloadTargetRequest && projectReloadDialogMode.value === mode)
-        projectReloadDialogBusy.value = false;
-    }
+    await projectReload.openDialog(mode, runtimeReady.value && !gameInteractionsBlocked.value);
   }
 
   function closeProjectReloadDialog(): void {
-    if (projectReloadDialogBusy.value) return;
-    projectReloadTargetRequest += 1;
-    projectReloadDialogMode.value = null;
-    projectReloadTargetOptions.value = [];
-    projectReloadDialogError.value = "";
+    projectReload.closeDialog();
   }
 
   async function confirmProjectReload(target: string): Promise<void> {
-    const mode = projectReloadDialogMode.value;
-    if (!mode || !projectReloadTargetOptions.value.includes(target)) return;
-    closeProjectReloadDialog();
-    await reloadProject({ type: mode, path: target });
+    const scope = projectReload.selectedScope(target);
+    if (scope) await reloadProject(scope);
   }
 
   async function reloadProject(scope: ProjectReloadScope = { type: "all" }): Promise<void> {
@@ -1455,11 +1414,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
       await runtimePump.waitUntilIdle();
       await cancelCompiledCacheExport();
       const submission = await bridge.reloadProject(scope);
-      pendingProjectReload = { messageId: String(submission.messageId) };
+      projectReload.begin(submission.messageId);
       continueProjectBuildProgress();
     } catch (error) {
-      await bridge.finalizeProjectReload(false).catch(() => undefined);
-      pendingProjectReload = undefined;
+      await projectReload.failSubmission();
       finishProjectLoad();
       const message = `重新加载项目失败：${String(error)}`;
       baseStatus.value = message;
