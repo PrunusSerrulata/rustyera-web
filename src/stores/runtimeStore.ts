@@ -9,7 +9,6 @@ import {
   debugVariableKey,
   formatDebugValue,
   isStaleDebugGrantError,
-  refreshDebugStop,
   sameDebugGrant,
   selectedDebugFiber,
   sourceLineStepCommand,
@@ -60,6 +59,7 @@ import { RuntimeLogState } from "@/stores/runtimeLogs";
 import { RuntimeInputState } from "@/stores/runtimeInput";
 import { RuntimeImportState } from "@/stores/runtimeImport";
 import { RuntimeDebugRequestState } from "@/stores/runtimeDebugRequests";
+import { RuntimeDebugState } from "@/stores/runtimeDebugState";
 import { RuntimeDiagnosisState } from "@/stores/runtimeDiagnosis";
 import { handleRuntimeService } from "@/stores/runtimeServices";
 import { RuntimeSettingsState } from "@/stores/runtimeSettings";
@@ -156,19 +156,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const logs = runtimeLogs.entries;
   const preferencesOpen = ref(false);
   const logsOpen = ref(false);
-  const debugConsoleOpen = ref(false);
-  const variablesOpen = ref(false);
-  const stackOpen = ref(false);
-  const debugEnabled = ref(false);
-  const singleStepEnabled = ref(false);
-  const debugGrant = ref<any>(null);
-  const debugStop = ref<any>(null);
-  const debugOutput = ref<string[]>([]);
-  const debugVariables = ref<any[]>([]);
-  const debugVariablesLoading = ref(false);
-  const debugFibers = ref<any[]>([]);
-  const debugFrames = ref<any[]>([]);
-  const debugVariableValues = ref<Record<string, string>>({});
+  const runtimeDebug = new RuntimeDebugState();
+  const debugConsoleOpen = runtimeDebug.consoleOpen;
+  const variablesOpen = runtimeDebug.variablesOpen;
+  const stackOpen = runtimeDebug.stackOpen;
+  const debugEnabled = runtimeDebug.enabled;
+  const singleStepEnabled = runtimeDebug.singleStepEnabled;
+  const debugGrant = runtimeDebug.grant;
+  const debugStop = runtimeDebug.stop;
+  const debugOutput = runtimeDebug.output;
+  const debugVariables = runtimeDebug.variables;
+  const debugVariablesLoading = runtimeDebug.variablesLoading;
+  const debugFibers = runtimeDebug.fibers;
+  const debugFrames = runtimeDebug.frames;
+  const debugVariableValues = runtimeDebug.variableValues;
   const runtimeDiagnosis = new RuntimeDiagnosisState();
   const diagnosisExporting = runtimeDiagnosis.exporting;
   const diagnosisProgress = runtimeDiagnosis.progress;
@@ -1237,15 +1238,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     inputUndo.value = null;
     fault.value = null;
     debugRequests.reset();
-    debugEnabled.value = false;
-    singleStepEnabled.value = false;
-    debugGrant.value = null;
-    debugStop.value = null;
-    debugOutput.value = [];
-    debugVariables.value = [];
-    debugFibers.value = [];
-    debugFrames.value = [];
-    debugVariableValues.value = {};
+    runtimeDebug.resetSession();
     prompt.value = "";
     runtimeInput.reset();
     runtimeViewport.reset();
@@ -2030,10 +2023,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       debugRequests.surfacePauseActive = false;
       debugRequests.surfaceResumePending = false;
       debugRequests.reset();
-      debugEnabled.value = false;
-      singleStepEnabled.value = false;
-      debugGrant.value = null;
-      debugStop.value = null;
+      runtimeDebug.revokeGrant();
     }
   }
 
@@ -2041,25 +2031,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (message.type === "grant") {
       debugRequests.pausePending = false;
       debugRequests.grantRefreshNeeded = false;
-      debugGrant.value = message.value;
-      debugEnabled.value = true;
-      singleStepEnabled.value = false;
-      debugStop.value = null;
+      runtimeDebug.acceptGrant(message.value);
     } else if (message.type === "revoke") {
       debugRequests.pausePending = false;
       debugRequests.pauseWanted = false;
       debugRequests.surfacePauseActive = false;
       debugRequests.surfaceResumePending = false;
-      debugGrant.value = null;
-      debugEnabled.value = false;
-      singleStepEnabled.value = false;
-      debugStop.value = null;
+      runtimeDebug.revokeGrant();
     } else if (message.type === "stopped") {
       debugRequests.pausePending = false;
       debugRequests.pauseWanted = false;
-      debugStop.value = message.value;
-      debugFibers.value = [];
-      debugFrames.value = [];
+      runtimeDebug.acceptStop(message.value);
       debugRequests.take(correlationId);
       // The stop token is authoritative only after this event. Start refreshing here so
       // dialog visibility cannot race a Vue watcher against the pause response. Pagination
@@ -2074,35 +2056,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } else if (message.type === "response") {
       const request = debugRequests.take(correlationId);
       const response = message.value;
-      debugStop.value = refreshDebugStop(debugStop.value, response.value);
-      if (response.type === "variable_page") debugVariables.value = response.value.variables ?? [];
-      else if (response.type === "variable_value") {
-        debugVariableValues.value[debugVariableKey(response.value)] = formatDebugValue(
-          response.value.value,
-        );
-      } else if (response.type === "fiber_page") {
-        debugFibers.value = response.value.fibers ?? [];
-        const selected = selectedDebugFiber(debugStop.value);
-        const fiber =
-          debugFibers.value.find((candidate) => candidate.fiber_id === selected) ??
-          debugFibers.value.find((candidate) => candidate.frame_count > 0);
+      const fiber = runtimeDebug.applyResponse(response);
+      if (response.type === "fiber_page") {
         if (stackOpen.value && fiber)
           await debugCommand({
             type: "read_call_stack",
             stop: debugStopToken(debugStop.value),
             fiber_id: fiber.fiber_id,
           });
-      } else if (response.type === "call_stack") debugFrames.value = response.value.frames ?? [];
-      else if (response.type === "console") {
-        debugOutput.value.push(...(response.value.output ?? []));
-        if (response.value.value != null)
-          debugOutput.value.push(`=> ${formatDebugValue(response.value.value)}`);
-        for (const diagnostic of response.value.diagnostics ?? []) {
-          debugOutput.value.push(`[${diagnostic.code}] ${diagnostic.message}`);
-        }
-        for (const changed of response.value.changed_variables ?? []) {
-          debugVariableValues.value[debugVariableKey(changed)] = formatDebugValue(changed.value);
-        }
       }
       request?.resolve?.(response);
     } else if (message.type === "error") {
@@ -2111,8 +2072,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       if (debugEnabled.value && isStaleDebugGrantError(message.value)) {
         const currentToken = debugGrant.value?.token;
         if (!currentToken || !request || sameDebugGrant(request.grant, currentToken)) {
-          debugGrant.value = null;
-          debugStop.value = null;
+          runtimeDebug.clearGrant();
           debugRequests.grantRefreshNeeded = true;
         }
       } else {
@@ -2248,12 +2208,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (kind === "console") debugConsoleOpen.value = true;
     else if (kind === "variables") {
       variablesOpen.value = true;
-      debugVariables.value = [];
-      debugVariableValues.value = {};
+      runtimeDebug.clearVariables();
     } else {
       stackOpen.value = true;
-      debugFibers.value = [];
-      debugFrames.value = [];
+      runtimeDebug.clearStack();
     }
     if (debugStopToken(debugStop.value)) await refreshOpenDebugSurfaces();
     else {
