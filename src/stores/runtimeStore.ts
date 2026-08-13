@@ -38,7 +38,7 @@ import {
   snapshotFileName,
 } from "@/core/runtimeSupport";
 import { formatRuntimeFault } from "@/core/runtimeFault";
-import { hasEnabledButton, restoreButtons, retireEnabledButtons } from "@/core/presentation";
+import { hasEnabledButton } from "@/core/presentation";
 import {
   defaultPreferences,
   type InteractionToken,
@@ -63,6 +63,7 @@ import { normalizeProjectProgress, RuntimeProjectLoadState } from "@/stores/runt
 import { RuntimeProjectReloadState } from "@/stores/runtimeProjectReload";
 import { classifyRuntimeRejection } from "@/stores/runtimeRejections";
 import { RuntimeLogState } from "@/stores/runtimeLogs";
+import { RuntimeInputState } from "@/stores/runtimeInput";
 import { handleRuntimeService } from "@/stores/runtimeServices";
 import { RuntimeStatusState } from "@/stores/runtimeStatus";
 import { RuntimeStartupTelemetryState } from "@/stores/runtimeStartupTelemetry";
@@ -95,8 +96,6 @@ import type {
   FullProjectExportState,
   FullProjectRequestSubmission,
   DiagnosisState,
-  PendingGameInput,
-  PendingInputUndo,
   RuntimeStartKind,
   RuntimeTestConfiguration,
 } from "@/stores/runtimeState";
@@ -235,8 +234,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
       reject?: (error: Error) => void;
     }
   >();
-  const pendingGameInput = ref<PendingGameInput>();
-  const pendingInputUndo = ref<PendingInputUndo>();
+  const runtimeInput = new RuntimeInputState({
+    presentation: currentPresentation,
+    send,
+    sampleMonotonic: () => testEnvironment.sampleMonotonic(),
+    phase: () => phase.value,
+    logWarning: (message) => log("warning", message, true),
+  });
+  const pendingGameInput = runtimeInput.pending;
+  const pendingInputUndo = runtimeInput.pendingUndo;
   const pendingProjectionMessages = runtimeViewport.pendingMessages;
   const runtimePump = new RuntimePumpCoordinator(bridge, {
     handleBatch,
@@ -799,16 +805,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "wait_changed":
         if (value.type === "opened" || value.type === "updated") {
-          if (
-            pendingGameInput.value &&
-            pendingGameInput.value.waitIdentity !== inputWaitIdentity(value.value)
-          )
-            pendingGameInput.value.waitClosed = true;
+          runtimeInput.updateWait(value.value);
           currentPresentation().inputWait = value.value;
           presentationProjection.markStagedReady();
         } else if (value.type === "closed") {
           currentPresentation().inputWait = null;
-          if (pendingGameInput.value) pendingGameInput.value.waitClosed = true;
+          runtimeInput.closeWait();
         }
         break;
       case "input_undo_state_changed":
@@ -922,10 +924,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
           pendingGameInput.value,
         );
         if (rejectedInput && !willRetryInput) {
-          restoreButtons(currentPresentation(), rejectedInput.retiredButtonTokens);
-          pendingGameInput.value = undefined;
+          runtimeInput.rejectInput(rejectedInput, willRetryInput);
         }
-        if (pendingInputUndo.value?.messageId === correlation) pendingInputUndo.value = undefined;
+        runtimeInput.rejectUndo(correlation);
         if (
           !staleProjection &&
           !willRetryInput &&
@@ -1117,87 +1118,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function submitIntent(intent: RuntimeInputIntent, messageSkip: boolean): Promise<void> {
-    if (diagnosisExporting.value || pendingGameInput.value || pendingInputUndo.value) return;
-    const wait = currentPresentation().inputWait;
-    if (!wait) return;
-    const waitIdentity = inputWaitIdentity(wait);
-    const retiredButtonTokens = retireEnabledButtons(currentPresentation());
-    pendingGameInput.value = {
-      waitIdentity,
-      waitId: String(wait.wait_id),
-      waitKind: String(wait.kind),
-      intent,
-      messageSkip,
-      staleRetries: 0,
-      retiredButtonTokens,
-    };
-    try {
-      const messageId = await send({
-        type: "input",
-        value: {
-          wait_id: wait.wait_id,
-          token: wait.submission_token,
-          monotonic_time_ns: sampleMonotonicTime(),
-          intent,
-          message_skip: messageSkip,
-        },
-      });
-      if (pendingGameInput.value?.waitIdentity === waitIdentity)
-        pendingGameInput.value.messageId = String(messageId);
-    } catch (error) {
-      if (pendingGameInput.value?.waitIdentity === waitIdentity) {
-        restoreButtons(currentPresentation(), retiredButtonTokens);
-        pendingGameInput.value = undefined;
-      }
-      throw error;
-    }
-    if (singleStepEnabled.value && !debugStopToken(debugStop.value)) await pauseDebug();
+    if (diagnosisExporting.value) return;
+    const submitted = await runtimeInput.submit(intent, messageSkip);
+    if (submitted && singleStepEnabled.value && !debugStopToken(debugStop.value))
+      await pauseDebug();
   }
 
   async function settlePendingGameInput(): Promise<void> {
     if (diagnosisExporting.value) return;
-    const pending = pendingGameInput.value;
-    if (!pending) return;
-    if (!pending.retryPending) {
-      if (pending.waitClosed) pendingGameInput.value = undefined;
-      return;
-    }
-    const wait = currentPresentation().inputWait;
-    if (!wait) {
-      if (phase.value === "running") return;
-      pendingGameInput.value = undefined;
-      log("warning", pending.retryError ?? "Runtime 拒绝了输入", true);
-      return;
-    }
-    const waitIdentity = inputWaitIdentity(wait);
-    if (waitIdentity === pending.waitIdentity) return;
-    if (String(wait.kind) !== pending.waitKind) {
-      pendingGameInput.value = undefined;
-      log("warning", pending.retryError ?? "Runtime 拒绝了输入", true);
-      return;
-    }
-    pending.waitIdentity = waitIdentity;
-    pending.waitId = String(wait.wait_id);
-    pending.waitClosed = false;
-    pending.retryPending = false;
-    pending.retryError = undefined;
-    pending.staleRetries = 1;
-    try {
-      const messageId = await send({
-        type: "input",
-        value: {
-          wait_id: wait.wait_id,
-          token: wait.submission_token,
-          monotonic_time_ns: sampleMonotonicTime(),
-          intent: pending.intent,
-          message_skip: pending.messageSkip,
-        },
-      });
-      if (pendingGameInput.value === pending) pending.messageId = String(messageId);
-    } catch (error) {
-      if (pendingGameInput.value === pending) pendingGameInput.value = undefined;
-      throw error;
-    }
+    await runtimeInput.settle();
   }
 
   async function advanceTimedWait(): Promise<void> {
@@ -1222,17 +1151,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const token = inputUndo.value?.token;
     if (diagnosisExporting.value || !token || pendingGameInput.value || pendingInputUndo.value)
       return;
-    const tokenIdentity = interactionTokenIdentity(token);
-    pendingInputUndo.value = { tokenIdentity };
-    try {
-      const messageId = await send({ type: "input_undo_request", value: { token } });
-      if (pendingInputUndo.value?.tokenIdentity === tokenIdentity)
-        pendingInputUndo.value.messageId = String(messageId);
-    } catch (error) {
-      if (pendingInputUndo.value?.tokenIdentity === tokenIdentity)
-        pendingInputUndo.value = undefined;
-      throw error;
-    }
+    await runtimeInput.undo(token);
   }
 
   async function restart(): Promise<void> {
@@ -1349,8 +1268,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     debugFrames.value = [];
     debugVariableValues.value = {};
     prompt.value = "";
-    pendingGameInput.value = undefined;
-    pendingInputUndo.value = undefined;
+    runtimeInput.reset();
     runtimeViewport.reset();
     exportState = compiledCacheExport;
     diagnosisState = undefined;
@@ -2678,17 +2596,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     return messageId;
   }
 
-  function inputWaitIdentity(wait: any): string {
-    return `${String(wait.wait_id)}:${String(wait.submission_token?.epoch)}:${String(wait.submission_token?.id)}`;
-  }
-
-  function interactionTokenIdentity(token: any): string {
-    return `${String(token?.epoch)}:${String(token?.id)}`;
-  }
-
   function applyInputUndo(value: any): void {
-    const nextIdentity = value?.token ? interactionTokenIdentity(value.token) : undefined;
-    if (pendingInputUndo.value?.tokenIdentity !== nextIdentity) pendingInputUndo.value = undefined;
+    runtimeInput.applyUndo(value);
     inputUndo.value = value;
   }
 
