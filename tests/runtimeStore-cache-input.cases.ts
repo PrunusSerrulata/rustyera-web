@@ -1,0 +1,937 @@
+import { bridge } from "./runtimeStoreTestSupport";
+import { describe, expect, it, vi } from "vitest";
+import type { Preferences } from "@/core/types";
+import {
+  installRuntimeStoreTestHarness,
+  advanceUntil,
+  defaultPreferences,
+  deferred,
+  emptyBatch,
+  flushMicrotasks,
+  mockProjectSelection,
+  storeWithInputWait,
+  storeWithPendingCompiledCacheWrite,
+  useRuntimeStore,
+  runtimeEvent,
+} from "./runtimeStoreTestSupport";
+
+describe("runtime store cache-input", () => {
+  installRuntimeStoreTestHarness();
+
+  it("leaves a background cache export running when the project-file picker is cancelled", async () => {
+    const cacheWrite = deferred<void>();
+    const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
+    bridge.beginProjectFileExport.mockResolvedValueOnce(false);
+
+    await store.exportProjectFile();
+
+    expect(bridge.cancelCompiledCacheExport).not.toHaveBeenCalled();
+    const transfer = store.testTransferState().export as { name?: string } | undefined;
+    expect(transfer?.name).toBe("compiled-project.reracache");
+    expect(store.gameInteractionsBlocked).toBe(false);
+    cacheWrite.resolve();
+    await flushMicrotasks();
+  });
+
+  it("publishes input waits while the compiled cache is still being persisted", async () => {
+    const cacheWrite = deferred<void>();
+    const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
+
+    expect(
+      store.logs.some((entry) => entry.message.includes("compiled project cache preparation")),
+    ).toBe(false);
+    expect(store.logNotifications).toEqual([]);
+    expect(bridge.writeCompiledCacheChunk).toHaveBeenCalledOnce();
+    expect(store.status).toBe(
+      "正在后台生成项目缓存，可继续游戏，但游戏运行和响应速度可能暂时受到影响…",
+    );
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) =>
+          (message as { type?: string }).type === "state_export_chunk_request",
+      ),
+    ).toHaveLength(1);
+    expect(store.canInteract).toBe(true);
+    await store.skip();
+    expect(bridge.submitRuntime).toHaveBeenLastCalledWith(
+      {
+        type: "input",
+        value: expect.objectContaining({
+          wait_id: 17,
+          token: { epoch: 2, id: 5 },
+          intent: { type: "enter" },
+          message_skip: true,
+        }),
+      },
+      undefined,
+    );
+
+    cacheWrite.resolve();
+    await flushMicrotasks();
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) =>
+          (message as { type?: string }).type === "state_export_chunk_request",
+      ),
+    ).toHaveLength(2);
+    expect(
+      bridge.submitRuntime.mock.calls
+        .map(
+          ([message]: unknown[]) =>
+            message as { type?: string; value?: { maximum_bytes?: number } },
+        )
+        .filter((message) => message.type === "state_export_chunk_request")
+        .map((message) => message.value?.maximum_bytes),
+    ).toEqual([16 * 1024 * 1024, 16 * 1024 * 1024]);
+  });
+
+  it("restores the stable status after compiled-cache success feedback", async () => {
+    const cacheWrite = deferred<void>();
+    const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("state_export_chunk", {
+          transfer_id: 7,
+          offset: 3,
+          data: [4, 5, 6],
+          complete: true,
+        }),
+      ],
+    });
+
+    cacheWrite.resolve();
+    await flushMicrotasks();
+    await advanceUntil(() => store.testTransferState().export == null);
+
+    expect(store.testTransferState().export).toBeNull();
+    expect(store.status).toBe("项目缓存已保存。");
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(store.status).toBe("游戏运行中");
+  });
+
+  it("clears a compiled-cache status when the initial request fails", async () => {
+    mockProjectSelection({
+      submittedAtMs: 0,
+      quickScanMs: 1,
+      cacheReadMs: 0,
+      sourceReadMs: 1,
+      submitMs: 1,
+      cacheImported: false,
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", { success: true, diagnostics: [] }),
+        runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+      ],
+    });
+    const store = useRuntimeStore();
+    await store.openProject();
+    await vi.advanceTimersByTimeAsync(16);
+    bridge.submitRuntime.mockRejectedValueOnce(new Error("cache request failed"));
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushMicrotasks();
+
+    expect(store.testTransferState().export).toBeNull();
+    expect(store.status).toBe("游戏运行中");
+    expect(store.logs.at(-1)?.message).toContain("项目缓存生成失败");
+  });
+
+  it("clears a compiled-cache status when cooperative preparation fails", async () => {
+    mockProjectSelection({
+      submittedAtMs: 0,
+      quickScanMs: 1,
+      cacheReadMs: 0,
+      sourceReadMs: 1,
+      submitMs: 1,
+      cacheImported: false,
+    });
+    let reportSent = false;
+    let preparationRejected = false;
+    let failureSent = false;
+    bridge.pump.mockImplementation(async () => {
+      if (!reportSent) {
+        reportSent = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("project_load_report", { success: true, diagnostics: [] }),
+            runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          ],
+        };
+      }
+      const cacheRequested = bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) =>
+          (message as { type?: string; value?: { kind?: string } }).type ===
+            "state_export_request" &&
+          (message as { value?: { kind?: string } }).value?.kind === "compiled_project_cache",
+      );
+      if (cacheRequested && !preparationRejected) {
+        preparationRejected = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent(
+              "command_rejected",
+              { message: "compiled project cache preparation started" },
+              1,
+            ),
+          ],
+        };
+      }
+      if (preparationRejected && !failureSent) {
+        failureSent = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("diagnostic", {
+              code: "runtime.compiled_cache_failed",
+              level: "warning",
+              message: "bytecode source differs from the project manifest",
+            }),
+          ],
+        };
+      }
+      return emptyBatch();
+    });
+    const store = useRuntimeStore();
+
+    await store.openProject();
+    await vi.advanceTimersByTimeAsync(1_100);
+
+    expect(store.testTransferState().export).toBeNull();
+    expect(store.status).toBe("游戏运行中");
+    expect(bridge.cancelCompiledCacheExport).toHaveBeenCalledOnce();
+    expect(store.logs.at(-1)?.message).toContain("项目缓存生成失败");
+    expect(
+      store.logNotifications.filter((notification) =>
+        notification.message.includes("runtime.compiled_cache_failed"),
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        level: "warning",
+        message:
+          "[runtime.compiled_cache_failed] bytecode source differs from the project manifest",
+      }),
+    ]);
+  });
+
+  it("keeps settings status above an active compiled-cache export", async () => {
+    const cacheWrite = deferred<void>();
+    const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
+    const preferencesWrite = deferred<Preferences>();
+    bridge.savePreferences.mockReturnValueOnce(preferencesWrite.promise);
+
+    const saving = store.savePreferences(defaultPreferences());
+    expect(store.status).toBe("正在保存客户端偏好…");
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(store.status).toMatch(/^正在保存客户端偏好… · 已等待 1 秒$/);
+    expect(store.status).not.toContain("后台生成项目缓存");
+
+    preferencesWrite.resolve(defaultPreferences());
+    await saving;
+    expect(store.status).toBe("设置已应用");
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(store.status).toContain("正在后台生成项目缓存");
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("state_export_chunk", {
+          transfer_id: 7,
+          offset: 3,
+          data: [4, 5, 6],
+          complete: true,
+        }),
+      ],
+    });
+    cacheWrite.resolve();
+    await flushMicrotasks();
+    await advanceUntil(() => store.testTransferState().export == null);
+    expect(store.status).toBe("项目缓存已保存。");
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(store.status).toBe("游戏运行中");
+  });
+
+  it("does not let a late cache completion cover active settings", async () => {
+    const cacheWrite = deferred<void>();
+    const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
+    const preferencesWrite = deferred<Preferences>();
+    bridge.savePreferences.mockReturnValueOnce(preferencesWrite.promise);
+    const saving = store.savePreferences(defaultPreferences());
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("state_export_chunk", {
+          transfer_id: 7,
+          offset: 3,
+          data: [4, 5, 6],
+          complete: true,
+        }),
+      ],
+    });
+
+    cacheWrite.resolve();
+    await flushMicrotasks();
+    await advanceUntil(() => store.testTransferState().export == null);
+
+    expect(store.status).toContain("正在保存客户端偏好");
+    preferencesWrite.resolve(defaultPreferences());
+    await saving;
+    expect(store.status).toBe("设置已应用");
+  });
+
+  it("does not let an earlier settings timer clear a later save", async () => {
+    const store = useRuntimeStore();
+    await store.savePreferences(defaultPreferences());
+    expect(store.status).toBe("设置已应用");
+    await vi.advanceTimersByTimeAsync(1_000);
+    const secondWrite = deferred<Preferences>();
+    bridge.savePreferences.mockReturnValueOnce(secondWrite.promise);
+
+    const secondSave = store.savePreferences(defaultPreferences());
+    await vi.advanceTimersByTimeAsync(1_100);
+
+    expect(store.status).toContain("正在保存客户端偏好");
+    secondWrite.resolve(defaultPreferences());
+    await secondSave;
+  });
+
+  it("invalidates settings feedback when the session restarts", async () => {
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.savePreferences(defaultPreferences());
+    expect(store.status).toBe("设置已应用");
+
+    await store.restart();
+    const restartedStatus = store.status;
+    expect(restartedStatus).not.toBe("设置已应用");
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(store.status).toBe(restartedStatus);
+  });
+
+  it("allows only one in-flight submission for every active input wait", async () => {
+    const wait = {
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    };
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+        runtimeEvent("presentation_snapshot", {
+          revision: 1,
+          title: "input gate",
+          history: { logical_lines: [] },
+          input_wait: wait,
+        }),
+        runtimeEvent("wait_changed", { type: "opened", value: wait }),
+      ],
+    });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+    bridge.submitRuntime.mockClear();
+
+    store.prompt = "412";
+    const first = store.submitText();
+    const duplicateText = store.submitText();
+    const duplicateButton = store.activate({ epoch: 2, id: 99 });
+    await Promise.all([first, duplicateText, duplicateButton]);
+
+    const inputs = bridge.submitRuntime.mock.calls.filter(
+      ([message]: unknown[]) => (message as { type?: string }).type === "input",
+    );
+    expect(inputs).toHaveLength(1);
+    expect((inputs[0] as unknown[] | undefined)?.[0]).toMatchObject({
+      value: {
+        wait_id: 17,
+        token: { epoch: 2, id: 5 },
+        intent: { type: "commit_text", value: "412" },
+      },
+    });
+    expect(store.canInteract).toBe(false);
+  });
+
+  it("submits only tokens that remain enabled in the current presentation", async () => {
+    const wait = {
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    };
+    const store = await storeWithInputWait(wait, [
+      runtimeEvent("presentation_delta", {
+        base_revision: 1,
+        new_revision: 2,
+        operations: [
+          {
+            type: "append_line",
+            line: {
+              line_id: 1,
+              temporary: false,
+              logical_line_start: true,
+              line_end: true,
+              alignment: "left",
+              runs: [
+                {
+                  type: "button",
+                  runs: [{ type: "text", text: "current", style: {} }],
+                  token: { epoch: 2, id: 6 },
+                  enabled: true,
+                  generation: 1,
+                },
+                {
+                  type: "button",
+                  runs: [{ type: "text", text: "expired", style: {} }],
+                  token: { epoch: 2, id: 7 },
+                  enabled: false,
+                  generation: 0,
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    ]);
+    bridge.submitRuntime.mockClear();
+
+    await store.activate({ epoch: 2, id: 7 });
+    expect(bridge.submitRuntime).not.toHaveBeenCalled();
+
+    await store.activate({ epoch: 2, id: 6 });
+    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "input",
+        value: expect.objectContaining({
+          wait_id: 17,
+          intent: { type: "activate", value: { epoch: 2, id: 6 } },
+        }),
+      }),
+      undefined,
+    );
+  });
+
+  it("shares the active-wait lock across text, buttons, left click, and right click", async () => {
+    const store = await storeWithInputWait({
+      kind: "enter_key",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    await Promise.all([
+      store.continueFromViewport(),
+      store.skip(),
+      store.submitText(),
+      store.activate({ epoch: 2, id: 99 }),
+    ]);
+
+    const inputs = bridge.submitRuntime.mock.calls.filter(
+      ([message]: unknown[]) => (message as { type?: string }).type === "input",
+    );
+    expect(inputs).toHaveLength(1);
+    expect((inputs[0] as unknown[] | undefined)?.[0]).toMatchObject({
+      value: { wait_id: 17, intent: { type: "enter" }, message_skip: false },
+    });
+  });
+
+  it("submits AnyKey once from a viewport left click", async () => {
+    const store = await storeWithInputWait({
+      kind: "any_key",
+      wait_id: 21,
+      submission_token: { epoch: 2, id: 8 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    await store.continueFromViewport();
+
+    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "input",
+        value: expect.objectContaining({
+          wait_id: 21,
+          intent: { type: "any_key", value: "\n" },
+          message_skip: false,
+        }),
+      }),
+      undefined,
+    );
+  });
+
+  it("starts continuous message skipping from an AnyKey viewport right click", async () => {
+    const store = await storeWithInputWait({
+      kind: "any_key",
+      wait_id: 22,
+      submission_token: { epoch: 2, id: 9 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    await store.skip();
+
+    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "input",
+        value: expect.objectContaining({
+          wait_id: 22,
+          intent: { type: "any_key", value: "\n" },
+          message_skip: true,
+        }),
+      }),
+      undefined,
+    );
+  });
+
+  it("submits one ordinary keyboard event for an AnyKey wait", async () => {
+    const store = useRuntimeStore();
+    await store.initialize();
+    await storeWithInputWait({
+      kind: "any_key",
+      wait_id: 23,
+      submission_token: { epoch: 2, id: 10 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: " ", code: "Space" }));
+    await flushMicrotasks();
+
+    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "input",
+        value: expect.objectContaining({
+          wait_id: 23,
+          intent: { type: "any_key", value: " " },
+          message_skip: false,
+        }),
+      }),
+      undefined,
+    );
+  });
+
+  it("shares one AnyKey input lock across keyboard, viewport, form, and button paths", async () => {
+    const store = useRuntimeStore();
+    await store.initialize();
+    await storeWithInputWait({
+      kind: "any_key",
+      wait_id: 24,
+      submission_token: { epoch: 2, id: 11 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "x", code: "KeyX" }));
+    await Promise.all([
+      store.continueFromViewport(),
+      store.skip(),
+      store.submitText(),
+      store.activate({ epoch: 2, id: 99 }),
+    ]);
+    await flushMicrotasks();
+
+    const inputs = bridge.submitRuntime.mock.calls.filter(
+      ([message]: unknown[]) => (message as { type?: string }).type === "input",
+    );
+    expect(inputs).toHaveLength(1);
+    expect((inputs[0] as unknown[] | undefined)?.[0]).toMatchObject({
+      value: {
+        wait_id: 24,
+        token: { epoch: 2, id: 11 },
+        intent: { type: "any_key", value: "x" },
+        message_skip: false,
+      },
+    });
+    expect(store.canInteract).toBe(false);
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("wait_changed", { type: "closed", value: null })],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.canInteract).toBe(false);
+
+    const nextWait = {
+      kind: "any_key",
+      wait_id: 25,
+      submission_token: { epoch: 2, id: 12 },
+    };
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("wait_changed", { type: "opened", value: nextWait })],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.canInteract).toBe(true);
+  });
+
+  it("ignores repeated, modified, and modifier-only keys for AnyKey waits", async () => {
+    const store = useRuntimeStore();
+    await store.initialize();
+    await storeWithInputWait({
+      kind: "any_key",
+      wait_id: 26,
+      submission_token: { epoch: 2, id: 13 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    for (const event of [
+      new KeyboardEvent("keydown", { key: "x", repeat: true }),
+      new KeyboardEvent("keydown", { key: "x", ctrlKey: true }),
+      new KeyboardEvent("keydown", { key: "x", altKey: true }),
+      new KeyboardEvent("keydown", { key: "x", metaKey: true }),
+      new KeyboardEvent("keydown", { key: "x", shiftKey: true }),
+      new KeyboardEvent("keydown", { key: "Control" }),
+      new KeyboardEvent("keydown", { key: "Alt" }),
+      new KeyboardEvent("keydown", { key: "Meta" }),
+      new KeyboardEvent("keydown", { key: "Shift" }),
+    ])
+      document.dispatchEvent(event);
+    await flushMicrotasks();
+
+    expect(bridge.submitRuntime).not.toHaveBeenCalled();
+    expect(store.canInteract).toBe(true);
+  });
+
+  it("releases the input lock when a wait closes or is updated to a new identity", async () => {
+    const store = await storeWithInputWait({
+      kind: "enter_key",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    await store.continueFromViewport();
+    expect(store.canInteract).toBe(false);
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("wait_changed", { type: "closed", value: null })],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+
+    const nextWait = {
+      kind: "enter_key",
+      wait_id: 18,
+      submission_token: { epoch: 2, id: 6 },
+    };
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("wait_changed", { type: "opened", value: nextWait })],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.canInteract).toBe(true);
+
+    await store.continueFromViewport();
+    expect(store.canInteract).toBe(false);
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("wait_changed", {
+          type: "updated",
+          value: {
+            ...nextWait,
+            wait_id: 19,
+            submission_token: { epoch: 2, id: 7 },
+          },
+        }),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.canInteract).toBe(true);
+  });
+
+  it("unlocks a rejected wait, isolates late rejections, and accepts the next wait", async () => {
+    let nextMessageId = 10;
+    bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    });
+    bridge.submitRuntime.mockClear();
+    store.prompt = "1";
+    await store.submitText();
+    expect(store.canInteract).toBe(false);
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("command_rejected", { message: "invalid input" }, 10)],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.canInteract).toBe(true);
+    await store.submitText();
+
+    const nextWait = {
+      kind: "integer_value",
+      wait_id: 18,
+      submission_token: { epoch: 2, id: 6 },
+    };
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("wait_changed", { type: "opened", value: nextWait }),
+        runtimeEvent("command_rejected", { message: "late old rejection" }, 10),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.canInteract).toBe(true);
+    store.prompt = "2";
+    await store.submitText();
+
+    const inputs = bridge.submitRuntime.mock.calls.filter(
+      ([message]: unknown[]) => (message as { type?: string }).type === "input",
+    );
+    expect(inputs.map((call: unknown[]) => (call[0] as any).value.wait_id)).toEqual([17, 17, 18]);
+  });
+
+  it("unlocks the active wait after a transport submission failure", async () => {
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    });
+    bridge.submitRuntime.mockReset();
+    bridge.submitRuntime.mockRejectedValueOnce(new Error("transport failed"));
+    store.prompt = "1";
+
+    await expect(store.submitText()).rejects.toThrow("transport failed");
+    expect(store.canInteract).toBe(true);
+    bridge.submitRuntime.mockResolvedValueOnce(11);
+    await store.submitText();
+    expect(store.canInteract).toBe(false);
+  });
+
+  it("retries one correlated timed-wait race on the next wait of the same kind", async () => {
+    let nextMessageId = 10;
+    bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+      deadline_ns: 1_000_000_000,
+    });
+    bridge.submitRuntime.mockClear();
+    store.prompt = "412";
+    await store.submitText();
+
+    const nextWait = {
+      kind: "integer_value",
+      wait_id: 18,
+      submission_token: { epoch: 2, id: 6 },
+      deadline_ns: 1_100_000_000,
+    };
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("wait_changed", { type: "opened", value: nextWait }),
+        runtimeEvent("command_rejected", { message: "input wait identity is stale" }, 10),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+
+    const inputs = bridge.submitRuntime.mock.calls.filter(
+      ([message]: unknown[]) => (message as { type?: string }).type === "input",
+    );
+    expect(inputs.map((call: unknown[]) => (call[0] as any).value.wait_id)).toEqual([17, 18]);
+    expect((inputs[1] as unknown[] | undefined)?.[0]).toMatchObject({
+      value: { intent: { type: "commit_text", value: "412" }, message_skip: false },
+    });
+    expect(store.logs.some((entry) => entry.message.includes("input wait identity is stale"))).toBe(
+      false,
+    );
+    expect(store.canInteract).toBe(false);
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("command_rejected", { message: "input wait identity is stale" }, 11)],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "input",
+      ),
+    ).toHaveLength(2);
+    expect(store.logs.some((entry) => entry.message.includes("input wait identity is stale"))).toBe(
+      true,
+    );
+    expect(store.canInteract).toBe(true);
+  });
+
+  it("does not advance a timed wait beside input and resumes timing after rejection", async () => {
+    let nextMessageId = 20;
+    bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+      deadline_ns: 1_000_000_000,
+    });
+    nextMessageId = 20;
+    bridge.submitRuntime.mockClear();
+    store.prompt = "1";
+    await store.submitText();
+    await vi.advanceTimersByTimeAsync(64);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "advance_time",
+      ),
+    ).toHaveLength(0);
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("command_rejected", { message: "invalid input" }, 20)],
+    });
+    await vi.advanceTimersByTimeAsync(64);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "advance_time",
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("serializes undo with active-wait input and unlocks it on rejection", async () => {
+    let nextMessageId = 30;
+    bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
+    const store = await storeWithInputWait(
+      {
+        kind: "integer_value",
+        wait_id: 17,
+        submission_token: { epoch: 2, id: 5 },
+      },
+      [runtimeEvent("input_undo_state_changed", { token: { epoch: 2, id: 9 } })],
+    );
+    bridge.submitRuntime.mockClear();
+
+    await Promise.all([store.undo(), store.undo(), store.submitText()]);
+    expect(bridge.submitRuntime.mock.calls.map((call: unknown[]) => (call[0] as any).type)).toEqual(
+      ["input_undo_request"],
+    );
+    expect(store.canInteract).toBe(false);
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("command_rejected", { message: "undo rejected" }, 30)],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.canInteract).toBe(true);
+    store.prompt = "2";
+    await store.submitText();
+    expect(bridge.submitRuntime).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "input" }),
+      undefined,
+    );
+  });
+
+  it("filters only correlated stale projection rejections", async () => {
+    let nextMessageId = 40;
+    bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
+    bridge.pump.mockResolvedValueOnce(emptyBatch()).mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "command_rejected",
+          { message: "projection observation does not match the canonical presentation" },
+          40,
+        ),
+        runtimeEvent("command_rejected", { message: "input wait identity is stale" }, 999),
+        runtimeEvent(
+          "command_rejected",
+          { message: "projection observation does not match the canonical presentation" },
+          998,
+        ),
+      ],
+    });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await store.projectViewport({
+      width: 100,
+      height: 80,
+      lineColumns: 20,
+      chromeWidth: 0,
+      chromeHeight: 0,
+    });
+    await vi.advanceTimersByTimeAsync(32);
+
+    expect(store.logs.some((entry) => entry.message.includes("input wait identity is stale"))).toBe(
+      true,
+    );
+    expect(
+      store.logs.filter((entry) =>
+        entry.message.includes("projection observation does not match the canonical presentation"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("cancels a pending compiled-cache writer before restarting the project", async () => {
+    const cacheWrite = deferred<void>();
+    const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
+
+    const restarting = store.restart();
+    await flushMicrotasks();
+
+    expect(bridge.cancelCompiledCacheExport).not.toHaveBeenCalled();
+    expect(bridge.createSession).toHaveBeenCalledOnce();
+
+    cacheWrite.resolve();
+    await restarting;
+
+    expect(bridge.cancelCompiledCacheExport).toHaveBeenCalledOnce();
+    expect(bridge.createSession).toHaveBeenCalledTimes(2);
+    expect(bridge.cancelCompiledCacheExport.mock.invocationCallOrder[0]).toBeLessThan(
+      bridge.createSession.mock.invocationCallOrder[1]!,
+    );
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) =>
+          (message as { type?: string }).type === "state_export_chunk_request",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("cancels a pending compiled-cache writer before reloading the project", async () => {
+    const cacheWrite = deferred<void>();
+    const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
+
+    const reloading = store.reloadProject();
+    await flushMicrotasks();
+
+    expect(bridge.cancelCompiledCacheExport).not.toHaveBeenCalled();
+    expect(bridge.reloadProject).not.toHaveBeenCalled();
+
+    cacheWrite.resolve();
+    await reloading;
+
+    expect(bridge.cancelCompiledCacheExport).toHaveBeenCalledOnce();
+    expect(bridge.reloadProject).toHaveBeenCalledOnce();
+    expect(bridge.cancelCompiledCacheExport.mock.invocationCallOrder[0]).toBeLessThan(
+      bridge.reloadProject.mock.invocationCallOrder[0]!,
+    );
+    expect(store.status).not.toBe("项目缓存已保存。");
+    expect(store.status).not.toContain("正在后台生成项目缓存");
+  });
+
+  it("cleans up a rejected compiled-cache write without requesting another chunk", async () => {
+    const cacheWrite = deferred<void>();
+    const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
+
+    cacheWrite.reject(undefined);
+    await advanceUntil(() =>
+      store.logs.some((entry) => entry.message.includes("项目缓存生成失败")),
+    );
+
+    expect(bridge.cancelCompiledCacheExport).toHaveBeenCalledOnce();
+    expect(store.testTransferState().export).toBeNull();
+    expect(store.logs.at(-1)?.message).toContain("项目缓存生成失败");
+    expect(store.status).toBe("游戏运行中");
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) =>
+          (message as { type?: string }).type === "state_export_chunk_request",
+      ),
+    ).toHaveLength(1);
+  });
+});
