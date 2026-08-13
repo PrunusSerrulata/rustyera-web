@@ -116,14 +116,16 @@ fn obsolete_global_font_overrides_yield_to_project_configuration() {
             font_size_override_px: Some(24),
             image_scale: 1.75,
             master_volume: 0.4,
+            trust_project_file_metadata: true,
         }
         .normalized();
 
-        assert_eq!(normalized.schema_version, 3);
+        assert_eq!(normalized.schema_version, 4);
         assert_eq!(normalized.font_family_override, None);
         assert_eq!(normalized.font_size_override_px, None);
         assert!((normalized.image_scale - 1.75).abs() < f64::EPSILON);
         assert!((normalized.master_volume - 0.4).abs() < f64::EPSILON);
+        assert!(normalized.trust_project_file_metadata);
     }
 }
 
@@ -141,7 +143,7 @@ fn stored_camel_case_font_overrides_migrate_without_resetting_other_preferences(
     .unwrap()
     .normalized();
 
-    assert_eq!(stored.schema_version, 3);
+    assert_eq!(stored.schema_version, 4);
     assert_eq!(stored.font_family_override, None);
     assert_eq!(stored.font_size_override_px, None);
     assert!((stored.image_scale - 1.75).abs() < f64::EPSILON);
@@ -156,6 +158,7 @@ fn current_accessibility_font_overrides_remain_normalized() {
         font_size_override_px: Some(100),
         image_scale: 2.0,
         master_volume: 0.5,
+        trust_project_file_metadata: true,
     }
     .normalized();
 

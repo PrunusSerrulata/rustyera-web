@@ -60,6 +60,17 @@ struct AtomicFileWriter {
     target: PathBuf,
 }
 
+fn emit_scanning_progress(app: &AppHandle, completed: usize, total: usize) {
+    let _ = app.emit(
+        "project-progress",
+        ProjectProgress {
+            stage: ProjectProgressStage::Scanning,
+            completed: u64::try_from(completed).unwrap_or(u64::MAX),
+            total: u64::try_from(total).unwrap_or(u64::MAX),
+        },
+    );
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Preferences {
@@ -68,6 +79,8 @@ struct Preferences {
     font_size_override_px: Option<u8>,
     image_scale: f64,
     master_volume: f64,
+    #[serde(default)]
+    trust_project_file_metadata: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -78,6 +91,12 @@ struct ProjectOpenMetrics {
     source_read_ms: f64,
     submit_ms: f64,
     cache_imported: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_index_trusted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_index_reused_files: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_index_hashed_files: Option<usize>,
 }
 
 impl Preferences {
@@ -86,7 +105,7 @@ impl Preferences {
         // exposes. Clear those unremovable values so project FontName/FontSize can hot-apply;
         // schema 3 values are deliberate accessibility overrides and remain supported.
         let obsolete_font_overrides = self.schema_version < 3;
-        self.schema_version = 3;
+        self.schema_version = 4;
         if obsolete_font_overrides {
             self.font_family_override = None;
         }
@@ -159,16 +178,7 @@ async fn stage_full_project_manifest(
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         state.full_project_cancelled.store(false, Ordering::Relaxed);
-        let progress = |completed, total| {
-            let _ = app.emit(
-                "project-progress",
-                ProjectProgress {
-                    stage: ProjectProgressStage::Scanning,
-                    completed: u64::try_from(completed).unwrap_or(u64::MAX),
-                    total: u64::try_from(total).unwrap_or(u64::MAX),
-                },
-            );
-        };
+        let progress = |completed, total| emit_scanning_progress(&app, completed, total);
         let manifest = {
             let mut project = state.project.lock().map_err(lock_error)?;
             project
@@ -295,18 +305,10 @@ async fn open_project(
 ) -> Result<ProjectOpenMetrics, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let scan_progress = |completed, total| {
-            let _ = app.emit(
-                "project-progress",
-                ProjectProgress {
-                    stage: ProjectProgressStage::Scanning,
-                    completed: u64::try_from(completed).unwrap_or(u64::MAX),
-                    total: u64::try_from(total).unwrap_or(u64::MAX),
-                },
-            );
-        };
+        let scan_progress = |completed, total| emit_scanning_progress(&app, completed, total);
         let started = Instant::now();
         let mut host = ProjectHost::scan_quick_with_progress(&path, 1, Some(&scan_progress))?;
+        let (source_index_reused_files, source_index_hashed_files) = host.source_index_stats();
         let quick_scan_ms = started.elapsed().as_secs_f64() * 1000.0;
         let identity = host.identity();
         let cache_started = Instant::now();
@@ -345,6 +347,9 @@ async fn open_project(
             source_read_ms,
             submit_ms,
             cache_imported,
+            source_index_trusted: Some(true),
+            source_index_reused_files: Some(source_index_reused_files),
+            source_index_hashed_files: Some(source_index_hashed_files),
         })
     })
     .await
@@ -384,6 +389,9 @@ async fn open_project_file(
             source_read_ms: 0.0,
             submit_ms,
             cache_imported: true,
+            source_index_trusted: None,
+            source_index_reused_files: None,
+            source_index_hashed_files: None,
         })
     })
     .await
@@ -394,16 +402,7 @@ async fn open_project_file(
 async fn submit_project_source(app: AppHandle, state: State<'_, AppState>) -> Result<u64, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let scan_progress = |completed, total| {
-            let _ = app.emit(
-                "project-progress",
-                ProjectProgress {
-                    stage: ProjectProgressStage::Scanning,
-                    completed: u64::try_from(completed).unwrap_or(u64::MAX),
-                    total: u64::try_from(total).unwrap_or(u64::MAX),
-                },
-            );
-        };
+        let scan_progress = |completed, total| emit_scanning_progress(&app, completed, total);
         let manifest = state
             .project
             .lock()
@@ -442,16 +441,7 @@ async fn prepare_project_reload_baseline(
 ) -> Result<(), String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let scan_progress = |completed, total| {
-            let _ = app.emit(
-                "project-progress",
-                ProjectProgress {
-                    stage: ProjectProgressStage::Scanning,
-                    completed: u64::try_from(completed).unwrap_or(u64::MAX),
-                    total: u64::try_from(total).unwrap_or(u64::MAX),
-                },
-            );
-        };
+        let scan_progress = |completed, total| emit_scanning_progress(&app, completed, total);
         state
             .project
             .lock()
@@ -473,16 +463,7 @@ async fn reload_project(
 ) -> Result<u64, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let scan_progress = |completed, total| {
-            let _ = app.emit(
-                "project-progress",
-                ProjectProgress {
-                    stage: ProjectProgressStage::Scanning,
-                    completed: u64::try_from(completed).unwrap_or(u64::MAX),
-                    total: u64::try_from(total).unwrap_or(u64::MAX),
-                },
-            );
-        };
+        let scan_progress = |completed, total| emit_scanning_progress(&app, completed, total);
         let mut project = state.project.lock().map_err(lock_error)?;
         let host = project
             .as_mut()
@@ -853,11 +834,12 @@ fn preferences_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn default_preferences() -> Preferences {
     Preferences {
-        schema_version: 3,
+        schema_version: 4,
         font_family_override: None,
         font_size_override_px: None,
         image_scale: 1.0,
         master_volume: 1.0,
+        trust_project_file_metadata: false,
     }
 }
 

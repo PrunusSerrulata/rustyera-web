@@ -3,11 +3,12 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
 #[cfg(not(unix))]
 use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant};
 
 use encoding_rs::{GBK, SHIFT_JIS, UTF_8};
 use era_protocol::ProtocolBytes;
@@ -28,6 +29,8 @@ const AUDIO_SUFFIXES: &[&str] = &["wav", "mp3", "ogg", "opus", "aac", "m4a", "fl
 const FONT_SUFFIXES: &[&str] = &["otf", "ttc", "ttf", "woff", "woff2"];
 const SOURCE_INDEX_VERSION: u32 = 1;
 const COMPILED_CACHE_NAME: &str = "compiled-project.reracache";
+const STABLE_SCAN_ATTEMPTS: usize = 3;
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(34);
 
 #[derive(Clone)]
 struct IndexedFile {
@@ -68,6 +71,7 @@ pub struct ProjectHost {
     project_file: Option<PathBuf>,
     runtime_manifest_sparse: bool,
     pending_reload: Option<PendingProjectReload>,
+    source_index_stats: (usize, usize),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -155,11 +159,11 @@ impl ProjectHost {
         if let Some(progress) = progress {
             progress(0, entries.len());
         }
-        let mut files = Vec::with_capacity(entries.len());
-        for (index, (path, category)) in entries.iter().enumerate() {
-            files.push(read_file(&root, path, *category)?);
-            report_scan_progress(progress, index + 1, entries.len());
-        }
+        let mut files = parallel_ordered(entries.len(), progress, None, |index| {
+            let (path, category) = &entries[index];
+            stable_read_file(&root, path, *category).map(|(file, _)| file)
+        })?;
+        let file_count = files.len();
         files.sort_by(|left, right| {
             left.relative_path
                 .to_lowercase()
@@ -181,6 +185,7 @@ impl ProjectHost {
             project_file: None,
             runtime_manifest_sparse: false,
             pending_reload: None,
+            source_index_stats: (0, file_count),
         })
     }
 
@@ -203,6 +208,16 @@ impl ProjectHost {
         if !root.is_dir() {
             return Err("selected project path is not a directory".into());
         }
+        retry_stable_scan(|| Self::scan_quick_once(root.clone(), revision, progress))
+    }
+
+    fn scan_quick_once(
+        root: PathBuf,
+        revision: u64,
+        progress: Option<&dyn Fn(usize, usize)>,
+    ) -> Result<Self, String> {
+        type IndexedScanResult = (IndexedFile, SourceIndexEntry);
+
         let index_path = root.join(".rustyera/cache/source-index-v1.json");
         let stored_index = fs::read(&index_path)
             .ok()
@@ -214,66 +229,42 @@ impl ProjectHost {
             .cloned()
             .unwrap_or_default();
         let canonical_roots = canonical_source_roots(&root)?;
-        let mut indexed_files = Vec::new();
-        let mut next_index = BTreeMap::new();
         let entries = project_entries(&root, &canonical_roots)?;
         if let Some(progress) = progress {
             progress(0, entries.len());
         }
-        for (index, (path, category)) in entries.iter().enumerate() {
-            let relative_path = relative_path(&root, path)?;
-            let metadata = fs::metadata(path)
-                .map_err(|error| format!("cannot stat {relative_path}: {error}"))?;
-            let signature = metadata_signature(&metadata);
-            let prior = previous
-                .get(&relative_path)
-                .filter(|prior| prior.signature == signature && prior.category == *category as u8)
-                .and_then(|prior| decode_hash(&prior.hash).ok().map(|hash| (hash, prior.size)));
-            let (content_hash, size, pending_file) = if let Some((hash, size)) = prior {
-                (hash, size, None)
-            } else {
-                let file = read_file(&root, path, *category)?;
-                let content_hash = file
-                    .content_hash
-                    .as_ref()
-                    .and_then(|hash| hash.as_slice().try_into().ok())
-                    .ok_or_else(|| format!("{relative_path} has an invalid content hash"))?;
-                let size = match &file.payload {
-                    FilePayload::Utf8(text) => text.len(),
-                    FilePayload::Bytes(bytes) => bytes.as_slice().len(),
-                    FilePayload::IoError(_) => 0,
-                };
-                (
-                    content_hash,
-                    u64::try_from(size).map_err(|_| format!("{relative_path} is too large"))?,
-                    Some(file),
-                )
-            };
-            next_index.insert(
-                relative_path.clone(),
-                SourceIndexEntry {
-                    category: *category as u8,
-                    signature,
-                    hash: encode_hash(&content_hash),
-                    size,
-                },
-            );
-            indexed_files.push(IndexedFile {
-                relative_path,
-                source_path: Some(path.clone()),
-                category: *category,
-                content_hash,
-                pending_file,
-                source_signature: Some(signature),
-            });
-            report_scan_progress(progress, index + 1, entries.len());
-        }
+        let indexed: Vec<IndexedScanResult> =
+            parallel_ordered(entries.len(), progress, None, |index| {
+                let (path, category) = &entries[index];
+                scan_indexed_entry(&root, path, *category, &previous)
+            })?;
+        let (mut indexed_files, next_index): (Vec<_>, BTreeMap<_, _>) = indexed
+            .into_iter()
+            .map(|(file, index_entry)| {
+                let relative_path = file.relative_path.clone();
+                (file, (relative_path, index_entry))
+            })
+            .unzip();
         indexed_files.sort_by(|left, right| {
             left.relative_path
                 .to_lowercase()
                 .cmp(&right.relative_path.to_lowercase())
                 .then_with(|| left.relative_path.cmp(&right.relative_path))
         });
+        let current_entries = project_entries(&root, &canonical_roots)?;
+        if current_entries != entries
+            || indexed_files.iter().any(|indexed| {
+                let Some(path) = &indexed.source_path else {
+                    return true;
+                };
+                indexed.source_signature.is_none_or(|signature| {
+                    fs::metadata(path)
+                        .map_or(true, |metadata| metadata_signature(&metadata) != signature)
+                })
+            })
+        {
+            return Err("project changed while it was being scanned".into());
+        }
         if stored_index.is_none() || previous != next_index {
             write_source_index(
                 &index_path,
@@ -283,6 +274,16 @@ impl ProjectHost {
                 },
             )?;
         }
+        let source_index_stats = (
+            indexed_files
+                .iter()
+                .filter(|file| file.pending_file.is_none())
+                .count(),
+            indexed_files
+                .iter()
+                .filter(|file| file.pending_file.is_some())
+                .count(),
+        );
         Ok(Self {
             root,
             manifest: None,
@@ -292,6 +293,7 @@ impl ProjectHost {
             project_file: None,
             runtime_manifest_sparse: false,
             pending_reload: None,
+            source_index_stats,
         })
     }
 
@@ -335,11 +337,16 @@ impl ProjectHost {
             project_file: Some(path),
             runtime_manifest_sparse: false,
             pending_reload: None,
+            source_index_stats: (0, 0),
         })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn source_index_stats(&self) -> (usize, usize) {
+        self.source_index_stats
     }
 
     pub fn font_sources(&self) -> Vec<ProjectFontSource> {
@@ -557,52 +564,10 @@ impl ProjectHost {
             if let Some(progress) = progress {
                 progress(0, self.indexed_files.len());
             }
-            let total = self.indexed_files.len();
-            let worker_count = thread::available_parallelism()
-                .map_or(1, std::num::NonZero::get)
-                .min(8)
-                .min(total.max(1));
-            let chunk_size = total.max(1).div_ceil(worker_count);
             let root = &self.root;
-            let indexed_files = &mut self.indexed_files;
-            let files = thread::scope(|scope| -> Result<Vec<SubmittedFile>, String> {
-                let (sender, receiver) = mpsc::channel();
-                for (chunk_index, chunk) in indexed_files.chunks_mut(chunk_size).enumerate() {
-                    let sender = sender.clone();
-                    scope.spawn(move || {
-                        let base = chunk_index.saturating_mul(chunk_size);
-                        for (offset, indexed) in chunk.iter_mut().enumerate() {
-                            if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-                                let _ = sender.send((
-                                    base + offset,
-                                    Err("full project export cancelled".to_owned()),
-                                ));
-                                break;
-                            }
-                            let result = materialize_indexed_file(root, indexed);
-                            if sender.send((base + offset, result)).is_err() {
-                                break;
-                            }
-                        }
-                    });
-                }
-                drop(sender);
-
-                let mut ordered = (0..total).map(|_| None).collect::<Vec<_>>();
-                for completed in 1..=total {
-                    if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-                        return Err("full project export cancelled".into());
-                    }
-                    let (index, file) = receiver
-                        .recv()
-                        .map_err(|error| format!("project file reader stopped early: {error}"))?;
-                    ordered[index] = Some(file?);
-                    report_scan_progress(progress, completed, total);
-                }
-                ordered
-                    .into_iter()
-                    .map(|file| file.ok_or_else(|| "project file reader omitted an entry".into()))
-                    .collect()
+            let indexed_files = &self.indexed_files;
+            let files = parallel_ordered(indexed_files.len(), progress, cancelled, |index| {
+                materialize_indexed_file(root, &indexed_files[index])
             })?;
             let manifest = ProjectManifest {
                 project_revision: self.revision,
@@ -610,6 +575,9 @@ impl ProjectHost {
             };
             if era_web_bridge::project_identity(&manifest)? != self.identity() {
                 return Err("project changed while its source files were being loaded".into());
+            }
+            for indexed in &mut self.indexed_files {
+                indexed.pending_file = None;
             }
             self.manifest = Some(manifest);
         }
@@ -945,17 +913,90 @@ fn project_entries(
     Ok(entries)
 }
 
-fn report_scan_progress(progress: Option<&dyn Fn(usize, usize)>, completed: usize, total: usize) {
-    let percent = completed.saturating_mul(100).checked_div(total);
-    let previous_percent = completed
-        .saturating_sub(1)
-        .saturating_mul(100)
-        .checked_div(total);
-    if (total == 0 || completed == total || percent > previous_percent)
-        && let Some(progress) = progress
-    {
-        progress(completed, total);
+struct ProgressGate<'a> {
+    callback: Option<&'a dyn Fn(usize, usize)>,
+    last: Option<(usize, usize)>,
+    last_emitted: Instant,
+}
+
+impl<'a> ProgressGate<'a> {
+    fn new(callback: Option<&'a dyn Fn(usize, usize)>) -> Self {
+        Self {
+            callback,
+            last: None,
+            last_emitted: Instant::now(),
+        }
     }
+
+    fn report(&mut self, completed: usize, total: usize) {
+        let value = (completed, total);
+        if self.last == Some(value) {
+            return;
+        }
+        let boundary = completed == 0 || completed >= total;
+        if boundary || self.last_emitted.elapsed() >= PROGRESS_INTERVAL {
+            if let Some(callback) = self.callback {
+                callback(completed, total);
+            }
+            self.last = Some(value);
+            self.last_emitted = Instant::now();
+        }
+    }
+}
+
+fn parallel_ordered<T: Send>(
+    total: usize,
+    progress: Option<&dyn Fn(usize, usize)>,
+    cancelled: Option<&AtomicBool>,
+    operation: impl Fn(usize) -> Result<T, String> + Sync,
+) -> Result<Vec<T>, String> {
+    if total == 0 {
+        return Ok(Vec::new());
+    }
+    let workers = thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(8)
+        .min(total);
+    let next = AtomicUsize::new(0);
+    let mut ordered = (0..total).map(|_| None).collect::<Vec<_>>();
+    thread::scope(|scope| {
+        let (sender, receiver) = mpsc::channel();
+        for _ in 0..workers {
+            let sender = sender.clone();
+            let operation = &operation;
+            let next = &next;
+            scope.spawn(move || {
+                loop {
+                    if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                        break;
+                    }
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= total {
+                        break;
+                    }
+                    if sender.send((index, operation(index))).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(sender);
+        let mut gate = ProgressGate::new(progress);
+        for (completed, (index, result)) in receiver.into_iter().enumerate() {
+            ordered[index] = Some(result);
+            gate.report(completed + 1, total);
+        }
+    });
+    if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        return Err("full project export cancelled".into());
+    }
+    ordered
+        .into_iter()
+        .enumerate()
+        .map(|(index, result)| {
+            result.ok_or_else(|| format!("project file reader omitted entry {index}"))?
+        })
+        .collect()
 }
 
 fn indexed_file(file: &SubmittedFile) -> Result<IndexedFile, String> {
@@ -1310,10 +1351,7 @@ fn read_file(root: &Path, path: &Path, category: FileCategory) -> Result<Submitt
     })
 }
 
-fn materialize_indexed_file(
-    root: &Path,
-    indexed: &mut IndexedFile,
-) -> Result<SubmittedFile, String> {
+fn materialize_indexed_file(root: &Path, indexed: &IndexedFile) -> Result<SubmittedFile, String> {
     let path = indexed
         .source_path
         .clone()
@@ -1322,13 +1360,111 @@ fn materialize_indexed_file(
         fs::metadata(&path).is_ok_and(|metadata| metadata_signature(&metadata) == expected)
     });
     if signature_matches {
-        indexed
-            .pending_file
-            .take()
-            .map_or_else(|| read_file(root, &path, indexed.category), Ok)
+        indexed.pending_file.clone().map_or_else(
+            || stable_read_file(root, &path, indexed.category).map(|(file, _)| file),
+            Ok,
+        )
     } else {
-        read_file(root, &path, indexed.category)
+        stable_read_file(root, &path, indexed.category).map(|(file, _)| file)
     }
+}
+
+fn stable_read_file(
+    root: &Path,
+    path: &Path,
+    category: FileCategory,
+) -> Result<(SubmittedFile, [u64; 5]), String> {
+    let relative = relative_path(root, path)?;
+    stable_read(
+        &relative,
+        || {
+            fs::metadata(path)
+                .map(|metadata| metadata_signature(&metadata))
+                .map_err(|error| format!("cannot stat {relative}: {error}"))
+        },
+        || read_file(root, path, category),
+    )
+}
+
+fn stable_read<T>(
+    relative_path: &str,
+    mut signature: impl FnMut() -> Result<[u64; 5], String>,
+    mut read: impl FnMut() -> Result<T, String>,
+) -> Result<(T, [u64; 5]), String> {
+    for _ in 0..STABLE_SCAN_ATTEMPTS {
+        let before = signature()?;
+        let value = read()?;
+        let after = signature()?;
+        if before == after {
+            return Ok((value, after));
+        }
+    }
+    Err(format!(
+        "{relative_path} changed repeatedly while it was being read"
+    ))
+}
+
+fn retry_stable_scan<T>(mut scan: impl FnMut() -> Result<T, String>) -> Result<T, String> {
+    for _ in 0..STABLE_SCAN_ATTEMPTS {
+        match scan() {
+            Err(error) if error == "project changed while it was being scanned" => {}
+            result => return result,
+        }
+    }
+    Err("project changed repeatedly while it was being scanned".into())
+}
+
+fn scan_indexed_entry(
+    root: &Path,
+    path: &Path,
+    category: FileCategory,
+    previous: &BTreeMap<String, SourceIndexEntry>,
+) -> Result<(IndexedFile, SourceIndexEntry), String> {
+    let relative_path = relative_path(root, path)?;
+    let metadata =
+        fs::metadata(path).map_err(|error| format!("cannot stat {relative_path}: {error}"))?;
+    let signature = metadata_signature(&metadata);
+    let prior = previous
+        .get(&relative_path)
+        .filter(|prior| prior.signature == signature && prior.category == category as u8)
+        .and_then(|prior| decode_hash(&prior.hash).ok().map(|hash| (hash, prior.size)));
+    let (content_hash, size, pending_file, signature) = if let Some((hash, size)) = prior {
+        (hash, size, None, signature)
+    } else {
+        let (file, stable_signature) = stable_read_file(root, path, category)?;
+        let content_hash = file
+            .content_hash
+            .as_ref()
+            .and_then(|hash| hash.as_slice().try_into().ok())
+            .ok_or_else(|| format!("{relative_path} has an invalid content hash"))?;
+        let size = match &file.payload {
+            FilePayload::Utf8(text) => text.len(),
+            FilePayload::Bytes(bytes) => bytes.as_slice().len(),
+            FilePayload::IoError(_) => 0,
+        };
+        (
+            content_hash,
+            u64::try_from(size).map_err(|_| format!("{relative_path} is too large"))?,
+            Some(file),
+            stable_signature,
+        )
+    };
+    Ok((
+        IndexedFile {
+            relative_path,
+            source_path: Some(path.to_owned()),
+            category,
+            content_hash,
+            pending_file,
+            source_signature: Some(signature),
+        },
+        SourceIndexEntry {
+            category: category as u8,
+            signature,
+            hash: encode_hash(&content_hash),
+            size,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -1563,6 +1699,135 @@ mod tests {
             "full project export cancelled"
         );
         assert!(project.manifest.is_none());
+        assert_eq!(project.source_index_stats(), (0, 1));
+
+        cancelled.store(false, Ordering::Relaxed);
+        assert!(
+            project
+                .materialize_with_progress_and_cancel(None, Some(&cancelled))
+                .is_ok()
+        );
+        assert_eq!(project.source_index_stats(), (0, 1));
+    }
+
+    #[test]
+    fn parallel_reader_reports_the_lowest_input_error_deterministically() {
+        let error = parallel_ordered(3, None, None, |index| {
+            if index == 0 {
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err::<(), _>(format!("failure-{index}"))
+        })
+        .unwrap_err();
+
+        assert_eq!(error, "failure-0");
+    }
+
+    #[test]
+    fn progress_gate_deduplicates_and_emits_boundaries() {
+        let observed = RefCell::new(Vec::new());
+        let callback = |completed, total| observed.borrow_mut().push((completed, total));
+        let mut gate = ProgressGate::new(Some(&callback));
+
+        gate.report(0, 10);
+        gate.report(0, 10);
+        gate.report(1, 10);
+        gate.last_emitted = Instant::now().checked_sub(PROGRESS_INTERVAL).unwrap();
+        gate.report(2, 10);
+        gate.report(10, 10);
+
+        assert_eq!(observed.into_inner(), [(0, 10), (2, 10), (10, 10)]);
+    }
+
+    #[test]
+    fn stable_read_retries_a_changed_signature_and_returns_the_matching_snapshot() {
+        let signatures = RefCell::new(
+            [
+                [1, 0, 0, 0, 0],
+                [2, 0, 0, 0, 0],
+                [2, 0, 0, 0, 0],
+                [2, 0, 0, 0, 0],
+            ]
+            .into_iter(),
+        );
+        let reads = RefCell::new(0);
+
+        let (value, signature) = stable_read(
+            "main.erb",
+            || Ok(signatures.borrow_mut().next().unwrap()),
+            || {
+                *reads.borrow_mut() += 1;
+                Ok(*reads.borrow())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(value, 2);
+        assert_eq!(signature, [2, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn stable_read_and_scan_fail_after_bounded_continuous_changes() {
+        let counter = RefCell::new(0_u64);
+        let read_error = stable_read(
+            "main.erb",
+            || {
+                *counter.borrow_mut() += 1;
+                Ok([*counter.borrow(), 0, 0, 0, 0])
+            },
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(
+            read_error,
+            "main.erb changed repeatedly while it was being read"
+        );
+
+        let attempts = RefCell::new(0);
+        let scan_error = retry_stable_scan(|| {
+            *attempts.borrow_mut() += 1;
+            Err::<(), _>("project changed while it was being scanned".to_owned())
+        })
+        .unwrap_err();
+        assert_eq!(*attempts.borrow(), STABLE_SCAN_ATTEMPTS);
+        assert_eq!(
+            scan_error,
+            "project changed repeatedly while it was being scanned"
+        );
+    }
+
+    #[test]
+    fn corrupt_source_index_is_rebuilt_from_file_contents() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("main.erb"), "@MAIN\nRETURN\n").unwrap();
+        let index = directory
+            .path()
+            .join(".rustyera/cache/source-index-v1.json");
+        fs::create_dir_all(index.parent().unwrap()).unwrap();
+        fs::write(&index, b"not-json").unwrap();
+
+        let project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+
+        assert_eq!(project.source_index_stats(), (0, 1));
+        let stored: SourceIndex = serde_json::from_slice(&fs::read(index).unwrap()).unwrap();
+        assert_eq!(stored.files.len(), 1);
+    }
+
+    #[test]
+    fn complete_index_reuses_all_files_and_partial_change_hashes_only_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("a.erb");
+        let second = directory.path().join("b.erb");
+        fs::write(&first, "@A\nRETURN\n").unwrap();
+        fs::write(&second, "@B\nRETURN\n").unwrap();
+        ProjectHost::scan_quick(directory.path(), 1).unwrap();
+
+        let reused = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+        assert_eq!(reused.source_index_stats(), (2, 0));
+
+        fs::write(&second, "@B\nPRINTL CHANGED\nRETURN\n").unwrap();
+        let partial = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+        assert_eq!(partial.source_index_stats(), (1, 1));
     }
 
     #[test]
