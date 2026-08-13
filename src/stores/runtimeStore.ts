@@ -75,6 +75,7 @@ import { RuntimeLogState } from "@/stores/runtimeLogs";
 import { handleRuntimeService } from "@/stores/runtimeServices";
 import { RuntimeStatusState } from "@/stores/runtimeStatus";
 import { RuntimeStartupTelemetryState } from "@/stores/runtimeStartupTelemetry";
+import { RuntimeTestEnvironment } from "@/stores/runtimeTestEnvironment";
 import { useSystemFontAccess } from "@/stores/systemFontAccess";
 import { transportValue } from "@/stores/runtimeTransport";
 
@@ -168,6 +169,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const faultMessage = computed(() => formatRuntimeFault(fault.value));
   const faultActionBusy = ref(false);
   const runtimeLogs = new RuntimeLogState(MAXIMUM_LOG_ENTRIES);
+  const testEnvironment = new RuntimeTestEnvironment();
   const logs = runtimeLogs.entries;
   const preferencesOpen = ref(false);
   const settingsBusy = ref(false);
@@ -215,10 +217,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let importKind: Exclude<RuntimeStartKind, "new_game"> | undefined;
   let traditionalSaveImportBytes: Uint8Array | undefined;
   let pendingStart: RuntimeTestConfiguration["start"] = { type: "new_game" };
-  let testClock: Date | undefined;
-  let testEntropyState: bigint | undefined;
-  let testMonotonicOrigin: { frontendMs: number; runtimeNs: number } | undefined;
-  let lastTimeAdvanceNs: number | undefined;
   let nextEnvironmentRevision = 1;
   let projectLoadStartedAt: number | undefined;
   let projectLoadElapsedTimer: number | undefined;
@@ -467,15 +465,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       seed: normalizedSeed,
       bytes: start.bytes ? new Uint8Array(start.bytes) : undefined,
     };
-    testClock = configuration.clock
-      ? new Date(configuration.clock)
-      : new Date("2026-01-01T00:00:00Z");
-    if (Number.isNaN(testClock.getTime())) throw new Error("测试 clock 不是有效日期");
-    testEntropyState = BigInt(start.seed ?? 1) || 1n;
-    testMonotonicOrigin = {
-      frontendMs: performance.now(),
-      runtimeNs: configuration.monotonicStartNs ?? 1_000_000,
-    };
+    testEnvironment.configure(configuration.clock, start.seed, configuration.monotonicStartNs);
   }
 
   async function ensureSession(): Promise<void> {
@@ -1242,13 +1232,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
       bridge,
       currentPresentation,
       heldKeys,
-      clock: () => testClock,
-      nextEntropy: () => {
-        if (testEntropyState == null) return undefined;
-        testEntropyState =
-          (testEntropyState * 6364136223846793005n + 1442695040888963407n) & 0xffff_ffff_ffff_ffffn;
-        return testEntropyState;
-      },
+      clock: () => testEnvironment.clock,
+      nextEntropy: () => testEnvironment.nextEntropy(),
       send,
     });
   }
@@ -1401,18 +1386,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
     )
       return;
     const now = sampleMonotonicTime();
-    if (lastTimeAdvanceNs != null && now - lastTimeAdvanceNs < TIME_ADVANCE_INTERVAL_NS) return;
-    lastTimeAdvanceNs = now;
+    if (!testEnvironment.shouldAdvanceTime(now, TIME_ADVANCE_INTERVAL_NS)) return;
     await send({ type: "advance_time", value: { monotonic_time_ns: now } });
   }
 
   function sampleMonotonicTime(): number {
-    const frontendMs = performance.now();
-    if (!testMonotonicOrigin) return Math.round(frontendMs * 1_000_000);
-    return Math.round(
-      testMonotonicOrigin.runtimeNs +
-        Math.max(0, frontendMs - testMonotonicOrigin.frontendMs) * 1_000_000,
-    );
+    return testEnvironment.sampleMonotonic();
   }
 
   async function undo(): Promise<void> {
@@ -1532,7 +1511,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     phase.value = "negotiating";
     runtimeEpoch.value = 0;
     projectResourceGeneration.value += 1;
-    lastTimeAdvanceNs = undefined;
+    testEnvironment.resetTimeAdvance();
     inputUndo.value = null;
     fault.value = null;
     debugPausePending = false;
@@ -1677,7 +1656,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         bridge.projectName(),
       ),
     );
-    const exportedAt = testClock ?? new Date();
+    const exportedAt = testEnvironment.clock ?? new Date();
     diagnosisState = {
       name: diagnosisArchiveName(projectName, exportedAt),
       projectName,
