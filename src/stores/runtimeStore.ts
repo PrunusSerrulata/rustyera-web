@@ -3,11 +3,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
 import { AudioEngine } from "@/core/audio";
-import {
-  diagnosisArchiveName,
-  diagnosisProjectName,
-  diagnosisProjectTitle,
-} from "@/core/diagnosis";
+import { diagnosisProjectName, diagnosisProjectTitle } from "@/core/diagnosis";
 import {
   debugStopToken,
   debugVariableKey,
@@ -42,8 +38,6 @@ import { hasEnabledButton } from "@/core/presentation";
 import {
   defaultPreferences,
   type InteractionToken,
-  type DiagnosisProgress,
-  type DiagnosisProgressStage,
   type Preferences,
   type ProjectConfigurationChange,
   type ProjectGameInformation,
@@ -66,6 +60,7 @@ import { RuntimeLogState } from "@/stores/runtimeLogs";
 import { RuntimeInputState } from "@/stores/runtimeInput";
 import { RuntimeImportState } from "@/stores/runtimeImport";
 import { RuntimeDebugRequestState } from "@/stores/runtimeDebugRequests";
+import { RuntimeDiagnosisState } from "@/stores/runtimeDiagnosis";
 import { handleRuntimeService } from "@/stores/runtimeServices";
 import { RuntimeSettingsState } from "@/stores/runtimeSettings";
 import { RuntimeStatusState } from "@/stores/runtimeStatus";
@@ -98,7 +93,6 @@ import type {
   DiagnosisStateExportKind,
   FullProjectExportState,
   FullProjectRequestSubmission,
-  DiagnosisState,
   RuntimeStartKind,
   RuntimeTestConfiguration,
 } from "@/stores/runtimeState";
@@ -175,9 +169,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const debugFibers = ref<any[]>([]);
   const debugFrames = ref<any[]>([]);
   const debugVariableValues = ref<Record<string, string>>({});
-  const diagnosisExporting = ref(false);
-  const diagnosisProgress = ref<DiagnosisProgress>();
-  const diagnosisResult = ref("");
+  const runtimeDiagnosis = new RuntimeDiagnosisState();
+  const diagnosisExporting = runtimeDiagnosis.exporting;
+  const diagnosisProgress = runtimeDiagnosis.progress;
+  const diagnosisResult = runtimeDiagnosis.result;
   const logNotifications = runtimeLogs.notifications;
   const traditionalSaves = new RuntimeTraditionalSaveState(
     bridge.traditionalSaves,
@@ -224,7 +219,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let compiledCacheTimer: number | undefined;
   let exportState: ExportState | undefined;
   let resumeCacheAfterProjectExport = false;
-  let diagnosisState: DiagnosisState | undefined;
   let pendingStart: RuntimeTestConfiguration["start"] = { type: "new_game" };
   let runtimeManifestSparse = false;
   let batchMediaDirty = false;
@@ -1256,10 +1250,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimeInput.reset();
     runtimeViewport.reset();
     exportState = compiledCacheExport;
-    diagnosisState = undefined;
-    diagnosisExporting.value = false;
-    diagnosisProgress.value = undefined;
-    diagnosisResult.value = "";
+    runtimeDiagnosis.reset();
     traditionalSaves.reset();
     runtimeImport.reset();
     runtimeConfiguration.reset();
@@ -1338,23 +1329,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
       ),
     );
     const exportedAt = testEnvironment.clock ?? new Date();
-    diagnosisState = {
-      name: diagnosisArchiveName(projectName, exportedAt),
-      projectName,
-      logs: formatDiagnosisLogs(logs),
-      exportedAt,
-    };
-    diagnosisResult.value = "";
-    diagnosisExporting.value = true;
-    setDiagnosisProgress("waiting");
+    runtimeDiagnosis.begin(projectName, formatDiagnosisLogs(logs), exportedAt);
     if (!exportState) await startDiagnosisStateExport("diagnosis_replay");
   }
 
   async function startDiagnosisStateExport(kind: DiagnosisStateExportKind): Promise<void> {
-    if (!diagnosisState || !diagnosisExporting.value) return;
-    setDiagnosisProgress(kind === "diagnosis_replay" ? "input_replay" : "vm_snapshot");
+    if (!runtimeDiagnosis.active || !diagnosisExporting.value) return;
+    runtimeDiagnosis.setProgress(kind === "diagnosis_replay" ? "input_replay" : "vm_snapshot");
     const activeExport: ExportState = {
-      name: diagnosisState.name,
+      name: runtimeDiagnosis.active.name,
       kind,
       chunks: [],
       received: 0,
@@ -1654,7 +1637,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     activeExport.descriptor = ready.result.transfer;
     const totalBytes = Number(ready.result.transfer.total_bytes);
     if (activeExport.kind.startsWith("diagnosis_") && Number.isSafeInteger(totalBytes)) {
-      setDiagnosisProgress(diagnosisProgressStage(activeExport.kind), 0, totalBytes);
+      runtimeDiagnosis.setProgress(diagnosisProgressStage(activeExport.kind), 0, totalBytes);
     }
     if (activeExport.kind === "project_file") {
       projectFileExportProgress.value = { stage: "packaging", completed: 0, total: totalBytes };
@@ -1711,7 +1694,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const reset = activeExport.received === 0;
     activeExport.received += bytes.length;
     if (activeExport.kind.startsWith("diagnosis_")) {
-      setDiagnosisProgress(
+      runtimeDiagnosis.setProgress(
         diagnosisProgressStage(activeExport.kind),
         activeExport.received,
         Number(activeExport.descriptor.total_bytes),
@@ -1911,15 +1894,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
         finishCompiledCacheExport(completed, "success");
         if (diagnosisExporting.value) await startDiagnosisStateExport("diagnosis_replay");
       } else if (completed.kind === "diagnosis_replay") {
-        if (!diagnosisState) throw new Error("诊断导出状态缺失");
-        diagnosisState.inputReplay = result;
+        if (!runtimeDiagnosis.active) throw new Error("诊断导出状态缺失");
+        runtimeDiagnosis.active.inputReplay = result;
         exportState = undefined;
         await startDiagnosisStateExport("diagnosis_snapshot");
       } else if (completed.kind === "diagnosis_snapshot") {
-        if (!diagnosisState) throw new Error("诊断导出状态缺失");
-        diagnosisState.snapshot = result;
+        if (!runtimeDiagnosis.active) throw new Error("诊断导出状态缺失");
+        runtimeDiagnosis.active.snapshot = result;
         const activeExport: FullProjectExportState = {
-          name: diagnosisState.name,
+          name: runtimeDiagnosis.active.name,
           kind: "diagnosis_project",
           chunks: [],
           received: 0,
@@ -1928,24 +1911,24 @@ export const useRuntimeStore = defineStore("runtime", () => {
         await bridge.stageFullProjectManifest();
         if (exportState === activeExport) await requestFullProjectExport(activeExport);
       } else {
-        if (!diagnosisState?.snapshot || !diagnosisState.inputReplay)
+        if (!runtimeDiagnosis.active?.snapshot || !runtimeDiagnosis.active.inputReplay)
           throw new Error("诊断归档输入缺失");
-        setDiagnosisProgress("archive");
+        runtimeDiagnosis.setProgress("archive");
         const saved = await bridge.saveDiagnosis(
-          diagnosisState.name,
+          runtimeDiagnosis.active.name,
           {
-            projectName: diagnosisState.projectName,
-            snapshot: diagnosisState.snapshot,
-            inputReplay: diagnosisState.inputReplay,
-            logs: diagnosisState.logs,
+            projectName: runtimeDiagnosis.active.projectName,
+            snapshot: runtimeDiagnosis.active.snapshot,
+            inputReplay: runtimeDiagnosis.active.inputReplay,
+            logs: runtimeDiagnosis.active.logs,
             projectFile: result,
-            exportedAt: diagnosisState.exportedAt,
+            exportedAt: runtimeDiagnosis.active.exportedAt,
           },
-          ({ completed, total }) => setDiagnosisProgress("archive", completed, total),
+          ({ completed, total }) => runtimeDiagnosis.setProgress("archive", completed, total),
         );
         finishDiagnosis(
           true,
-          saved ? `诊断信息已导出：${diagnosisState.name}` : "已取消导出诊断信息",
+          saved ? `诊断信息已导出：${runtimeDiagnosis.active.name}` : "已取消导出诊断信息",
         );
       }
     } catch (error) {
@@ -1971,10 +1954,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   function finishDiagnosis(success: boolean, message: string): void {
     exportState = undefined;
-    diagnosisState = undefined;
-    diagnosisExporting.value = false;
-    diagnosisProgress.value = undefined;
-    diagnosisResult.value = message;
+    runtimeDiagnosis.finish(message);
     baseStatus.value = message;
     log(success ? "info" : "error", message, false, "none");
   }
@@ -1982,7 +1962,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function failDiagnosisExport(activeExport: ExportState, message: string): Promise<void> {
     if (exportState !== activeExport || !activeExport.kind.startsWith("diagnosis_")) return;
     exportState = undefined;
-    diagnosisState = undefined;
+    runtimeDiagnosis.active = undefined;
     if (activeExport.kind === "diagnosis_replay" || activeExport.kind === "diagnosis_snapshot") {
       try {
         if (activeExport.descriptor?.transfer_id != null) {
@@ -2020,22 +2000,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
       }
     }
     finishDiagnosis(false, message);
-  }
-
-  function setDiagnosisProgress(stage: DiagnosisProgressStage, completed = 0, total = 0): void {
-    if (!diagnosisExporting.value) return;
-    if (
-      !Number.isSafeInteger(completed) ||
-      !Number.isSafeInteger(total) ||
-      completed < 0 ||
-      total < 0
-    )
-      return;
-    diagnosisProgress.value = {
-      stage,
-      completed: total > 0 ? Math.min(completed, total) : 0,
-      total,
-    };
   }
 
   async function restoreSnapshot(): Promise<void> {
@@ -2521,7 +2485,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const progress = normalizeProjectProgress(value);
     if (!progress) return;
     if (diagnosisExporting.value && exportState?.kind === "diagnosis_project") {
-      setDiagnosisProgress(
+      runtimeDiagnosis.setProgress(
         progress.stage === "scanning"
           ? "project_scanning"
           : progress.stage === "packaging"
