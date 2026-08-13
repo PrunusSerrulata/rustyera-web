@@ -11,6 +11,7 @@ webdriver = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
 tauri-build = { version = "2.5.3", features = [] }
 
 [dependencies]
+base64 = "0.22.1"
 blake3.workspace = true
 era-protocol.workspace = true
 era-debug-protocol.workspace = true

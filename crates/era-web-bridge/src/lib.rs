@@ -73,6 +73,21 @@ pub struct WebEvent {
     pub correlation_id: Option<u64>,
     pub epoch: Option<u64>,
     pub message: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_bytes: Option<WebBytes>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WebBytes(pub Vec<u8>);
+
+impl Serialize for WebBytes {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // Keep bulk export bytes out of the message's JSON number-array projection.
+        serializer.serialize_bytes(&self.0)
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -340,7 +355,7 @@ impl WebSession {
             if let Some(epoch) = envelope.session_epoch {
                 self.epoch = Some(epoch);
             }
-            let (channel, message) = match envelope.channel {
+            let (channel, message, data_bytes) = match envelope.channel {
                 Channel::Runtime => {
                     let message = RuntimeMessage::from_envelope(&envelope)
                         .map_err(|error| error.to_string())?;
@@ -351,7 +366,8 @@ impl WebSession {
                         self.epoch = Some(SessionEpoch(*epoch));
                     }
                     acknowledge_through = Some(envelope.sequence);
-                    (WebChannel::Runtime, serde_json::to_value(message))
+                    let (message, data_bytes) = project_runtime_message(message);
+                    (WebChannel::Runtime, message, data_bytes)
                 }
                 Channel::Debug => (
                     WebChannel::Debug,
@@ -359,6 +375,7 @@ impl WebSession {
                         DebugMessage::from_envelope(&envelope)
                             .map_err(|error| error.to_string())?,
                     ),
+                    None,
                 ),
             };
             events.push(WebEvent {
@@ -368,6 +385,7 @@ impl WebSession {
                 correlation_id: envelope.correlation_id,
                 epoch: envelope.session_epoch.map(|value| value.0),
                 message: message.map_err(|error| error.to_string())?,
+                data_bytes,
             });
         }
         if let Some(through_sequence) = acknowledge_through {
@@ -457,6 +475,21 @@ impl WebSession {
         self.next_message_id = self.next_message_id.saturating_add(1);
         value
     }
+}
+
+fn project_runtime_message(
+    mut message: RuntimeMessage,
+) -> (
+    Result<serde_json::Value, serde_json::Error>,
+    Option<WebBytes>,
+) {
+    let data_bytes = match &mut message {
+        RuntimeMessage::StateExportChunk(chunk) => {
+            Some(WebBytes(std::mem::take(&mut chunk.data).into_inner()))
+        }
+        _ => None,
+    };
+    (serde_json::to_value(message), data_bytes)
 }
 
 struct NativeCompletion {
@@ -730,7 +763,7 @@ pub const fn debug_protocol_version() -> era_protocol::ProtocolVersion {
 mod tests {
     use super::*;
     use era_protocol::ProtocolBytes;
-    use era_runtime_protocol::{FileCategory, FilePayload, SubmittedFile};
+    use era_runtime_protocol::{FileCategory, FilePayload, StateExportChunk, SubmittedFile};
     use std::collections::VecDeque;
 
     #[test]
@@ -746,6 +779,28 @@ mod tests {
                     == Some("server_hello")
         }));
         assert!(session.is_negotiated());
+    }
+
+    #[test]
+    fn state_export_chunks_project_bulk_bytes_separately() {
+        let original = vec![0, 1, 0x80, 0xff];
+        let (message, data_bytes) =
+            project_runtime_message(RuntimeMessage::StateExportChunk(StateExportChunk {
+                transfer_id: 7,
+                offset: 9,
+                data: ProtocolBytes::new(original.clone()),
+                complete: false,
+            }));
+
+        assert_eq!(data_bytes.unwrap().0, original);
+        assert_eq!(message.unwrap()["value"]["data"], serde_json::json!([]));
+
+        let (message, data_bytes) =
+            project_runtime_message(RuntimeMessage::Acknowledge(SequenceAcknowledgement {
+                through_sequence: 3,
+            }));
+        assert!(data_bytes.is_none());
+        assert_eq!(message.unwrap()["type"], "acknowledge");
     }
 
     #[test]
@@ -1075,6 +1130,7 @@ mod tests {
             correlation_id: None,
             epoch: Some(1),
             message: serde_json::json!({ "type": message_type }),
+            data_bytes: None,
         }
     }
 
@@ -1094,6 +1150,7 @@ mod tests {
                 deadline_ns: None,
             }))
             .unwrap(),
+            data_bytes: None,
         }
     }
 

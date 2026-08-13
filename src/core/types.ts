@@ -8,6 +8,7 @@ export interface WebEvent {
   correlationId?: number | bigint;
   epoch?: number | bigint;
   message: RuntimeMessage | DebugMessage;
+  dataBytes?: Uint8Array;
 }
 
 export interface PumpBatch {

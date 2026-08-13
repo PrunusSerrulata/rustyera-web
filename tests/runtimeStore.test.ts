@@ -1766,7 +1766,10 @@ describe("runtime store session lifecycle", () => {
         ...emptyBatch(),
         events: [
           stateExportReadyEvent("full_project_file", 7, [1, 2, 3]),
-          stateExportChunkEvent(7, [1, 2, 3]),
+          {
+            ...stateExportChunkEvent(7, []),
+            dataBytes: Uint8Array.of(1, 2, 3),
+          },
         ],
       });
     const store = useRuntimeStore();
@@ -1789,6 +1792,15 @@ describe("runtime store session lifecycle", () => {
       },
       undefined,
     );
+    expect(
+      bridge.submitRuntime.mock.calls
+        .map(
+          ([message]: unknown[]) =>
+            message as { type?: string; value?: { maximum_bytes?: number } },
+        )
+        .filter((message) => message.type === "state_export_chunk_request")
+        .map((message) => message.value?.maximum_bytes),
+    ).toEqual([16 * 1024 * 1024]);
     expect(bridge.writeProjectFileChunk).toHaveBeenCalledWith(Uint8Array.of(1, 2, 3), true, true);
     expect(store.gameInteractionsBlocked).toBe(false);
   });
@@ -1849,6 +1861,15 @@ describe("runtime store session lifecycle", () => {
           (message as { type?: string }).type === "state_export_chunk_request",
       ),
     ).toHaveLength(2);
+    expect(
+      bridge.submitRuntime.mock.calls
+        .map(
+          ([message]: unknown[]) =>
+            message as { type?: string; value?: { maximum_bytes?: number } },
+        )
+        .filter((message) => message.type === "state_export_chunk_request")
+        .map((message) => message.value?.maximum_bytes),
+    ).toEqual([16 * 1024 * 1024, 16 * 1024 * 1024]);
   });
 
   it("restores the stable status after compiled-cache success feedback", async () => {

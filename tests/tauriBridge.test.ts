@@ -133,6 +133,56 @@ describe("Tauri project restart", () => {
     expect(invoke).toHaveBeenCalledWith("cancel_compiled_cache_export");
   });
 
+  it("tags project export chunks, including the empty completion write", async () => {
+    save.mockResolvedValue("/tmp/project.reraproj");
+    invoke.mockResolvedValue(undefined);
+    const bridge = new TauriBridge();
+
+    await bridge.beginProjectFileExport("project.reraproj");
+    await bridge.writeProjectFileChunk(Uint8Array.of(0, 0x80, 0xff), true, false);
+    await bridge.writeProjectFileChunk(new Uint8Array(), false, true);
+
+    expect(commandCalls("write_export_chunk")).toEqual([
+      [
+        "write_export_chunk",
+        {
+          path: "/tmp/project.reraproj",
+          bytes: { $rustyeraBytes: "AID/" },
+          reset: true,
+          complete: false,
+        },
+      ],
+      [
+        "write_export_chunk",
+        {
+          path: "/tmp/project.reraproj",
+          bytes: { $rustyeraBytes: "" },
+          reset: false,
+          complete: true,
+        },
+      ],
+    ]);
+  });
+
+  it("tags compiled-cache chunks, including the empty completion write", async () => {
+    invoke.mockResolvedValue(undefined);
+    const bridge = new TauriBridge();
+
+    await bridge.writeCompiledCacheChunk(Uint8Array.of(0, 0x80, 0xff), true, false);
+    await bridge.writeCompiledCacheChunk(new Uint8Array(), false, true);
+
+    expect(commandCalls("write_compiled_cache_chunk")).toEqual([
+      [
+        "write_compiled_cache_chunk",
+        { bytes: { $rustyeraBytes: "AID/" }, reset: true, complete: false },
+      ],
+      [
+        "write_compiled_cache_chunk",
+        { bytes: { $rustyeraBytes: "" }, reset: false, complete: true },
+      ],
+    ]);
+  });
+
   it("reports diagnosis completion only after the native host commits the file", async () => {
     const completed = deferred<void>();
     save.mockResolvedValue("/tmp/diagnosis.tar.zst");
@@ -147,7 +197,7 @@ describe("Tauri project restart", () => {
         write: (chunk: Uint8Array) => Promise<void>,
         progress?: (value: { completed: number; total: number }) => void,
       ) => {
-        await write(Uint8Array.of(1));
+        await write(Uint8Array.of(0, 0x80, 0xff));
         progress?.({ completed: 1, total: 2 });
         return 2;
       },
@@ -162,6 +212,26 @@ describe("Tauri project restart", () => {
     completed.resolve();
     await expect(saving).resolves.toBe(true);
     expect(progress).toHaveBeenLastCalledWith({ completed: 2, total: 2 });
+    expect(commandCalls("write_export_chunk")).toEqual([
+      [
+        "write_export_chunk",
+        {
+          path: "/tmp/diagnosis.tar.zst",
+          bytes: { $rustyeraBytes: "AID/" },
+          reset: true,
+          complete: false,
+        },
+      ],
+      [
+        "write_export_chunk",
+        {
+          path: "/tmp/diagnosis.tar.zst",
+          bytes: { $rustyeraBytes: "" },
+          reset: false,
+          complete: true,
+        },
+      ],
+    ]);
   });
 
   it("keeps the previous project when opening a replacement fails", async () => {

@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use era_web_bridge::{PumpBatch, WebEvent};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -8,6 +9,7 @@ use tauri::ipc::Response;
 const MAXIMUM_SAFE_JAVASCRIPT_INTEGER: u64 = 9_007_199_254_740_991;
 const MINIMUM_SAFE_JAVASCRIPT_INTEGER: i64 = -9_007_199_254_740_991;
 const IPC_INTEGER_TAG: &str = "$rustyeraInteger";
+const IPC_BYTES_TAG: &str = "$rustyeraBytes";
 
 pub(crate) fn encode_value<T: Serialize>(value: &T) -> Result<Value, String> {
     let mut value = serde_json::to_value(value)
@@ -60,13 +62,31 @@ impl Serialize for SafeEvent<'_> {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(6))?;
+        let mut map =
+            serializer.serialize_map(Some(if self.0.data_bytes.is_some() { 7 } else { 6 }))?;
         map.serialize_entry("channel", &self.0.channel)?;
         map.serialize_entry("sequence", &SafeU64(self.0.sequence))?;
         map.serialize_entry("messageId", &SafeU64(self.0.message_id))?;
         map.serialize_entry("correlationId", &self.0.correlation_id.map(SafeU64))?;
         map.serialize_entry("epoch", &self.0.epoch.map(SafeU64))?;
         map.serialize_entry("message", &SafeJson(&self.0.message))?;
+        if let Some(bytes) = &self.0.data_bytes {
+            map.serialize_entry("dataBytes", &SafeBytes(&bytes.0))?;
+        }
+        map.end()
+    }
+}
+
+struct SafeBytes<'a>(&'a [u8]);
+
+impl Serialize for SafeBytes<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(self.0);
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry(IPC_BYTES_TAG, &encoded)?;
         map.end()
     }
 }
@@ -131,6 +151,20 @@ where
 pub(crate) fn decode_value<T: DeserializeOwned>(mut value: Value) -> Result<T, String> {
     untag_unsafe_integers(&mut value)?;
     serde_json::from_value(value).map_err(|error| format!("cannot decode IPC request: {error}"))
+}
+
+pub(crate) fn decode_bytes(value: Value) -> Result<Vec<u8>, String> {
+    if let Some(encoded) = value
+        .as_object()
+        .filter(|fields| fields.len() == 1)
+        .and_then(|fields| fields.get(IPC_BYTES_TAG))
+        .and_then(Value::as_str)
+    {
+        return base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|error| format!("cannot decode IPC bytes: {error}"));
+    }
+    serde_json::from_value(value).map_err(|error| format!("cannot decode IPC bytes: {error}"))
 }
 
 fn tag_unsafe_integers(value: &mut Value) {
@@ -224,6 +258,7 @@ mod tests {
                     "type": "test",
                     "value": MAXIMUM_SAFE_JAVASCRIPT_INTEGER + 2,
                 }),
+                data_bytes: None,
             }],
         };
 
@@ -237,5 +272,33 @@ mod tests {
             encoded["events"][0]["message"]["value"][IPC_INTEGER_TAG],
             (MAXIMUM_SAFE_JAVASCRIPT_INTEGER + 2).to_string()
         );
+    }
+
+    #[test]
+    fn pump_serializer_and_command_decoder_use_tagged_binary_bytes() {
+        let batch = PumpBatch {
+            state: WebDriveState::OutputReady,
+            vm_instructions: 0,
+            runtime_transitions: 1,
+            cooperative_background_work: false,
+            events: vec![WebEvent {
+                channel: WebChannel::Runtime,
+                sequence: 2,
+                message_id: 3,
+                correlation_id: None,
+                epoch: None,
+                message: serde_json::json!({
+                    "type": "state_export_chunk",
+                    "value": { "data": [] },
+                }),
+                data_bytes: Some(era_web_bridge::WebBytes(vec![0, 1, 127, 255])),
+            }],
+        };
+
+        let encoded: Value =
+            serde_json::from_slice(&serde_json::to_vec(&SafePump(&batch)).unwrap()).unwrap();
+        let tagged = encoded["events"][0]["dataBytes"].clone();
+        assert_eq!(tagged[IPC_BYTES_TAG], "AAF//w==");
+        assert_eq!(decode_bytes(tagged).unwrap(), vec![0, 1, 127, 255]);
     }
 }

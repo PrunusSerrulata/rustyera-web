@@ -1,36 +1,33 @@
-import {
-  diagnosisArchiveChunks,
-  type DiagnosisArchiveChunk,
-  type DiagnosisArchiveInput,
-} from "@/core/diagnosis";
+import { diagnosisArchiveChunks, type DiagnosisArchiveInput } from "@/core/diagnosis";
+import { DiagnosisArchiveBatcher } from "@/platform/diagnosisBatch";
 
-let chunks: Iterator<DiagnosisArchiveChunk> | undefined;
+let batches: DiagnosisArchiveBatcher | undefined;
 
 self.onmessage = (event: MessageEvent<DiagnosisArchiveInput | { type: "continue" }>) => {
   try {
     if ("type" in event.data) {
-      if (event.data.type !== "continue" || !chunks)
+      if (event.data.type !== "continue" || !batches)
         throw new Error("诊断归档 Worker 收到了无效的继续请求");
     } else {
-      if (chunks) throw new Error("诊断归档 Worker 已经在处理导出");
-      chunks = diagnosisArchiveChunks(event.data);
+      if (batches) throw new Error("诊断归档 Worker 已经在处理导出");
+      batches = new DiagnosisArchiveBatcher(diagnosisArchiveChunks(event.data));
     }
-    const next = chunks.next();
-    if (next.done) {
-      chunks = undefined;
+    const batch = batches.next();
+    if ("type" in batch) {
+      batches = undefined;
       self.postMessage({ complete: true });
     } else {
       self.postMessage(
         {
-          chunk: next.value.bytes,
-          completed: next.value.completed,
-          total: next.value.total,
+          chunk: batch.bytes,
+          completed: batch.completed,
+          total: batch.total,
         },
-        { transfer: [next.value.bytes.buffer] },
+        { transfer: [batch.bytes.buffer] },
       );
     }
   } catch (error) {
-    chunks = undefined;
+    batches = undefined;
     self.postMessage({ error: String(error) });
   }
 };

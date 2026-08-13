@@ -85,7 +85,13 @@ self.onmessage = async (event: MessageEvent) => {
           throw new Error(`未知 Worker 方法：${method}`);
       }
     }
-    self.postMessage({ id, result });
+    const transfer =
+      method === "pump" || method === "create"
+        ? ((result as { events?: Array<{ dataBytes?: Uint8Array }> })?.events ?? [])
+            .map((item) => item.dataBytes?.buffer)
+            .filter((buffer): buffer is ArrayBuffer => buffer instanceof ArrayBuffer)
+        : [];
+    self.postMessage({ id, result }, { transfer });
   } catch (error) {
     self.postMessage({ id, error: error instanceof Error ? error.message : String(error) });
   }

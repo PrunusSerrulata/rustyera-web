@@ -300,6 +300,8 @@ const DEBUG_VARIABLE_PAGE_LIMIT = 256;
 const DEBUG_VARIABLE_MAX_PAGES = 16;
 const TIME_ADVANCE_INTERVAL_NS = 16_000_000;
 const MAXIMUM_LOG_ENTRIES = 10_000;
+// Bound memory while amortizing runtime and native-host round trips for large exports.
+const STATE_EXPORT_CHUNK_BYTES = 16 * 1024 * 1024;
 const STATUS_FEEDBACK_DURATION_MS = 2_000;
 const PROJECT_STARTING_STATUS = "项目加载完成，正在启动游戏…";
 const GAME_RUNNING_STATUS = "游戏运行中";
@@ -920,6 +922,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           event.message as RuntimeMessage,
           event.correlationId,
           suppressedLogNotificationIndexes.has(index),
+          event.dataBytes,
         );
       else await handleDebug(event.message as any, event.correlationId);
       index += 1;
@@ -945,6 +948,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     message: RuntimeMessage,
     correlationId?: number | bigint,
     suppressNotification = false,
+    dataBytes?: Uint8Array,
   ): Promise<void> {
     const value = message.value;
     switch (message.type) {
@@ -1184,7 +1188,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         await handleExportReady(value, correlationId);
         break;
       case "state_export_chunk":
-        await handleExportChunk(value);
+        await handleExportChunk(value, dataBytes);
         break;
       case "state_import_accepted":
         await handleImportAccepted(value);
@@ -2591,12 +2595,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
       value: {
         transfer_id: exportState.descriptor.transfer_id,
         offset: exportState.received,
-        maximum_bytes: 1024 * 1024,
+        maximum_bytes: STATE_EXPORT_CHUNK_BYTES,
       },
     });
   }
 
-  async function handleExportChunk(chunk: any): Promise<void> {
+  async function handleExportChunk(chunk: any, dataBytes?: Uint8Array): Promise<void> {
     const activeExport = exportState;
     if (!activeExport?.descriptor) return;
     if (
@@ -2609,7 +2613,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
       }
       throw new Error("Runtime 状态导出分块关联或顺序无效");
     }
-    const bytes = Uint8Array.from(chunk.data, (value: number | bigint) => Number(value));
+    const bytes =
+      dataBytes ?? Uint8Array.from(chunk.data, (value: number | bigint) => Number(value));
     const reset = activeExport.received === 0;
     activeExport.received += bytes.length;
     if (activeExport.kind.startsWith("diagnosis_")) {

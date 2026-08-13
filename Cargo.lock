@@ -959,6 +959,7 @@ dependencies = [
 name = "era-web-tauri"
 version = "0.4.0-tauri"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "encoding_rs",
  "era-debug-protocol",

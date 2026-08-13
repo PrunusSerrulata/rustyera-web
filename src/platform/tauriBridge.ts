@@ -26,6 +26,7 @@ import type {
 } from "@/core/types";
 
 const IPC_INTEGER_TAG = "$rustyeraInteger";
+const IPC_BYTES_TAG = "$rustyeraBytes";
 type HostProjectOpenMetrics = Omit<ProjectOpenMetrics, "submittedAtMs" | "projectFonts">;
 type HostProjectFontSource = { relativePath: string; contentHash: number[] };
 
@@ -33,6 +34,8 @@ function decodeIpcValue<T>(value: unknown): T {
   if (Array.isArray(value)) return value.map((item) => decodeIpcValue(item)) as T;
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
+    if (Object.keys(record).length === 1 && typeof record[IPC_BYTES_TAG] === "string")
+      return decodeBase64(record[IPC_BYTES_TAG]) as T;
     if (
       Object.keys(record).length === 1 &&
       typeof record[IPC_INTEGER_TAG] === "string" &&
@@ -45,6 +48,25 @@ function decodeIpcValue<T>(value: unknown): T {
     ) as T;
   }
   return value as T;
+}
+
+function encodeIpcBytes(bytes: Uint8Array): Record<string, string> {
+  const native = (bytes as Uint8Array & { toBase64?: () => string }).toBase64;
+  if (native) return { [IPC_BYTES_TAG]: native.call(bytes) };
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 32 * 1024)
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32 * 1024));
+  return { [IPC_BYTES_TAG]: btoa(binary) };
+}
+
+function decodeBase64(encoded: string): Uint8Array {
+  const native = (Uint8Array as typeof Uint8Array & { fromBase64?: (value: string) => Uint8Array })
+    .fromBase64;
+  if (native) return native(encoded);
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
 }
 
 function decodeIpcResponse<T>(value: unknown): T {
@@ -355,7 +377,7 @@ export class TauriBridge implements FrontendBridge {
   async saveDownload(name: string, bytes: Uint8Array): Promise<boolean> {
     const path = await save({ defaultPath: name });
     if (!path) return false;
-    await invoke("write_export", { path, bytes: [...bytes] });
+    await invoke("write_export", { path, bytes: encodeIpcBytes(bytes) });
     return true;
   }
 
@@ -380,7 +402,12 @@ export class TauriBridge implements FrontendBridge {
   async writeProjectFileChunk(bytes: Uint8Array, reset: boolean, complete: boolean): Promise<void> {
     const path = this.projectFileExportPath;
     if (!path) throw new Error("项目文件导出尚未开始");
-    await invoke("write_export_chunk", { path, bytes: [...bytes], reset, complete });
+    await invoke("write_export_chunk", {
+      path,
+      bytes: encodeIpcBytes(bytes),
+      reset,
+      complete,
+    });
     if (complete) this.projectFileExportPath = undefined;
   }
 
@@ -409,7 +436,7 @@ export class TauriBridge implements FrontendBridge {
         async (chunk) => {
           await invoke("write_export_chunk", {
             path,
-            bytes: [...chunk],
+            bytes: encodeIpcBytes(chunk),
             reset: first,
             complete: false,
           });
@@ -419,7 +446,7 @@ export class TauriBridge implements FrontendBridge {
       );
       await invoke("write_export_chunk", {
         path,
-        bytes: [],
+        bytes: encodeIpcBytes(new Uint8Array()),
         reset: first,
         complete: true,
       });
@@ -436,7 +463,11 @@ export class TauriBridge implements FrontendBridge {
     reset: boolean,
     complete: boolean,
   ): Promise<void> {
-    await invoke("write_compiled_cache_chunk", { bytes: [...bytes], reset, complete });
+    await invoke("write_compiled_cache_chunk", {
+      bytes: encodeIpcBytes(bytes),
+      reset,
+      complete,
+    });
   }
 
   async cancelCompiledCacheExport(): Promise<void> {

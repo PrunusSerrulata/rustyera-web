@@ -39,8 +39,8 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::ipc::{
-    decode_value as decode_ipc_value, encode_pump_response as encode_ipc_response,
-    encode_value as encode_ipc_value,
+    decode_bytes as decode_ipc_bytes, decode_value as decode_ipc_value,
+    encode_pump_response as encode_ipc_response, encode_value as encode_ipc_value,
 };
 use crate::project::{ProjectFontSource, ProjectHost, ProjectReloadScope, ProjectReloadTargets};
 use crate::storage::StorageHost;
@@ -672,7 +672,8 @@ fn save_preferences(app: AppHandle, preferences: Preferences) -> Result<Preferen
 }
 
 #[tauri::command]
-fn write_export(path: PathBuf, bytes: Vec<u8>) -> Result<(), String> {
+fn write_export(path: PathBuf, bytes: Value) -> Result<(), String> {
+    let bytes = decode_ipc_bytes(bytes)?;
     let parent = path
         .parent()
         .ok_or_else(|| "export path has no parent".to_owned())?;
@@ -694,10 +695,11 @@ fn write_export(path: PathBuf, bytes: Vec<u8>) -> Result<(), String> {
 async fn write_export_chunk(
     state: State<'_, AppState>,
     path: PathBuf,
-    bytes: Vec<u8>,
+    bytes: Value,
     reset: bool,
     complete: bool,
 ) -> Result<(), String> {
+    let bytes = decode_ipc_bytes(bytes)?;
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         write_atomic_file_chunk(&state.export_writer, Some(path), &bytes, reset, complete)
@@ -715,10 +717,11 @@ fn cancel_export(state: State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 async fn write_compiled_cache_chunk(
     state: State<'_, AppState>,
-    bytes: Vec<u8>,
+    bytes: Value,
     reset: bool,
     complete: bool,
 ) -> Result<(), String> {
+    let bytes = decode_ipc_bytes(bytes)?;
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         write_compiled_cache_chunk_inner(&state, &bytes, reset, complete)
