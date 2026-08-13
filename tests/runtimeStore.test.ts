@@ -50,6 +50,7 @@ const bridge = vi.hoisted(() => ({
   prepareProjectReloadBaseline: vi.fn(),
   projectReloadTargets: vi.fn(),
   reloadProject: vi.fn(),
+  finalizeProjectReload: vi.fn(),
   readResource: vi.fn(),
   readImageMetadata: vi.fn(),
   handleStorage: vi.fn(),
@@ -130,6 +131,7 @@ describe("runtime store session lifecycle", () => {
     bridge.cancelCompiledCacheExport.mockResolvedValue(undefined);
     bridge.listFonts.mockResolvedValue({ kind: "ready", fonts: [] });
     bridge.reloadProject.mockResolvedValue({ fonts: [], errors: [], messageId: 77 });
+    bridge.finalizeProjectReload.mockResolvedValue({ fonts: [], errors: [] });
     bridge.projectReloadTargets.mockResolvedValue({
       folders: ["ERB/events"],
       scripts: ["ERB/events/day.erb"],
@@ -4738,6 +4740,10 @@ describe("runtime store session lifecycle", () => {
       ([message]: unknown[]) => (message as { type?: string }).type === "start",
     ).length;
     bridge.reloadProject.mockResolvedValueOnce({ fonts: [], errors: [], messageId: 77 });
+    bridge.finalizeProjectReload.mockImplementationOnce(async () => {
+      expect(store.projectResourceGeneration).toBe(resourceGenerationBefore);
+      return { fonts: [], errors: [] };
+    });
     bridge.pump.mockResolvedValueOnce({
       ...emptyBatch(),
       events: [
@@ -4753,6 +4759,7 @@ describe("runtime store session lifecycle", () => {
     expect(store.status).toBe("游戏运行中");
     expect(store.presentation.inputWait).toEqual(wait);
     expect(store.projectResourceGeneration).toBe(resourceGenerationBefore + 1);
+    expect(bridge.finalizeProjectReload).toHaveBeenCalledWith(true);
     expect(store.canInteract).toBe(true);
     expect(
       bridge.submitRuntime.mock.calls.filter(
@@ -4775,6 +4782,7 @@ describe("runtime store session lifecycle", () => {
 
     expect(store.projectLoading).toBe(false);
     expect(store.logs.filter((entry) => entry.message.includes("reload rejected"))).toHaveLength(1);
+    expect(bridge.finalizeProjectReload).toHaveBeenCalledWith(false);
     expect(
       bridge.submitRuntime.mock.calls.filter(
         ([message]: unknown[]) => (message as { type?: string }).type === "start",
@@ -4805,6 +4813,7 @@ describe("runtime store session lifecycle", () => {
 
     expect(store.projectLoading).toBe(false);
     expect(store.projectResourceGeneration).toBe(resourceGenerationBefore);
+    expect(bridge.finalizeProjectReload).toHaveBeenCalledWith(false);
     expect(store.logs.some((entry) => entry.message.includes("bad script"))).toBe(true);
     expect(
       bridge.submitRuntime.mock.calls.filter(

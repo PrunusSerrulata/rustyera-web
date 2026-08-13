@@ -33,11 +33,17 @@ interface Window {
     }>;
   }) => Promise<FileSystemFileHandle>;
   __RUSTYERA_TEST__?: import("@/testing/control").WebTestControl;
+  __RUSTYERA_TEST_FS_REPLACE__?: (request: {
+    relativePath: string;
+    expected: string;
+    replacement: string;
+  }) => Promise<void>;
   __RUSTYERA_TEST_DOWNLOADS__?: Array<{
     name: string;
     bytes: Uint8Array;
     size?: number;
     projectMagic?: Uint8Array;
+    projectManifest?: import("@/platform/browserProject").BrowserManifest;
     inputReplay?: Uint8Array;
   }>;
 }

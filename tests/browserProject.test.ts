@@ -468,6 +468,7 @@ describe("browser project reads", () => {
     });
 
     expect(selectedReload.changes).toHaveLength(2);
+    expect(Array.isArray(selectedReload.changes[0].file.content_hash)).toBe(true);
     expect(
       selectedReload.changes.find(
         (change: any) => change.file.relative_path === "ERB/selected/command.erb",
@@ -478,6 +479,16 @@ describe("browser project reads", () => {
         (change: any) => change.file.relative_path === "ERB/other/command.erb",
       ).file.payload.value,
     ).toContain("PRINTL OLD");
+    expect((await project.materialize()).project_revision).toBe(1);
+    project.finalizeReload(true);
+    const active = await project.materialize();
+    expect(active.project_revision).toBe(2);
+    expect(
+      active.files.find((file) => file.relative_path === "ERB/selected/command.erb")?.payload.value,
+    ).toContain("PRINTL SELECTED");
+    expect(
+      active.files.find((file) => file.relative_path === "ERB/other/command.erb")?.payload.value,
+    ).toContain("PRINTL OLD");
 
     const remainingReload = await project.reloadRequest({
       type: "script",
@@ -485,6 +496,22 @@ describe("browser project reads", () => {
     });
     expect(remainingReload.changes).toHaveLength(1);
     expect(remainingReload.changes[0].file.relative_path).toBe("ERB/other/command.erb");
+    project.finalizeReload(true);
+  });
+
+  it("discards a rejected scoped reload without changing the active manifest", async () => {
+    const root = new SaveDirectoryHandle("game");
+    await writeFixtureFile(root, "main.erb", "@SYSTEM_TITLE\nPRINTL OLD\nRETURN\n");
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    await project.scan();
+    await writeFixtureFile(root, "main.erb", "@SYSTEM_TITLE\nPRINTL NEW\nRETURN\n");
+
+    await project.reloadRequest({ type: "script", path: "main.erb" });
+    project.finalizeReload(false);
+
+    const active = await project.materialize();
+    expect(active.project_revision).toBe(1);
+    expect(active.files[0].payload.value).toContain("PRINTL OLD");
   });
 
   it("materializes every payload when fully reloading a cached project", async () => {
@@ -505,6 +532,7 @@ describe("browser project reads", () => {
       reload.changes.find((change: any) => change.file.relative_path === "other.erb").file.payload
         .value,
     ).toContain("PRINTL OLD");
+    project.finalizeReload(true);
   });
 
   it("rejects an invalid reload scope before changing its revision or baseline", async () => {
@@ -523,6 +551,7 @@ describe("browser project reads", () => {
     expect(reload.target_revision).toBe(2);
     expect(reload.changes).toHaveLength(1);
     expect(reload.changes[0].file.relative_path).toBe("main.erb");
+    project.finalizeReload(true);
   });
 
   it("lists current and removed scripts as selectable reload targets", async () => {

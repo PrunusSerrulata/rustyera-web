@@ -116,6 +116,7 @@ export class BrowserBridge implements FrontendBridge {
     onSubmitted?: ProjectSubmittedListener,
     prepareAfterSelection?: ProjectSelectionPreparation,
   ): Promise<ProjectOpenMetrics | undefined> {
+    this.project?.finalizeReload(false);
     let submittedAtMs = 0;
     const picked = await pickBrowserDirectory(
       (stage, completed, total) => this.projectProgressListener?.({ stage, completed, total }),
@@ -164,6 +165,7 @@ export class BrowserBridge implements FrontendBridge {
     onSubmitted?: ProjectSubmittedListener,
     prepareAfterSelection?: ProjectSelectionPreparation,
   ): Promise<ProjectOpenMetrics | undefined> {
+    this.project?.finalizeReload(false);
     const picked = await pickBrowserProjectFile();
     if (!picked) return undefined;
     const { file } = picked;
@@ -278,16 +280,26 @@ export class BrowserBridge implements FrontendBridge {
 
   async reloadProject(scope: ProjectReloadScope) {
     if (!this.project) throw new Error("没有打开的项目");
-    const messageId = await this.submitRuntime({
-      type: "reload_project",
-      value: await this.project.reloadRequest(scope, (completed, total) =>
-        this.projectProgressListener?.({ stage: "scanning", completed, total }),
-      ),
-    });
-    return {
-      ...(await this.projectFontRegistry.replace(this.project.fontSources())),
-      messageId,
-    };
+    try {
+      const messageId = await this.submitRuntime({
+        type: "reload_project",
+        value: await this.project.reloadRequest(scope, (completed, total) =>
+          this.projectProgressListener?.({ stage: "scanning", completed, total }),
+        ),
+      });
+      return { fonts: [], errors: [], messageId };
+    } catch (error) {
+      this.project.finalizeReload(false);
+      throw error;
+    }
+  }
+
+  async finalizeProjectReload(success: boolean) {
+    const project = this.requireProject();
+    project.finalizeReload(success);
+    return success
+      ? this.projectFontRegistry.replace(project.fontSources())
+      : { fonts: [], errors: [] };
   }
 
   private async loadSourceProject(
@@ -559,6 +571,10 @@ export class BrowserBridge implements FrontendBridge {
     if (import.meta.env.VITE_RUSTYERA_TEST === "1") {
       const prefix = new Uint8Array(4);
       const projectMagic = input.projectFile.slice(0, 8);
+      const projectManifest = (await this.worker.call(
+        "projectFileManifest",
+        input.projectFile,
+      )) as BrowserManifest;
       const inputReplay = new Uint8Array(input.inputReplay);
       let size = 0;
       await streamDiagnosisArchiveInWorker(input, async (chunk) => {
@@ -571,6 +587,7 @@ export class BrowserBridge implements FrontendBridge {
         bytes: prefix,
         size,
         projectMagic,
+        projectManifest,
         inputReplay,
       });
       return true;
@@ -663,6 +680,7 @@ export class BrowserBridge implements FrontendBridge {
   }
 
   async close(): Promise<void> {
+    this.project?.finalizeReload(false);
     this.projectFontRegistry.clear();
     this.worker.close();
   }

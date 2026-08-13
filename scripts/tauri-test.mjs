@@ -133,12 +133,10 @@ const environment = {
   VITE_RUSTYERA_TEST: "1",
   VITE_RUSTYERA_TAURI_TEST: "1",
   VITE_RUSTYERA_TEST_PROJECT: project,
-  VITE_RUSTYERA_TEST_PROJECT_FILE: path.join(
-    project,
-    ".rustyera",
-    "cache",
-    "compiled-project.reracache",
-  ),
+  VITE_RUSTYERA_TEST_PROJECT_FILE:
+    specName === "diagnosis.spec.mjs"
+      ? path.join(project, ".rustyera", "diagnosis-project.reraproj")
+      : path.join(project, ".rustyera", "cache", "compiled-project.reracache"),
   VITE_RUSTYERA_TAURI_EXPORT_PATH:
     specName === "full-project-export.spec.mjs"
       ? path.join(project, ".rustyera", "full-export.reraproj")

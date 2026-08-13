@@ -142,6 +142,7 @@ export interface FrontendBridge {
   prepareProjectReloadBaseline(): Promise<void>;
   projectReloadTargets(): Promise<ProjectReloadTargets>;
   reloadProject(scope: ProjectReloadScope): Promise<ProjectReloadSubmission>;
+  finalizeProjectReload(success: boolean): Promise<ProjectFontLoadResult>;
   readResource(relativePath: string): Promise<Uint8Array>;
   readImageMetadata(relativePath: string): Promise<{
     width: number;

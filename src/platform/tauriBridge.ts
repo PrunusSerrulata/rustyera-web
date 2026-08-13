@@ -132,6 +132,7 @@ export class TauriBridge implements FrontendBridge {
       const submittedAtMs = performance.now();
       onSubmitted?.(submittedAtMs);
       await prepareAfterSelection?.();
+      await invoke("finalize_project_reload", { success: false }).catch(() => undefined);
       const response = await invoke<HostProjectOpenMetrics>("open_project", { path: testProject });
       const metrics = await this.withProjectFonts(response);
       this.projectPath = testProject;
@@ -139,11 +140,15 @@ export class TauriBridge implements FrontendBridge {
       return { ...metrics, submittedAtMs };
     }
     const path = await open({ directory: true, multiple: false, title: "打开 Era 项目" });
-    if (typeof path !== "string") return undefined;
+    if (typeof path !== "string") {
+      await invoke("finalize_project_reload", { success: false }).catch(() => undefined);
+      return undefined;
+    }
     const submittedAtMs = performance.now();
     onSubmitted?.(submittedAtMs);
     await prepareAfterSelection?.();
     this.projectProgressListener?.({ stage: "scanning", completed: 0, total: 0 });
+    await invoke("finalize_project_reload", { success: false }).catch(() => undefined);
     if (this.progressUnlisten) await this.progressUnlisten;
     const response = await invoke<HostProjectOpenMetrics>("open_project", { path });
     const metrics = await this.withProjectFonts(response);
@@ -161,6 +166,7 @@ export class TauriBridge implements FrontendBridge {
       const submittedAtMs = performance.now();
       onSubmitted?.(submittedAtMs);
       await prepareAfterSelection?.();
+      await invoke("finalize_project_reload", { success: false }).catch(() => undefined);
       const response = await invoke<HostProjectOpenMetrics>("open_project_file", {
         path: testProjectFile,
       });
@@ -175,10 +181,14 @@ export class TauriBridge implements FrontendBridge {
       title: "打开 RustyEra 项目文件",
       filters: [{ name: "RustyEra 项目", extensions: ["reraproj"] }],
     });
-    if (typeof path !== "string") return undefined;
+    if (typeof path !== "string") {
+      await invoke("finalize_project_reload", { success: false }).catch(() => undefined);
+      return undefined;
+    }
     const submittedAtMs = performance.now();
     onSubmitted?.(submittedAtMs);
     await prepareAfterSelection?.();
+    await invoke("finalize_project_reload", { success: false }).catch(() => undefined);
     const response = await invoke<HostProjectOpenMetrics>("open_project_file", { path });
     const metrics = await this.withProjectFonts(response);
     this.projectPath = path;
@@ -241,7 +251,12 @@ export class TauriBridge implements FrontendBridge {
   async reloadProject(scope: ProjectReloadScope) {
     if (this.progressUnlisten) await this.progressUnlisten;
     const messageId = await invoke<number>("reload_project", { scope });
-    return { ...(await this.activateProjectFonts()), messageId };
+    return { fonts: [], errors: [], messageId };
+  }
+
+  async finalizeProjectReload(success: boolean) {
+    await invoke("finalize_project_reload", { success });
+    return success ? this.activateProjectFonts() : { fonts: [], errors: [] };
   }
 
   async submitProjectSource(): Promise<void> {
@@ -420,6 +435,7 @@ export class TauriBridge implements FrontendBridge {
   }
 
   async close(): Promise<void> {
+    await invoke("finalize_project_reload", { success: false }).catch(() => undefined);
     this.projectFontRegistry.clear();
     if (this.progressUnlisten) (await this.progressUnlisten)();
     await getCurrentWindow().close();

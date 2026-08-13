@@ -39,6 +39,12 @@ struct IndexedFile {
     source_signature: Option<[u64; 5]>,
 }
 
+struct PendingProjectReload {
+    indexed_files: Vec<IndexedFile>,
+    manifest: ProjectManifest,
+    runtime_manifest_sparse: bool,
+}
+
 #[derive(Default, Deserialize, Serialize)]
 struct SourceIndex {
     version: u32,
@@ -61,6 +67,7 @@ pub struct ProjectHost {
     embedded_resources: BTreeMap<String, Vec<u8>>,
     project_file: Option<PathBuf>,
     runtime_manifest_sparse: bool,
+    pending_reload: Option<PendingProjectReload>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -173,6 +180,7 @@ impl ProjectHost {
             embedded_resources: BTreeMap::new(),
             project_file: None,
             runtime_manifest_sparse: false,
+            pending_reload: None,
         })
     }
 
@@ -283,6 +291,7 @@ impl ProjectHost {
             embedded_resources: BTreeMap::new(),
             project_file: None,
             runtime_manifest_sparse: false,
+            pending_reload: None,
         })
     }
 
@@ -325,6 +334,7 @@ impl ProjectHost {
             embedded_resources,
             project_file: Some(path),
             runtime_manifest_sparse: false,
+            pending_reload: None,
         })
     }
 
@@ -608,13 +618,13 @@ impl ProjectHost {
             .ok_or_else(|| "project manifest was not materialized".to_owned())
     }
 
-    pub fn take_manifest_with_progress(
+    pub fn retained_manifest_with_progress(
         &mut self,
         progress: Option<&dyn Fn(usize, usize)>,
     ) -> Result<ProjectManifest, String> {
         self.materialize_with_progress(progress)?;
         self.manifest
-            .take()
+            .clone()
             .ok_or_else(|| "project manifest was not materialized".to_owned())
     }
 
@@ -666,11 +676,14 @@ impl ProjectHost {
         if self.project_file.is_some() {
             return Err("a packaged project cannot reload source files".into());
         }
+        if self.pending_reload.is_some() {
+            return Err("a project reload is already awaiting runtime confirmation".into());
+        }
         let selector = ProjectReloadSelector::new(scope)?;
         let candidate =
             Self::scan_with_progress(&self.root, self.revision.saturating_add(1), progress)?;
-        if let Some(request) = self.hydrate_sparse_reload(&selector, &candidate)? {
-            return Ok(request);
+        if self.runtime_manifest_sparse && !matches!(&selector, ProjectReloadSelector::All) {
+            return self.hydrate_sparse_reload(&selector, candidate);
         }
         let new_manifest = candidate
             .manifest
@@ -726,64 +739,34 @@ impl ProjectHost {
             target_revision: candidate.revision,
             changes,
         };
-        if matches!(&selector, ProjectReloadSelector::All) {
-            *self = candidate;
-        } else {
-            self.indexed_files
-                .retain(|file| !selector.matches(&file.relative_path, file.category));
-            self.indexed_files.extend(
-                candidate
-                    .indexed_files
-                    .into_iter()
-                    .filter(|file| selector.matches(&file.relative_path, file.category)),
-            );
-            self.indexed_files.sort_by(|left, right| {
-                left.relative_path
-                    .to_lowercase()
-                    .cmp(&right.relative_path.to_lowercase())
-                    .then_with(|| left.relative_path.cmp(&right.relative_path))
-            });
-            self.manifest = None;
-            self.revision = candidate.revision;
-        }
+        let (indexed_files, manifest, runtime_manifest_sparse) =
+            if matches!(&selector, ProjectReloadSelector::All) {
+                (candidate.indexed_files.clone(), new_manifest.clone(), false)
+            } else {
+                (
+                    self.merged_scoped_index(&selector, &candidate),
+                    ProjectManifest {
+                        project_revision: candidate.revision,
+                        files: self.merged_scoped_files(&selector, &candidate)?,
+                    },
+                    false,
+                )
+            };
+        self.pending_reload = Some(PendingProjectReload {
+            indexed_files,
+            manifest,
+            runtime_manifest_sparse,
+        });
         Ok(request)
     }
 
     fn hydrate_sparse_reload(
         &mut self,
         selector: &ProjectReloadSelector,
-        candidate: &Self,
-    ) -> Result<Option<ReloadProject>, String> {
-        if !self.runtime_manifest_sparse || matches!(selector, ProjectReloadSelector::All) {
-            return Ok(None);
-        }
-        let baseline = self
-            .manifest
-            .as_ref()
-            .ok_or_else(|| "cached project reload baseline was not materialized".to_owned())?;
-        let candidate_manifest = candidate
-            .manifest
-            .as_ref()
-            .ok_or_else(|| "candidate manifest was not materialized".to_owned())?;
-        let mut files = baseline
-            .files
-            .iter()
-            .filter(|file| !selector.matches(&file.relative_path, file.category))
-            .cloned()
-            .chain(
-                candidate_manifest
-                    .files
-                    .iter()
-                    .filter(|file| selector.matches(&file.relative_path, file.category))
-                    .cloned(),
-            )
-            .collect::<Vec<_>>();
-        files.sort_by(|left, right| {
-            left.relative_path
-                .to_lowercase()
-                .cmp(&right.relative_path.to_lowercase())
-                .then_with(|| left.relative_path.cmp(&right.relative_path))
-        });
+        candidate: Self,
+    ) -> Result<ReloadProject, String> {
+        let baseline = self.active_manifest()?;
+        let files = self.merged_scoped_files(selector, &candidate)?;
         let hydrated_paths = files
             .iter()
             .map(|file| file.relative_path.as_str())
@@ -811,14 +794,94 @@ impl ProjectHost {
             target_revision: candidate.revision,
             changes,
         };
-        self.indexed_files = files.iter().map(indexed_file).collect::<Result<_, _>>()?;
-        self.manifest = Some(ProjectManifest {
+        let manifest = ProjectManifest {
             project_revision: candidate.revision,
             files,
+        };
+        self.pending_reload = Some(PendingProjectReload {
+            indexed_files: self.merged_scoped_index(selector, &candidate),
+            manifest,
+            runtime_manifest_sparse: false,
         });
-        self.revision = candidate.revision;
-        self.runtime_manifest_sparse = false;
-        Ok(Some(request))
+        Ok(request)
+    }
+
+    fn active_manifest(&self) -> Result<&ProjectManifest, String> {
+        self.manifest
+            .as_ref()
+            .ok_or_else(|| "active project manifest was not retained".to_owned())
+    }
+
+    fn merged_scoped_files(
+        &self,
+        selector: &ProjectReloadSelector,
+        candidate: &Self,
+    ) -> Result<Vec<SubmittedFile>, String> {
+        let baseline = self.active_manifest()?;
+        let candidate_manifest = candidate
+            .manifest
+            .as_ref()
+            .ok_or_else(|| "candidate manifest was not materialized".to_owned())?;
+        let mut files = baseline
+            .files
+            .iter()
+            .filter(|file| !selector.matches(&file.relative_path, file.category))
+            .cloned()
+            .chain(
+                candidate_manifest
+                    .files
+                    .iter()
+                    .filter(|file| selector.matches(&file.relative_path, file.category))
+                    .cloned(),
+            )
+            .collect::<Vec<_>>();
+        files.sort_by(|left, right| {
+            left.relative_path
+                .to_lowercase()
+                .cmp(&right.relative_path.to_lowercase())
+                .then_with(|| left.relative_path.cmp(&right.relative_path))
+        });
+        Ok(files)
+    }
+
+    fn merged_scoped_index(
+        &self,
+        selector: &ProjectReloadSelector,
+        candidate: &Self,
+    ) -> Vec<IndexedFile> {
+        let mut files = self
+            .indexed_files
+            .iter()
+            .filter(|file| !selector.matches(&file.relative_path, file.category))
+            .cloned()
+            .chain(
+                candidate
+                    .indexed_files
+                    .iter()
+                    .filter(|file| selector.matches(&file.relative_path, file.category))
+                    .cloned(),
+            )
+            .collect::<Vec<_>>();
+        files.sort_by(|left, right| {
+            left.relative_path
+                .to_lowercase()
+                .cmp(&right.relative_path.to_lowercase())
+                .then_with(|| left.relative_path.cmp(&right.relative_path))
+        });
+        files
+    }
+
+    pub fn finalize_reload(&mut self, success: bool) {
+        let Some(pending) = self.pending_reload.take() else {
+            return;
+        };
+        if !success {
+            return;
+        }
+        self.indexed_files = pending.indexed_files;
+        self.revision = pending.manifest.project_revision;
+        self.manifest = Some(pending.manifest);
+        self.runtime_manifest_sparse = pending.runtime_manifest_sparse;
     }
 
     pub fn read_resource(&self, relative_path: &str) -> Result<Vec<u8>, String> {
@@ -1561,7 +1624,7 @@ mod tests {
         let progress = |completed, total| observed.borrow_mut().push((completed, total));
 
         let manifest = indexed
-            .take_manifest_with_progress(Some(&progress))
+            .retained_manifest_with_progress(Some(&progress))
             .unwrap();
 
         let paths = manifest
@@ -1619,6 +1682,7 @@ mod tests {
                 relative_path,
             } if relative_path == "font/Project.ttf"
         ));
+        project.finalize_reload(true);
         assert!(project.font_sources().is_empty());
     }
 
@@ -1636,8 +1700,8 @@ mod tests {
         .unwrap();
         fs::write(other.join("command.erb"), "@COM1\nPRINTL OLD\nRETURN 1\n").unwrap();
         let mut project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
-        project.mark_runtime_manifest_sparse();
-        project.materialize().unwrap();
+        let submitted = project.retained_manifest_with_progress(None).unwrap();
+        assert_eq!(submitted.project_revision, 1);
 
         fs::write(
             selected.join("command.erb"),
@@ -1654,19 +1718,25 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(selected_reload.changes.len(), 2);
+        assert_eq!(selected_reload.changes.len(), 1);
         assert!(selected_reload.changes.iter().any(|change| matches!(
             change,
             FileChange::Upsert { file }
                 if file.relative_path == "ERB/selected/command.erb"
                     && matches!(&file.payload, FilePayload::Utf8(text) if text.contains("PRINTL SELECTED"))
         )));
-        assert!(selected_reload.changes.iter().any(|change| matches!(
-            change,
-            FileChange::Upsert { file }
-                if file.relative_path == "ERB/other/command.erb"
-                    && matches!(&file.payload, FilePayload::Utf8(text) if text.contains("PRINTL OLD"))
-        )));
+        assert_eq!(project.materialize().unwrap().project_revision, 1);
+        project.finalize_reload(true);
+        let active = project.materialize().unwrap();
+        assert_eq!(active.project_revision, 2);
+        assert!(active.files.iter().any(|file| {
+            file.relative_path == "ERB/selected/command.erb"
+                && matches!(&file.payload, FilePayload::Utf8(text) if text.contains("PRINTL SELECTED"))
+        }));
+        assert!(active.files.iter().any(|file| {
+            file.relative_path == "ERB/other/command.erb"
+                && matches!(&file.payload, FilePayload::Utf8(text) if text.contains("PRINTL OLD"))
+        }));
 
         let remaining_reload = project
             .reload_scoped_with_progress(
@@ -1676,11 +1746,88 @@ mod tests {
                 None,
             )
             .unwrap();
+        project.finalize_reload(true);
         assert_eq!(remaining_reload.changes.len(), 1);
         assert!(matches!(
             &remaining_reload.changes[0],
             FileChange::Upsert { file } if file.relative_path == "ERB/other/command.erb"
         ));
+    }
+
+    #[test]
+    fn sparse_scoped_reload_hydrates_the_active_baseline_and_commits_only_on_success() {
+        let directory = tempfile::tempdir().unwrap();
+        let selected = directory.path().join("ERB/selected");
+        let other = directory.path().join("ERB/other");
+        fs::create_dir_all(&selected).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        fs::write(
+            selected.join("command.erb"),
+            "@COM0\nPRINTL OLD\nRETURN 1\n",
+        )
+        .unwrap();
+        fs::write(other.join("command.erb"), "@COM1\nPRINTL OLD\nRETURN 1\n").unwrap();
+        let mut project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+        project.retained_manifest_with_progress(None).unwrap();
+        project.mark_runtime_manifest_sparse();
+
+        fs::write(
+            selected.join("command.erb"),
+            "@COM0\nPRINTL SELECTED\nRETURN 1\n",
+        )
+        .unwrap();
+        fs::write(other.join("command.erb"), "@COM1\nPRINTL OTHER\nRETURN 1\n").unwrap();
+        let request = project
+            .reload_scoped_with_progress(
+                &ProjectReloadScope::Folder {
+                    path: "ERB/selected".into(),
+                },
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(request.base_revision, 1);
+        assert_eq!(request.target_revision, 2);
+        assert_eq!(request.changes.len(), 2);
+        assert!(request.changes.iter().any(|change| matches!(
+            change,
+            FileChange::Upsert { file }
+                if file.relative_path == "ERB/selected/command.erb"
+                    && matches!(&file.payload, FilePayload::Utf8(text) if text.contains("PRINTL SELECTED"))
+        )));
+        assert!(request.changes.iter().any(|change| matches!(
+            change,
+            FileChange::Upsert { file }
+                if file.relative_path == "ERB/other/command.erb"
+                    && matches!(&file.payload, FilePayload::Utf8(text) if text.contains("PRINTL OLD"))
+        )));
+        project.finalize_reload(false);
+        let rolled_back = project.materialize().unwrap();
+        assert_eq!(rolled_back.project_revision, 1);
+        assert!(rolled_back.files.iter().any(|file| {
+            file.relative_path == "ERB/selected/command.erb"
+                && matches!(&file.payload, FilePayload::Utf8(text) if text.contains("PRINTL OLD"))
+        }));
+
+        project
+            .reload_scoped_with_progress(
+                &ProjectReloadScope::Folder {
+                    path: "ERB/selected".into(),
+                },
+                None,
+            )
+            .unwrap();
+        project.finalize_reload(true);
+        let active = project.materialize().unwrap();
+        assert_eq!(active.project_revision, 2);
+        assert!(active.files.iter().any(|file| {
+            file.relative_path == "ERB/selected/command.erb"
+                && matches!(&file.payload, FilePayload::Utf8(text) if text.contains("PRINTL SELECTED"))
+        }));
+        assert!(active.files.iter().any(|file| {
+            file.relative_path == "ERB/other/command.erb"
+                && matches!(&file.payload, FilePayload::Utf8(text) if text.contains("PRINTL OLD"))
+        }));
     }
 
     #[test]

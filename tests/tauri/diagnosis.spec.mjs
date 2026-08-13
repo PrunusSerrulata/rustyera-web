@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 import { waitForRuntimeProgress } from "./runtime-progress.mjs";
 
@@ -35,6 +36,32 @@ enabled("Tauri diagnosis archive", () => {
       accept: (state) => state?.canInteract && state.output.includes("REPLAY_DIAGNOSIS_GOT=7"),
     });
 
+    const project = process.env.VITE_RUSTYERA_TEST_PROJECT;
+    await Promise.all([
+      replaceSource(
+        path.join(project, "erb", "diagnosis.erb"),
+        "REPLAY_DIAGNOSIS_READY",
+        "REPLAY_DIAGNOSIS_RELOADED",
+      ),
+      replaceSource(
+        path.join(project, "erb", "unselected.erb"),
+        "UNSELECTED_ACTIVE",
+        "UNSELECTED_DISK_ONLY",
+      ),
+    ]);
+    const beforeReload = (await snapshot()).runtimeEpoch;
+    await reloadSingleScript("erb/diagnosis.erb");
+    await waitForRuntimeProgress({
+      browser,
+      snapshot,
+      label: "selected diagnosis script did not finish hot reloading",
+      totalTimeout: timeout,
+      accept: (state) =>
+        state?.canInteract &&
+        state.projectLoading === false &&
+        Number(state.runtimeEpoch) === Number(beforeReload) + 1,
+    });
+
     await $("button=帮助").click();
     await $("button=导出诊断信息…").click();
     const target = process.env.VITE_RUSTYERA_TAURI_EXPORT_PATH;
@@ -64,6 +91,8 @@ enabled("Tauri diagnosis archive", () => {
       members.get("Replay Diagnosis Fixture.reraproj").subarray(0, 8).toString(),
       "RERAPROJ",
     );
+    const projectFile = process.env.VITE_RUSTYERA_TEST_PROJECT_FILE;
+    await writeFile(projectFile, members.get("Replay Diagnosis Fixture.reraproj"));
     const replayBytes = members.get("input-replay.jsonl");
     assert.equal(replayBytes.at(-1), 0x0a);
     const records = replayBytes
@@ -71,21 +100,62 @@ enabled("Tauri diagnosis archive", () => {
       .trimEnd()
       .split("\n")
       .map((line) => JSON.parse(line));
-    assert.equal(records[0].origin.kind, "new_game");
-    assert.equal(records[0].origin.seed, "18446744073709551615");
-    assert.equal(records[0].step_count, 1);
-    assert.deepEqual(records[1], {
-      record: "step",
-      sequence: 1,
-      action: "text",
-      wait_kind: "integer_value",
-      result: { kind: "integer", value: "7" },
-      message_skip: false,
-      text: "7",
+    const origin = records[0].origin;
+    assert.equal(origin.kind, "hot_reload");
+    assert.equal(origin.before_revision, "1");
+    assert.equal(origin.after_revision, "2");
+    assert.deepEqual(origin.changes, [
+      {
+        operation: "upsert",
+        relative_path: "erb/diagnosis.erb",
+        category: "erb",
+      },
+    ]);
+    assert.notEqual(origin.before_identity, origin.after_identity);
+    assert.equal(origin.project.identity, origin.after_identity);
+    assert.equal(origin.project.locale, "zh-Hans");
+    assert.equal(origin.project.revision, "2");
+    assert.equal(records[0].step_count, 0);
+    assert.equal(records.length, 1);
+
+    await $("button=文件").click();
+    await $("button=从项目文件启动…").click();
+    const confirmation = await $(".dialog-panel[aria-label='打开新项目']");
+    await confirmation.waitForDisplayed();
+    await confirmation.$("button=打开新项目").click();
+    await waitForRuntimeProgress({
+      browser,
+      snapshot,
+      label: "diagnosis project did not preserve the runtime-accepted source generation",
+      totalTimeout: timeout,
+      accept: (state) =>
+        state?.canInteract &&
+        state.output.includes("REPLAY_DIAGNOSIS_RELOADED") &&
+        state.output.includes("UNSELECTED_ACTIVE"),
     });
+    const reopened = await snapshot();
+    assert.equal(reopened.output.includes("UNSELECTED_DISK_ONLY"), false);
     console.log(JSON.stringify({ diagnosisMembers: [...members.keys()], replay: records }));
   });
 });
+
+async function replaceSource(file, expected, replacement) {
+  const source = await readFile(file, "utf8");
+  assert.equal(source.split(expected).length, 2, `${file} must contain one ${expected}`);
+  await writeFile(file, source.replace(expected, replacement), "utf8");
+}
+
+async function reloadSingleScript(target) {
+  await $("button=文件").click();
+  await $("button=重新加载单个脚本…").click();
+  const dialog = await $(".dialog-panel[aria-label='重新加载单个脚本']");
+  await dialog.waitForDisplayed();
+  const select = await dialog.$("select");
+  await select.waitForEnabled({ timeout: 2_000 });
+  await select.selectByAttribute("value", target);
+  assert.equal((await select.getValue()).toLowerCase(), target.toLowerCase());
+  await dialog.$("button=重新加载").click();
+}
 
 async function snapshot() {
   return browser.execute(() => window.__RUSTYERA_TEST__?.snapshot());

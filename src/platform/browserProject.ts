@@ -88,6 +88,12 @@ interface PendingBrowserSnapshot {
   topLevel: Set<string>;
 }
 
+interface PendingBrowserReload {
+  candidate: BrowserProject;
+  manifest: BrowserManifest;
+  runtimeManifestSparse: boolean;
+}
+
 export class BrowserProject {
   private readonly files = new Map<string, FileSystemFileHandle>();
   private readonly embeddedResources = new Map<string, Uint8Array>();
@@ -100,6 +106,7 @@ export class BrowserProject {
   private prepareConfigurationUpdate?: ProjectConfigurationUpdatePreparer;
   private importedSnapshot = false;
   private runtimeManifestSparse = false;
+  private pendingReload?: PendingBrowserReload;
 
   constructor(
     readonly root: FileSystemDirectoryHandle,
@@ -471,23 +478,29 @@ export class BrowserProject {
 
   async reloadRequest(scope: ProjectReloadScope, progress?: FileScanProgress): Promise<any> {
     if (this.embeddedManifest()) throw new Error("项目文件不包含可热重载的外部源码目录");
+    if (this.pendingReload) throw new Error("已有项目热重载正在等待 Runtime 确认");
     const selector = projectReloadSelector(scope);
     const previous = this.manifestValue ?? (await this.scan(progress));
-    this.revision += 1;
-    let current = await this.scan(progress);
+    const candidate = new BrowserProject(
+      this.root,
+      this.revision + 1,
+      this.name,
+      this.sourceIndexTrusted,
+    );
+    let current = await candidate.scan(progress);
     if (this.runtimeManifestSparse && selector.type === "all") {
-      current = await this.materialize(progress);
+      current = await candidate.materialize(progress);
     }
     const oldByPath = new Map(previous.files.map((file) => [file.relative_path, file]));
     const newByPath = new Map(current.files.map((file) => [file.relative_path, file]));
     const paths = [...new Set([...oldByPath.keys(), ...newByPath.keys()])].sort(comparePaths);
     const changes: any[] = [];
     if (this.runtimeManifestSparse && selector.type === "all") {
-      this.runtimeManifestSparse = false;
+      this.pendingReload = { candidate, manifest: current, runtimeManifestSparse: false };
       return {
         base_revision: previous.project_revision,
         target_revision: current.project_revision,
-        changes: current.files.map((file) => ({ type: "upsert", file })),
+        changes: current.files.map((file) => runtimeReloadUpsert(file)),
       };
     }
     if (this.runtimeManifestSparse) {
@@ -521,12 +534,15 @@ export class BrowserProject {
             relative_path: file.relative_path,
           })),
       );
-      this.runtimeManifestSparse = false;
-      this.manifestValue = { project_revision: current.project_revision, files };
+      this.pendingReload = {
+        candidate,
+        manifest: { project_revision: current.project_revision, files },
+        runtimeManifestSparse: false,
+      };
       return {
         base_revision: previous.project_revision,
         target_revision: current.project_revision,
-        changes,
+        changes: changes.map(runtimeReloadChange),
       };
     }
     for (const path of paths) {
@@ -559,13 +575,45 @@ export class BrowserProject {
           projectReloadScopeMatches(selector, file.relative_path, file.category),
         ),
       ].sort(compareScannedFiles);
-      this.manifestValue = { project_revision: current.project_revision, files };
+      this.pendingReload = {
+        candidate,
+        manifest: { project_revision: current.project_revision, files },
+        runtimeManifestSparse: false,
+      };
+    } else {
+      this.pendingReload = { candidate, manifest: current, runtimeManifestSparse: false };
     }
     return {
       base_revision: previous.project_revision,
       target_revision: current.project_revision,
-      changes,
+      changes: changes.map(runtimeReloadChange),
     };
+  }
+
+  finalizeReload(success: boolean): void {
+    const pending = this.pendingReload;
+    this.pendingReload = undefined;
+    if (!success || !pending) return;
+    const candidate = pending.candidate;
+    this.revision = pending.manifest.project_revision;
+    this.manifestValue = pending.manifest;
+    this.pendingSnapshot = undefined;
+    this.runtimeManifestSparse = pending.runtimeManifestSparse;
+    this.files.clear();
+    this.canonicalPaths.clear();
+    const activePaths = new Set(
+      pending.manifest.files.map((file) => file.relative_path.toLowerCase()),
+    );
+    for (const [path, handle] of candidate.files) {
+      if (activePaths.has(path)) this.files.set(path, handle);
+    }
+    for (const [path, canonical] of candidate.canonicalPaths) {
+      if (activePaths.has(path)) this.canonicalPaths.set(path, canonical);
+    }
+  }
+
+  hasPendingReload(): boolean {
+    return this.pendingReload != null;
   }
 
   async readResource(relativePath: string): Promise<Uint8Array> {
@@ -759,6 +807,24 @@ export class BrowserProject {
     if (namespace === "resource") return this.root;
     return this.root.getDirectoryHandle(storageDirectoryName(namespace), { create });
   }
+}
+
+function runtimeReloadChange(change: any): any {
+  return change.type === "upsert" ? runtimeReloadUpsert(change.file) : change;
+}
+
+function runtimeReloadUpsert(file: ScannedFile): any {
+  return {
+    type: "upsert",
+    file: {
+      ...file,
+      payload:
+        file.payload.type === "bytes"
+          ? { type: "bytes", value: [...file.payload.value] }
+          : file.payload,
+      content_hash: [...file.content_hash],
+    },
+  };
 }
 
 async function operateBrowserStorage(

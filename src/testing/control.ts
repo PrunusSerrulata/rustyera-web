@@ -15,6 +15,9 @@ export interface WebTestControl {
   exportSnapshot(): Promise<void>;
   exportTraditionalSave(): Promise<void>;
   takeDownload(timeoutMs?: number): Promise<{ name: string; bytes: number[] }>;
+  replaceProjectSource(relativePath: string, expected: string, replacement: string): Promise<void>;
+  reloadProject(scope: "all" | "folder" | "script", path?: string): Promise<void>;
+  exportDiagnosis(): Promise<void>;
 }
 
 export function isStableObservationCandidate(
@@ -95,6 +98,14 @@ export function installWebTestControl(pinia: Pinia): void {
     inspect: (watches) => store.inspectWatches(watches),
     exportSnapshot: () => store.exportSnapshot("normal"),
     exportTraditionalSave: () => store.exportTraditionalSaveForTest(),
+    async replaceProjectSource(relativePath, expected, replacement) {
+      if (!window.__RUSTYERA_TEST_FS_REPLACE__)
+        throw new Error("测试项目文件系统未安装源码替换入口");
+      await window.__RUSTYERA_TEST_FS_REPLACE__({ relativePath, expected, replacement });
+    },
+    reloadProject: (scope, path) =>
+      store.reloadProject(scope === "all" ? { type: "all" } : { type: scope, path: path ?? "" }),
+    exportDiagnosis: () => store.exportDiagnosis(),
     async takeDownload(timeoutMs = 30_000) {
       const deadline = performance.now() + timeoutMs;
       while (performance.now() < deadline) {
@@ -193,6 +204,7 @@ function downloadSummary(download?: {
   bytes: Uint8Array;
   size?: number;
   projectMagic?: Uint8Array;
+  projectManifest?: import("@/platform/browserProject").BrowserManifest;
   inputReplay?: Uint8Array;
 }): unknown {
   if (!download) return null;
@@ -208,10 +220,24 @@ function downloadSummary(download?: {
     size: download.size ?? download.bytes.length,
     magic: [...download.bytes.slice(0, 4)],
     ...(download.projectMagic ? { projectMagic: [...download.projectMagic] } : {}),
+    ...(download.projectManifest
+      ? {
+          projectHashes: Object.fromEntries(
+            download.projectManifest.files
+              .filter((file) => file.category !== "resource")
+              .map((file) => [file.relative_path, hex(file.content_hash)]),
+          ),
+          projectRevision: download.projectManifest.project_revision,
+        }
+      : {}),
     ...(replayRecords
       ? { replayHeader: replayRecords[0], replaySteps: replayRecords.slice(1) }
       : {}),
   };
+}
+
+function hex(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function serialize(value: unknown): any {

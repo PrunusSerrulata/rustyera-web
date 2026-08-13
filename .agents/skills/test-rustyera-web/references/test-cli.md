@@ -127,6 +127,21 @@ An action has `type`:
   Deadline waits are observed until the runtime advances them; the runner must not click through
   them.
 - `assert_state`: an `expect` subset of the serialized frontend snapshot.
+- `edit_project_source`: test setup for a hot-reload scenario; requires `relative_path`, `expected`,
+  and `replacement`, and replaces exactly one fragment inside the isolated project.
+- `reload_project`: invokes the production Browser/WASM reload path with `scope` (`all`, `folder`,
+  or `script`) and an optional project-relative `path`, then waits for the accepted runtime epoch.
+  Set `expect_success: false` only when testing rollback after a deliberately invalid reload; the
+  runner then requires the runtime epoch to remain unchanged and the frontend to restore interaction.
+- `export_diagnosis`: invokes the production diagnosis-export lifecycle and waits for its download.
+- `assert_diagnosis_project_manifest`: hashes each declared UTF-8 `sources` value and compares it
+  with the manifest decoded from the exported `.reraproj` by the real WASM worker.
+- `wait_compiled_cache_saved`: waits until the production cache export has completed.
+
+For cross-host cache handoff, set `RUSTYERA_TEST_COMPILED_CACHE_INPUT` and
+`RUSTYERA_TEST_COMPILED_CACHE_OUTPUT` to explicit opaque cache paths. The runner installs/exports
+only `.rustyera/cache/compiled-project.reracache`. `RUSTYERA_TEST_PROJECT_OUTPUT` may export the
+isolated source tree, excluding `.rustyera`, for a following TUI run.
 
 Set `allow_fault: true` on an action only when the scenario intentionally enters or operates on
 the fatal-error UI. The runner otherwise stops at the first runtime fault.

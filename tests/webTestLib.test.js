@@ -1,6 +1,8 @@
-import { access, mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { TextEncoder } from "node:util";
+import { blake3 } from "@noble/hashes/blake3.js";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -10,6 +12,7 @@ import {
   isolatedProject,
   loadScenario,
   nativeFirefoxCapabilities,
+  publishCrossHostArtifacts,
   resolveLocator,
   runtimeProgressDiagnostic,
   runtimeProgressSignature,
@@ -240,6 +243,170 @@ describe("web game test scenario", () => {
       access(path.join(isolated.project, ".rustyera", "cache", "source-index-v1.json")),
     ).rejects.toThrow();
     await isolated.close();
+  });
+
+  it("installs an explicit cross-host compiled cache without copying other private state", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "web-scenario-"));
+    const project = path.join(root, "project");
+    await mkdir(project);
+    await writeFile(path.join(project, "game.ERB"), "@SYSTEM_TITLE\nRETURN\n");
+    const incoming = path.join(root, "tui.reracache");
+    await writeFile(incoming, "tui-cache");
+
+    const isolated = await isolatedProject(project, { compiledCacheInput: incoming });
+
+    await expect(
+      readFile(
+        path.join(isolated.project, ".rustyera", "cache", "compiled-project.reracache"),
+        "utf8",
+      ),
+    ).resolves.toBe("tui-cache");
+    await isolated.close();
+  });
+
+  it("publishes successful cross-host artifacts without private state", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "web-handoff-"));
+    const source = path.join(root, "source");
+    const isolated = path.join(root, "isolated");
+    await mkdir(path.join(isolated, ".rustyera", "cache"), { recursive: true });
+    await mkdir(source);
+    await writeFile(path.join(isolated, "main.erb"), "@SYSTEM_TITLE\nRETURN\n");
+    await writeFile(
+      path.join(isolated, ".rustyera", "cache", "compiled-project.reracache"),
+      "cache",
+    );
+    const cacheOutput = path.join(root, "cache.reracache");
+    const projectOutput = path.join(root, "project-output");
+
+    await publishCrossHostArtifacts({
+      source,
+      isolated,
+      cacheOutput,
+      projectOutput,
+      succeeded: true,
+      cacheSaved: true,
+    });
+
+    await expect(readFile(cacheOutput, "utf8")).resolves.toBe("cache");
+    await expect(readFile(path.join(projectOutput, "main.erb"), "utf8")).resolves.toContain(
+      "SYSTEM_TITLE",
+    );
+    await expect(access(path.join(projectOutput, ".rustyera"))).rejects.toThrow();
+  });
+
+  it("does not publish a failed handoff and rejects unsafe targets", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "web-handoff-"));
+    const source = path.join(root, "source");
+    const isolated = path.join(root, "isolated");
+    await mkdir(source);
+    await mkdir(isolated);
+    const output = path.join(root, "cache.reracache");
+
+    await publishCrossHostArtifacts({
+      source,
+      isolated,
+      cacheOutput: output,
+      succeeded: false,
+      cacheSaved: false,
+    });
+    await expect(access(output)).rejects.toThrow();
+    await expect(
+      publishCrossHostArtifacts({
+        source,
+        isolated,
+        cacheInput: output,
+        cacheOutput: output,
+        succeeded: true,
+        cacheSaved: true,
+      }),
+    ).rejects.toThrow("must differ");
+
+    await expect(
+      publishCrossHostArtifacts({
+        source,
+        isolated,
+        cacheOutput: path.join(source, "nested.reracache"),
+        succeeded: true,
+        cacheSaved: true,
+      }),
+    ).rejects.toThrow("overlaps project state");
+
+    const nonempty = path.join(root, "nonempty-project");
+    await mkdir(nonempty);
+    await writeFile(path.join(nonempty, "keep.txt"), "keep");
+    await expect(
+      publishCrossHostArtifacts({
+        source,
+        isolated,
+        projectOutput: nonempty,
+        succeeded: true,
+        cacheSaved: false,
+      }),
+    ).rejects.toThrow("absent or empty");
+
+    await writeFile(output, "existing");
+    await expect(
+      publishCrossHostArtifacts({
+        source,
+        isolated,
+        cacheOutput: output,
+        succeeded: true,
+        cacheSaved: true,
+      }),
+    ).rejects.toThrow("must not exist");
+  });
+
+  it("does nothing when cross-host outputs are not requested", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "web-handoff-"));
+    await expect(
+      publishCrossHostArtifacts({
+        source: path.join(root, "source"),
+        isolated: path.join(root, "isolated"),
+        succeeded: true,
+        cacheSaved: false,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("requires an observed producer cache save before publishing", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "web-handoff-"));
+    const source = path.join(root, "source");
+    const isolated = path.join(root, "isolated");
+    await mkdir(source);
+    await mkdir(isolated);
+
+    await expect(
+      publishCrossHostArtifacts({
+        source,
+        isolated,
+        cacheOutput: path.join(root, "cache.reracache"),
+        succeeded: true,
+        cacheSaved: false,
+      }),
+    ).rejects.toThrow("observed successful cache save");
+  });
+
+  it("checks diagnosis project hashes from the real decoded project manifest", async () => {
+    const source = "@SYSTEM_TITLE\nRETURN\n";
+    const hash = [...blake3(new TextEncoder().encode(source))]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    const page = {
+      evaluate: vi.fn(async () => ({
+        lastDownload: {
+          projectHashes: {
+            "erb/main.erb": hash,
+          },
+        },
+      })),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "assert_diagnosis_project_manifest",
+        sources: { "erb/main.erb": source },
+      }),
+    ).resolves.toEqual({ semanticInput: undefined });
   });
 
   it("can isolate a fresh game without existing saves", async () => {

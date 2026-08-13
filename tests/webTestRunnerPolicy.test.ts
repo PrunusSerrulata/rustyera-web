@@ -136,6 +136,26 @@ describe("browser game runner progress policy", () => {
     expect(fixture).toContain("THROW INTENTIONAL_FATAL_DIAGNOSIS_FIXTURE");
   });
 
+  it("keeps the runtime-accepted project generation after a failed browser reload", () => {
+    const scenario = readFileSync(
+      resolve("tools/runtime-tester/scenarios/failed-reload-diagnosis.json"),
+      "utf8",
+    );
+
+    expect(scenario).toContain('"expect_success": false');
+    expect(scenario).toContain('"projectRevision": "1"');
+    expect(scenario).toContain('"type": "assert_diagnosis_project_manifest"');
+    expect(scenario).toContain("UNSELECTED_ACTIVE");
+    expect(scenario).not.toContain("UNSELECTED_DISK_ONLY");
+  });
+
+  it("checks cross-host cache acceptance from the serialized frontend telemetry", () => {
+    const runner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
+
+    expect(runner).toContain("current.rust.frontend.startupTelemetry?.cacheHit !== true");
+    expect(runner).not.toContain("current.rust.startupTelemetry?.cacheHit !== true");
+  });
+
   it("runs the cache-hit settings regression through the native Tauri host", () => {
     const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
     const spec = readFileSync(resolve("tests/tauri/cache-settings.spec.mjs"), "utf8");

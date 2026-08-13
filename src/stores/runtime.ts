@@ -23,10 +23,7 @@ import {
 } from "@/core/debug";
 import { preferredRuntimeLocales, resolveGameTextStyle } from "@/core/gameText";
 import { decodeImageMetadata } from "@/core/imageMetadata";
-import {
-  suppressedMirroredLogNotificationIndexes,
-  type LogNotificationState,
-} from "@/core/log";
+import { suppressedMirroredLogNotificationIndexes, type LogNotificationState } from "@/core/log";
 import {
   isMessageContinuationWait,
   isMessageSkipWait,
@@ -437,13 +434,22 @@ export const useRuntimeStore = defineStore("runtime", () => {
     advanceTimedWait,
     handleError(error) {
       gameProgressLossConfirmation.value = null;
-      pendingProjectReload = undefined;
+      void finalizePendingProjectReload(false);
       failStartupTelemetry(error);
       finishProjectLoad();
       fault.value = { code: "frontend", message: String(error) };
       log("error", String(error), false, "none");
     },
   });
+
+  async function finalizePendingProjectReload(success: boolean): Promise<ProjectFontLoadResult> {
+    if (!pendingProjectReload) return { fonts: [], errors: [] };
+    try {
+      return await bridge.finalizeProjectReload(success);
+    } finally {
+      pendingProjectReload = undefined;
+    }
+  }
 
   const effectivePreferences = computed(() => previewPreferences.value ?? preferences.value);
   const configurationEntries = computed(() =>
@@ -1219,7 +1225,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         const reloadRejected = pendingProjectReload?.messageId === correlation;
         if (reloadRejected) {
           const message = String(value.message ?? "Runtime 拒绝了热重载");
-          pendingProjectReload = undefined;
+          await finalizePendingProjectReload(false);
           finishProjectLoad();
           baseStatus.value = `重新加载项目失败：${message}`;
           log("error", baseStatus.value, true);
@@ -1330,13 +1336,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
       })),
       "errors_only",
     );
-    pendingProjectReload = undefined;
+    const committedFonts = await finalizePendingProjectReload(Boolean(value.success));
     if (!value.success) {
       finishProjectLoad();
       baseStatus.value = "重新加载项目失败，请查看日志";
       log("error", baseStatus.value, true);
       return;
     }
+    refreshProjectFontFamilies(committedFonts);
     projectResourceGeneration.value += 1;
     configurationWritable.value = bridge.projectConfigurationWritable();
     updateProjectConfiguration(value.configuration);
@@ -1934,7 +1941,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   function resetSessionState(preserveCompiledCacheExport = false): void {
     gameProgressLossConfirmation.value = null;
     projectReloadTargetRequest += 1;
-    pendingProjectReload = undefined;
+    void finalizePendingProjectReload(false);
     projectReloadDialogMode.value = null;
     projectReloadTargetOptions.value = [];
     projectReloadDialogBusy.value = false;
@@ -2050,10 +2057,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
       await runtimePump.waitUntilIdle();
       await cancelCompiledCacheExport();
       const submission = await bridge.reloadProject(scope);
-      refreshProjectFontFamilies(submission);
       pendingProjectReload = { messageId: String(submission.messageId) };
       continueProjectBuildProgress();
     } catch (error) {
+      await bridge.finalizeProjectReload(false).catch(() => undefined);
       pendingProjectReload = undefined;
       finishProjectLoad();
       const message = `重新加载项目失败：${String(error)}`;

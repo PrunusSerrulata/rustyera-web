@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/diagnosis-project",
+  "mode": "fixed",
+  "seed": 123456,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [
+    { "type": "input", "value": "7" },
+    {
+      "type": "edit_project_source",
+      "relative_path": "erb/diagnosis.erb",
+      "expected": "PRINTL REPLAY_DIAGNOSIS_READY",
+      "replacement": "PRINTL REPLAY_DIAGNOSIS_READY\nBROKEN("
+    },
+    {
+      "type": "reload_project",
+      "scope": "script",
+      "path": "erb/diagnosis.erb",
+      "expect_success": false
+    },
+    { "type": "export_diagnosis" },
+    {
+      "type": "assert_state",
+      "expect": {
+        "projectOpen": true,
+        "projectLoading": false,
+        "canInteract": true,
+        "diagnosis": { "exporting": false, "canExport": true },
+        "lastDownload": {
+          "projectMagic": [82, 69, 82, 65, 80, 82, 79, 74],
+          "projectRevision": "1"
+        }
+      }
+    },
+    {
+      "type": "assert_diagnosis_project_manifest",
+      "sources": {
+        "erb/diagnosis.erb": "@SYSTEM_TITLE\nPRINTL REPLAY_DIAGNOSIS_READY\nCALL UNSELECTED_DIAGNOSIS_SOURCE\nINPUT\nPRINTFORML REPLAY_DIAGNOSIS_GOT={RESULT}\nINPUT\nRETURN\n",
+        "erb/unselected.erb": "@UNSELECTED_DIAGNOSIS_SOURCE\nPRINTL UNSELECTED_ACTIVE\nRETURN\n"
+      }
+    }
+  ],
+  "goal": {
+    "wait_kind": "integer_value"
+  },
+  "limits": {
+    "max_steps": 10,
+    "timeout_seconds": 60
+  }
+}

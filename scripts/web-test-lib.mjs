@@ -1,9 +1,23 @@
 /* global window, HTMLImageElement */
 
 import { createWriteStream } from "node:fs";
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  cp,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+
+import { blake3 } from "@noble/hashes/blake3.js";
 
 export {
   goalStatus,
@@ -173,7 +187,129 @@ export async function isolatedProject(source, options = {}) {
       ].includes(relative);
     },
   });
+  if (options.compiledCacheInput) {
+    const cacheDirectory = path.join(destination, ".rustyera", "cache");
+    await mkdir(cacheDirectory, { recursive: true });
+    await cp(
+      path.resolve(options.compiledCacheInput),
+      path.join(cacheDirectory, "compiled-project.reracache"),
+    );
+  }
   return { root, project: destination, close: () => rm(root, { recursive: true, force: true }) };
+}
+
+export function crossHostArtifactPaths({
+  source,
+  isolated,
+  cacheInput,
+  cacheOutput,
+  projectOutput,
+}) {
+  const resolvedSource = path.resolve(source);
+  const resolvedIsolated = path.resolve(isolated);
+  const input = cacheInput ? path.resolve(cacheInput) : undefined;
+  const cache = cacheOutput ? path.resolve(cacheOutput) : undefined;
+  const project = projectOutput ? path.resolve(projectOutput) : undefined;
+  if (input && cache && input === cache) throw new Error("cache input and output must differ");
+  for (const target of [cache, project].filter(Boolean)) {
+    if (pathsOverlap(target, resolvedSource) || pathsOverlap(target, resolvedIsolated))
+      throw new Error(`cross-host artifact target overlaps project state: ${target}`);
+  }
+  return { input, cache, project };
+}
+
+export async function publishCrossHostArtifacts({
+  source,
+  isolated,
+  cacheInput,
+  cacheOutput,
+  projectOutput,
+  succeeded,
+  cacheSaved,
+}) {
+  // A failed producer must preserve its original failure. In particular, do not
+  // let output-path validation or cleanup replace the scenario error.
+  if (!succeeded) return;
+  const targets = crossHostArtifactPaths({
+    source,
+    isolated,
+    cacheInput,
+    cacheOutput,
+    projectOutput,
+  });
+  if (!targets.cache && !targets.project) return;
+  if (targets.cache && !cacheSaved)
+    throw new Error("compiled cache output requires an observed successful cache save");
+  if (targets.cache && (await pathExists(targets.cache)))
+    throw new Error(`cache output target must not exist: ${targets.cache}`);
+  if (targets.project && (await directoryNonempty(targets.project)))
+    throw new Error(`project output target must be absent or empty: ${targets.project}`);
+  const targetParents = [
+    ...new Set([targets.cache, targets.project].filter(Boolean).map(path.dirname)),
+  ];
+  if (targetParents.length > 1)
+    throw new Error("cross-host cache and project outputs must share a parent directory");
+  await mkdir(targetParents[0], { recursive: true });
+  const temporaryRoot = await mkdtemp(path.join(targetParents[0], ".handoff-"));
+  try {
+    if (targets.cache) {
+      const cache = path.join(isolated, ".rustyera", "cache", "compiled-project.reracache");
+      const temporary = path.join(temporaryRoot, "compiled-project.reracache");
+      await copyFile(cache, temporary);
+      await mkdir(path.dirname(targets.cache), { recursive: true });
+    }
+    if (targets.project) {
+      const temporary = path.join(temporaryRoot, "project");
+      await copyProjectSources(isolated, temporary);
+    }
+    if (targets.cache)
+      await rename(path.join(temporaryRoot, "compiled-project.reracache"), targets.cache);
+    if (targets.project) {
+      await rm(targets.project, { recursive: true, force: true });
+      await rename(path.join(temporaryRoot, "project"), targets.project);
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+function pathsOverlap(left, right) {
+  return pathContains(left, right) || pathContains(right, left);
+}
+
+function pathContains(parent, child) {
+  const relative = path.relative(parent, child);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+async function directoryNonempty(directory) {
+  try {
+    return (await stat(directory)).isDirectory() && (await readdir(directory)).length > 0;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function pathExists(target) {
+  try {
+    await stat(target);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function copyProjectSources(source, destination) {
+  await mkdir(destination, { recursive: true });
+  for (const entry of await readdir(source, { withFileTypes: true })) {
+    if (entry.name === ".rustyera") continue;
+    const from = path.join(source, entry.name);
+    const to = path.join(destination, entry.name);
+    if (entry.isDirectory()) await cp(from, to, { recursive: true });
+    else if (entry.isFile()) await copyFile(from, to);
+  }
 }
 
 export function injectInGameSaveFlow(source) {
@@ -225,6 +361,13 @@ export async function installRemoteFileSystem(page, root) {
     if (request.op === "delete")
       return rm(target, { force: true, recursive: true }).then(() => true);
     throw new Error(`unknown filesystem operation ${request.op}`);
+  });
+  await page.exposeBinding("__rustyeraReplaceProjectSource", async (_source, request) => {
+    const target = safe(request.relativePath);
+    const source = await readFile(target, "utf8");
+    if (source.split(request.expected).length !== 2)
+      throw new Error(`source edit expected text must occur exactly once: ${request.relativePath}`);
+    await writeFile(target, source.replace(request.expected, request.replacement), "utf8");
   });
   await page.addInitScript(() => {
     const callFileSystem = async (request) => {
@@ -319,6 +462,8 @@ export async function installRemoteFileSystem(page, root) {
       requestPermission = async () => "granted";
     }
     window.showDirectoryPicker = async () => new RemoteDirectoryHandle("project");
+    window.__RUSTYERA_TEST_FS_REPLACE__ = (request) =>
+      window.__rustyeraReplaceProjectSource(request);
   });
 }
 
@@ -335,6 +480,72 @@ export function resolveLocator(page, locator = {}) {
 }
 
 export async function runAction(page, action) {
+  if (action.type === "edit_project_source") {
+    await page.evaluate(
+      (request) =>
+        window.__RUSTYERA_TEST__.replaceProjectSource(
+          request.relative_path,
+          request.expected,
+          request.replacement,
+        ),
+      action,
+    );
+    return { semanticInput: action.semantic_input };
+  }
+  if (action.type === "reload_project") {
+    const previousEpoch = await page.evaluate(
+      () => window.__RUSTYERA_TEST__.snapshot().runtimeEpoch,
+    );
+    const expectSuccess = action.expect_success !== false;
+    await page.evaluate(
+      ({ scope, path }) => window.__RUSTYERA_TEST__.reloadProject(scope, path),
+      action,
+    );
+    await page.waitForFunction(
+      ({ epoch, expectSuccess }) => {
+        const state = window.__RUSTYERA_TEST__.snapshot();
+        if (state.projectLoading !== false || state.canInteract !== true) return false;
+        return expectSuccess
+          ? Number(state.runtimeEpoch) > Number(epoch)
+          : Number(state.runtimeEpoch) === Number(epoch) && state.status.includes("失败");
+      },
+      { epoch: previousEpoch, expectSuccess },
+    );
+    return { semanticInput: action.semantic_input };
+  }
+  if (action.type === "export_diagnosis") {
+    const previousDownloads = await page.evaluate(
+      () => window.__RUSTYERA_TEST_DOWNLOADS__?.length ?? 0,
+    );
+    await page.evaluate(() => window.__RUSTYERA_TEST__.exportDiagnosis());
+    await page.waitForFunction((downloads) => {
+      const state = window.__RUSTYERA_TEST__.snapshot();
+      return (
+        state.diagnosis?.exporting === false &&
+        (window.__RUSTYERA_TEST_DOWNLOADS__?.length ?? 0) > downloads
+      );
+    }, previousDownloads);
+    return { semanticInput: action.semantic_input };
+  }
+  if (action.type === "wait_compiled_cache_saved") {
+    await page.waitForFunction(
+      () => window.__RUSTYERA_TEST__.snapshot().status === "项目缓存已保存。",
+    );
+    return { semanticInput: action.semantic_input };
+  }
+  if (action.type === "assert_diagnosis_project_manifest") {
+    const state = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    const actual = state.lastDownload?.projectHashes ?? {};
+    for (const [relativePath, source] of Object.entries(action.sources ?? {})) {
+      const expected = hex(blake3(new TextEncoder().encode(String(source))));
+      if (actual[relativePath] !== expected) {
+        throw new Error(
+          `diagnosis project source mismatch for ${relativePath}: expected ${expected}, got ${actual[relativePath]}`,
+        );
+      }
+    }
+    return { semanticInput: action.semantic_input };
+  }
   if (action.type === "advance_intermediate_waits_until") {
     const maximum = Number(action.maximum ?? 100);
     const mediaSourcesAtLeast = Number(action.until?.media_sources_at_least ?? 0);
@@ -569,6 +780,10 @@ export async function runAction(page, action) {
     return { state };
   } else throw new Error(`unknown action type ${action.type}`);
   return { semanticInput: action.semantic_input };
+}
+
+function hex(bytes) {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function waitForAutomaticWaitChange(page, waitId) {

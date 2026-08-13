@@ -17,6 +17,7 @@ import {
   isolatedProject,
   loadScenario,
   observationFromSnapshot,
+  publishCrossHostArtifacts,
   runAction,
   shellWords,
 } from "./web-test-lib.mjs";
@@ -57,7 +58,9 @@ async function execute(args) {
   await mkdir(path.dirname(tracePath), { recursive: true });
   const trace = new TraceWriter(tracePath);
   const webProject = await isolatedProject(scenario.project, {
-    compiledCache: scenario.compiled_cache === true,
+    compiledCache:
+      scenario.compiled_cache === true || Boolean(process.env.RUSTYERA_TEST_COMPILED_CACHE_INPUT),
+    compiledCacheInput: process.env.RUSTYERA_TEST_COMPILED_CACHE_INPUT,
     cleanSaves: scenario.clean_saves === true,
   });
   if (scenario.prepare_in_game_save) {
@@ -76,6 +79,7 @@ async function execute(args) {
   let previousOutput = [];
   let referenceObservation;
   let steps = 0;
+  let compiledCacheSaved = false;
   const deadline = Date.now() + scenario.limits.timeout_seconds * 1000;
   const outcome = (status, exitCode, extra = {}) => ({
     exitCode,
@@ -127,7 +131,21 @@ async function execute(args) {
       () => browser?.close(),
       () => server?.close(),
       () => referenceProject?.close(),
-      () => webProject.close(),
+      async () => {
+        try {
+          await publishCrossHostArtifacts({
+            source: scenario.project,
+            isolated: webProject.project,
+            cacheInput: process.env.RUSTYERA_TEST_COMPILED_CACHE_INPUT,
+            cacheOutput: process.env.RUSTYERA_TEST_COMPILED_CACHE_OUTPUT,
+            projectOutput: process.env.RUSTYERA_TEST_PROJECT_OUTPUT,
+            succeeded: completedOutcome?.exitCode === 0 && runError == null,
+            cacheSaved: compiledCacheSaved,
+          });
+        } finally {
+          await webProject.close();
+        }
+      },
     ],
     trace,
     classifyError,
@@ -328,6 +346,7 @@ async function execute(args) {
       if (steps >= scenario.limits.max_steps) throw new Error("step budget exhausted");
       trace.emit({ type: "action", step: steps + 1, source, action });
       const result = await runAction(page, action);
+      if (action.type === "wait_compiled_cache_saved") compiledCacheSaved = true;
       if (reference && action.advances_game && result.semanticInput == null)
         throw new Error(`${action.type} that advances a compared game must declare semantic_input`);
       if (reference && result.semanticInput != null)
@@ -375,6 +394,14 @@ async function execute(args) {
       trace: tracePath,
     });
     let current = await observe();
+    if (
+      process.env.RUSTYERA_TEST_COMPILED_CACHE_INPUT &&
+      current.rust.frontend.startupTelemetry?.cacheHit !== true
+    ) {
+      throw new Error(
+        `cross-host compiled cache was not accepted: ${JSON.stringify(current.rust.frontend.startupTelemetry)}`,
+      );
+    }
     if (current.rust.fault) return fail("runtime_fault", 1, { fault: current.rust.fault });
     if (current.comparison && !current.comparison.equal) return fail("difference", 1);
     if (scenario.checkpoint) await saveCheckpoint(scenario.checkpoint.path);

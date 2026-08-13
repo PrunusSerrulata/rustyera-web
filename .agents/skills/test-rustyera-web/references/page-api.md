@@ -14,6 +14,9 @@ only for lifecycle setup and observation:
   counters, status, fault/log tail, and debugger state.
 - `inspect(watches)`: pause through debug protocol v4, read named/indexed variables, then continue
   if the call initiated the pause.
+- `replaceProjectSource`, `reloadProject`, and `exportDiagnosis`: test-only lifecycle controls for
+  real isolated-project hot reload and diagnosis scenarios. They delegate to the injected bounded
+  filesystem and the production store methods; they do not mutate Pinia state directly.
 
 The Playwright-injected directory handle proxies an isolated project copy. It validates every path
 against that root and implements the same project scan, resource, compiled-cache, and storage paths

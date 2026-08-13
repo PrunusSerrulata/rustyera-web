@@ -324,14 +324,14 @@ async fn open_project(
                 true
             } else {
                 let source_started = Instant::now();
-                let manifest = host.take_manifest_with_progress(Some(&scan_progress))?;
+                let manifest = host.retained_manifest_with_progress(Some(&scan_progress))?;
                 source_read_ms = source_started.elapsed().as_secs_f64() * 1000.0;
                 with_session(&state, |session| session.load_project(manifest))?;
                 false
             }
         } else {
             let source_started = Instant::now();
-            let manifest = host.take_manifest_with_progress(Some(&scan_progress))?;
+            let manifest = host.retained_manifest_with_progress(Some(&scan_progress))?;
             source_read_ms = source_started.elapsed().as_secs_f64() * 1000.0;
             with_session(&state, |session| session.load_project(manifest))?;
             false
@@ -376,7 +376,7 @@ async fn open_project_file(
         // Keep the embedded manifest until the runtime accepts the compiled snapshot. A project
         // file exported after legacy-configuration migration can legitimately require a source
         // fallback because its embedded source identity differs from the cached build identity.
-        // `submit_project_source` consumes this manifest only when the runtime requests it.
+        // `submit_project_source` clones this retained manifest when the runtime requests it.
         *state.project.lock().map_err(lock_error)? = Some(host);
         Ok(ProjectOpenMetrics {
             quick_scan_ms: 0.0,
@@ -410,7 +410,7 @@ async fn submit_project_source(app: AppHandle, state: State<'_, AppState>) -> Re
             .map_err(lock_error)?
             .as_mut()
             .ok_or_else(|| "no project is open".to_owned())?
-            .take_manifest_with_progress(Some(&scan_progress))?;
+            .retained_manifest_with_progress(Some(&scan_progress))?;
         with_session(&state, |session| session.load_project(manifest))
     })
     .await
@@ -483,19 +483,35 @@ async fn reload_project(
                 },
             );
         };
-        let request = state
-            .project
-            .lock()
-            .map_err(lock_error)?
+        let mut project = state.project.lock().map_err(lock_error)?;
+        let host = project
             .as_mut()
-            .ok_or_else(|| "no project is open".to_owned())?
-            .reload_scoped_with_progress(&scope, Some(&scan_progress))?;
-        with_session(&state, |session| {
+            .ok_or_else(|| "no project is open".to_owned())?;
+        let request = host.reload_scoped_with_progress(&scope, Some(&scan_progress))?;
+        match with_session(&state, |session| {
             session.submit_runtime(&RuntimeMessage::ReloadProject(request), None)
-        })
+        }) {
+            Ok(message_id) => Ok(message_id),
+            Err(error) => {
+                host.finalize_reload(false);
+                Err(error)
+            }
+        }
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn finalize_project_reload(state: State<'_, AppState>, success: bool) -> Result<(), String> {
+    state
+        .project
+        .lock()
+        .map_err(lock_error)?
+        .as_mut()
+        .ok_or_else(|| "no project is open".to_owned())?
+        .finalize_reload(success);
+    Ok(())
 }
 
 #[tauri::command]
@@ -884,6 +900,7 @@ pub fn run() {
             project_reload_targets,
             prepare_project_reload_baseline,
             reload_project,
+            finalize_project_reload,
             read_resource,
             read_resource_prefix,
             project_font_sources,

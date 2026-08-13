@@ -6,11 +6,24 @@
   "clock": "2026-01-01T00:00:00Z",
   "actions": [
     { "type": "input", "value": "7" },
-    { "type": "click", "locator": { "role": "button", "name": "帮助", "exact": true } },
     {
-      "type": "click",
-      "locator": { "role": "button", "name": "导出诊断信息…", "exact": true }
+      "type": "edit_project_source",
+      "relative_path": "erb/diagnosis.erb",
+      "expected": "REPLAY_DIAGNOSIS_READY",
+      "replacement": "REPLAY_DIAGNOSIS_RELOADED"
     },
+    {
+      "type": "edit_project_source",
+      "relative_path": "erb/unselected.erb",
+      "expected": "UNSELECTED_ACTIVE",
+      "replacement": "UNSELECTED_DISK_ONLY"
+    },
+    {
+      "type": "reload_project",
+      "scope": "script",
+      "path": "erb/diagnosis.erb"
+    },
+    { "type": "export_diagnosis" },
     {
       "type": "assert_state",
       "expect": {
@@ -20,30 +33,35 @@
           "name": "Replay Diagnosis Fixture-diagnosis_20260101-080000.tar.zst",
           "magic": [40, 181, 47, 253],
           "projectMagic": [82, 69, 82, 65, 80, 82, 79, 74],
+          "projectRevision": "2",
           "replayHeader": {
             "record": "header",
             "schema_version": 1,
             "fidelity": "manual_path",
             "status": "available",
-            "step_count": 1,
+            "step_count": 0,
             "origin": {
-              "kind": "new_game",
-              "seed": "123456",
-              "trigger": "start"
+              "kind": "hot_reload",
+              "before_revision": "1",
+              "after_revision": "2",
+              "changes": [
+                {
+                  "operation": "upsert",
+                  "relative_path": "erb/diagnosis.erb",
+                  "category": "erb"
+                }
+              ]
             }
           },
-          "replaySteps": [
-            {
-              "record": "step",
-              "sequence": 1,
-              "action": "text",
-              "wait_kind": "integer_value",
-              "result": { "kind": "integer", "value": "7" },
-              "message_skip": false,
-              "text": "7"
-            }
-          ]
+          "replaySteps": []
         }
+      }
+    },
+    {
+      "type": "assert_diagnosis_project_manifest",
+      "sources": {
+        "erb/diagnosis.erb": "@SYSTEM_TITLE\nPRINTL REPLAY_DIAGNOSIS_RELOADED\nCALL UNSELECTED_DIAGNOSIS_SOURCE\nINPUT\nPRINTFORML REPLAY_DIAGNOSIS_GOT={RESULT}\nINPUT\nRETURN\n",
+        "erb/unselected.erb": "@UNSELECTED_DIAGNOSIS_SOURCE\nPRINTL UNSELECTED_ACTIVE\nRETURN\n"
       }
     },
     {
