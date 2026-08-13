@@ -66,6 +66,7 @@ import { RuntimeLogState } from "@/stores/runtimeLogs";
 import { RuntimeInputState } from "@/stores/runtimeInput";
 import { RuntimeDebugRequestState } from "@/stores/runtimeDebugRequests";
 import { handleRuntimeService } from "@/stores/runtimeServices";
+import { RuntimeSettingsState } from "@/stores/runtimeSettings";
 import { RuntimeStatusState } from "@/stores/runtimeStatus";
 import { RuntimeStartupTelemetryState } from "@/stores/runtimeStartupTelemetry";
 import { RuntimeTestEnvironment } from "@/stores/runtimeTestEnvironment";
@@ -109,7 +110,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const preferences = ref<Preferences>(defaultPreferences());
   const runtimeViewport = new RuntimeViewportState(send);
   const viewportMeasurement = runtimeViewport.measurement;
-  const previewPreferences = ref<Preferences | null>(null);
   const {
     systemFonts,
     status: fontAccessStatus,
@@ -160,10 +160,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const testEnvironment = new RuntimeTestEnvironment();
   const logs = runtimeLogs.entries;
   const preferencesOpen = ref(false);
-  const settingsBusy = ref(false);
-  const settingsError = ref("");
-  let settingsStartedAt: number | undefined;
-  let settingsElapsedTimer: number | undefined;
   const logsOpen = ref(false);
   const debugConsoleOpen = ref(false);
   const variablesOpen = ref(false);
@@ -210,6 +206,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
     refreshCompiledCache: refreshCompiledCacheAfterConfigurationUpdate,
   });
   const projectConfiguration = runtimeConfiguration.snapshot;
+  const runtimeSettings = new RuntimeSettingsState({
+    preferences,
+    preferencesOpen,
+    configuration: runtimeConfiguration,
+    status: runtimeStatus,
+    savePreferences: (value) => bridge.savePreferences(value),
+    applyAudioPreferences: (value) => audio.setPreferences(value),
+    restart,
+    logError: (message) => log("error", message),
+  });
+  const previewPreferences = runtimeSettings.preview;
+  const settingsBusy = runtimeSettings.busy;
+  const settingsError = runtimeSettings.error;
   bridge.setProjectProgressListener(handleProjectProgress);
   let compiledCacheTimer: number | undefined;
   let exportState: ExportState | undefined;
@@ -375,7 +384,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   function resetTransientStatuses(): void {
     runtimeStatus.reset();
-    finishSettingsElapsedTimer();
+    runtimeSettings.resetStatus();
   }
 
   async function initialize(): Promise<void> {
@@ -2427,73 +2436,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
     changes: ProjectConfigurationChange[] = [],
     restartAfterApply = false,
   ): Promise<void> {
-    if (settingsBusy.value) return;
-    settingsBusy.value = true;
-    settingsError.value = "";
-    const statusToken = runtimeStatus.begin("settings", "正在保存设置…");
-    startSettingsElapsedTimer(statusToken);
-    let projectApplication: "persistent" | "session" | undefined;
-    let preferencesSaved = false;
-    try {
-      if (changes.length) {
-        if (restartAfterApply && configurationSessionOnly.value)
-          throw new Error("项目文件的会话设置无法通过重启应用");
-        projectApplication = await runtimeConfiguration.save(changes, false, statusToken);
-      }
-      runtimeStatus.update("settings", statusToken, "正在保存客户端偏好…");
-      preferences.value = await bridge.savePreferences(value);
-      preferencesSaved = true;
-      previewPreferences.value = null;
-      audio.setPreferences(preferences.value);
-      if (restartAfterApply) {
-        runtimeStatus.clear("settings", statusToken);
-        preferencesOpen.value = false;
-        await restart();
-      } else {
-        runtimeStatus.finish(
-          "settings",
-          statusToken,
-          projectApplication === "session" ? "会话设置已应用；退出游戏后将丢失" : "设置已应用",
-        );
-      }
-    } catch (error) {
-      const message = preferencesSaved
-        ? `设置已保存，但重新启动失败：${String(error)}`
-        : projectApplication === "session"
-          ? `会话设置已应用（退出游戏后将丢失），但客户端偏好保存失败：${String(error)}`
-          : projectApplication === "persistent"
-            ? `项目设置已应用，但客户端偏好保存失败：${String(error)}`
-            : `设置未保存：${String(error)}`;
-      runtimeStatus.update("settings", statusToken, message);
-      log("error", message);
-      settingsError.value = message;
-    } finally {
-      settingsBusy.value = false;
-      finishSettingsElapsedTimer();
-    }
-  }
-
-  function startSettingsElapsedTimer(statusToken: number): void {
-    settingsStartedAt = performance.now();
-    settingsElapsedTimer = window.setInterval(() => {
-      if (settingsStartedAt == null) return;
-      const elapsed = Math.floor((performance.now() - settingsStartedAt) / 1000);
-      if (elapsed < 1) return;
-      runtimeStatus.appendElapsed("settings", statusToken, elapsed);
-    }, 1000);
-  }
-
-  function finishSettingsElapsedTimer(): void {
-    settingsStartedAt = undefined;
-    if (settingsElapsedTimer != null) {
-      window.clearInterval(settingsElapsedTimer);
-      settingsElapsedTimer = undefined;
-    }
+    await runtimeSettings.save(value, changes, restartAfterApply);
   }
 
   function preview(value: Preferences | null): void {
-    previewPreferences.value = value;
-    audio.setPreferences(value ?? preferences.value);
+    runtimeSettings.showPreview(value);
   }
 
   async function projectViewport(measurement = currentGameViewportMeasurement()): Promise<void> {
