@@ -1,6 +1,6 @@
 import { blake3 } from "@noble/hashes/blake3.js";
 import { defineStore } from "pinia";
-import { computed, nextTick, ref } from "vue";
+import { computed, ref } from "vue";
 
 import { AudioEngine } from "@/core/audio";
 import {
@@ -55,10 +55,7 @@ import {
   type SessionOptions,
 } from "@/core/types";
 import { platformBridge } from "@/platform";
-import {
-  currentGameViewportMeasurement,
-  type GameViewportMeasurement,
-} from "@/platform/viewportMeasurement";
+import { currentGameViewportMeasurement } from "@/platform/viewportMeasurement";
 import { RuntimePumpCoordinator } from "@/stores/runtimePump";
 import { RuntimePresentationProjection } from "@/stores/runtimePresentation";
 import { RuntimeConfigurationState } from "@/stores/runtimeConfiguration";
@@ -71,6 +68,7 @@ import { RuntimeStatusState } from "@/stores/runtimeStatus";
 import { RuntimeStartupTelemetryState } from "@/stores/runtimeStartupTelemetry";
 import { RuntimeTestEnvironment } from "@/stores/runtimeTestEnvironment";
 import { RuntimeTraditionalSaveState } from "@/stores/runtimeTraditionalSaves";
+import { RuntimeViewportState } from "@/stores/runtimeViewport";
 import { useSystemFontAccess } from "@/stores/systemFontAccess";
 import { transportValue } from "@/stores/runtimeTransport";
 
@@ -109,7 +107,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const presentation = presentationProjection.presentation;
   const presentationStaged = presentationProjection.staged;
   const preferences = ref<Preferences>(defaultPreferences());
-  const viewportMeasurement = ref<GameViewportMeasurement>();
+  const runtimeViewport = new RuntimeViewportState(send);
+  const viewportMeasurement = runtimeViewport.measurement;
   const previewPreferences = ref<Preferences | null>(null);
   const {
     systemFonts,
@@ -207,7 +206,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     setVolume: (volume) => audio.setGameVolume(volume),
     log,
     updateSettingsStatus: (token, message) => runtimeStatus.update("settings", token, message),
-    viewportChrome: () => viewportChrome(viewportMeasurement.value),
+    viewportChrome: () => runtimeViewport.chrome(),
     refreshCompiledCache: refreshCompiledCacheAfterConfigurationUpdate,
   });
   const projectConfiguration = runtimeConfiguration.snapshot;
@@ -219,7 +218,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let importBytes: Uint8Array | undefined;
   let importKind: Exclude<RuntimeStartKind, "new_game"> | undefined;
   let pendingStart: RuntimeTestConfiguration["start"] = { type: "new_game" };
-  let nextEnvironmentRevision = 1;
   let runtimeManifestSparse = false;
   let batchMediaDirty = false;
   let debugPausePending = false;
@@ -239,7 +237,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   >();
   const pendingGameInput = ref<PendingGameInput>();
   const pendingInputUndo = ref<PendingInputUndo>();
-  const pendingProjectionMessages = new Set<string>();
+  const pendingProjectionMessages = runtimeViewport.pendingMessages;
   const runtimePump = new RuntimePumpCoordinator(bridge, {
     handleBatch,
     advanceTimedWait,
@@ -710,7 +708,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
             try {
               await bridge.applyProjectConfiguration(
                 configurationEntries.value,
-                viewportChrome(currentGameViewportMeasurement()),
+                runtimeViewport.chrome(currentGameViewportMeasurement()),
               );
             } catch (error) {
               log("warning", `客户端项目配置应用失败：${String(error)}`);
@@ -1005,7 +1003,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       try {
         await bridge.applyProjectConfiguration(
           configurationEntries.value,
-          viewportChrome(currentGameViewportMeasurement()),
+          runtimeViewport.chrome(currentGameViewportMeasurement()),
         );
       } catch (error) {
         log("warning", `客户端项目配置应用失败：${String(error)}`);
@@ -1353,7 +1351,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     prompt.value = "";
     pendingGameInput.value = undefined;
     pendingInputUndo.value = undefined;
-    pendingProjectionMessages.clear();
+    runtimeViewport.reset();
     exportState = compiledCacheExport;
     diagnosisState = undefined;
     diagnosisExporting.value = false;
@@ -1365,7 +1363,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimeConfiguration.reset();
     gameInformation.value = null;
     runtimeManifestSparse = false;
-    nextEnvironmentRevision = 1;
   }
 
   async function openProjectReloadDialog(mode: "folder" | "script"): Promise<void> {
@@ -2631,55 +2628,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function projectViewport(measurement = currentGameViewportMeasurement()): Promise<void> {
-    if (!measurement) return;
-    viewportMeasurement.value = measurement;
-    if (!runtimePump.ready) return;
-    const messageId = await send({
-      type: "projection_observation",
-      value: {
-        environment_revision: nextEnvironmentRevision,
-        presentation_revision: presentation.revision,
-        client_size: { width: measurement.width, height: measurement.height },
-        projection_space_revision: nextEnvironmentRevision++,
-        line_columns: measurement.lineColumns,
-        text_box: prompt.value,
-        transform: {
-          x_numerator: 1,
-          x_denominator: 1000,
-          y_numerator: 1,
-          y_denominator: 1000,
-          origin_x: 0,
-          origin_y: 0,
-        },
-      },
-    });
-    if (pendingProjectionMessages.size >= 256) pendingProjectionMessages.clear();
-    pendingProjectionMessages.add(String(messageId));
-  }
-
-  function viewportChrome(measurement: GameViewportMeasurement | undefined): {
-    width: number;
-    height: number;
-  } {
-    return measurement
-      ? { width: measurement.chromeWidth, height: measurement.chromeHeight }
-      : { width: 0, height: 0 };
+    await runtimeViewport.observe(
+      measurement,
+      runtimePump.ready,
+      presentation.revision,
+      prompt.value,
+    );
   }
 
   async function settleProjectViewport(): Promise<void> {
-    await nextTick();
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(timeout);
-        resolve();
-      };
-      const timeout = window.setTimeout(finish, 100);
-      requestAnimationFrame(finish);
-    });
-    await projectViewport();
+    await runtimeViewport.settle(projectViewport);
   }
 
   async function sendClientState(): Promise<void> {
