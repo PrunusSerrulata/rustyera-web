@@ -1,4 +1,8 @@
 use era_protocol::{ProtocolBytes, ProtocolVersion, decode_canonical, encode_canonical};
+use era_runtime_protocol::{
+    DECODE_CANVAS_IMAGE_OPERATION, DecodeCanvasImageRequest, DecodeCanvasImageResponse,
+    ServiceKind, ServiceRequest, ServiceResult,
+};
 
 use super::*;
 use crate::export::{

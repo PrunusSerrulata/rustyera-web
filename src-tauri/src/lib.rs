@@ -16,6 +16,7 @@ mod image_metadata;
 mod ipc;
 mod preferences;
 mod project;
+mod services;
 mod storage;
 
 use std::fs;
@@ -25,16 +26,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use era_debug_protocol::DebugMessage;
-use era_protocol::{ProtocolBytes, decode_canonical, encode_canonical};
 use era_runtime::{
     ProjectProgress, ProjectProgressReporter, ProjectProgressStage, RuntimeDriveBudget,
 };
-use era_runtime_protocol::{
-    DECODE_CANVAS_IMAGE_OPERATION, DecodeCanvasImageRequest, DecodeCanvasImageResponse,
-    FullProjectManifest, IMAGE_METADATA_OPERATION, ImageMetadataRequest, ImageMetadataResponse,
-    RuntimeMessage, ServiceKind, ServiceRequest, ServiceResponse, ServiceResult, StorageRequest,
-    StorageResponse,
-};
+use era_runtime_protocol::{FullProjectManifest, RuntimeMessage, StorageRequest, StorageResponse};
 use era_web_bridge::{FRONTEND_PUMP_MAXIMUM_QUIET_SLICES, WebSession, WebSessionOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -46,6 +41,7 @@ use crate::ipc::{
     encode_pump_response as encode_ipc_response, encode_value as encode_ipc_value,
 };
 use crate::project::{ProjectFontSource, ProjectHost, ProjectReloadScope, ProjectReloadTargets};
+use crate::services::native_service;
 use crate::storage::StorageHost;
 
 #[derive(Clone, Default)]
@@ -212,46 +208,6 @@ async fn pump(state: State<'_, AppState>) -> Result<tauri::ipc::Response, String
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
-}
-
-fn native_service(
-    request: ServiceRequest,
-    project: Option<&ProjectHost>,
-) -> Option<ServiceResponse> {
-    let payload = match (request.kind, request.operation.as_str()) {
-        (ServiceKind::Canvas, DECODE_CANVAS_IMAGE_OPERATION) => {
-            let decoded: DecodeCanvasImageRequest =
-                decode_canonical(request.payload.as_slice()).ok()?;
-            let metadata = image_metadata::decode(decoded.encoded.as_slice())?;
-            encode_canonical(&DecodeCanvasImageResponse {
-                width: metadata.width,
-                height: metadata.height,
-            })
-            .ok()?
-        }
-        (ServiceKind::Image, IMAGE_METADATA_OPERATION) => {
-            let decoded: ImageMetadataRequest =
-                decode_canonical(request.payload.as_slice()).ok()?;
-            let bytes = project?
-                .read_resource_prefix(&decoded.resource_id, 1024 * 1024)
-                .ok()?;
-            let metadata = image_metadata::decode(&bytes)?;
-            encode_canonical(&ImageMetadataResponse {
-                width: metadata.width,
-                height: metadata.height,
-                format: metadata.format.into(),
-                animated: metadata.animated,
-            })
-            .ok()?
-        }
-        _ => return None,
-    };
-    Some(ServiceResponse {
-        request_id: request.request_id,
-        result: ServiceResult::Ready {
-            payload: ProtocolBytes::new(payload),
-        },
-    })
 }
 
 #[tauri::command]
