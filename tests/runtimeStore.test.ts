@@ -1308,7 +1308,7 @@ describe("runtime store session lifecycle", () => {
       masterVolume: 0.75,
     });
     expect(migrated).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 4,
       fontFamilyOverride: null,
       fontSizeOverridePx: null,
       imageScale: 1.5,
@@ -3811,11 +3811,23 @@ describe("runtime store session lifecycle", () => {
     expect(store.projectLoadProgressLabel).toBe("项目缓存命中，正在加载缓存…");
     expect(store.projectLoadProgressValue).toBeUndefined();
 
+    bridge.projectProgressListener?.({
+      stage: "compiling",
+      completed: 0,
+      total: 10,
+      elapsedMs: 10,
+    });
     bridge.projectProgressListener?.({ stage: "compiling", completed: 7, total: 10 });
     expect(store.projectLoadProgressLabel).toBe("正在编译脚本函数：7/10（70%）");
     expect(store.projectLoadProgressValue).toBe(70);
-
+    bridge.projectProgressListener?.({
+      stage: "compiling",
+      completed: 10,
+      total: 10,
+      elapsedMs: 60,
+    });
     bridge.projectProgressListener?.({ stage: "validating", completed: 1, total: 2 });
+    expect(store.startupTelemetry?.durations.compileMs).toBe(50);
     expect(store.projectLoadProgressLabel).toBe("正在验证编译结果：1/2（50%）");
     expect(store.projectLoadProgressValue).toBe(50);
     await vi.advanceTimersByTimeAsync(5_000);

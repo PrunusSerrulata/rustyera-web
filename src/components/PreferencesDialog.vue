@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 
 import ColorPickerDialog from "@/components/ColorPickerDialog.vue";
 import DraggableDialog from "@/components/DraggableDialog.vue";
@@ -49,6 +49,14 @@ const emit = defineEmits<{
   save: [value: Preferences, changes: ProjectConfigurationChange[], restart: boolean];
 }>();
 const colorField = ref<SettingsField>();
+const trustProjectFileMetadata = ref(false);
+watch(
+  [() => props.open, () => props.value.trustProjectFileMetadata],
+  ([open, trusted]) => {
+    if (open) trustProjectFileMetadata.value = trusted;
+  },
+  { immediate: true },
+);
 const {
   activeProjectTab,
   activeTabEditable,
@@ -71,7 +79,24 @@ const {
   configurationReadOnly: () => props.configurationReadOnly,
   configurationSessionOnly: () => props.configurationSessionOnly,
 });
-const tabs = computed(() => projectTabs.value.map((tab) => ({ id: tab.id, label: tab.label })));
+const metadataTrustAvailable = computed(
+  () => props.hostKind === "browser" && props.projectSource === "directory",
+);
+const tabs = computed(() => {
+  const available = projectTabs.value.map((tab) => ({ id: tab.id, label: tab.label }));
+  if (metadataTrustAvailable.value && !available.some((tab) => tab.id === "interaction"))
+    available.push({ id: "interaction", label: "交互与输出" });
+  return available;
+});
+const metadataTrustVisible = computed(
+  () => activeTab.value === "interaction" && metadataTrustAvailable.value,
+);
+const metadataTrustChanged = computed(
+  () =>
+    metadataTrustVisible.value &&
+    trustProjectFileMetadata.value !== props.value.trustProjectFileMetadata,
+);
+const canApply = computed(() => anyFieldEditable.value || metadataTrustChanged.value);
 const title = computed(() => `RustyEra ${props.hostKind === "tauri" ? "Tauri" : "Web"} · 设置`);
 const configurationWarning = computed(() => {
   if (props.configurationSessionOnly) {
@@ -93,11 +118,21 @@ function close(): void {
 
 function apply(restart: boolean): void {
   if (!validateAll()) return;
-  emit("save", { ...props.value }, changes(), restart);
+  emit(
+    "save",
+    { ...props.value, trustProjectFileMetadata: trustProjectFileMetadata.value },
+    changes(),
+    restart,
+  );
 }
 
 function fieldDisabled(field: SettingsField): boolean {
   return draftFieldDisabled(field, props.busy);
+}
+
+function resetCurrentTab(): void {
+  resetActiveTab();
+  if (metadataTrustVisible.value) trustProjectFileMetadata.value = false;
 }
 
 function setBoolean(field: SettingsField, event: Event): void {
@@ -318,16 +353,30 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
             <option v-for="font in fontFamilies" :key="font" :value="font" />
           </datalist>
         </template>
+        <fieldset v-if="metadataTrustVisible" class="settings-group">
+          <legend>项目启动</legend>
+          <label class="setting-item boolean-setting">
+            <input v-model="trustProjectFileMetadata" type="checkbox" :disabled="busy" />
+            <span>信任文件大小和修改时间以加快启动</span>
+          </label>
+          <p class="settings-warning" role="note">
+            启用后，路径、类型、大小和修改时间均未变化的文件会复用上次内容摘要；关闭后下次启动将重新校验全部内容。
+          </p>
+        </fieldset>
       </div>
 
       <p v-if="error" class="settings-error" role="alert">{{ error }}</p>
       <footer class="dialog-actions settings-actions">
-        <button type="button" :disabled="busy || !activeTabEditable" @click="resetActiveTab">
+        <button
+          type="button"
+          :disabled="busy || (!activeTabEditable && !metadataTrustVisible)"
+          @click="resetCurrentTab"
+        >
           重置当前标签页
         </button>
         <span class="spacer" />
         <button type="button" :disabled="busy" @click="close">取消</button>
-        <button type="submit" class="primary" :disabled="busy || !anyFieldEditable">
+        <button type="submit" class="primary" :disabled="busy || !canApply">
           {{ busy ? "正在应用…" : "应用" }}
         </button>
         <button

@@ -273,17 +273,31 @@ export interface StartupTelemetry {
   };
   durations: {
     enumerateMs: number | null;
-    statAndIndexReadMs: number | null;
+    indexReadMs: number | null;
     indexWriteMs: number | null;
+    statMs: number | null;
     sourceReadDecodeHashMs: number | null;
     cacheReadMs: number | null;
     submissionTransferMs: number | null;
+    normalizeMs: number | null;
+    csvMs: number | null;
+    cacheParseMs: number | null;
     cacheDecodeMs: number | null;
+    cacheValidateMs: number | null;
     parseMs: number | null;
     analyzeMs: number | null;
     compileMs: number | null;
+    finalizeMs: number | null;
     validateMs: number | null;
+    prepareMs: number | null;
   };
+  sourceIndex: {
+    present: boolean | null;
+    trusted: boolean | null;
+    reusedFiles: number | null;
+    hashedFiles: number | null;
+  };
+  wasmMode: "single" | null;
   observedStages: Partial<Record<ProjectProgressStage, number>>;
   milestones: {
     runtimeValidationReportedMs: number | null;
@@ -295,6 +309,22 @@ export interface StartupTelemetry {
   outcome: "loading" | "success" | "failure";
   error: string | null;
 }
+
+const STARTUP_DURATION_BY_STAGE: Partial<
+  Record<ProjectProgressStage, keyof StartupTelemetry["durations"]>
+> = {
+  normalizing: "normalizeMs",
+  loading_data: "csvMs",
+  parsing: "parseMs",
+  analyzing: "analyzeMs",
+  compiling: "compileMs",
+  finalizing: "finalizeMs",
+  validating: "validateMs",
+  preparing: "prepareMs",
+  cache_parsing: "cacheParseMs",
+  cache_decoding: "cacheDecodeMs",
+  cache_validating: "cacheValidateMs",
+};
 
 const DEBUG_VARIABLE_PAGE_LIMIT = 256;
 const DEBUG_VARIABLE_MAX_PAGES = 16;
@@ -428,6 +458,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let startupAttemptSequence = 0;
   let startupProgressStage: ProjectProgressStage | undefined;
   let startupProgressStageStartedAtMs: number | undefined;
+  let startupCoreProgressStartedAtMs: Partial<Record<ProjectProgressStage, number>> = {};
+  let startupCoreProgressDurations: Partial<Record<ProjectProgressStage, number>> = {};
   let startupStartMessageId: string | undefined;
   let projectLoadStartedAt: number | undefined;
   let projectLoadElapsedTimer: number | undefined;
@@ -672,10 +704,18 @@ export const useRuntimeStore = defineStore("runtime", () => {
     // Host end-to-end tests must not inherit a developer's persisted font/image
     // preferences. Those values change Emuera geometry and made identical test
     // binaries report different image positions on different machines.
-    preferences.value =
-      import.meta.env.VITE_RUSTYERA_TEST === "1"
-        ? defaultPreferences()
-        : await bridge.loadPreferences();
+    if (import.meta.env.VITE_RUSTYERA_TEST === "1") {
+      preferences.value = {
+        ...defaultPreferences(),
+        trustProjectFileMetadata:
+          bridge.kind === "browser" && import.meta.env.VITE_RUSTYERA_TEST_TRUST_METADATA === "1",
+      };
+      if (preferences.value.trustProjectFileMetadata) {
+        preferences.value = await bridge.savePreferences(preferences.value);
+      }
+    } else {
+      preferences.value = await bridge.loadPreferences();
+    }
     audio.setPreferences(preferences.value);
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
@@ -3737,6 +3777,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       stage: value.stage,
       completed: Number(value.completed),
       total: Number(value.total),
+      elapsedMs: value.elapsedMs == null ? undefined : Number(value.elapsedMs),
     } satisfies ProjectProgress;
     if (
       !Number.isSafeInteger(progress.completed) ||
@@ -3765,14 +3806,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (!acceptingProjectProgress) return;
     projectLoading.value = true;
     startProjectLoadElapsedTimer();
+    recordStartupProgress(progress);
     projectProgress.value = progress;
-    recordStartupProgress(progress.stage);
     baseStatus.value = formatProjectProgress(progress);
   }
 
   function beginStartupTelemetry(submittedAtMs: number, selection: "directory" | "file"): void {
     startupProgressStage = undefined;
     startupProgressStageStartedAtMs = undefined;
+    startupCoreProgressStartedAtMs = {};
+    startupCoreProgressDurations = {};
     startupStartMessageId = undefined;
     startupTelemetry.value = {
       attemptId: ++startupAttemptSequence,
@@ -3787,17 +3830,31 @@ export const useRuntimeStore = defineStore("runtime", () => {
       },
       durations: {
         enumerateMs: null,
-        statAndIndexReadMs: null,
+        indexReadMs: null,
         indexWriteMs: null,
+        statMs: null,
         sourceReadDecodeHashMs: null,
         cacheReadMs: null,
         submissionTransferMs: null,
+        normalizeMs: null,
+        csvMs: null,
+        cacheParseMs: null,
         cacheDecodeMs: null,
+        cacheValidateMs: null,
         parseMs: null,
         analyzeMs: null,
         compileMs: null,
+        finalizeMs: null,
         validateMs: null,
+        prepareMs: null,
       },
+      sourceIndex: {
+        present: null,
+        trusted: null,
+        reusedFiles: null,
+        hashedFiles: null,
+      },
+      wasmMode: null,
       observedStages: {},
       milestones: {
         runtimeValidationReportedMs: null,
@@ -3820,6 +3877,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
       sourceReadMs: metrics.sourceReadMs,
       submitMs: metrics.submitMs,
     };
+    telemetry.durations.enumerateMs = metrics.enumerateMs ?? null;
+    telemetry.durations.indexReadMs = metrics.indexReadMs ?? null;
+    telemetry.durations.indexWriteMs = metrics.indexWriteMs ?? null;
+    telemetry.durations.statMs = metrics.statMs ?? null;
+    telemetry.durations.sourceReadDecodeHashMs = metrics.sourceReadDecodeHashMs ?? null;
+    telemetry.durations.cacheReadMs = metrics.cacheReadMs;
+    telemetry.durations.submissionTransferMs = metrics.submissionTransferMs ?? metrics.submitMs;
+    telemetry.sourceIndex = {
+      present: metrics.sourceIndexPresent ?? null,
+      trusted: metrics.sourceIndexTrusted ?? null,
+      reusedFiles: metrics.sourceIndexReusedFiles ?? null,
+      hashedFiles: metrics.sourceIndexHashedFiles ?? null,
+    };
+    telemetry.wasmMode = metrics.wasmMode ?? (bridge.kind === "tauri" ? null : "single");
   }
 
   function startupElapsedMs(): number {
@@ -3843,9 +3914,23 @@ export const useRuntimeStore = defineStore("runtime", () => {
     startupStartMessageId = undefined;
   }
 
-  function recordStartupProgress(stage: ProjectProgressStage): void {
+  function recordStartupProgress(progress: ProjectProgress): void {
     const telemetry = startupTelemetry.value;
     if (!telemetry) return;
+    const { stage } = progress;
+    if (Number.isFinite(progress.elapsedMs)) {
+      if (progress.completed === 0) {
+        startupCoreProgressStartedAtMs[stage] = progress.elapsedMs;
+      }
+      const started = startupCoreProgressStartedAtMs[stage];
+      if (started != null && progress.completed >= progress.total) {
+        const duration = Math.max(0, progress.elapsedMs! - started);
+        startupCoreProgressDurations[stage] = duration;
+        telemetry.observedStages[stage] = duration;
+        const durationField = STARTUP_DURATION_BY_STAGE[stage];
+        if (durationField) telemetry.durations[durationField] = duration;
+      }
+    }
     if (startupProgressStage === stage) return;
     finishStartupProgressStage();
     startupProgressStage = stage;
@@ -3855,10 +3940,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
   function finishStartupProgressStage(): void {
     const telemetry = startupTelemetry.value;
     if (!telemetry || !startupProgressStage || startupProgressStageStartedAtMs == null) return;
-    telemetry.observedStages[startupProgressStage] =
-      (telemetry.observedStages[startupProgressStage] ?? 0) +
-      startupElapsedMs() -
-      startupProgressStageStartedAtMs;
+    const coreDuration = startupCoreProgressDurations[startupProgressStage];
+    if (coreDuration != null) {
+      telemetry.observedStages[startupProgressStage] = coreDuration;
+      const durationField = STARTUP_DURATION_BY_STAGE[startupProgressStage];
+      if (durationField) telemetry.durations[durationField] = coreDuration;
+    } else {
+      const duration = startupElapsedMs() - startupProgressStageStartedAtMs;
+      telemetry.observedStages[startupProgressStage] =
+        (telemetry.observedStages[startupProgressStage] ?? 0) + duration;
+      const durationField = STARTUP_DURATION_BY_STAGE[startupProgressStage];
+      if (durationField) {
+        telemetry.durations[durationField] = (telemetry.durations[durationField] ?? 0) + duration;
+      }
+    }
     startupProgressStage = undefined;
     startupProgressStageStartedAtMs = undefined;
   }

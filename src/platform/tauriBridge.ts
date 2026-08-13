@@ -236,7 +236,19 @@ export class TauriBridge implements FrontendBridge {
   private async withProjectFonts(
     response: HostProjectOpenMetrics,
   ): Promise<Omit<ProjectOpenMetrics, "submittedAtMs">> {
-    return { ...response, projectFonts: await this.activateProjectFonts() };
+    return {
+      ...response,
+      // Native scanning currently reports its combined quick-scan wall time. Preserve that
+      // measurement in the stat bucket until the native scanner exposes finer subphase timers.
+      enumerateMs: response.enumerateMs ?? 0,
+      indexReadMs: response.indexReadMs ?? 0,
+      indexWriteMs: response.indexWriteMs ?? 0,
+      statMs: response.statMs ?? response.quickScanMs,
+      sourceReadDecodeHashMs: response.sourceReadDecodeHashMs ?? response.sourceReadMs,
+      submissionTransferMs: response.submissionTransferMs ?? response.submitMs,
+      sourceIndexPresent: response.sourceIndexPresent ?? (response.sourceIndexReusedFiles ?? 0) > 0,
+      projectFonts: await this.activateProjectFonts(),
+    };
   }
 
   private async activateProjectFonts() {

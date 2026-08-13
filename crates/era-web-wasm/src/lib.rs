@@ -17,6 +17,7 @@ struct WasmProjectProgress {
     stage: era_runtime::ProjectProgressStage,
     completed: u32,
     total: u32,
+    elapsed_ms: f64,
 }
 
 #[wasm_bindgen]
@@ -42,6 +43,7 @@ impl WasmRuntime {
             from_js(options)?
         };
         let mut inner = WebSession::new(options).map_err(js_error)?;
+        let progress_started = std::time::Instant::now();
         if let Some(progress_callback) = progress_callback {
             inner.set_project_progress_reporter(Some(ProjectProgressReporter::new(
                 move |progress| {
@@ -49,6 +51,7 @@ impl WasmRuntime {
                         stage: progress.stage,
                         completed: u32::try_from(progress.completed).unwrap_or(u32::MAX),
                         total: u32::try_from(progress.total).unwrap_or(u32::MAX),
+                        elapsed_ms: progress_started.elapsed().as_secs_f64() * 1000.0,
                     }) {
                         let _ = progress_callback.call1(&JsValue::UNDEFINED, &value);
                     }

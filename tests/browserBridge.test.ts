@@ -19,6 +19,8 @@ vi.mock("@/platform/database", () => ({
 vi.mock("@/platform/diagnosis", () => ({ streamDiagnosisArchiveInWorker }));
 
 import { BrowserBridge } from "@/platform/browserBridge";
+import { defaultPreferences } from "@/core/types";
+import { loadBrowserPreferences, saveBrowserPreferences } from "@/platform/database";
 import { overlayBrowserDirectory } from "@/platform/browserDirectoryOverlay";
 import { BrowserProject } from "@/platform/browserProject";
 
@@ -122,6 +124,11 @@ class MemoryWorker {
   onmessage?: (event: MessageEvent) => void;
   onerror?: (event: ErrorEvent) => void;
 
+  constructor(url: URL) {
+    if (String(url).includes("browserProjectScan.worker"))
+      throw new Error("scan worker unavailable");
+  }
+
   postMessage(message: WorkerRequest["message"], transfer: Transferable[] = []): void {
     requests.push({ message, transfer });
     queueMicrotask(() => {
@@ -159,10 +166,67 @@ describe("browser startup bridge", () => {
     });
     respond = () => 1n;
     streamDiagnosisArchiveInWorker.mockReset();
+    vi.mocked(loadBrowserPreferences).mockReset();
+    vi.mocked(loadBrowserPreferences).mockResolvedValue(defaultPreferences());
+    vi.mocked(saveBrowserPreferences).mockReset();
+    vi.mocked(saveBrowserPreferences).mockImplementation(async (value) => value);
     vi.stubGlobal("Worker", MemoryWorker);
   });
 
   afterEach(() => vi.unstubAllGlobals());
+
+  it("uses explicit schema 4 metadata trust and reports actual source-index reuse", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    const source = await root.getFileHandle("main.erb", { create: true });
+    await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
+    pickBrowserDirectory.mockResolvedValue({
+      handle: root,
+      persistHandle: false,
+      projectName: "game",
+    });
+    vi.mocked(loadBrowserPreferences).mockResolvedValue({
+      ...defaultPreferences(),
+      trustProjectFileMetadata: true,
+    });
+    const bridge = new BrowserBridge();
+    await bridge.loadPreferences();
+
+    const cold = await bridge.openProject();
+    const indexed = await bridge.openProject();
+
+    expect(cold).toMatchObject({
+      sourceIndexTrusted: true,
+      sourceIndexReusedFiles: 0,
+      sourceIndexHashedFiles: 1,
+    });
+    expect(indexed).toMatchObject({
+      sourceIndexTrusted: true,
+      sourceIndexReusedFiles: 1,
+      sourceIndexHashedFiles: 0,
+    });
+  });
+
+  it("performs an exact scan immediately after metadata trust is disabled", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    const source = await root.getFileHandle("main.erb", { create: true });
+    await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
+    pickBrowserDirectory.mockResolvedValue({ handle: root, persistHandle: false });
+    const bridge = new BrowserBridge();
+    await bridge.savePreferences({
+      ...defaultPreferences(),
+      trustProjectFileMetadata: true,
+    });
+    await bridge.openProject();
+
+    await bridge.savePreferences(defaultPreferences());
+    const exact = await bridge.openProject();
+
+    expect(exact).toMatchObject({
+      sourceIndexTrusted: false,
+      sourceIndexReusedFiles: 0,
+      sourceIndexHashedFiles: 1,
+    });
+  });
 
   it("falls back with one binary manifest transfer and retries its cache without rescanning", async () => {
     const root = new MemoryDirectoryHandle("game");

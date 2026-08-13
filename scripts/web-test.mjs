@@ -61,6 +61,7 @@ async function execute(args) {
     compiledCache:
       scenario.compiled_cache === true || Boolean(process.env.RUSTYERA_TEST_COMPILED_CACHE_INPUT),
     compiledCacheInput: process.env.RUSTYERA_TEST_COMPILED_CACHE_INPUT,
+    sourceIndexInput: process.env.RUSTYERA_TEST_SOURCE_INDEX_INPUT,
     cleanSaves: scenario.clean_saves === true,
   });
   if (scenario.prepare_in_game_save) {

@@ -54,8 +54,8 @@ export async function runBounded(
         completed += 1;
         if (
           completed === tasks.length ||
-          Math.floor((completed * 100) / tasks.length) >
-            Math.floor(((completed - 1) * 100) / tasks.length)
+          Math.floor((completed * 30) / tasks.length) >
+            Math.floor(((completed - 1) * 30) / tasks.length)
         )
           progress?.(completed, tasks.length);
       }

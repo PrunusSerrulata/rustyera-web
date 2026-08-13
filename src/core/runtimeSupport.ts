@@ -20,6 +20,9 @@ const PROJECT_PROGRESS_LABELS: Record<ProjectProgress["stage"], string> = {
   finalizing: "正在整理编译结果",
   preparing: "正在准备 Runtime 资源",
   packaging: "正在打包全量项目文件",
+  cache_parsing: "正在解析项目缓存",
+  cache_decoding: "正在解码项目缓存",
+  cache_validating: "正在校验项目缓存",
 };
 
 export function formatProjectProgress(progress: ProjectProgress): string {

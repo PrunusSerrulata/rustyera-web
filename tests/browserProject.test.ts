@@ -393,6 +393,31 @@ describe("browser project reads", () => {
     expect(manifest.files[0].payload).toEqual({ type: "utf8", value: "@MAIN\nRETURN\n" });
   });
 
+  it("removes an old trusted index when an exact refresh cannot be written", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const source = await root.getFileHandle("main.erb", { create: true });
+    await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
+    await new BrowserProject(root as any).scanQuick();
+    const privateDirectory = await root.getDirectoryHandle(".rustyera");
+    const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
+    const index = await cacheDirectory.getFileHandle("source-index-v1.json");
+    index.createWritable = async () => ({
+      write: async () => {
+        throw new DOMException("quota", "QuotaExceededError");
+      },
+      seek: async () => {},
+      truncate: async () => {},
+      close: async () => {},
+      abort: async () => {},
+    });
+
+    await new BrowserProject(root as any).scanQuick();
+    const trusted = new BrowserProject(root as any, 1, "game", true);
+    await trusted.scanQuick();
+
+    expect(trusted.sourceIndexStats()).toMatchObject({ reusedFiles: 0, hashedFiles: 1 });
+  });
+
   it("refreshes trusted index entries after edits and deletions", async () => {
     const root = new SaveDirectoryHandle("game");
     const first = await root.getFileHandle("one.erb", { create: true });

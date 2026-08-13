@@ -8,7 +8,7 @@ describe("preference normalization", () => {
     expect(defaultPreferences().fontSizeOverridePx).toBeNull();
     expect(
       normalizePreferences({ ...defaultPreferences(), fontSizeOverridePx: null }),
-    ).toMatchObject({ fontSizeOverridePx: null, schemaVersion: 3 });
+    ).toMatchObject({ fontSizeOverridePx: null, schemaVersion: 4 });
   });
 
   it("clamps every user-controlled numeric projection", () => {
@@ -21,11 +21,12 @@ describe("preference normalization", () => {
         masterVolume: -1,
       }),
     ).toEqual({
-      schemaVersion: 3,
+      schemaVersion: 4,
       fontFamilyOverride: null,
       fontSizeOverridePx: 72,
       imageScale: 4,
       masterVolume: 0,
+      trustProjectFileMetadata: false,
     });
   });
 
@@ -42,11 +43,12 @@ describe("preference normalization", () => {
           masterVolume: 0.4,
         }),
       ).toEqual({
-        schemaVersion: 3,
+        schemaVersion: 4,
         fontFamilyOverride: null,
         fontSizeOverridePx: null,
         imageScale: 1.75,
         masterVolume: 0.4,
+        trustProjectFileMetadata: false,
       });
     },
   );
@@ -55,17 +57,32 @@ describe("preference normalization", () => {
     expect(
       normalizePreferences({
         ...defaultPreferences(),
+        schemaVersion: 3,
         fontFamilyOverride: "Accessible Font",
         fontSizeOverridePx: 100,
         imageScale: 2,
         masterVolume: 0.5,
       }),
     ).toEqual({
-      schemaVersion: 3,
+      schemaVersion: 4,
       fontFamilyOverride: "Accessible Font",
       fontSizeOverridePx: 72,
       imageScale: 2,
       masterVolume: 0.5,
+      trustProjectFileMetadata: false,
     });
+  });
+
+  it("enables metadata trust only for an explicit schema 4 preference", () => {
+    expect(
+      normalizePreferences({ ...defaultPreferences(), trustProjectFileMetadata: true }),
+    ).toMatchObject({ schemaVersion: 4, trustProjectFileMetadata: true });
+    expect(
+      normalizePreferences({
+        ...defaultPreferences(),
+        schemaVersion: 3,
+        trustProjectFileMetadata: true,
+      }),
+    ).toMatchObject({ schemaVersion: 4, trustProjectFileMetadata: false });
   });
 });

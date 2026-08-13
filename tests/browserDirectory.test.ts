@@ -7,6 +7,7 @@ import {
   selectedProjectFiles,
 } from "@/platform/browserDirectory";
 import { BrowserProject } from "@/platform/browserProject";
+import { scanBrowserProjectFile } from "@/platform/browserProjectScanner";
 
 class MemoryFileHandle {
   readonly kind = "file";
@@ -215,6 +216,47 @@ describe("portable browser directory selection", () => {
       }),
     ]);
     expect((await importedStorageProject(storage)).entriesCalls).toBe(1);
+  });
+
+  it("uses a short-lived scan worker batch for portable imports", async () => {
+    const workers: Array<{ terminate: ReturnType<typeof vi.fn> }> = [];
+    class ScanWorker {
+      onmessage?: (event: MessageEvent) => void;
+      onerror?: (event: ErrorEvent) => void;
+      onmessageerror?: (event: MessageEvent) => void;
+      readonly terminate = vi.fn();
+
+      constructor() {
+        workers.push(this);
+      }
+
+      postMessage(message: any) {
+        void message.file.arrayBuffer().then((buffer: ArrayBuffer) => {
+          this.onmessage?.({
+            data: {
+              id: message.id,
+              ok: true,
+              result: scanBrowserProjectFile(
+                message.relativePath,
+                new Uint8Array(buffer),
+                new Set(message.topLevel),
+              ),
+            },
+          } as MessageEvent);
+        });
+      }
+    }
+    vi.stubGlobal("Worker", ScanWorker);
+    const storage = new MemoryDirectoryHandle("root");
+
+    const picked = await importBrowserDirectory(
+      [projectFile("game/ERB/main.erb", "@SYSTEM_TITLE\nRETURN\n")],
+      storage as unknown as FileSystemDirectoryHandle,
+    );
+
+    expect(picked.manifest?.files).toHaveLength(1);
+    expect(workers).toHaveLength(1);
+    expect(workers[0]!.terminate).toHaveBeenCalledOnce();
   });
 
   it("returns the same manifest as scanning the final imported directory", async () => {

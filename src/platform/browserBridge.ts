@@ -1,18 +1,19 @@
-import type {
-  DebugMessage,
-  FrontendBridge,
-  Preferences,
-  ProjectProgress,
-  ProjectOpenMetrics,
-  ProjectReloadScope,
-  ProjectReloadTargets,
-  ProjectSelectionPreparation,
-  ProjectSubmittedListener,
-  PumpBatch,
-  RuntimeMessage,
-  SessionOptions,
-  SystemFontQueryResult,
-  TraditionalSaveAccess,
+import {
+  defaultPreferences,
+  type DebugMessage,
+  type FrontendBridge,
+  type Preferences,
+  type ProjectProgress,
+  type ProjectOpenMetrics,
+  type ProjectReloadScope,
+  type ProjectReloadTargets,
+  type ProjectSelectionPreparation,
+  type ProjectSubmittedListener,
+  type PumpBatch,
+  type RuntimeMessage,
+  type SessionOptions,
+  type SystemFontQueryResult,
+  type TraditionalSaveAccess,
 } from "@/core/types";
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import type { DiagnosisArchiveInput, DiagnosisArchiveProgress } from "@/core/diagnosis";
@@ -72,6 +73,7 @@ export class BrowserBridge implements FrontendBridge {
         writer: FileSystemWritableFileStream;
       };
   private projectProgressListener?: (progress: ProjectProgress) => void;
+  private preferences = defaultPreferences();
   private readonly prepareProjectConfigurationUpdate = (
     projectFile: Uint8Array,
     expectedDigest: Uint8Array,
@@ -136,7 +138,12 @@ export class BrowserBridge implements FrontendBridge {
     // structured-cloned into IndexedDB. Production handles continue to be persisted normally.
     if (picked.persistHandle && import.meta.env.VITE_RUSTYERA_TEST !== "1")
       await database.handles.put({ key: "last-project", handle });
-    const project = new BrowserProject(handle, 1, picked.projectName);
+    const project = new BrowserProject(
+      handle,
+      1,
+      picked.projectName,
+      this.preferences.trustProjectFileMetadata,
+    );
     project.useConfigurationUpdatePreparer(this.prepareProjectConfigurationUpdate);
     const started = performance.now();
     const sourcesReady = picked.manifest != null;
@@ -145,11 +152,16 @@ export class BrowserBridge implements FrontendBridge {
       (await project.scanQuick((completed, total) =>
         this.projectProgressListener?.({ stage: "scanning", completed, total }),
       ));
-    if (picked.manifest) project.useImportedManifest(picked.manifest);
+    if (picked.manifest) {
+      project.useImportedManifest(picked.manifest);
+      if (picked.scanMetrics) project.useScanMetrics(picked.scanMetrics);
+    }
     const quickScanMs = sourcesReady ? 0 : performance.now() - started;
     const loaded = await this.loadSourceProject(project, manifest, sourcesReady);
     this.project = project;
     const projectFonts = await this.projectFontRegistry.replace(project.fontSources());
+    const indexStats = project.sourceIndexStats();
+    const scanMetrics = project.scanMetrics();
     return {
       submittedAtMs,
       quickScanMs,
@@ -157,6 +169,17 @@ export class BrowserBridge implements FrontendBridge {
       sourceReadMs: loaded.sourceReadMs,
       submitMs: loaded.submitMs,
       cacheImported: loaded.cacheImported,
+      sourceIndexTrusted: indexStats.trusted,
+      sourceIndexReusedFiles: indexStats.reusedFiles,
+      sourceIndexHashedFiles: indexStats.hashedFiles,
+      sourceIndexPresent: scanMetrics.sourceIndexPresent,
+      enumerateMs: scanMetrics.enumerateMs,
+      indexReadMs: scanMetrics.indexReadMs,
+      indexWriteMs: scanMetrics.indexWriteMs,
+      statMs: scanMetrics.statMs,
+      sourceReadDecodeHashMs: scanMetrics.sourceReadDecodeHashMs + loaded.sourceReadMs,
+      submissionTransferMs: loaded.submitMs,
+      wasmMode: "single",
       projectFonts,
     } satisfies ProjectOpenMetrics;
   }
@@ -219,6 +242,7 @@ export class BrowserBridge implements FrontendBridge {
       sourceReadMs: 0,
       submitMs: performance.now() - started,
       cacheImported: true,
+      wasmMode: "single",
       projectFonts,
     };
   }
@@ -244,6 +268,7 @@ export class BrowserBridge implements FrontendBridge {
         sourceReadMs: 0,
         submitMs: performance.now() - started,
         cacheImported: true,
+        wasmMode: "single",
         projectFonts: await this.projectFontRegistry.replace(this.project.fontSources()),
       };
     }
@@ -257,6 +282,8 @@ export class BrowserBridge implements FrontendBridge {
       ));
     const quickScanMs = sourcesReady ? 0 : performance.now() - started;
     const loaded = await this.loadSourceProject(this.project, manifest, sourcesReady);
+    const indexStats = this.project.sourceIndexStats();
+    const scanMetrics = this.project.scanMetrics();
     return {
       submittedAtMs,
       quickScanMs,
@@ -264,6 +291,17 @@ export class BrowserBridge implements FrontendBridge {
       sourceReadMs: loaded.sourceReadMs,
       submitMs: loaded.submitMs,
       cacheImported: loaded.cacheImported,
+      sourceIndexTrusted: indexStats.trusted,
+      sourceIndexReusedFiles: indexStats.reusedFiles,
+      sourceIndexHashedFiles: indexStats.hashedFiles,
+      sourceIndexPresent: scanMetrics.sourceIndexPresent,
+      enumerateMs: scanMetrics.enumerateMs,
+      indexReadMs: scanMetrics.indexReadMs,
+      indexWriteMs: scanMetrics.indexWriteMs,
+      statMs: scanMetrics.statMs,
+      sourceReadDecodeHashMs: scanMetrics.sourceReadDecodeHashMs + loaded.sourceReadMs,
+      submissionTransferMs: loaded.submitMs,
+      wasmMode: "single",
       projectFonts: await this.projectFontRegistry.replace(this.project.fontSources()),
     };
   }
@@ -393,12 +431,15 @@ export class BrowserBridge implements FrontendBridge {
     );
   }
 
-  loadPreferences(): Promise<Preferences> {
-    return loadBrowserPreferences();
+  async loadPreferences(): Promise<Preferences> {
+    this.preferences = await loadBrowserPreferences();
+    return this.preferences;
   }
 
-  savePreferences(preferences: Preferences): Promise<Preferences> {
-    return saveBrowserPreferences(preferences);
+  async savePreferences(preferences: Preferences): Promise<Preferences> {
+    this.preferences = await saveBrowserPreferences(preferences);
+    this.project?.setSourceIndexTrusted(this.preferences.trustProjectFileMetadata);
+    return this.preferences;
   }
 
   projectConfigurationWritable(): boolean {

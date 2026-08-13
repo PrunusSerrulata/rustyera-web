@@ -12,7 +12,10 @@ interface HandleRecord {
   handle: FileSystemDirectoryHandle;
 }
 
-type StoredPreferences = Omit<Preferences, "schemaVersion"> & { schemaVersion: number };
+type StoredPreferences = Omit<Preferences, "schemaVersion" | "trustProjectFileMetadata"> & {
+  schemaVersion: number;
+  trustProjectFileMetadata?: boolean;
+};
 
 class FrontendDatabase extends Dexie {
   settings!: EntityTable<SettingRecord, "key">;
@@ -43,7 +46,7 @@ export function normalizePreferences(value: StoredPreferences): Preferences {
   // FontName/FontSize; schema 3 values represent an intentional accessibility override.
   const obsoleteFontOverrides = Number(value.schemaVersion ?? 1) < 3;
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     fontFamilyOverride: obsoleteFontOverrides ? null : value.fontFamilyOverride || null,
     fontSizeOverridePx:
       obsoleteFontOverrides || value.fontSizeOverridePx == null
@@ -55,5 +58,7 @@ export function normalizePreferences(value: StoredPreferences): Preferences {
     masterVolume: Number.isFinite(value.masterVolume)
       ? Math.min(1, Math.max(0, value.masterVolume))
       : 1,
+    trustProjectFileMetadata:
+      Number(value.schemaVersion ?? 1) >= 4 && value.trustProjectFileMetadata === true,
   };
 }

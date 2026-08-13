@@ -20,19 +20,21 @@ export interface PumpBatch {
 }
 
 export interface Preferences {
-  schemaVersion: 3;
+  schemaVersion: 4;
   fontFamilyOverride: string | null;
   fontSizeOverridePx: number | null;
   imageScale: number;
   masterVolume: number;
+  trustProjectFileMetadata: boolean;
 }
 
 export const defaultPreferences = (): Preferences => ({
-  schemaVersion: 3,
+  schemaVersion: 4,
   fontFamilyOverride: null,
   fontSizeOverridePx: null,
   imageScale: 1,
   masterVolume: 1,
+  trustProjectFileMetadata: false,
 });
 
 export interface SessionOptions {
@@ -53,6 +55,17 @@ export interface ProjectOpenMetrics {
   sourceReadMs: number;
   submitMs: number;
   cacheImported: boolean;
+  sourceIndexTrusted?: boolean;
+  sourceIndexReusedFiles?: number;
+  sourceIndexHashedFiles?: number;
+  sourceIndexPresent?: boolean;
+  enumerateMs?: number;
+  indexReadMs?: number;
+  indexWriteMs?: number;
+  statMs?: number;
+  sourceReadDecodeHashMs?: number;
+  submissionTransferMs?: number;
+  wasmMode?: "single";
   projectFonts: ProjectFontLoadResult;
 }
 
@@ -80,12 +93,17 @@ export type ProjectProgressStage =
   | "validating"
   | "finalizing"
   | "preparing"
-  | "packaging";
+  | "packaging"
+  | "cache_parsing"
+  | "cache_decoding"
+  | "cache_validating";
 
 export interface ProjectProgress {
   stage: ProjectProgressStage;
   completed: number;
   total: number;
+  /** Core monotonic time used to report precise startup phase durations. */
+  elapsedMs?: number;
 }
 
 export type DiagnosisProgressStage =

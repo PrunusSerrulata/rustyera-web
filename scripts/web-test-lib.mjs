@@ -179,12 +179,13 @@ export async function isolatedProject(source, options = {}) {
       if (options.cleanSaves && relative.split(path.sep)[0]?.toLocaleLowerCase() === "sav")
         return false;
       if (!relative.split(path.sep).includes(".rustyera")) return true;
-      if (!options.compiledCache) return false;
-      return [
-        ".rustyera",
-        path.join(".rustyera", "cache"),
-        path.join(".rustyera", "cache", "compiled-project.reracache"),
-      ].includes(relative);
+      if (!options.compiledCache && !options.sourceIndexInput) return false;
+      const retained = [".rustyera", path.join(".rustyera", "cache")];
+      if (options.compiledCache)
+        retained.push(path.join(".rustyera", "cache", "compiled-project.reracache"));
+      if (options.sourceIndexInput)
+        retained.push(path.join(".rustyera", "cache", "source-index-v1.json"));
+      return retained.includes(relative);
     },
   });
   if (options.compiledCacheInput) {
@@ -193,6 +194,14 @@ export async function isolatedProject(source, options = {}) {
     await cp(
       path.resolve(options.compiledCacheInput),
       path.join(cacheDirectory, "compiled-project.reracache"),
+    );
+  }
+  if (options.sourceIndexInput) {
+    const cacheDirectory = path.join(destination, ".rustyera", "cache");
+    await mkdir(cacheDirectory, { recursive: true });
+    await cp(
+      path.resolve(options.sourceIndexInput),
+      path.join(cacheDirectory, "source-index-v1.json"),
     );
   }
   return { root, project: destination, close: () => rm(root, { recursive: true, force: true }) };

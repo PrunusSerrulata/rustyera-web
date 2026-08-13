@@ -118,6 +118,82 @@ describe("dialog actions", () => {
     wrapper.unmount();
   });
 
+  it("shows metadata trust only for browser directory projects", async () => {
+    const wrapper = mount(PreferencesDialog, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        value: defaultPreferences(),
+        fontFamilies: [],
+        hostKind: "browser",
+        projectSource: "directory",
+        configurationEntries: [],
+        configurationReadOnly: true,
+      },
+    });
+    await clickButton("交互与输出");
+    const label = [...document.body.querySelectorAll("label")].find((item) =>
+      item.textContent?.includes("信任文件大小和修改时间"),
+    );
+    const checkbox = label?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(checkbox).toBeTruthy();
+    checkbox!.checked = true;
+    checkbox!.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
+    await clickButton("应用");
+
+    expect(wrapper.emitted("save")?.at(-1)?.[0]).toMatchObject({
+      schemaVersion: 4,
+      trustProjectFileMetadata: true,
+    });
+    wrapper.unmount();
+  });
+
+  it.each([
+    { hostKind: "browser" as const, projectSource: "file" as const },
+    { hostKind: "tauri" as const, projectSource: "directory" as const },
+  ])("hides browser directory metadata trust for $hostKind/$projectSource", (host) => {
+    const wrapper = mount(PreferencesDialog, {
+      props: {
+        open: true,
+        value: defaultPreferences(),
+        fontFamilies: [],
+        ...host,
+      },
+    });
+    expect(wrapper.text()).not.toContain("信任文件大小和修改时间");
+    wrapper.unmount();
+  });
+
+  it("restores persisted metadata trust after cancelling and reopening", async () => {
+    const wrapper = mount(PreferencesDialog, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        value: { ...defaultPreferences(), trustProjectFileMetadata: true },
+        fontFamilies: [],
+        hostKind: "browser",
+        projectSource: "directory",
+      },
+    });
+    await clickButton("交互与输出");
+    const checkbox = [
+      ...document.body.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+    ].find((item) => item.parentElement?.textContent?.includes("信任文件大小和修改时间"));
+    expect(checkbox).toBeTruthy();
+    checkbox!.checked = false;
+    checkbox!.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
+    await clickButton("取消");
+    await wrapper.setProps({ open: false });
+    await wrapper.setProps({ open: true });
+    const restored = [
+      ...document.body.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+    ].find((item) => item.parentElement?.textContent?.includes("信任文件大小和修改时间"));
+    expect(restored?.checked).toBe(true);
+    wrapper.unmount();
+  });
+
   it("shows compact display rows and synchronizes the visual picker with HEX input", async () => {
     const wrapper = mount(PreferencesDialog, {
       attachTo: document.body,

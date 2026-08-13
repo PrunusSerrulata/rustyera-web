@@ -22,7 +22,6 @@ import {
   decodeProjectSource,
   decodeProtocolBytes,
   isScriptCategory,
-  normalizeResourceManifest,
   projectReloadScopeMatches,
   projectReloadSelector,
   runBounded,
@@ -31,6 +30,11 @@ import {
   throwIfAborted,
 } from "@/platform/browserProjectUtilities";
 import { isPackagedProjectFontPath, type ProjectFontSource } from "@/platform/projectFonts";
+import { scanBrowserProjectFilesOffThread } from "@/platform/browserProjectScanPool";
+import type { ScannedFile } from "@/platform/browserProjectScanner";
+
+export { scanBrowserProjectFile } from "@/platform/browserProjectScanner";
+export type { ScannedFile } from "@/platform/browserProjectScanner";
 
 export {
   decodeProjectSource,
@@ -43,13 +47,6 @@ export {
 
 const SOURCE_INDEX_VERSION = 1;
 const SOURCE_INDEX_NAME = "source-index-v1.json";
-
-export interface ScannedFile {
-  relative_path: string;
-  category: string;
-  payload: { type: "utf8"; value: string } | { type: "bytes"; value: Uint8Array };
-  content_hash: Uint8Array;
-}
 
 export interface BrowserTraditionalSaveSlot {
   slot: number;
@@ -94,6 +91,18 @@ interface PendingBrowserReload {
   runtimeManifestSparse: boolean;
 }
 
+export interface BrowserProjectScanMetrics {
+  enumerateMs: number;
+  indexReadMs: number;
+  indexWriteMs: number;
+  statMs: number;
+  sourceReadDecodeHashMs: number;
+  sourceIndexPresent: boolean;
+  sourceIndexTrusted: boolean;
+  sourceIndexReusedFiles: number;
+  sourceIndexHashedFiles: number;
+}
+
 export class BrowserProject {
   private readonly files = new Map<string, FileSystemFileHandle>();
   private readonly embeddedResources = new Map<string, Uint8Array>();
@@ -107,13 +116,34 @@ export class BrowserProject {
   private importedSnapshot = false;
   private runtimeManifestSparse = false;
   private pendingReload?: PendingBrowserReload;
+  private scanMetricsValue: BrowserProjectScanMetrics = emptyScanMetrics();
 
   constructor(
     readonly root: FileSystemDirectoryHandle,
     private revision = 1,
     readonly name = root.name,
-    private readonly sourceIndexTrusted = false,
+    private sourceIndexTrusted = false,
   ) {}
+
+  setSourceIndexTrusted(trusted: boolean): void {
+    this.sourceIndexTrusted = trusted;
+  }
+
+  sourceIndexStats(): { trusted: boolean; reusedFiles: number; hashedFiles: number } {
+    return {
+      trusted: this.sourceIndexTrusted,
+      reusedFiles: this.scanMetricsValue.sourceIndexReusedFiles,
+      hashedFiles: this.scanMetricsValue.sourceIndexHashedFiles,
+    };
+  }
+
+  scanMetrics(): BrowserProjectScanMetrics {
+    return { ...this.scanMetricsValue };
+  }
+
+  useScanMetrics(metrics: BrowserProjectScanMetrics): void {
+    this.scanMetricsValue = { ...metrics };
+  }
 
   useEmbeddedManifest(manifest: BrowserManifest): void {
     this.revision = manifest.project_revision;
@@ -263,26 +293,7 @@ export class BrowserProject {
     throwIfAborted(signal);
     this.files.clear();
     progress?.(0, 0);
-    const topLevel = new Set<string>();
-    for await (const [name, handle] of this.root.entries()) {
-      if (handle.kind === "directory" && name.toLowerCase() !== ".rustyera") {
-        topLevel.add(name.toLowerCase());
-      }
-    }
-    const files: ScannedFile[] = [];
-    const reads: Array<() => Promise<void>> = [];
-    await this.walk(this.root, "", topLevel, files, reads, preloaded);
-    progress?.(0, reads.length);
-    await runBounded(reads, 8, progress, signal);
-    files.sort(compareScannedFiles);
-    this.manifestValue = { project_revision: this.revision, files };
-    this.pendingSnapshot = undefined;
-    return this.manifestValue;
-  }
-
-  async scanQuick(progress?: FileScanProgress): Promise<BrowserManifest> {
-    this.files.clear();
-    progress?.(0, 0);
+    const enumerateStarted = performance.now();
     const topLevel = new Set<string>();
     for await (const [name, handle] of this.root.entries()) {
       if (handle.kind === "directory" && name.toLowerCase() !== ".rustyera") {
@@ -296,61 +307,168 @@ export class BrowserProject {
     }> = [];
     await this.walkHandles(this.root, "", topLevel, candidates);
     candidates.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
-    // File.size/lastModified is only a safe identity shortcut for the app-owned imported copy.
-    // A user-controlled directory can preserve both values while replacing its contents.
-    const previous = this.sourceIndexTrusted ? await this.readSourceIndex() : {};
+    const enumerateMs = performance.now() - enumerateStarted;
+    const files = new Array<ScannedFile>();
+    const requests: Array<{ relativePath: string; file: File }> = [];
+    const positions: number[] = [];
+    const statStarted = performance.now();
+    for (const candidate of candidates) {
+      const prepared = preloaded?.get(candidate.relativePath);
+      if (prepared) {
+        files.push(prepared);
+      } else {
+        positions.push(files.length);
+        files.push(undefined as unknown as ScannedFile);
+        requests.push({
+          relativePath: candidate.relativePath,
+          file: await candidate.handle.getFile(),
+        });
+      }
+    }
+    const statMs = performance.now() - statStarted;
+    progress?.(0, requests.length);
+    const readStarted = performance.now();
+    const scanned = await scanBrowserProjectFilesOffThread(requests, topLevel, signal);
+    for (let index = 0; index < scanned.length; index += 1) {
+      const file = scanned[index];
+      if (!file) throw new Error(`无法分类项目文件：${requests[index]!.relativePath}`);
+      files[positions[index]!] = file;
+    }
+    progress?.(requests.length, requests.length);
+    const sourceReadDecodeHashMs = performance.now() - readStarted;
+    files.sort(compareScannedFiles);
+    this.scanMetricsValue = {
+      ...emptyScanMetrics(),
+      enumerateMs,
+      statMs,
+      sourceReadDecodeHashMs,
+      sourceIndexHashedFiles: requests.length,
+    };
+    this.manifestValue = { project_revision: this.revision, files };
+    this.pendingSnapshot = undefined;
+    return this.manifestValue;
+  }
+
+  async scanQuick(progress?: FileScanProgress): Promise<BrowserManifest> {
+    this.files.clear();
+    progress?.(0, 0);
+    const enumerateStarted = performance.now();
+    const topLevel = new Set<string>();
+    for await (const [name, handle] of this.root.entries()) {
+      if (handle.kind === "directory" && name.toLowerCase() !== ".rustyera") {
+        topLevel.add(name.toLowerCase());
+      }
+    }
+    const candidates: Array<{
+      relativePath: string;
+      category: string;
+      handle: FileSystemFileHandle;
+    }> = [];
+    await this.walkHandles(this.root, "", topLevel, candidates);
+    candidates.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
+    const enumerateMs = performance.now() - enumerateStarted;
+    const indexReadStarted = performance.now();
+    const sourceIndex = await this.readSourceIndex();
+    const indexReadMs = performance.now() - indexReadStarted;
+    const previous = sourceIndex.files;
     const pending = new Array<PendingBrowserFile>(candidates.length);
     const files = new Array<ScannedFile>(candidates.length);
     const indexEntries = new Array<[string, BrowserSourceIndexEntry]>(candidates.length);
+    const reused = new Array<boolean>(candidates.length).fill(false);
+    const snapshots = new Array<File>(candidates.length);
+    const signatures = new Array<string>(candidates.length);
     progress?.(0, candidates.length);
+    const statStarted = performance.now();
     await runBounded(
       candidates.map((candidate, index) => async () => {
         const file = await candidate.handle.getFile();
-        const signature = `${file.size}:${file.lastModified}`;
-        const prior = previous[candidate.relativePath];
-        let scanned: ScannedFile;
-        let prepared: ScannedFile | undefined;
-        if (
-          isBrowserSourceIndexEntry(prior) &&
-          prior.category === candidate.category &&
-          prior.signature === signature &&
-          prior.size === file.size &&
-          /^[0-9a-f]{64}$/i.test(prior.hash)
-        ) {
-          scanned = {
-            relative_path: candidate.relativePath,
-            category: candidate.category,
-            payload: emptyPayload(candidate.category),
-            content_hash: decodeHex(prior.hash),
-          };
-        } else {
-          const bytes = new Uint8Array(await file.arrayBuffer());
-          prepared = scanBrowserProjectFile(candidate.relativePath, bytes, topLevel);
-          if (!prepared) throw new Error(`无法分类项目文件：${candidate.relativePath}`);
-          scanned = prepared;
-        }
-        files[index] = scanned;
-        pending[index] = { ...candidate, signature, prepared };
-        indexEntries[index] = [
-          candidate.relativePath,
-          {
-            category: candidate.category,
-            signature,
-            hash: hex(scanned.content_hash),
-            size: file.size,
-          },
-        ];
+        snapshots[index] = file;
+        signatures[index] = `${file.size}:${file.lastModified}`;
       }),
       8,
-      progress,
     );
+    const statMs = performance.now() - statStarted;
+    const requests: Array<{ relativePath: string; file: File }> = [];
+    const requestIndexes: number[] = [];
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index]!;
+      const file = snapshots[index]!;
+      const signature = signatures[index]!;
+      const prior = previous[candidate.relativePath];
+      if (
+        this.sourceIndexTrusted &&
+        sourceIndex.valid &&
+        isBrowserSourceIndexEntry(prior) &&
+        prior.category === candidate.category &&
+        prior.signature === signature &&
+        prior.size === file.size &&
+        /^[0-9a-f]{64}$/i.test(prior.hash)
+      ) {
+        reused[index] = true;
+        files[index] = {
+          relative_path: candidate.relativePath,
+          category: candidate.category,
+          payload: emptyPayload(candidate.category),
+          content_hash: decodeHex(prior.hash),
+        };
+      } else {
+        requestIndexes.push(index);
+        requests.push({ relativePath: candidate.relativePath, file });
+      }
+    }
+    const readStarted = performance.now();
+    const scannedFiles = await scanBrowserProjectFilesOffThread(requests, topLevel);
+    for (let requestIndex = 0; requestIndex < requests.length; requestIndex += 1) {
+      const candidateIndex = requestIndexes[requestIndex]!;
+      const scanned = scannedFiles[requestIndex];
+      if (!scanned) throw new Error(`无法分类项目文件：${requests[requestIndex]!.relativePath}`);
+      files[candidateIndex] = scanned;
+    }
+    const sourceReadDecodeHashMs = performance.now() - readStarted;
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index]!;
+      const file = snapshots[index]!;
+      const signature = signatures[index]!;
+      const scanned = files[index]!;
+      const prepared = reused[index] ? undefined : scanned;
+      pending[index] = { ...candidate, signature, prepared };
+      indexEntries[index] = [
+        candidate.relativePath,
+        {
+          category: candidate.category,
+          signature,
+          hash: hex(scanned.content_hash),
+          size: file.size,
+        },
+      ];
+    }
+    progress?.(candidates.length, candidates.length);
     const next = Object.fromEntries(indexEntries);
-    if (this.sourceIndexTrusted && !sourceIndexesEqual(previous, next)) {
-      await this.writeSourceIndex(next).catch(() => undefined);
+    let indexWriteMs = 0;
+    if (!this.sourceIndexTrusted || !sourceIndexesEqual(previous, next)) {
+      const indexWriteStarted = performance.now();
+      try {
+        await this.writeSourceIndex(next);
+      } catch (error) {
+        await this.removeSourceIndex();
+        console.warn("Unable to refresh browser source index", error);
+      }
+      indexWriteMs = performance.now() - indexWriteStarted;
     }
     files.sort(compareScannedFiles);
     pending.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
     this.pendingSnapshot = { files: pending, topLevel };
+    this.scanMetricsValue = {
+      enumerateMs,
+      indexReadMs,
+      indexWriteMs,
+      statMs,
+      sourceReadDecodeHashMs,
+      sourceIndexPresent: sourceIndex.present,
+      sourceIndexTrusted: this.sourceIndexTrusted,
+      sourceIndexReusedFiles: reused.filter(Boolean).length,
+      sourceIndexHashedFiles: reused.filter((value) => !value).length,
+    };
     this.manifestValue = { project_revision: this.revision, files };
     return this.manifestValue;
   }
@@ -402,24 +520,26 @@ export class BrowserProject {
     }
     const files = new Array<ScannedFile>(snapshot.files.length);
     progress?.(0, snapshot.files.length);
-    await runBounded(
-      snapshot.files.map((pending, index) => async () => {
-        if (pending.prepared) {
-          files[index] = pending.prepared;
-          return;
-        }
-        const entry = current[index];
-        const bytes = new Uint8Array(await currentFiles[index].arrayBuffer());
-        const scanned = scanBrowserProjectFile(entry.relativePath, bytes, topLevel);
-        if (!scanned || scanned.category !== entry.category) {
-          throw new Error(`项目文件在读取期间发生变化：${entry.relativePath}`);
-        }
-        files[index] = scanned;
-      }),
-      8,
-      progress,
-      signal,
-    );
+    const requests: Array<{ relativePath: string; file: File }> = [];
+    const requestIndexes: number[] = [];
+    for (let index = 0; index < snapshot.files.length; index += 1) {
+      const pending = snapshot.files[index]!;
+      if (pending.prepared) files[index] = pending.prepared;
+      else {
+        requestIndexes.push(index);
+        requests.push({ relativePath: current[index]!.relativePath, file: currentFiles[index]! });
+      }
+    }
+    const scannedFiles = await scanBrowserProjectFilesOffThread(requests, topLevel, signal);
+    for (let requestIndex = 0; requestIndex < scannedFiles.length; requestIndex += 1) {
+      const index = requestIndexes[requestIndex]!;
+      const scanned = scannedFiles[requestIndex];
+      const entry = current[index]!;
+      if (!scanned || scanned.category !== entry.category)
+        throw new Error(`项目文件在读取期间发生变化：${entry.relativePath}`);
+      files[index] = scanned;
+    }
+    progress?.(snapshot.files.length, snapshot.files.length);
     files.sort(compareScannedFiles);
     this.pendingSnapshot = undefined;
     this.manifestValue = { project_revision: this.revision, files };
@@ -713,37 +833,6 @@ export class BrowserProject {
     }
   }
 
-  private async walk(
-    directory: FileSystemDirectoryHandle,
-    prefix: string,
-    topLevel: Set<string>,
-    output: ScannedFile[],
-    reads: Array<() => Promise<void>>,
-    preloaded?: ReadonlyMap<string, ScannedFile>,
-  ): Promise<void> {
-    for await (const [name, handle] of directory.entries()) {
-      if (name.toLowerCase() === ".rustyera") continue;
-      const relative = `${prefix}${name}`.normalize("NFC");
-      if (handle.kind === "directory") {
-        await this.walk(handle, `${relative}/`, topLevel, output, reads, preloaded);
-        continue;
-      }
-      const category = classify(relative, topLevel);
-      if (!category) continue;
-      this.files.set(relative.toLowerCase(), handle);
-      const prepared = preloaded?.get(relative);
-      if (prepared) {
-        output.push(prepared);
-        continue;
-      }
-      reads.push(async () => {
-        const bytes = new Uint8Array(await (await handle.getFile()).arrayBuffer());
-        const scanned = scanBrowserProjectFile(relative, bytes, topLevel);
-        if (scanned) output.push(scanned);
-      });
-    }
-  }
-
   private async walkHandles(
     directory: FileSystemDirectoryHandle,
     prefix: string,
@@ -768,20 +857,33 @@ export class BrowserProject {
     }
   }
 
-  private async readSourceIndex(): Promise<Record<string, BrowserSourceIndexEntry>> {
+  private async readSourceIndex(): Promise<{
+    files: Record<string, BrowserSourceIndexEntry>;
+    present: boolean;
+    valid: boolean;
+  }> {
+    let file: File;
     try {
       const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
       const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
       const handle = await cacheDirectory.getFileHandle(SOURCE_INDEX_NAME);
-      const value = JSON.parse(await (await handle.getFile()).text()) as {
+      file = await handle.getFile();
+    } catch {
+      return { files: {}, present: false, valid: false };
+    }
+    try {
+      const value = JSON.parse(await file.text()) as {
         version?: unknown;
         files?: unknown;
       };
-      return value.version === SOURCE_INDEX_VERSION && isRecord(value.files)
-        ? (value.files as Record<string, BrowserSourceIndexEntry>)
-        : {};
+      const valid = value.version === SOURCE_INDEX_VERSION && isRecord(value.files);
+      return {
+        files: valid ? (value.files as Record<string, BrowserSourceIndexEntry>) : {},
+        present: true,
+        valid,
+      };
     } catch {
-      return {};
+      return { files: {}, present: true, valid: false };
     }
   }
 
@@ -800,6 +902,16 @@ export class BrowserProject {
     } catch (error) {
       await writer.abort().catch(() => undefined);
       throw error;
+    }
+  }
+
+  private async removeSourceIndex(): Promise<void> {
+    try {
+      const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
+      const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
+      await cacheDirectory.removeEntry(SOURCE_INDEX_NAME);
+    } catch (error) {
+      if (errorKind(error) !== "not_found") throw error;
     }
   }
 
@@ -960,6 +1072,20 @@ function emptyPayload(category: string): ScannedFile["payload"] {
     : { type: "utf8", value: "" };
 }
 
+function emptyScanMetrics(): BrowserProjectScanMetrics {
+  return {
+    enumerateMs: 0,
+    indexReadMs: 0,
+    indexWriteMs: 0,
+    statMs: 0,
+    sourceReadDecodeHashMs: 0,
+    sourceIndexPresent: false,
+    sourceIndexTrusted: false,
+    sourceIndexReusedFiles: 0,
+    sourceIndexHashedFiles: 0,
+  };
+}
+
 function compareScannedFiles(left: ScannedFile, right: ScannedFile): number {
   return comparePaths(left.relative_path, right.relative_path);
 }
@@ -1032,32 +1158,4 @@ function sourceIndexesEqual(
 
 function equalStringSets(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
   return left.size === right.size && [...left].every((value) => right.has(value));
-}
-
-export function scanBrowserProjectFile(
-  relativePath: string,
-  bytes: Uint8Array,
-  topLevel: ReadonlySet<string>,
-): ScannedFile | undefined {
-  const relative = safePath(relativePath);
-  if (relative.split("/", 1)[0]?.toLowerCase() === ".rustyera") return undefined;
-  const category = classify(relative, topLevel);
-  if (!category) return undefined;
-  if (category === "resource") {
-    return {
-      relative_path: relative,
-      category,
-      payload: { type: "bytes", value: bytes },
-      content_hash: blake3(bytes),
-    };
-  }
-  const decoded = decodeProjectSource(bytes, relative);
-  const text = category === "resource_manifest" ? normalizeResourceManifest(decoded) : decoded;
-  const normalized = new TextEncoder().encode(text);
-  return {
-    relative_path: relative,
-    category,
-    payload: { type: "utf8", value: text },
-    content_hash: blake3(normalized),
-  };
 }

@@ -1,7 +1,12 @@
 import { blake3 } from "@noble/hashes/blake3.js";
 import type { ProjectSelectionPreparation } from "@/core/types";
-import { runBounded, scanBrowserProjectFile } from "@/platform/browserProject";
-import type { BrowserManifest, ScannedFile } from "@/platform/browserProject";
+import { runBounded } from "@/platform/browserProject";
+import type {
+  BrowserManifest,
+  BrowserProjectScanMetrics,
+  ScannedFile,
+} from "@/platform/browserProject";
+import { scanBrowserProjectFilesOffThread } from "@/platform/browserProjectScanPool";
 import {
   overlayBrowserDirectory,
   type PortableBrowserFile,
@@ -12,6 +17,7 @@ export interface PickedBrowserDirectory {
   persistHandle: boolean;
   projectName?: string;
   manifest?: BrowserManifest;
+  scanMetrics?: BrowserProjectScanMetrics;
 }
 
 export type BrowserDirectoryProgress = (
@@ -100,6 +106,7 @@ export async function importBrowserDirectory(
   storageRoot: FileSystemDirectoryHandle,
   progress?: BrowserDirectoryProgress,
 ): Promise<PickedBrowserDirectory> {
+  const enumerateStarted = performance.now();
   progress?.("importing", 0, 0);
   const { projectName, files } = selectedProjectFiles(selectedFiles);
   const imports = await storageRoot.getDirectoryHandle(IMPORT_ROOT, { create: true });
@@ -117,30 +124,45 @@ export async function importBrowserDirectory(
   for await (const [name, handle] of project.entries()) {
     if (handle.kind === "directory") topLevel.add(name.toLocaleLowerCase());
   }
+  const enumerateMs = performance.now() - enumerateStarted;
   const scannedFiles = new Map<string, ScannedFile>();
   const portableFiles: PortableBrowserFile[] = [];
+  const scanRequests = new Array<{ relativePath: string; file: File }>(files.length);
   progress?.("importing", 0, files.length);
 
   for (const path of previousSources) {
     await removeFile(project, path);
   }
+  const statAndCopyStarted = performance.now();
   await runBounded(
-    files.map(({ path, file }) => async () => {
+    files.map(({ path, file }, index) => async () => {
       const runtimeStorage = isRuntimeStoragePath(path);
       const preserveRuntimeFile = runtimeStorage && (await fileExists(project, path));
-      const bytes = preserveRuntimeFile ? await readFile(project, path) : await fileBytes(file);
       if (runtimeStorage) {
+        const bytes = preserveRuntimeFile ? await readFile(project, path) : await fileBytes(file);
         if (!preserveRuntimeFile) await writeFile(project, path, bytes);
+        scanRequests[index] = {
+          relativePath: path,
+          file: preserveRuntimeFile ? fileSnapshot(file, bytes) : file,
+        };
       } else {
         portableFiles.push({ path, file });
+        scanRequests[index] = { relativePath: path, file };
       }
-      const scanned = scanBrowserProjectFile(path, bytes, topLevel);
-      if (scanned) scannedFiles.set(scanned.relative_path, scanned);
     }),
     8,
     (completed, total) => progress?.("importing", completed, total),
   );
+  const statMs = performance.now() - statAndCopyStarted;
+  const scanStarted = performance.now();
+  const scans = await scanBrowserProjectFilesOffThread(scanRequests, topLevel);
+  for (const scanned of scans) {
+    if (scanned) scannedFiles.set(scanned.relative_path, scanned);
+  }
+  const sourceReadDecodeHashMs = performance.now() - scanStarted;
+  const indexWriteStarted = performance.now();
   await writeFile(privateDirectory, SOURCE_MANIFEST, new TextEncoder().encode("[]"));
+  const indexWriteMs = performance.now() - indexWriteStarted;
   const manifest = {
     project_revision: 1,
     files: [...scannedFiles.values()].sort((left, right) =>
@@ -152,11 +174,33 @@ export async function importBrowserDirectory(
     persistHandle: false,
     projectName,
     manifest,
+    scanMetrics: {
+      enumerateMs,
+      indexReadMs: 0,
+      indexWriteMs,
+      statMs,
+      sourceReadDecodeHashMs,
+      sourceIndexPresent: false,
+      sourceIndexTrusted: false,
+      sourceIndexReusedFiles: 0,
+      sourceIndexHashedFiles: manifest.files.length,
+    },
   };
 }
 
 async function fileBytes(file: File): Promise<Uint8Array> {
   return new Uint8Array(await file.arrayBuffer());
+}
+
+function fileSnapshot(source: File, bytes: Uint8Array): File {
+  const snapshot = new Uint8Array(bytes);
+  return {
+    name: source.name,
+    type: source.type,
+    size: snapshot.byteLength,
+    lastModified: source.lastModified,
+    arrayBuffer: async () => snapshot.buffer.slice(0),
+  } as File;
 }
 
 export function selectedProjectFiles(selectedFiles: Iterable<File>): {
