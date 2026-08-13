@@ -126,7 +126,10 @@ describe("runtime store session lifecycle", () => {
     bridge.traditionalSaves.pickImport.mockResolvedValue(undefined);
     bridge.traditionalSaves.inspect.mockResolvedValue({ description: "valid" });
     bridge.traditionalSaves.writeSlot.mockResolvedValue(undefined);
-    bridge.saveDiagnosis.mockResolvedValue(true);
+    bridge.saveDiagnosis.mockImplementation(async (_name, _input, reportProgress) => {
+      reportProgress?.({ completed: 100, total: 100 });
+      return true;
+    });
     bridge.writeCompiledCacheChunk.mockResolvedValue(undefined);
     bridge.cancelCompiledCacheExport.mockResolvedValue(undefined);
     bridge.listFonts.mockResolvedValue({ kind: "ready", fonts: [] });
@@ -2710,7 +2713,8 @@ describe("runtime store session lifecycle", () => {
     expect(store.diagnosisExporting).toBe(true);
     expect(store.canInteract).toBe(false);
     expect(store.promptPlaceholder).toBe("诊断信息导出中……");
-    expect(store.diagnosisNotification).toBe("诊断信息导出中……");
+    expect(store.diagnosisProgress).toEqual({ stage: "input_replay", completed: 0, total: 0 });
+    expect(store.diagnosisProgressLabel).toBe("正在导出输入回放…");
     await store.activate({ epoch: 2, id: 5 });
     expect(bridge.submitRuntime).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "input" }),
@@ -2750,13 +2754,63 @@ describe("runtime store session lifecycle", () => {
         projectFile: Uint8Array.of(5, 6),
         logs: expect.stringContaining("INFO  diagnostic detail"),
       }),
+      expect.any(Function),
     );
     expect(store.diagnosisExporting).toBe(false);
     expect(store.canInteract).toBe(true);
-    expect(store.diagnosisNotification).toContain("诊断信息已导出");
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(store.diagnosisNotification).toBe("");
+    expect(store.diagnosisProgress).toBeUndefined();
+    expect(store.diagnosisResult).toContain("诊断信息已导出");
+    expect(store.logNotifications).toEqual([]);
   });
+
+  it("projects actual diagnosis transfer bytes as a percentage", async () => {
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 1,
+      submission_token: { epoch: 2, id: 3 },
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        stateExportReadyEvent("input_replay", 11, [1, 2, 3, 4]),
+        stateExportChunkEvent(11, [1, 2], 0, false),
+      ],
+    });
+
+    await store.exportDiagnosis();
+    await advanceUntil(() => store.diagnosisProgress?.completed === 2);
+
+    expect(store.diagnosisProgress).toEqual({
+      stage: "input_replay",
+      completed: 2,
+      total: 4,
+    });
+    expect(store.diagnosisProgressLabel).toBe("正在导出输入回放（50%）");
+    expect(store.diagnosisProgressValue).toBe(50);
+  });
+
+  it.each([
+    ["user cancellation", async () => false, "已取消导出诊断信息"],
+    [
+      "archive write failure",
+      async () => {
+        throw new Error("archive write failed");
+      },
+      "archive write failed",
+    ],
+  ])(
+    "clears progress and suppresses corner notifications after %s",
+    async (_kind, save, result) => {
+      bridge.saveDiagnosis.mockImplementationOnce(save);
+      const store = await storeCompletingDiagnosis();
+
+      expect(store.diagnosisExporting).toBe(false);
+      expect(store.diagnosisProgress).toBeUndefined();
+      expect(store.diagnosisResult).toContain(result);
+      expect(store.canInteract).toBe(true);
+      expect(store.logNotifications).toEqual([]);
+    },
+  );
 
   it.each([
     ["correlation", stateExportReadyEvent("input_replay", 11, [1, 2], 99)],
@@ -2857,7 +2911,7 @@ describe("runtime store session lifecycle", () => {
     await advanceUntil(() => store.diagnosisExporting === false);
 
     expect(store.canInteract).toBe(true);
-    expect(store.diagnosisNotification).toContain("分块关联");
+    expect(store.diagnosisResult).toContain("分块关联");
     expect(bridge.saveDiagnosis).not.toHaveBeenCalled();
   });
 
@@ -2903,9 +2957,10 @@ describe("runtime store session lifecycle", () => {
 
     expect(store.diagnosisExporting).toBe(false);
     expect(store.canInteract).toBe(true);
-    expect(store.diagnosisNotification).toContain("scan failed");
+    expect(store.diagnosisResult).toContain("scan failed");
     expect(bridge.cancelProjectFileExport).toHaveBeenCalledOnce();
     expect(bridge.saveDiagnosis).not.toHaveBeenCalled();
+    expect(store.logNotifications).toEqual([]);
     expect(bridge.submitRuntime).not.toHaveBeenCalledWith(
       expect.objectContaining({
         type: "state_export_request",
@@ -2940,7 +2995,7 @@ describe("runtime store session lifecycle", () => {
     await store.exportDiagnosis();
     await advanceUntil(() => store.diagnosisExporting === false);
 
-    expect(store.diagnosisNotification).toContain("transport failed");
+    expect(store.diagnosisResult).toContain("transport failed");
     expect(store.canInteract).toBe(true);
     expect(bridge.submitRuntime).toHaveBeenCalledWith(
       { type: "state_export_cancel", value: { kind: "full_project_file" } },
@@ -3075,6 +3130,7 @@ describe("runtime store session lifecycle", () => {
         snapshot: Uint8Array.of(3, 4),
         projectFile: Uint8Array.of(5, 6),
       }),
+      expect.any(Function),
     );
     expect(store.diagnosisExporting).toBe(false);
     expect(store.canInteract).toBe(true);
@@ -3280,7 +3336,7 @@ describe("runtime store session lifecycle", () => {
     await advanceUntil(() => store.diagnosisExporting === false, 20);
 
     expect(fullProjectRequests).toBe(2);
-    expect(store.diagnosisNotification).toContain("transport failed");
+    expect(store.diagnosisResult).toContain("transport failed");
     expect(store.canInteract).toBe(true);
     expect(
       store.logNotifications.some((notification) =>
@@ -4986,6 +5042,29 @@ async function storeWithInputWait(
   return store;
 }
 
+async function storeCompletingDiagnosis() {
+  const store = await storeWithInputWait({
+    kind: "integer_value",
+    wait_id: 1,
+    submission_token: { epoch: 2, id: 3 },
+  });
+  bridge.pump.mockResolvedValueOnce({
+    ...emptyBatch(),
+    events: [
+      stateExportReadyEvent("input_replay", 11, [1, 2]),
+      stateExportChunkEvent(11, [1, 2]),
+      stateExportReadyEvent("vm_snapshot", 12, [3, 4]),
+      stateExportChunkEvent(12, [3, 4]),
+      stateExportReadyEvent("full_project_file", 13, [5, 6]),
+      stateExportChunkEvent(13, [5, 6]),
+    ],
+  });
+
+  await store.exportDiagnosis();
+  await advanceUntil(() => store.diagnosisExporting === false);
+  return store;
+}
+
 function runtimeEvent(type: string, value: unknown, correlationId?: number, epoch?: number) {
   return {
     channel: "runtime" as const,
@@ -5021,12 +5100,12 @@ function stateExportReadyEvent(
   );
 }
 
-function stateExportChunkEvent(transferId: number, bytes: number[], offset = 0) {
+function stateExportChunkEvent(transferId: number, bytes: number[], offset = 0, complete = true) {
   return runtimeEvent("state_export_chunk", {
     transfer_id: transferId,
     offset,
     data: bytes,
-    complete: true,
+    complete,
   });
 }
 

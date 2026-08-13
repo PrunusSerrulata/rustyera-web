@@ -34,9 +34,9 @@ describe("corner notification stack", () => {
 
   it("keeps deleting the oldest entries until the entire remaining stack fits", async () => {
     let notificationHeight = 30;
-    mockRects(() => notificationHeight, 0);
+    mockRects(() => notificationHeight);
     vi.stubGlobal("innerHeight", 152);
-    const { wrapper, items, dismissed } = managedMount(initialNotifications, "", (id) => {
+    const { wrapper, items, dismissed } = managedMount(initialNotifications, (id) => {
       if (id === 1) notificationHeight = 60;
     });
 
@@ -47,29 +47,14 @@ describe("corner notification stack", () => {
     expect(totalStackHeight(wrapper, 8)).toBeLessThan(100);
   });
 
-  it("includes diagnosis height and every gap when evicting after a viewport shrink", async () => {
-    mockRects(() => 40, 20);
-    vi.stubGlobal("innerHeight", 300);
-    const { wrapper, items, dismissed } = managedMount(initialNotifications, "diagnosis");
-    await flushFits();
-    expect(dismissed).toEqual([]);
+  it("does not render the removed diagnosis corner notification", () => {
+    const wrapper = trackedMount(initialNotifications);
 
-    vi.stubGlobal("innerHeight", 150);
-    window.dispatchEvent(new Event("resize"));
-    await flushFits();
-
-    expect(dismissed).toEqual([1, 2]);
-    expect(items.value.map((item) => item.id)).toEqual([3]);
-    expect(totalStackHeight(wrapper, 8)).toBe(68);
-
-    vi.stubGlobal("innerHeight", 300);
-    window.dispatchEvent(new Event("resize"));
-    await flushFits();
-    expect(items.value.map((item) => item.id)).toEqual([3]);
+    expect(wrapper.find(".diagnosis-notification").exists()).toBe(false);
   });
 
   it("evicts the oldest entry when the stack exactly equals the available height", async () => {
-    mockRects(() => 40, 0);
+    mockRects(() => 40);
     vi.stubGlobal("innerHeight", 140);
     const twoNotifications = initialNotifications.slice(0, 2);
     const { items, dismissed } = managedMount(twoNotifications);
@@ -81,7 +66,7 @@ describe("corner notification stack", () => {
   });
 
   it("reflows the lower entries immediately after manual dismissal", async () => {
-    mockRects(() => 40, 0);
+    mockRects(() => 40);
     vi.stubGlobal("innerHeight", 300);
     const { wrapper, items } = managedMount(initialNotifications);
     await flushFits();
@@ -98,7 +83,7 @@ describe("corner notification stack", () => {
 
   it("preserves independent deadlines for notifications created at different times", async () => {
     vi.useFakeTimers();
-    mockRects(() => 40, 0);
+    mockRects(() => 40);
     vi.stubGlobal("innerHeight", 300);
     const { items } = managedMount(initialNotifications.slice(0, 1));
     await flushFits();
@@ -131,7 +116,7 @@ describe("corner notification stack", () => {
       },
     );
     let notificationHeight = 40;
-    mockRects(() => notificationHeight, 0);
+    mockRects(() => notificationHeight);
     vi.stubGlobal("innerHeight", 152);
     const { items } = managedMount(initialNotifications.slice(0, 1));
     await flushFits();
@@ -149,17 +134,13 @@ describe("corner notification stack", () => {
   });
 });
 
-function trackedMount(notifications: LogNotificationState[], diagnosis = "") {
-  const wrapper = mount(CornerNotifications, { props: { notifications, diagnosis } });
+function trackedMount(notifications: LogNotificationState[]) {
+  const wrapper = mount(CornerNotifications, { props: { notifications } });
   cleanups.push(() => wrapper.unmount());
   return wrapper;
 }
 
-function managedMount(
-  notifications: LogNotificationState[],
-  diagnosis = "",
-  afterDismiss?: (id: number) => void,
-) {
+function managedMount(notifications: LogNotificationState[], afterDismiss?: (id: number) => void) {
   const items = ref(notifications.map((notification) => ({ ...notification })));
   const dismissed: number[] = [];
   const wrapper = mount(
@@ -172,25 +153,20 @@ function managedMount(
           if (index >= 0) items.value.splice(index, 1);
           afterDismiss?.(id);
         };
-        return { diagnosis, dismiss, items };
+        return { dismiss, items };
       },
-      template:
-        '<CornerNotifications :notifications="items" :diagnosis="diagnosis" @dismiss="dismiss" />',
+      template: '<CornerNotifications :notifications="items" @dismiss="dismiss" />',
     }),
   );
   cleanups.push(() => wrapper.unmount());
   return { dismissed, items, wrapper };
 }
 
-function mockRects(notificationHeight: () => number, diagnosisHeight: number): void {
+function mockRects(notificationHeight: () => number): void {
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement,
   ) {
-    const height = this.classList.contains("diagnosis-notification")
-      ? diagnosisHeight
-      : this.classList.contains("log-notification")
-        ? notificationHeight()
-        : 0;
+    const height = this.classList.contains("log-notification") ? notificationHeight() : 0;
     const top = this.classList.contains("corner-notifications") ? 42 : 0;
     return { top, height } as DOMRect;
   });
@@ -201,7 +177,7 @@ async function flushFits(): Promise<void> {
 }
 
 function totalStackHeight(wrapper: ReturnType<typeof mount>, gap: number): number {
-  const items = wrapper.findAll<HTMLElement>(".log-notification, .diagnosis-notification");
+  const items = wrapper.findAll<HTMLElement>(".log-notification");
   return (
     items.reduce((total, item) => total + item.element.getBoundingClientRect().height, 0) +
     Math.max(0, items.length - 1) * gap

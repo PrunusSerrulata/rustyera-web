@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 import { decodeImageMetadata } from "@/core/imageMetadata";
-import type { DiagnosisArchiveInput } from "@/core/diagnosis";
+import type { DiagnosisArchiveInput, DiagnosisArchiveProgress } from "@/core/diagnosis";
 import { streamDiagnosisArchiveInWorker } from "@/platform/diagnosis";
 import { ProjectFontRegistry, type ProjectFontSource } from "@/platform/projectFonts";
 import type {
@@ -391,7 +391,11 @@ export class TauriBridge implements FrontendBridge {
     this.projectFileExportPath = undefined;
   }
 
-  async saveDiagnosis(name: string, input: DiagnosisArchiveInput): Promise<boolean> {
+  async saveDiagnosis(
+    name: string,
+    input: DiagnosisArchiveInput,
+    reportProgress?: (progress: DiagnosisArchiveProgress) => void,
+  ): Promise<boolean> {
     const testPath =
       import.meta.env.VITE_RUSTYERA_TEST === "1"
         ? import.meta.env.VITE_RUSTYERA_TAURI_EXPORT_PATH
@@ -400,21 +404,26 @@ export class TauriBridge implements FrontendBridge {
     if (!path) return false;
     let first = true;
     try {
-      await streamDiagnosisArchiveInWorker(input, async (chunk) => {
-        await invoke("write_export_chunk", {
-          path,
-          bytes: [...chunk],
-          reset: first,
-          complete: false,
-        });
-        first = false;
-      });
+      const totalBytes = await streamDiagnosisArchiveInWorker(
+        input,
+        async (chunk) => {
+          await invoke("write_export_chunk", {
+            path,
+            bytes: [...chunk],
+            reset: first,
+            complete: false,
+          });
+          first = false;
+        },
+        reportProgress,
+      );
       await invoke("write_export_chunk", {
         path,
         bytes: [],
         reset: first,
         complete: true,
       });
+      reportProgress?.({ completed: totalBytes, total: totalBytes });
       return true;
     } catch (error) {
       await invoke("cancel_export").catch(() => undefined);

@@ -16,6 +16,10 @@ const store = reactive({
   faultActionBusy: false,
   canExportDiagnosis: true,
   gameInteractionsBlocked: false,
+  diagnosisExporting: false,
+  diagnosisProgressValue: undefined as number | undefined,
+  diagnosisProgressLabel: "正在准备诊断信息…",
+  diagnosisResult: "",
   ...mocks,
 });
 
@@ -28,6 +32,9 @@ describe("FaultDialog", () => {
     store.fault = { message: "boom" };
     store.faultMessage = "Runtime 故障 [VmFault]：boom";
     store.faultActionBusy = false;
+    store.diagnosisExporting = false;
+    store.diagnosisProgressValue = undefined;
+    store.diagnosisResult = "";
     vi.clearAllMocks();
     document.body.innerHTML = "";
   });
@@ -50,6 +57,24 @@ describe("FaultDialog", () => {
     expect(mocks.recoverFromFault).toHaveBeenNthCalledWith(2, "reload");
     expect(mocks.shutdown).toHaveBeenCalledOnce();
     expect(mocks.dismissFault).toHaveBeenCalledOnce();
+    wrapper.unmount();
+  });
+
+  it("shows real export progress inside the fatal dialog", async () => {
+    store.diagnosisExporting = true;
+    store.diagnosisProgressValue = 37;
+    store.diagnosisProgressLabel = "正在导出 VM 快照（37%）";
+    const wrapper = mount(FaultDialog, { attachTo: document.body });
+    await Promise.resolve();
+
+    const progress = document.body.querySelector<HTMLProgressElement>(
+      ".fault-diagnosis-progress progress",
+    );
+    expect(progress?.getAttribute("value")).toBe("37");
+    expect(document.body.querySelector(".fault-diagnosis-progress")?.textContent).toContain(
+      "正在导出 VM 快照（37%）",
+    );
+    expect(document.body.querySelector(".diagnosis-notification")).toBeNull();
     wrapper.unmount();
   });
 });

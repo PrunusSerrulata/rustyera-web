@@ -79,6 +79,7 @@ enabled("Tauri diagnosis archive", () => {
       totalTimeout: timeout,
       accept: (state) => !state?.diagnosis?.exporting && state?.canInteract,
     });
+    assert.equal(await $(".diagnosis-notification").isExisting(), false);
 
     const members = parseTar(decodeRawZstdFrame(await readFile(target)));
     assert.deepEqual([...members.keys()].sort(), [

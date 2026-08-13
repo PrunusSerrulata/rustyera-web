@@ -1,4 +1,4 @@
-import type { ProjectProgress } from "@/core/types";
+import type { DiagnosisProgress, ProjectProgress } from "@/core/types";
 
 export interface DiagnosisLogEntry {
   timestamp: Date;
@@ -29,6 +29,30 @@ export function formatProjectProgress(progress: ProjectProgress): string {
   const completed = Math.min(progress.completed, progress.total);
   const percent = Math.min(100, Math.round((completed * 100) / progress.total));
   return `${label}：${completed}/${progress.total}（${percent}%）`;
+}
+
+const DIAGNOSIS_PROGRESS_LABELS: Record<DiagnosisProgress["stage"], string> = {
+  waiting: "正在准备诊断信息",
+  input_replay: "正在导出输入回放",
+  vm_snapshot: "正在导出 VM 快照",
+  project_scanning: "正在读取项目文件",
+  project_preparing: "正在准备全量项目文件",
+  project_packaging: "正在打包全量项目文件",
+  project_transfer: "正在传输全量项目文件",
+  archive: "正在写入诊断归档",
+};
+
+export function formatDiagnosisProgress(progress: DiagnosisProgress): string {
+  const label = DIAGNOSIS_PROGRESS_LABELS[progress.stage];
+  const percent = diagnosisProgressPercentage(progress);
+  if (percent == null) return `${label}…`;
+  return `${label}（${percent}%）`;
+}
+
+export function diagnosisProgressPercentage(progress: DiagnosisProgress): number | undefined {
+  if (progress.total <= 0) return undefined;
+  const completed = Math.min(progress.completed, progress.total);
+  return Math.min(100, Math.floor((completed * 100) / progress.total));
 }
 
 export function at(value: any, key: number): any {

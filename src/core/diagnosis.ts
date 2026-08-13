@@ -7,6 +7,15 @@ export interface DiagnosisArchiveInput {
   exportedAt: Date;
 }
 
+export interface DiagnosisArchiveProgress {
+  completed: number;
+  total: number;
+}
+
+export interface DiagnosisArchiveChunk extends DiagnosisArchiveProgress {
+  bytes: Uint8Array;
+}
+
 const TAR_BLOCK_BYTES = 512;
 const ZSTD_BLOCK_BYTES = 128 * 1024;
 const INVALID_FILENAME_CHARACTERS = new Set('<>:"/\\|?*');
@@ -31,10 +40,12 @@ export function diagnosisProjectName(projectName: string): string {
 }
 
 export function createDiagnosisArchive(input: DiagnosisArchiveInput): Uint8Array {
-  return concatenate([...diagnosisArchiveChunks(input)]);
+  return concatenate([...diagnosisArchiveChunks(input)].map((chunk) => chunk.bytes));
 }
 
-export function* diagnosisArchiveChunks(input: DiagnosisArchiveInput): Generator<Uint8Array> {
+export function* diagnosisArchiveChunks(
+  input: DiagnosisArchiveInput,
+): Generator<DiagnosisArchiveChunk> {
   const timestamp = Math.floor(input.exportedAt.getTime() / 1000);
   const projectName = diagnosisProjectName(input.projectName);
   const tarParts = [
@@ -50,7 +61,13 @@ export function* diagnosisArchiveChunks(input: DiagnosisArchiveInput): Generator
   const frameHeader = new Uint8Array(9);
   frameHeader.set([0x28, 0xb5, 0x2f, 0xfd, 0xa0], 0);
   new DataView(frameHeader.buffer).setUint32(5, contentSize, true);
-  yield frameHeader;
+  const blockCount = tarParts.reduce(
+    (total, part) => total + Math.ceil(part.length / ZSTD_BLOCK_BYTES),
+    0,
+  );
+  const outputSize = frameHeader.length + contentSize + blockCount * 3;
+  let completed = frameHeader.length;
+  yield { bytes: frameHeader, completed, total: outputSize };
 
   let remaining = contentSize;
   for (const part of tarParts) {
@@ -63,7 +80,8 @@ export function* diagnosisArchiveChunks(input: DiagnosisArchiveInput): Generator
       output[1] = (header >>> 8) & 0xff;
       output[2] = (header >>> 16) & 0xff;
       output.set(payload, 3);
-      yield output;
+      completed += output.length;
+      yield { bytes: output, completed, total: outputSize };
     }
   }
 }

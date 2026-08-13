@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const invoke = vi.hoisted(() => vi.fn());
 const open = vi.hoisted(() => vi.fn());
+const save = vi.hoisted(() => vi.fn());
 const listen = vi.hoisted(() => vi.fn());
+const streamDiagnosisArchiveInWorker = vi.hoisted(() => vi.fn());
 const currentWindow = vi.hoisted(() => ({
   close: vi.fn(),
   setResizable: vi.fn(),
@@ -17,7 +19,8 @@ const currentWindow = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => currentWindow }));
 vi.mock("@tauri-apps/api/event", () => ({ listen }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open, save: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open, save }));
+vi.mock("@/platform/diagnosis", () => ({ streamDiagnosisArchiveInWorker }));
 
 import { TauriBridge } from "@/platform/tauriBridge";
 import { sfntFont } from "./fontFixture";
@@ -33,6 +36,7 @@ function commandCalls(command: string): unknown[][] {
 describe("Tauri project restart", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    save.mockReset();
     listen.mockResolvedValue(vi.fn());
     currentWindow.setResizable.mockResolvedValue(undefined);
     currentWindow.setSize.mockResolvedValue(undefined);
@@ -40,6 +44,7 @@ describe("Tauri project restart", () => {
     currentWindow.isMaximized.mockResolvedValue(false);
     currentWindow.maximize.mockResolvedValue(undefined);
     currentWindow.unmaximize.mockResolvedValue(undefined);
+    streamDiagnosisArchiveInWorker.mockReset();
   });
 
   afterEach(() => {
@@ -126,6 +131,37 @@ describe("Tauri project restart", () => {
     await new TauriBridge().cancelCompiledCacheExport();
 
     expect(invoke).toHaveBeenCalledWith("cancel_compiled_cache_export");
+  });
+
+  it("reports diagnosis completion only after the native host commits the file", async () => {
+    const completed = deferred<void>();
+    save.mockResolvedValue("/tmp/diagnosis.tar.zst");
+    invoke.mockImplementation(async (command, arguments_) => {
+      if (command === "write_export_chunk" && arguments_?.complete === true)
+        await completed.promise;
+      return undefined;
+    });
+    streamDiagnosisArchiveInWorker.mockImplementation(
+      async (
+        _input: unknown,
+        write: (chunk: Uint8Array) => Promise<void>,
+        progress?: (value: { completed: number; total: number }) => void,
+      ) => {
+        await write(Uint8Array.of(1));
+        progress?.({ completed: 1, total: 2 });
+        return 2;
+      },
+    );
+    const progress = vi.fn();
+
+    const saving = new TauriBridge().saveDiagnosis("diagnosis.tar.zst", diagnosisInput(), progress);
+    await flushMicrotasks();
+
+    expect(progress).toHaveBeenCalledWith({ completed: 1, total: 2 });
+    expect(progress).not.toHaveBeenCalledWith({ completed: 2, total: 2 });
+    completed.resolve();
+    await expect(saving).resolves.toBe(true);
+    expect(progress).toHaveBeenLastCalledWith({ completed: 2, total: 2 });
   });
 
   it("keeps the previous project when opening a replacement fails", async () => {
@@ -372,6 +408,29 @@ describe("Tauri project restart", () => {
     expect(currentWindow.maximize).not.toHaveBeenCalled();
   });
 });
+
+function diagnosisInput() {
+  return {
+    projectName: "eraFL",
+    snapshot: Uint8Array.of(1),
+    inputReplay: Uint8Array.of(2),
+    logs: "log",
+    projectFile: Uint8Array.of(3),
+    exportedAt: new Date(2026, 7, 13, 12, 0, 0),
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+async function flushMicrotasks(): Promise<void> {
+  for (let index = 0; index < 6; index += 1) await Promise.resolve();
+}
 
 describe("Tauri lossless integer transport", () => {
   beforeEach(() => {

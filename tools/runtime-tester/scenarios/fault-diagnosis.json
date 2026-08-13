@@ -43,7 +43,7 @@
     },
     {
       "type": "assert_dom",
-      "locator": { "css": ".diagnosis-notification" },
+      "locator": { "css": ".fault-diagnosis-result" },
       "fields": ["count", "text", "visible"],
       "expect": {
         "count": 1,

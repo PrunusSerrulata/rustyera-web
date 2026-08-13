@@ -13,12 +13,17 @@ const store = vi.hoisted(() => ({
   canOpenProject: false,
   runtimeReady: false,
   gameInteractionsBlocked: false,
+  fault: null,
   debugEnabled: true,
   singleStepEnabled: true,
   canStepDebug: true,
   canExportDiagnosis: false,
   canManageTraditionalSaves: false,
-  diagnosisNotification: "",
+  diagnosisExporting: false,
+  diagnosisProgress: undefined,
+  diagnosisProgressLabel: "正在准备诊断信息…",
+  diagnosisProgressValue: undefined as number | undefined,
+  diagnosisResult: "",
   projectFileExporting: false,
   projectFileExportProgressLabel: "",
   projectFileExportProgressValue: undefined,
@@ -136,6 +141,10 @@ describe("application menus", () => {
     store.canExportDiagnosis = false;
     store.canManageTraditionalSaves = false;
     store.configurationEntries = [];
+    store.projectLoading = true;
+    store.diagnosisExporting = false;
+    store.diagnosisProgressValue = undefined;
+    store.diagnosisProgressLabel = "正在准备诊断信息…";
   });
 
   it("requests confirmation for progress-losing game actions", async () => {
@@ -241,6 +250,22 @@ describe("application menus", () => {
     await settings!.trigger("click");
 
     expect(store.openPreferencesFromUser).toHaveBeenCalledOnce();
+    wrapper.unmount();
+  });
+
+  it("shows menu diagnosis progress above the viewport without a corner popup", () => {
+    store.projectLoading = false;
+    store.diagnosisExporting = true;
+    store.diagnosisProgressValue = 62;
+    store.diagnosisProgressLabel = "正在传输全量项目文件（62%）";
+    const wrapper = mountApp();
+
+    const progress = wrapper.get<HTMLProgressElement>(".diagnosis-export-progress progress");
+    expect(progress.attributes("value")).toBe("62");
+    expect(wrapper.get(".diagnosis-export-progress").text()).toContain(
+      "正在传输全量项目文件（62%）",
+    );
+    expect(wrapper.find(".diagnosis-notification").exists()).toBe(false);
     wrapper.unmount();
   });
 

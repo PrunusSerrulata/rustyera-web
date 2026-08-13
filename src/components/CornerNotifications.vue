@@ -7,7 +7,6 @@ import { oldestOverflowCount } from "@/core/notificationLayout";
 
 const props = defineProps<{
   notifications: LogNotificationState[];
-  diagnosis: string;
 }>();
 const emit = defineEmits<{ dismiss: [id: number] }>();
 
@@ -36,9 +35,7 @@ function observeItems(): void {
   resizeObserver?.disconnect();
   const element = container.value;
   if (!resizeObserver || !element) return;
-  for (const item of element.querySelectorAll<HTMLElement>(
-    ".log-notification, .diagnosis-notification",
-  )) {
+  for (const item of element.querySelectorAll<HTMLElement>(".log-notification")) {
     resizeObserver.observe(item);
   }
 }
@@ -58,22 +55,14 @@ function fitToViewport(): void {
   const heights = [...element.querySelectorAll<HTMLElement>(".log-notification")].map(
     (notification) => notification.getBoundingClientRect().height,
   );
-  const diagnosisHeight =
-    element.querySelector<HTMLElement>(".diagnosis-notification")?.getBoundingClientRect().height ??
-    0;
-  const overflow = oldestOverflowCount(
-    heights,
-    diagnosisHeight,
-    notificationGapPx,
-    availableHeight,
-  );
+  const overflow = oldestOverflowCount(heights, notificationGapPx, availableHeight);
   for (const notification of props.notifications.slice(0, overflow)) {
     emit("dismiss", notification.id);
   }
 }
 
 watch(
-  () => [props.diagnosis, ...props.notifications.map((notification) => notification.id)],
+  () => props.notifications.map((notification) => notification.id),
   () => scheduleFit(true),
   { immediate: true },
 );
@@ -100,8 +89,5 @@ onBeforeUnmount(() => {
       :message="notification.message"
       @close="emit('dismiss', $event)"
     />
-    <div v-if="diagnosis" class="diagnosis-notification" role="status" aria-live="polite">
-      {{ diagnosis }}
-    </div>
   </div>
 </template>

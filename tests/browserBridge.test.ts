@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { blake3 } from "@noble/hashes/blake3.js";
 
 const pickBrowserDirectory = vi.hoisted(() => vi.fn());
 const pickBrowserFile = vi.hoisted(() => vi.fn());
 const pickBrowserProjectFile = vi.hoisted(() => vi.fn());
+const streamDiagnosisArchiveInWorker = vi.hoisted(() => vi.fn());
 
 vi.mock("@/platform/browserDirectory", () => ({
   pickBrowserDirectory,
@@ -15,6 +16,7 @@ vi.mock("@/platform/database", () => ({
   loadBrowserPreferences: vi.fn(),
   saveBrowserPreferences: vi.fn(),
 }));
+vi.mock("@/platform/diagnosis", () => ({ streamDiagnosisArchiveInWorker }));
 
 import { BrowserBridge } from "@/platform/browserBridge";
 import { overlayBrowserDirectory } from "@/platform/browserDirectoryOverlay";
@@ -156,8 +158,11 @@ describe("browser startup bridge", () => {
       return file ? { file } : undefined;
     });
     respond = () => 1n;
+    streamDiagnosisArchiveInWorker.mockReset();
     vi.stubGlobal("Worker", MemoryWorker);
   });
+
+  afterEach(() => vi.unstubAllGlobals());
 
   it("falls back with one binary manifest transfer and retries its cache without rescanning", async () => {
     const root = new MemoryDirectoryHandle("game");
@@ -237,6 +242,46 @@ describe("browser startup bridge", () => {
     await bridge.cancelCompiledCacheExport();
 
     expect(file.abort).toHaveBeenCalledOnce();
+  });
+
+  it("reports diagnosis completion only after the browser writer closes", async () => {
+    const closed = deferred<void>();
+    const writer = {
+      write: vi.fn(async () => undefined),
+      close: vi.fn(() => closed.promise),
+      abort: vi.fn(async () => undefined),
+    };
+    vi.stubGlobal(
+      "showSaveFilePicker",
+      vi.fn(async () => ({
+        createWritable: vi.fn(async () => writer),
+      })),
+    );
+    streamDiagnosisArchiveInWorker.mockImplementation(
+      async (
+        _input: unknown,
+        write: (chunk: Uint8Array) => Promise<void>,
+        progress?: (value: { completed: number; total: number }) => void,
+      ) => {
+        await write(Uint8Array.of(1));
+        progress?.({ completed: 1, total: 2 });
+        return 2;
+      },
+    );
+    const progress = vi.fn();
+
+    const saving = new BrowserBridge().saveDiagnosis(
+      "diagnosis.tar.zst",
+      diagnosisInput(),
+      progress,
+    );
+    await flushMicrotasks();
+
+    expect(progress).toHaveBeenCalledWith({ completed: 1, total: 2 });
+    expect(progress).not.toHaveBeenCalledWith({ completed: 2, total: 2 });
+    closed.resolve();
+    await expect(saving).resolves.toBe(true);
+    expect(progress).toHaveBeenLastCalledWith({ completed: 2, total: 2 });
   });
 
   it("falls back to download chunks when OPFS export initialization fails", async () => {
@@ -578,4 +623,27 @@ function containsBytes(haystack: Uint8Array, needle: Uint8Array): boolean {
   return haystack.some((_, start) =>
     needle.every((byte, offset) => haystack[start + offset] === byte),
   );
+}
+
+function diagnosisInput() {
+  return {
+    projectName: "eraFL",
+    snapshot: Uint8Array.of(1),
+    inputReplay: Uint8Array.of(2),
+    logs: "log",
+    projectFile: Uint8Array.of(3),
+    exportedAt: new Date(2026, 7, 13, 12, 0, 0),
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+async function flushMicrotasks(): Promise<void> {
+  for (let index = 0; index < 6; index += 1) await Promise.resolve();
 }

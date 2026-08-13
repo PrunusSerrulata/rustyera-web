@@ -32,7 +32,7 @@ onMounted(() => void store.initialize());
   <div
     class="app-shell"
     :class="{ 'menu-disabled': !store.useMenu }"
-    :aria-busy="store.projectLoading"
+    :aria-busy="store.projectLoading || store.diagnosisExporting"
     :style="{
       '--game-font': store.gameTextStyle.fontFamily,
       '--game-size': store.gameTextStyle.fontSize,
@@ -56,9 +56,19 @@ onMounted(() => void store.initialize());
       <span>{{ store.projectLoadProgressLabel }}</span>
     </div>
 
+    <div
+      v-else-if="store.diagnosisExporting && !store.fault"
+      class="project-load-progress diagnosis-export-progress"
+      role="status"
+      aria-live="polite"
+      aria-label="诊断信息导出进度"
+    >
+      <progress aria-hidden="true" max="100" :value="store.diagnosisProgressValue ?? undefined" />
+      <span>{{ store.diagnosisProgressLabel }}</span>
+    </div>
+
     <CornerNotifications
       :notifications="store.logNotifications"
-      :diagnosis="store.diagnosisNotification"
       @dismiss="store.dismissLogNotification"
     />
 

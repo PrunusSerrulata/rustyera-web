@@ -44,7 +44,13 @@ describe("diagnosis archive", () => {
     ];
 
     expect(chunks.length).toBeGreaterThan(8);
-    expect(Math.max(...chunks.map((chunk) => chunk.length))).toBeLessThanOrEqual(128 * 1024 + 3);
+    expect(Math.max(...chunks.map((chunk) => chunk.bytes.length))).toBeLessThanOrEqual(
+      128 * 1024 + 3,
+    );
+    expect(chunks.map((chunk) => chunk.completed)).toEqual(
+      [...chunks.map((chunk) => chunk.completed)].sort((left, right) => left - right),
+    );
+    expect(chunks.at(-1)?.completed).toBe(chunks.at(-1)?.total);
     expect(diagnosisArchiveName("unsafe/project", new Date(2026, 6, 29, 14, 5, 6))).toBe(
       "unsafe_project-diagnosis_20260729-140506.tar.zst",
     );

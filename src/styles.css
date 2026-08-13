@@ -126,6 +126,23 @@ select {
 .full-project-export progress {
   width: 100%;
 }
+
+.fault-diagnosis-progress {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0.75rem 0;
+}
+
+.fault-diagnosis-progress progress {
+  width: 100%;
+  accent-color: #5279eb;
+}
+
+.fault-diagnosis-progress span,
+.fault-diagnosis-result {
+  color: #dbe6ff;
+}
+
 .menu-bar {
   display: flex;
   align-items: center;
@@ -198,13 +215,6 @@ select {
   max-height: calc(100vh - 52px);
   overflow: hidden;
   z-index: 900;
-}
-.diagnosis-notification {
-  padding: 0.65rem 0.85rem;
-  border: 1px solid #5279eb;
-  border-radius: 6px;
-  background: #202b49;
-  box-shadow: 0 8px 24px #0009;
 }
 .log-notification {
   position: relative;

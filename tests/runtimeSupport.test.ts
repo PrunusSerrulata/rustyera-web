@@ -4,6 +4,7 @@ import {
   concatenateChunks,
   formatDiagnostic,
   formatDiagnosisLogs,
+  formatDiagnosisProgress,
   formatProjectProgress,
   saveSlotFileName,
   snapshotFileName,
@@ -29,6 +30,18 @@ describe("runtime support", () => {
     );
     expect(formatProjectProgress({ stage: "packaging", completed: 1, total: 2 })).toBe(
       "正在打包全量项目文件：1/2（50%）",
+    );
+  });
+
+  it("shows diagnosis byte progress as a percentage without reaching 100 early", () => {
+    expect(formatDiagnosisProgress({ stage: "waiting", completed: 0, total: 0 })).toBe(
+      "正在准备诊断信息…",
+    );
+    expect(formatDiagnosisProgress({ stage: "archive", completed: 999, total: 1_000 })).toBe(
+      "正在写入诊断归档（99%）",
+    );
+    expect(formatDiagnosisProgress({ stage: "archive", completed: 1_000, total: 1_000 })).toBe(
+      "正在写入诊断归档（100%）",
     );
   });
 

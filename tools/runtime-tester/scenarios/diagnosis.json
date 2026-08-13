@@ -23,7 +23,14 @@
       "scope": "script",
       "path": "erb/diagnosis.erb"
     },
-    { "type": "export_diagnosis" },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "帮助", "exact": true }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "导出诊断信息…", "exact": true }
+    },
     {
       "type": "assert_state",
       "expect": {
@@ -67,16 +74,12 @@
     {
       "type": "assert_dom",
       "locator": { "css": ".diagnosis-notification" },
-      "fields": ["count", "text", "visible"],
-      "expect": {
-        "count": 1,
-        "text": "诊断信息已导出：Replay Diagnosis Fixture-diagnosis_20260101-080000.tar.zst",
-        "visible": true
-      }
+      "fields": ["count"],
+      "expect": { "count": 0 }
     }
   ],
   "limits": {
-    "max_steps": 10,
+    "max_steps": 16,
     "timeout_seconds": 60
   }
 }

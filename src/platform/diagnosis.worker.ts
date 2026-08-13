@@ -1,6 +1,10 @@
-import { diagnosisArchiveChunks, type DiagnosisArchiveInput } from "@/core/diagnosis";
+import {
+  diagnosisArchiveChunks,
+  type DiagnosisArchiveChunk,
+  type DiagnosisArchiveInput,
+} from "@/core/diagnosis";
 
-let chunks: Iterator<Uint8Array> | undefined;
+let chunks: Iterator<DiagnosisArchiveChunk> | undefined;
 
 self.onmessage = (event: MessageEvent<DiagnosisArchiveInput | { type: "continue" }>) => {
   try {
@@ -16,7 +20,14 @@ self.onmessage = (event: MessageEvent<DiagnosisArchiveInput | { type: "continue"
       chunks = undefined;
       self.postMessage({ complete: true });
     } else {
-      self.postMessage({ chunk: next.value }, { transfer: [next.value.buffer] });
+      self.postMessage(
+        {
+          chunk: next.value.bytes,
+          completed: next.value.completed,
+          total: next.value.total,
+        },
+        { transfer: [next.value.bytes.buffer] },
+      );
     }
   } catch (error) {
     chunks = undefined;

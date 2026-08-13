@@ -79,6 +79,22 @@ export interface ProjectProgress {
   total: number;
 }
 
+export type DiagnosisProgressStage =
+  | "waiting"
+  | "input_replay"
+  | "vm_snapshot"
+  | "project_scanning"
+  | "project_preparing"
+  | "project_packaging"
+  | "project_transfer"
+  | "archive";
+
+export interface DiagnosisProgress {
+  stage: DiagnosisProgressStage;
+  completed: number;
+  total: number;
+}
+
 export interface TraditionalSaveSlot {
   slot: number;
   occupied: boolean;
@@ -171,6 +187,7 @@ export interface FrontendBridge {
   saveDiagnosis(
     name: string,
     input: import("@/core/diagnosis").DiagnosisArchiveInput,
+    reportProgress?: (progress: import("@/core/diagnosis").DiagnosisArchiveProgress) => void,
   ): Promise<boolean>;
   writeCompiledCacheChunk(bytes: Uint8Array, reset: boolean, complete: boolean): Promise<void>;
   cancelCompiledCacheExport(): Promise<void>;

@@ -10,6 +10,18 @@ const store = useRuntimeStore();
     <p>游戏遇到了无法恢复的错误：</p>
     <pre class="fault-message">{{ store.faultMessage }}</pre>
     <p>诊断信息归档可发送给游戏项目或 RustyEra 开发者。</p>
+    <div
+      v-if="store.diagnosisExporting"
+      class="fault-diagnosis-progress"
+      role="status"
+      aria-live="polite"
+    >
+      <progress aria-hidden="true" max="100" :value="store.diagnosisProgressValue ?? undefined" />
+      <span>{{ store.diagnosisProgressLabel }}</span>
+    </div>
+    <p v-else-if="store.diagnosisResult" class="fault-diagnosis-result" role="status">
+      {{ store.diagnosisResult }}
+    </p>
     <footer class="dialog-actions">
       <button
         type="button"

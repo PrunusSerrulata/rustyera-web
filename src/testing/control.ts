@@ -77,7 +77,9 @@ export function installWebTestControl(pinia: Pinia): void {
       transfer: store.testTransferState(),
       diagnosis: {
         exporting: store.diagnosisExporting,
-        notification: store.diagnosisNotification,
+        progress: store.diagnosisProgress,
+        label: store.diagnosisProgressLabel,
+        result: store.diagnosisResult,
         canExport: store.canExportDiagnosis,
       },
       saveTransfer: {
