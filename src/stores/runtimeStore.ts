@@ -64,6 +64,7 @@ import { RuntimeProjectReloadState } from "@/stores/runtimeProjectReload";
 import { classifyRuntimeRejection } from "@/stores/runtimeRejections";
 import { RuntimeLogState } from "@/stores/runtimeLogs";
 import { RuntimeInputState } from "@/stores/runtimeInput";
+import { RuntimeDebugRequestState } from "@/stores/runtimeDebugRequests";
 import { handleRuntimeService } from "@/stores/runtimeServices";
 import { RuntimeStatusState } from "@/stores/runtimeStatus";
 import { RuntimeStartupTelemetryState } from "@/stores/runtimeStartupTelemetry";
@@ -219,21 +220,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let pendingStart: RuntimeTestConfiguration["start"] = { type: "new_game" };
   let runtimeManifestSparse = false;
   let batchMediaDirty = false;
-  let debugPausePending = false;
-  let debugPauseWanted = false;
-  let debugSurfacePauseActive = false;
-  let debugSurfaceResumePending = false;
-  let debugGrantRefreshNeeded = false;
-  let debugVariableRefreshId = 0;
-  const pendingDebugRequests = new Map<
-    string,
-    {
-      grant: any;
-      commandType: string | undefined;
-      resolve?: (value: any) => void;
-      reject?: (error: Error) => void;
-    }
-  >();
+  const debugRequests = new RuntimeDebugRequestState();
   const runtimeInput = new RuntimeInputState({
     presentation: currentPresentation,
     send,
@@ -654,10 +641,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (presentationProjection.shouldPublish(batch.state))
       batchMediaDirty = presentationProjection.publish() || batchMediaDirty;
     if (batchMediaDirty) await synchronizeMedia();
-    if (debugGrantRefreshNeeded) {
-      debugGrantRefreshNeeded = false;
+    if (debugRequests.grantRefreshNeeded) {
+      debugRequests.grantRefreshNeeded = false;
       await requestDebugGrant();
-    } else if (debugPauseWanted) {
+    } else if (debugRequests.pauseWanted) {
       await requestPendingDebugPause();
     }
     await settlePendingGameInput();
@@ -1252,12 +1239,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     testEnvironment.resetTimeAdvance();
     inputUndo.value = null;
     fault.value = null;
-    debugPausePending = false;
-    debugPauseWanted = false;
-    debugSurfacePauseActive = false;
-    debugSurfaceResumePending = false;
-    debugGrantRefreshNeeded = false;
-    pendingDebugRequests.clear();
+    debugRequests.reset();
     debugEnabled.value = false;
     singleStepEnabled.value = false;
     debugGrant.value = null;
@@ -2105,11 +2087,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
           type: "revoke",
           value: { grant_id: debugGrant.value.token.grant_id, reason: "disabled by user" },
         });
-      debugPausePending = false;
-      debugPauseWanted = false;
-      debugSurfacePauseActive = false;
-      debugSurfaceResumePending = false;
-      pendingDebugRequests.clear();
+      debugRequests.pausePending = false;
+      debugRequests.pauseWanted = false;
+      debugRequests.surfacePauseActive = false;
+      debugRequests.surfaceResumePending = false;
+      debugRequests.reset();
       debugEnabled.value = false;
       singleStepEnabled.value = false;
       debugGrant.value = null;
@@ -2119,40 +2101,40 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function handleDebug(message: any, correlationId?: number | bigint): Promise<void> {
     if (message.type === "grant") {
-      debugPausePending = false;
-      debugGrantRefreshNeeded = false;
+      debugRequests.pausePending = false;
+      debugRequests.grantRefreshNeeded = false;
       debugGrant.value = message.value;
       debugEnabled.value = true;
       singleStepEnabled.value = false;
       debugStop.value = null;
     } else if (message.type === "revoke") {
-      debugPausePending = false;
-      debugPauseWanted = false;
-      debugSurfacePauseActive = false;
-      debugSurfaceResumePending = false;
+      debugRequests.pausePending = false;
+      debugRequests.pauseWanted = false;
+      debugRequests.surfacePauseActive = false;
+      debugRequests.surfaceResumePending = false;
       debugGrant.value = null;
       debugEnabled.value = false;
       singleStepEnabled.value = false;
       debugStop.value = null;
     } else if (message.type === "stopped") {
-      debugPausePending = false;
-      debugPauseWanted = false;
+      debugRequests.pausePending = false;
+      debugRequests.pauseWanted = false;
       debugStop.value = message.value;
       debugFibers.value = [];
       debugFrames.value = [];
-      forgetDebugRequest(correlationId);
+      debugRequests.take(correlationId);
       // The stop token is authoritative only after this event. Start refreshing here so
       // dialog visibility cannot race a Vue watcher against the pause response. Pagination
       // must continue asynchronously because its later pages arrive in future pump batches.
       void refreshOpenDebugSurfaces().catch((error) => log("warning", String(error)));
-      if (debugSurfaceResumePending && !singleStepEnabled.value) {
-        debugSurfaceResumePending = false;
+      if (debugRequests.surfaceResumePending && !singleStepEnabled.value) {
+        debugRequests.surfaceResumePending = false;
         void continueDebug().catch((error) => log("warning", String(error)));
       }
       if (singleStepEnabled.value && message.value?.reason?.type === "host_wait")
         void continueDebug(true).catch((error) => log("warning", String(error)));
     } else if (message.type === "response") {
-      const request = forgetDebugRequest(correlationId);
+      const request = debugRequests.take(correlationId);
       const response = message.value;
       debugStop.value = refreshDebugStop(debugStop.value, response.value);
       if (response.type === "variable_page") debugVariables.value = response.value.variables ?? [];
@@ -2186,40 +2168,25 @@ export const useRuntimeStore = defineStore("runtime", () => {
       }
       request?.resolve?.(response);
     } else if (message.type === "error") {
-      const request = forgetDebugRequest(correlationId);
-      if (request?.commandType === "pause") debugPausePending = false;
+      const request = debugRequests.take(correlationId);
+      if (request?.commandType === "pause") debugRequests.pausePending = false;
       if (debugEnabled.value && isStaleDebugGrantError(message.value)) {
         const currentToken = debugGrant.value?.token;
         if (!currentToken || !request || sameDebugGrant(request.grant, currentToken)) {
           debugGrant.value = null;
           debugStop.value = null;
-          debugGrantRefreshNeeded = true;
+          debugRequests.grantRefreshNeeded = true;
         }
       } else {
         if (request?.commandType === "pause") {
-          debugPauseWanted = false;
-          debugSurfacePauseActive = false;
-          debugSurfaceResumePending = false;
+          debugRequests.pauseWanted = false;
+          debugRequests.surfacePauseActive = false;
+          debugRequests.surfaceResumePending = false;
         }
         log("warning", message.value.message);
       }
       request?.reject?.(new Error(message.value.message ?? "debug request failed"));
     }
-  }
-
-  function forgetDebugRequest(correlationId?: number | bigint):
-    | {
-        grant: any;
-        commandType: string | undefined;
-        resolve?: (value: any) => void;
-        reject?: (error: Error) => void;
-      }
-    | undefined {
-    if (correlationId == null) return undefined;
-    const key = String(correlationId);
-    const request = pendingDebugRequests.get(key);
-    pendingDebugRequests.delete(key);
-    return request;
   }
 
   async function requestDebugGrant(): Promise<void> {
@@ -2255,7 +2222,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         value: { grant, command },
       }),
     );
-    pendingDebugRequests.set(String(messageId), { grant, commandType: command?.type });
+    debugRequests.register(messageId, grant, command?.type);
   }
 
   async function debugRequest(command: any, timeoutMs = 10_000): Promise<any> {
@@ -2267,25 +2234,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
         value: { grant, command },
       }),
     );
-    return new Promise((resolve, reject) => {
-      const timer = window.setTimeout(() => {
-        pendingDebugRequests.delete(String(messageId));
-        reject(new Error(`debug ${command?.type ?? "request"} 超时`));
-      }, timeoutMs);
-      pendingDebugRequests.set(String(messageId), {
-        grant,
-        commandType: command?.type,
-        resolve: (value) => {
-          window.clearTimeout(timer);
-          resolve(value);
-        },
-        reject: (error) => {
-          window.clearTimeout(timer);
-          reject(error);
-        },
-      });
-      schedulePump(0);
-    });
+    const response = debugRequests.wait(messageId, grant, command?.type, timeoutMs);
+    schedulePump(0);
+    return response;
   }
 
   async function inspectWatches(watches: string[]): Promise<Record<string, unknown>> {
@@ -2332,24 +2283,24 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function pauseDebug(): Promise<void> {
-    debugPauseWanted = true;
+    debugRequests.pauseWanted = true;
     await requestPendingDebugPause();
   }
 
   async function requestPendingDebugPause(): Promise<void> {
     if (
-      !debugPauseWanted ||
+      !debugRequests.pauseWanted ||
       !debugGrant.value ||
       debugStopToken(debugStop.value) ||
-      debugPausePending ||
+      debugRequests.pausePending ||
       !["running", "waiting_input", "waiting_external"].includes(phase.value)
     )
       return;
-    debugPausePending = true;
+    debugRequests.pausePending = true;
     try {
       await debugCommand({ type: "pause" });
     } catch (error) {
-      debugPausePending = false;
+      debugRequests.pausePending = false;
       throw error;
     }
   }
@@ -2368,8 +2319,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
     if (debugStopToken(debugStop.value)) await refreshOpenDebugSurfaces();
     else {
-      debugSurfacePauseActive = true;
-      debugSurfaceResumePending = false;
+      debugRequests.surfacePauseActive = true;
+      debugRequests.surfaceResumePending = false;
       await pauseDebug();
     }
   }
@@ -2379,11 +2330,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
     else if (kind === "variables") variablesOpen.value = false;
     else stackOpen.value = false;
     if (debugConsoleOpen.value || variablesOpen.value || stackOpen.value) return;
-    if (!debugSurfacePauseActive) return;
-    debugSurfacePauseActive = false;
+    if (!debugRequests.surfacePauseActive) return;
+    debugRequests.surfacePauseActive = false;
     if (singleStepEnabled.value) return;
     if (debugStopToken(debugStop.value)) await continueDebug();
-    else debugSurfaceResumePending = true;
+    else debugRequests.surfaceResumePending = true;
   }
 
   async function refreshOpenDebugSurfaces(): Promise<void> {
@@ -2395,7 +2346,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function refreshDebugVariables(stop: any): Promise<void> {
-    const refreshId = ++debugVariableRefreshId;
+    const refreshId = debugRequests.nextVariableRefresh();
     debugVariablesLoading.value = true;
     const variables: any[] = [];
     const seen = new Set<string>();
@@ -2420,11 +2371,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
       } while (
         cursor != null &&
         pages < DEBUG_VARIABLE_MAX_PAGES &&
-        refreshId === debugVariableRefreshId
+        debugRequests.isCurrentVariableRefresh(refreshId)
       );
-      if (refreshId === debugVariableRefreshId) debugVariables.value = variables;
+      if (debugRequests.isCurrentVariableRefresh(refreshId)) debugVariables.value = variables;
     } finally {
-      if (refreshId === debugVariableRefreshId) debugVariablesLoading.value = false;
+      if (debugRequests.isCurrentVariableRefresh(refreshId)) debugVariablesLoading.value = false;
     }
   }
 
@@ -2433,7 +2384,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const command = sourceLineStepCommand(debugStop.value);
     if (!command) return;
     const previousStop = debugStop.value;
-    debugPauseWanted = false;
+    debugRequests.pauseWanted = false;
     debugStop.value = null;
     try {
       await debugRequest(command);
@@ -2449,9 +2400,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (!stop) return;
     if (!preserveSingleStep) singleStepEnabled.value = false;
     const previousStop = debugStop.value;
-    debugPauseWanted = false;
-    debugSurfacePauseActive = false;
-    debugSurfaceResumePending = false;
+    debugRequests.pauseWanted = false;
+    debugRequests.surfacePauseActive = false;
+    debugRequests.surfaceResumePending = false;
     debugStop.value = null;
     try {
       await debugRequest({ type: "continue", stop });
