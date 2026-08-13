@@ -69,6 +69,7 @@ import {
 } from "@/platform/viewportMeasurement";
 import { RuntimePumpCoordinator } from "@/stores/runtimePump";
 import { RuntimePresentationProjection } from "@/stores/runtimePresentation";
+import { normalizeProjectProgress, RuntimeProjectLoadState } from "@/stores/runtimeProjectLoad";
 import { RuntimeLogState } from "@/stores/runtimeLogs";
 import { handleRuntimeService } from "@/stores/runtimeServices";
 import { RuntimeStatusState } from "@/stores/runtimeStatus";
@@ -145,12 +146,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const status = runtimeStatus.current;
   const projectOpen = ref(false);
   const gameInformation = ref<ProjectGameInformation | null>(null);
-  const projectLoading = ref(false);
+  const projectLoad = new RuntimeProjectLoadState();
+  const projectLoading = projectLoad.loading;
   const projectSelecting = ref(false);
-  const projectProgress = ref<ProjectProgress>();
+  const projectProgress = projectLoad.progress;
   const projectFileExporting = ref(false);
   const projectFileExportProgress = ref<ProjectProgress>();
-  const projectLoadElapsedSeconds = ref(0);
+  const projectLoadElapsedSeconds = projectLoad.elapsedSeconds;
   const startupTelemetryState = new RuntimeStartupTelemetryState();
   const startupTelemetry = startupTelemetryState.current;
   const openProjectConfirmationOpen = ref(false);
@@ -220,12 +222,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let importKind: Exclude<RuntimeStartKind, "new_game"> | undefined;
   let pendingStart: RuntimeTestConfiguration["start"] = { type: "new_game" };
   let nextEnvironmentRevision = 1;
-  let projectLoadStartedAt: number | undefined;
-  let projectLoadElapsedTimer: number | undefined;
   let runtimeManifestSparse = false;
   let pendingProjectReload: PendingProjectReload | undefined;
   let projectReloadTargetRequest = 0;
-  let acceptingProjectProgress = false;
   let batchMediaDirty = false;
   let debugPausePending = false;
   let debugPauseWanted = false;
@@ -544,7 +543,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     selection: "directory" | "file",
   ): Promise<void> {
     projectSelecting.value = true;
-    acceptingProjectProgress = true;
+    projectLoad.acceptProgress();
     unlockAudioFromUserGesture();
     let currentSessionReplaced = false;
     let selectionSubmitted = false;
@@ -3075,64 +3074,29 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function beginProjectLoad(message: string): void {
-    acceptingProjectProgress = true;
-    projectLoading.value = true;
-    projectProgress.value = undefined;
+    projectLoad.begin();
     baseStatus.value = message;
-    startProjectLoadElapsedTimer();
   }
 
   function continueProjectBuildProgress(cacheImported = false): void {
-    // Runtime can report project success before the host finishes post-submit work
-    // (notably project-font registration). Never reopen an attempt that already settled.
-    if (!acceptingProjectProgress) return;
-    projectLoading.value = true;
-    startProjectLoadElapsedTimer();
-    if (
-      projectProgress.value &&
-      projectProgress.value.stage !== "importing" &&
-      projectProgress.value.stage !== "scanning"
-    )
-      return;
-    projectProgress.value = undefined;
+    if (!projectLoad.continueBuild()) return;
     baseStatus.value = cacheImported
       ? "项目缓存命中，正在加载缓存…"
       : "项目文件读取完成，正在准备编译与校验…";
   }
 
   function showProjectLoadTransition(message: string): void {
-    projectLoading.value = true;
-    projectProgress.value = undefined;
+    projectLoad.transition();
     baseStatus.value = message;
-    startProjectLoadElapsedTimer();
   }
 
   function finishProjectLoad(): void {
-    acceptingProjectProgress = false;
-    projectLoading.value = false;
-    projectProgress.value = undefined;
-    projectLoadElapsedSeconds.value = 0;
-    projectLoadStartedAt = undefined;
-    if (projectLoadElapsedTimer != null) {
-      window.clearInterval(projectLoadElapsedTimer);
-      projectLoadElapsedTimer = undefined;
-    }
+    projectLoad.finish();
   }
 
   function handleProjectProgress(value: ProjectProgress): void {
-    const progress = {
-      stage: value.stage,
-      completed: Number(value.completed),
-      total: Number(value.total),
-      elapsedMs: value.elapsedMs == null ? undefined : Number(value.elapsedMs),
-    } satisfies ProjectProgress;
-    if (
-      !Number.isSafeInteger(progress.completed) ||
-      !Number.isSafeInteger(progress.total) ||
-      progress.completed < 0 ||
-      progress.total < 0
-    )
-      return;
+    const progress = normalizeProjectProgress(value);
+    if (!progress) return;
     if (diagnosisExporting.value && exportState?.kind === "diagnosis_project") {
       setDiagnosisProgress(
         progress.stage === "scanning"
@@ -3150,23 +3114,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
       baseStatus.value = formatProjectProgress(progress);
       return;
     }
-    if (!acceptingProjectProgress) return;
-    projectLoading.value = true;
-    startProjectLoadElapsedTimer();
+    if (!projectLoad.record(progress)) return;
     startupTelemetryState.recordProgress(progress);
-    projectProgress.value = progress;
     baseStatus.value = formatProjectProgress(progress);
-  }
-
-  function startProjectLoadElapsedTimer(): void {
-    if (projectLoadStartedAt == null) projectLoadStartedAt = performance.now();
-    if (projectLoadElapsedTimer != null) return;
-    projectLoadElapsedTimer = window.setInterval(() => {
-      if (projectLoadStartedAt == null) return;
-      projectLoadElapsedSeconds.value = Math.floor(
-        (performance.now() - projectLoadStartedAt) / 1000,
-      );
-    }, 1000);
   }
 
   function requestBrowserTabClose(): void {
