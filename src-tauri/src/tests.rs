@@ -1,6 +1,10 @@
 use era_protocol::{ProtocolBytes, ProtocolVersion, decode_canonical, encode_canonical};
 
 use super::*;
+use crate::export::{
+    cancel_compiled_cache_export_inner, write_atomic_file_chunk, write_compiled_cache_chunk_inner,
+};
+use crate::preferences::{Preferences, default_preferences};
 
 #[test]
 fn native_canvas_service_reads_png_dimensions() {

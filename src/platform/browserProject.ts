@@ -2,33 +2,34 @@ import { blake3 } from "@noble/hashes/blake3.js";
 
 import type { ProjectReloadScope, ProjectReloadTargets } from "@/core/types";
 import {
-  checkPrecondition,
-  classify,
-  collectEntries,
-  conflict,
   equalBytes,
   errorKind,
-  getDirectory,
-  getFile,
-  getFileHandle,
   hex,
   nativeLineEndings,
   normalizeLineEndings,
-  optionalFile,
   optionalFileHandle,
   safePath,
 } from "@/platform/browserProjectFilesystem";
 import {
   decodeProjectSource,
-  decodeProtocolBytes,
   isScriptCategory,
   projectReloadScopeMatches,
   projectReloadSelector,
   runBounded,
   saveSlotName,
-  storageDirectoryName,
   throwIfAborted,
 } from "@/platform/browserProjectUtilities";
+import { enumerateBrowserProject } from "@/platform/browserProjectEnumeration";
+import {
+  decodeSourceIndexHash,
+  isBrowserSourceIndexEntry,
+  readBrowserSourceIndex,
+  removeBrowserSourceIndex,
+  sourceIndexesEqual,
+  type BrowserSourceIndexEntry,
+  writeBrowserSourceIndex,
+} from "@/platform/browserProjectSourceIndex";
+import { dispatchBrowserStorage } from "@/platform/browserProjectStorage";
 import { isPackagedProjectFontPath, type ProjectFontSource } from "@/platform/projectFonts";
 import { scanBrowserProjectFilesOffThread } from "@/platform/browserProjectScanPool";
 import type { ScannedFile } from "@/platform/browserProjectScanner";
@@ -44,9 +45,6 @@ export {
   saveSlotName,
   storageDirectoryName,
 } from "@/platform/browserProjectUtilities";
-
-const SOURCE_INDEX_VERSION = 1;
-const SOURCE_INDEX_NAME = "source-index-v1.json";
 
 export interface BrowserTraditionalSaveSlot {
   slot: number;
@@ -64,13 +62,6 @@ export type ProjectConfigurationUpdatePreparer = (
   expectedDigest: Uint8Array,
   contents: string,
 ) => Promise<Uint8Array>;
-
-interface BrowserSourceIndexEntry {
-  category: string;
-  signature: string;
-  hash: string;
-  size: number;
-}
 
 interface PendingBrowserFile {
   relativePath: string;
@@ -294,18 +285,7 @@ export class BrowserProject {
     this.files.clear();
     progress?.(0, 0);
     const enumerateStarted = performance.now();
-    const topLevel = new Set<string>();
-    for await (const [name, handle] of this.root.entries()) {
-      if (handle.kind === "directory" && name.toLowerCase() !== ".rustyera") {
-        topLevel.add(name.toLowerCase());
-      }
-    }
-    const candidates: Array<{
-      relativePath: string;
-      category: string;
-      handle: FileSystemFileHandle;
-    }> = [];
-    await this.walkHandles(this.root, "", topLevel, candidates);
+    const { files: candidates, topLevel } = await this.enumerateFiles();
     candidates.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
     const enumerateMs = performance.now() - enumerateStarted;
     const files = new Array<ScannedFile>();
@@ -353,22 +333,11 @@ export class BrowserProject {
     this.files.clear();
     progress?.(0, 0);
     const enumerateStarted = performance.now();
-    const topLevel = new Set<string>();
-    for await (const [name, handle] of this.root.entries()) {
-      if (handle.kind === "directory" && name.toLowerCase() !== ".rustyera") {
-        topLevel.add(name.toLowerCase());
-      }
-    }
-    const candidates: Array<{
-      relativePath: string;
-      category: string;
-      handle: FileSystemFileHandle;
-    }> = [];
-    await this.walkHandles(this.root, "", topLevel, candidates);
+    const { files: candidates, topLevel } = await this.enumerateFiles();
     candidates.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
     const enumerateMs = performance.now() - enumerateStarted;
     const indexReadStarted = performance.now();
-    const sourceIndex = await this.readSourceIndex();
+    const sourceIndex = await readBrowserSourceIndex(this.root);
     const indexReadMs = performance.now() - indexReadStarted;
     const previous = sourceIndex.files;
     const pending = new Array<PendingBrowserFile>(candidates.length);
@@ -409,7 +378,7 @@ export class BrowserProject {
           relative_path: candidate.relativePath,
           category: candidate.category,
           payload: emptyPayload(candidate.category),
-          content_hash: decodeHex(prior.hash),
+          content_hash: decodeSourceIndexHash(prior.hash),
         };
       } else {
         requestIndexes.push(index);
@@ -448,9 +417,9 @@ export class BrowserProject {
     if (!this.sourceIndexTrusted || !sourceIndexesEqual(previous, next)) {
       const indexWriteStarted = performance.now();
       try {
-        await this.writeSourceIndex(next);
+        await writeBrowserSourceIndex(this.root, next);
       } catch (error) {
-        await this.removeSourceIndex();
+        await removeBrowserSourceIndex(this.root);
         console.warn("Unable to refresh browser source index", error);
       }
       indexWriteMs = performance.now() - indexWriteStarted;
@@ -478,18 +447,7 @@ export class BrowserProject {
     const snapshot = this.pendingSnapshot;
     if (!snapshot) return this.manifestValue ?? this.scan(progress, undefined, signal);
     this.files.clear();
-    const topLevel = new Set<string>();
-    for await (const [name, handle] of this.root.entries()) {
-      if (handle.kind === "directory" && name.toLowerCase() !== ".rustyera") {
-        topLevel.add(name.toLowerCase());
-      }
-    }
-    const current: Array<{
-      relativePath: string;
-      category: string;
-      handle: FileSystemFileHandle;
-    }> = [];
-    await this.walkHandles(this.root, "", topLevel, current);
+    const { files: current, topLevel } = await this.enumerateFiles();
     current.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
     if (
       !equalStringSets(snapshot.topLevel, topLevel) ||
@@ -567,18 +525,7 @@ export class BrowserProject {
         .filter((file) => isScriptCategory(file.category))
         .map((file) => file.relative_path),
     );
-    const topLevel = new Set<string>();
-    for await (const [name, handle] of this.root.entries()) {
-      if (handle.kind === "directory" && name.toLowerCase() !== ".rustyera") {
-        topLevel.add(name.toLowerCase());
-      }
-    }
-    const current: Array<{
-      relativePath: string;
-      category: string;
-      handle: FileSystemFileHandle;
-    }> = [];
-    await this.walkHandles(this.root, "", topLevel, current);
+    const { files: current } = await this.enumerateFiles();
     for (const file of current) {
       if (isScriptCategory(file.category)) paths.add(file.relativePath);
     }
@@ -809,18 +756,12 @@ export class BrowserProject {
 
   async storage(request: any): Promise<any> {
     try {
-      const parts = request.relative_path ? safePath(request.relative_path).split("/") : [];
-      const operation = request.operation;
-      const readOnly = ["read", "stat", "read_range", "list"].includes(operation.type);
-      const rootReadFallback = readOnly && ["project", "data"].includes(request.namespace);
-      let result: any;
-      try {
-        const primary = await this.namespace(request.namespace, !rootReadFallback);
-        result = await operateBrowserStorage(primary, parts, operation);
-      } catch (error) {
-        if (!rootReadFallback || errorKind(error) !== "not_found") throw error;
-        result = await operateBrowserStorage(this.root, parts, operation);
-      }
+      const result = await dispatchBrowserStorage(
+        this.root,
+        request.namespace,
+        request.relative_path,
+        request.operation,
+      );
       return { request_id: request.request_id, result };
     } catch (error) {
       return {
@@ -833,91 +774,12 @@ export class BrowserProject {
     }
   }
 
-  private async walkHandles(
-    directory: FileSystemDirectoryHandle,
-    prefix: string,
-    topLevel: Set<string>,
-    output: Array<{
-      relativePath: string;
-      category: string;
-      handle: FileSystemFileHandle;
-    }>,
-  ): Promise<void> {
-    for await (const [name, handle] of directory.entries()) {
-      if (name.toLowerCase() === ".rustyera") continue;
-      const relativePath = `${prefix}${name}`.normalize("NFC");
-      if (handle.kind === "directory") {
-        await this.walkHandles(handle, `${relativePath}/`, topLevel, output);
-        continue;
-      }
-      const category = classify(relativePath, topLevel);
-      if (!category) continue;
-      this.files.set(relativePath.toLowerCase(), handle);
-      output.push({ relativePath, category, handle });
+  private async enumerateFiles() {
+    const enumeration = await enumerateBrowserProject(this.root);
+    for (const file of enumeration.files) {
+      this.files.set(file.relativePath.toLowerCase(), file.handle);
     }
-  }
-
-  private async readSourceIndex(): Promise<{
-    files: Record<string, BrowserSourceIndexEntry>;
-    present: boolean;
-    valid: boolean;
-  }> {
-    let file: File;
-    try {
-      const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
-      const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
-      const handle = await cacheDirectory.getFileHandle(SOURCE_INDEX_NAME);
-      file = await handle.getFile();
-    } catch {
-      return { files: {}, present: false, valid: false };
-    }
-    try {
-      const value = JSON.parse(await file.text()) as {
-        version?: unknown;
-        files?: unknown;
-      };
-      const valid = value.version === SOURCE_INDEX_VERSION && isRecord(value.files);
-      return {
-        files: valid ? (value.files as Record<string, BrowserSourceIndexEntry>) : {},
-        present: true,
-        valid,
-      };
-    } catch {
-      return { files: {}, present: true, valid: false };
-    }
-  }
-
-  private async writeSourceIndex(files: Record<string, BrowserSourceIndexEntry>): Promise<void> {
-    const privateDirectory = await this.root.getDirectoryHandle(".rustyera", { create: true });
-    const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
-    const handle = await cacheDirectory.getFileHandle(SOURCE_INDEX_NAME, { create: true });
-    const writer = await handle.createWritable({ keepExistingData: false });
-    try {
-      await writer.write(
-        new TextEncoder().encode(
-          JSON.stringify({ version: SOURCE_INDEX_VERSION, files }),
-        ) as FileSystemWriteChunkType,
-      );
-      await writer.close();
-    } catch (error) {
-      await writer.abort().catch(() => undefined);
-      throw error;
-    }
-  }
-
-  private async removeSourceIndex(): Promise<void> {
-    try {
-      const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
-      const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
-      await cacheDirectory.removeEntry(SOURCE_INDEX_NAME);
-    } catch (error) {
-      if (errorKind(error) !== "not_found") throw error;
-    }
-  }
-
-  private async namespace(namespace: string, create = true): Promise<FileSystemDirectoryHandle> {
-    if (namespace === "resource") return this.root;
-    return this.root.getDirectoryHandle(storageDirectoryName(namespace), { create });
+    return enumeration;
   }
 }
 
@@ -937,70 +799,6 @@ function runtimeReloadUpsert(file: ScannedFile): any {
       content_hash: [...file.content_hash],
     },
   };
-}
-
-async function operateBrowserStorage(
-  root: FileSystemDirectoryHandle,
-  parts: string[],
-  operation: any,
-): Promise<any> {
-  if (operation.type === "read") {
-    const file = await getFile(root, parts);
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    return { type: "read", data: [...bytes], revision: hex(blake3(bytes)) };
-  }
-  if (operation.type === "write") {
-    // A missing precondition must be checked before creating the destination. Creating the
-    // handle first leaves a zero-byte save behind and then makes the precondition fail.
-    const existingHandle = await optionalFileHandle(root, parts);
-    const current = existingHandle ? await existingHandle.getFile() : undefined;
-    await checkPrecondition(current, operation.precondition);
-    const handle = existingHandle ?? (await getFileHandle(root, parts, true));
-    const writable = await handle.createWritable({ keepExistingData: false });
-    const bytes = decodeProtocolBytes(operation.data);
-    await writable.write(bytes as FileSystemWriteChunkType);
-    await writable.close();
-    return { type: "written", revision: hex(blake3(bytes)) };
-  }
-  if (operation.type === "delete") {
-    const parent = await getDirectory(root, parts.slice(0, -1), false);
-    const handle = await parent.getFileHandle(parts.at(-1)!);
-    await checkPrecondition(await optionalFile(handle), operation.precondition);
-    await parent.removeEntry(parts.at(-1)!);
-    return { type: "deleted" };
-  }
-  if (operation.type === "stat") {
-    const file = await getFile(root, parts);
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    return {
-      type: "metadata",
-      byte_length: file.size,
-      revision: hex(blake3(bytes)),
-    };
-  }
-  if (operation.type === "read_range") {
-    const file = await getFile(root, parts);
-    const token = `${file.size}:${file.lastModified}`;
-    if (operation.change_token && operation.change_token !== token) throw conflict();
-    const offset = Number(operation.offset);
-    const end = Math.min(file.size, offset + Number(operation.maximum_bytes));
-    const data = new Uint8Array(await file.slice(offset, end).arrayBuffer());
-    return {
-      type: "read_chunk",
-      data: [...data],
-      offset: operation.offset,
-      complete: end >= file.size,
-      change_token: token,
-    };
-  }
-  if (operation.type === "list") {
-    const directory = await getDirectory(root, parts, false);
-    const entries: any[] = [];
-    const prefix = parts.length ? `${parts.join("/")}/` : "";
-    await collectEntries(directory, prefix, operation.recursive, operation.pattern, entries);
-    return { type: "listed", entries };
-  }
-  throw new Error(`不支持的存储操作：${operation.type}`);
 }
 
 async function applyProjectFileUpdate(
@@ -1110,50 +908,6 @@ function compareCodePoints(left: string, right: string): number {
     const rightPoint = rightItem.value.codePointAt(0)!;
     if (leftPoint !== rightPoint) return leftPoint < rightPoint ? -1 : 1;
   }
-}
-
-function decodeHex(value: string): Uint8Array {
-  return Uint8Array.from({ length: value.length / 2 }, (_, index) =>
-    Number.parseInt(value.slice(index * 2, index * 2 + 2), 16),
-  );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isBrowserSourceIndexEntry(value: unknown): value is BrowserSourceIndexEntry {
-  return (
-    isRecord(value) &&
-    typeof value.category === "string" &&
-    typeof value.signature === "string" &&
-    typeof value.hash === "string" &&
-    /^[0-9a-f]{64}$/i.test(value.hash) &&
-    typeof value.size === "number" &&
-    Number.isSafeInteger(value.size) &&
-    value.size >= 0
-  );
-}
-
-function sourceIndexesEqual(
-  left: Record<string, BrowserSourceIndexEntry>,
-  right: Record<string, BrowserSourceIndexEntry>,
-): boolean {
-  const leftEntries = Object.entries(left);
-  const rightEntries = Object.entries(right);
-  return (
-    leftEntries.length === rightEntries.length &&
-    rightEntries.every(([path, entry]) => {
-      const previous = left[path];
-      return (
-        isBrowserSourceIndexEntry(previous) &&
-        previous.category === entry.category &&
-        previous.signature === entry.signature &&
-        previous.hash.toLowerCase() === entry.hash.toLowerCase() &&
-        previous.size === entry.size
-      );
-    })
-  );
 }
 
 function equalStringSets(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {

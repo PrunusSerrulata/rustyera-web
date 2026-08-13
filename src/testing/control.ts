@@ -1,6 +1,7 @@
 import type { Pinia } from "pinia";
 
 import { plainLine } from "@/core/presentation";
+import { hex } from "@/platform/browserProjectFilesystem";
 import type { RuntimeTestConfiguration } from "@/stores/runtime";
 import { useRuntimeStore } from "@/stores/runtime";
 
@@ -236,10 +237,6 @@ function downloadSummary(download?: {
       ? { replayHeader: replayRecords[0], replaySteps: replayRecords.slice(1) }
       : {}),
   };
-}
-
-function hex(bytes: Uint8Array): string {
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function serialize(value: unknown): any {

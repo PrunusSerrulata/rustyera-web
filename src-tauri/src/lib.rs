@@ -11,8 +11,10 @@
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod export;
 mod image_metadata;
 mod ipc;
+mod preferences;
 mod project;
 mod storage;
 
@@ -38,6 +40,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::export::AtomicFileWriter;
 use crate::ipc::{
     decode_bytes as decode_ipc_bytes, decode_value as decode_ipc_value,
     encode_pump_response as encode_ipc_response, encode_value as encode_ipc_value,
@@ -55,11 +58,6 @@ struct AppState {
     full_project_cancelled: Arc<AtomicBool>,
 }
 
-struct AtomicFileWriter {
-    temporary: tempfile::NamedTempFile,
-    target: PathBuf,
-}
-
 fn emit_scanning_progress(app: &AppHandle, completed: usize, total: usize) {
     let _ = app.emit(
         "project-progress",
@@ -69,18 +67,6 @@ fn emit_scanning_progress(app: &AppHandle, completed: usize, total: usize) {
             total: u64::try_from(total).unwrap_or(u64::MAX),
         },
     );
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Preferences {
-    schema_version: u32,
-    font_family_override: Option<String>,
-    font_size_override_px: Option<u8>,
-    image_scale: f64,
-    master_volume: f64,
-    #[serde(default)]
-    trust_project_file_metadata: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -97,35 +83,6 @@ struct ProjectOpenMetrics {
     source_index_reused_files: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_index_hashed_files: Option<usize>,
-}
-
-impl Preferences {
-    fn normalized(mut self) -> Self {
-        // Schema 1/2 stored global font controls that the unified project settings UI no longer
-        // exposes. Clear those unremovable values so project FontName/FontSize can hot-apply;
-        // schema 3 values are deliberate accessibility overrides and remain supported.
-        let obsolete_font_overrides = self.schema_version < 3;
-        self.schema_version = 4;
-        if obsolete_font_overrides {
-            self.font_family_override = None;
-        }
-        self.font_size_override_px = if obsolete_font_overrides {
-            None
-        } else {
-            self.font_size_override_px.map(|value| value.clamp(8, 72))
-        };
-        self.image_scale = if self.image_scale.is_finite() {
-            self.image_scale.clamp(0.25, 4.0)
-        } else {
-            1.0
-        };
-        self.master_volume = if self.master_volume.is_finite() {
-            self.master_volume.clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-        self
-    }
 }
 
 #[tauri::command]
@@ -617,232 +574,6 @@ fn list_fonts() -> Vec<String> {
     families
 }
 
-#[tauri::command]
-fn load_preferences(app: AppHandle) -> Result<Preferences, String> {
-    let path = preferences_path(&app)?;
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice::<Preferences>(&bytes)
-            .map(Preferences::normalized)
-            .map_err(|error| format!("invalid preferences file: {error}")),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(default_preferences()),
-        Err(error) => Err(format!("cannot read preferences: {error}")),
-    }
-}
-
-#[tauri::command]
-fn save_preferences(app: AppHandle, preferences: Preferences) -> Result<Preferences, String> {
-    let preferences = preferences.normalized();
-    let path = preferences_path(&app)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| "preferences path has no parent".to_owned())?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("cannot create config directory: {error}"))?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|error| format!("cannot create temporary preferences file: {error}"))?;
-    serde_json::to_writer_pretty(&mut temporary, &preferences)
-        .map_err(|error| format!("cannot encode preferences: {error}"))?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(|error| format!("cannot sync preferences: {error}"))?;
-    temporary
-        .persist(&path)
-        .map_err(|error| format!("cannot replace preferences: {}", error.error))?;
-    Ok(preferences)
-}
-
-#[tauri::command]
-fn write_export(path: PathBuf, bytes: Value) -> Result<(), String> {
-    let bytes = decode_ipc_bytes(bytes)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| "export path has no parent".to_owned())?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|error| format!("cannot create export file: {error}"))?;
-    std::io::Write::write_all(&mut temporary, &bytes)
-        .map_err(|error| format!("cannot write export file: {error}"))?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(|error| format!("cannot sync export file: {error}"))?;
-    temporary
-        .persist(path)
-        .map_err(|error| format!("cannot replace export file: {}", error.error))?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn write_export_chunk(
-    state: State<'_, AppState>,
-    path: PathBuf,
-    bytes: Value,
-    reset: bool,
-    complete: bool,
-) -> Result<(), String> {
-    let bytes = decode_ipc_bytes(bytes)?;
-    let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        write_atomic_file_chunk(&state.export_writer, Some(path), &bytes, reset, complete)
-    })
-    .await
-    .map_err(|error| format!("frontend background task failed: {error}"))?
-}
-
-#[tauri::command]
-fn cancel_export(state: State<'_, AppState>) -> Result<(), String> {
-    state.export_writer.lock().map_err(lock_error)?.take();
-    Ok(())
-}
-
-#[tauri::command]
-async fn write_compiled_cache_chunk(
-    state: State<'_, AppState>,
-    bytes: Value,
-    reset: bool,
-    complete: bool,
-) -> Result<(), String> {
-    let bytes = decode_ipc_bytes(bytes)?;
-    let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        write_compiled_cache_chunk_inner(&state, &bytes, reset, complete)
-    })
-    .await
-    .map_err(|error| format!("frontend background task failed: {error}"))?
-}
-
-fn write_compiled_cache_chunk_inner(
-    state: &AppState,
-    bytes: &[u8],
-    reset: bool,
-    complete: bool,
-) -> Result<(), String> {
-    if reset {
-        let root = state
-            .project
-            .lock()
-            .map_err(lock_error)?
-            .as_ref()
-            .ok_or_else(|| "no project is open".to_owned())?
-            .root()
-            .to_owned();
-        let directory = root.join(".rustyera/cache");
-        fs::create_dir_all(&directory)
-            .map_err(|error| format!("cannot create compiled cache directory: {error}"))?;
-        let target = directory.join("compiled-project.reracache");
-        let temporary = tempfile::NamedTempFile::new_in(&directory)
-            .map_err(|error| format!("cannot create temporary compiled cache: {error}"))?;
-        *state.cache_writer.lock().map_err(lock_error)? =
-            Some(AtomicFileWriter { temporary, target });
-    }
-    append_atomic_file_chunk(
-        &state.cache_writer,
-        bytes,
-        complete,
-        "compiled cache write has not started",
-        "compiled cache writer disappeared",
-        "compiled cache",
-    )?;
-    if complete {
-        let root = state
-            .project
-            .lock()
-            .map_err(lock_error)?
-            .as_ref()
-            .ok_or_else(|| "no project is open".to_owned())?
-            .root()
-            .to_owned();
-        let _ = fs::remove_file(root.join(".rustyera/cache/compiled-project.reraproj"));
-    }
-    Ok(())
-}
-
-#[tauri::command]
-fn cancel_compiled_cache_export(state: State<'_, AppState>) -> Result<(), String> {
-    cancel_compiled_cache_export_inner(&state)
-}
-
-fn cancel_compiled_cache_export_inner(state: &AppState) -> Result<(), String> {
-    state.cache_writer.lock().map_err(lock_error)?.take();
-    Ok(())
-}
-
-fn write_atomic_file_chunk(
-    slot: &Mutex<Option<AtomicFileWriter>>,
-    target: Option<PathBuf>,
-    bytes: &[u8],
-    reset: bool,
-    complete: bool,
-) -> Result<(), String> {
-    if reset {
-        let target = target.ok_or_else(|| "export path is missing".to_owned())?;
-        let parent = target
-            .parent()
-            .ok_or_else(|| "export path has no parent".to_owned())?;
-        let temporary = tempfile::NamedTempFile::new_in(parent)
-            .map_err(|error| format!("cannot create temporary export file: {error}"))?;
-        *slot.lock().map_err(lock_error)? = Some(AtomicFileWriter { temporary, target });
-    }
-    append_atomic_file_chunk(
-        slot,
-        bytes,
-        complete,
-        "export write has not started",
-        "export writer disappeared",
-        "export file",
-    )
-}
-
-fn append_atomic_file_chunk(
-    slot: &Mutex<Option<AtomicFileWriter>>,
-    bytes: &[u8],
-    complete: bool,
-    missing_message: &str,
-    disappeared_message: &str,
-    file_kind: &str,
-) -> Result<(), String> {
-    let mut guard = slot.lock().map_err(lock_error)?;
-    let writer = guard.as_mut().ok_or_else(|| missing_message.to_owned())?;
-    std::io::Write::write_all(&mut writer.temporary, bytes)
-        .map_err(|error| format!("cannot write {file_kind}: {error}"))?;
-    if complete {
-        let writer = guard.take().ok_or_else(|| disappeared_message.to_owned())?;
-        writer
-            .temporary
-            .as_file()
-            .sync_all()
-            .map_err(|error| format!("cannot sync {file_kind}: {error}"))?;
-        writer
-            .temporary
-            .persist(writer.target)
-            .map_err(|error| format!("cannot replace {file_kind}: {}", error.error))?;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-fn read_import(path: PathBuf) -> Result<Vec<u8>, String> {
-    fs::read(path).map_err(|error| format!("cannot read import file: {error}"))
-}
-
-fn preferences_path(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_config_dir()
-        .map(|directory| directory.join("preferences-v1.json"))
-        .map_err(|error| format!("cannot resolve application config directory: {error}"))
-}
-
-fn default_preferences() -> Preferences {
-    Preferences {
-        schema_version: 4,
-        font_family_override: None,
-        font_size_override_px: None,
-        image_scale: 1.0,
-        master_volume: 1.0,
-        trust_project_file_metadata: false,
-    }
-}
-
 fn with_session<T>(
     state: &AppState,
     operation: impl FnOnce(&mut WebSession) -> Result<T, String>,
@@ -893,15 +624,15 @@ pub fn run() {
             write_project_configuration,
             storage_request,
             list_fonts,
-            load_preferences,
-            save_preferences,
-            write_export,
-            write_export_chunk,
-            cancel_export,
+            preferences::load_preferences,
+            preferences::save_preferences,
+            export::write_export,
+            export::write_export_chunk,
+            export::cancel_export,
             cancel_full_project_export,
-            write_compiled_cache_chunk,
-            cancel_compiled_cache_export,
-            read_import,
+            export::write_compiled_cache_chunk,
+            export::cancel_compiled_cache_export,
+            export::read_import,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RustyEra web frontend");

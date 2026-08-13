@@ -1,6 +1,7 @@
 import { blake3 } from "@noble/hashes/blake3.js";
 
 import type { BrowserManifest } from "@/platform/browserProject";
+import { hex } from "@/platform/browserProjectFilesystem";
 
 export interface BrowserProjectFileRuntime {
   projectFileManifest(bytes: Uint8Array): unknown;
@@ -14,8 +15,4 @@ export function loadBrowserProjectFile(
   const manifest = runtime.projectFileManifest(bytes) as BrowserManifest;
   runtime.loadProjectWithCompiledCache(manifest, bytes);
   return { manifest, storageKey: hex(blake3(bytes)) };
-}
-
-function hex(bytes: Uint8Array): string {
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }

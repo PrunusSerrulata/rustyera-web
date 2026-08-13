@@ -17,6 +17,7 @@ vi.mock("@/platform", () => ({ platformBridge: () => ({}) }));
 vi.mock("@/stores/runtime", () => ({ useRuntimeStore: () => store }));
 
 import CanvasReplay from "@/components/CanvasReplay.vue";
+import type { CanvasReplayData } from "@/components/canvasReplayRenderer";
 
 describe("canvas resource replay", () => {
   const contexts: any[] = [];
@@ -231,7 +232,7 @@ describe("canvas resource replay", () => {
       animationFrames.push(callback);
       return animationFrames.length;
     });
-    const replay = (revision: number) => ({
+    const replay = (revision: number): CanvasReplayData => ({
       canvas_id: 1,
       revision,
       size: { width: 40, height: 40 },
@@ -351,7 +352,7 @@ describe("canvas resource replay", () => {
         ],
       },
     ];
-    const replay = (revision: number) => ({
+    const replay = (revision: number): CanvasReplayData => ({
       canvas_id: 1,
       revision,
       size: { width: 100, height: 100 },
@@ -458,7 +459,7 @@ describe("canvas resource replay", () => {
         });
       },
     );
-    const replay = (revision: number, name: string) => ({
+    const replay = (revision: number, name: string): CanvasReplayData => ({
       canvas_id: 1,
       revision,
       size: { width: 100, height: 100 },
@@ -523,7 +524,7 @@ describe("canvas resource replay", () => {
         frames: [{ resource_id: "layer", source_rectangle: [0, 0, 100, 100] }],
       },
     ];
-    const replay = (revision: number) => ({
+    const replay = (revision: number): CanvasReplayData => ({
       canvas_id: 1,
       revision,
       size: { width: 100, height: 100 },

@@ -1,4 +1,5 @@
 import type { BrowserManifest, ScannedFile } from "@/platform/browserProject";
+import { yieldToMainThread } from "@/platform/mainThread";
 
 const MAGIC = new TextEncoder().encode("RERMAN01");
 const HEADER_BYTES = MAGIC.byteLength + 8 + 4;
@@ -175,18 +176,6 @@ function progressReporter(
     last = bounded;
     progress?.(bounded, PROGRESS_TOTAL);
   };
-}
-
-function yieldToMainThread(): Promise<void> {
-  return new Promise((resolve) => {
-    const channel = new MessageChannel();
-    channel.port1.onmessage = () => {
-      channel.port1.close();
-      channel.port2.close();
-      resolve();
-    };
-    channel.port2.postMessage(undefined);
-  });
 }
 
 function checkedAdd(left: number, right: number): number {

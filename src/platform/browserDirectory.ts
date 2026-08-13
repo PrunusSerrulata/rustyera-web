@@ -7,6 +7,7 @@ import type {
   ScannedFile,
 } from "@/platform/browserProject";
 import { scanBrowserProjectFilesOffThread } from "@/platform/browserProjectScanPool";
+import { hex, safePath } from "@/platform/browserProjectFilesystem";
 import {
   overlayBrowserDirectory,
   type PortableBrowserFile,
@@ -215,7 +216,7 @@ export function selectedProjectFiles(selectedFiles: Iterable<File>): {
   const normalized = files.map((file) => {
     const parts = file.webkitRelativePath.replaceAll("\\", "/").normalize("NFC").split("/");
     if (parts.shift() !== root) throw new Error("所选文件必须来自同一个项目目录。");
-    const path = safeRelativePath(parts.join("/"));
+    const path = safePath(parts.join("/"));
     if (!path) throw new Error("项目文件路径不能为空。");
     return { path, file };
   });
@@ -286,7 +287,7 @@ async function writeFile(
   relativePath: string,
   bytes: Uint8Array,
 ): Promise<void> {
-  const parts = safeRelativePath(relativePath).split("/");
+  const parts = safePath(relativePath).split("/");
   let directory = root;
   for (const part of parts.slice(0, -1)) {
     directory = await directory.getDirectoryHandle(part, { create: true });
@@ -298,7 +299,7 @@ async function writeFile(
 }
 
 async function removeFile(root: FileSystemDirectoryHandle, relativePath: string): Promise<void> {
-  const parts = safeRelativePath(relativePath).split("/");
+  const parts = safePath(relativePath).split("/");
   let directory = root;
   try {
     for (const part of parts.slice(0, -1)) directory = await directory.getDirectoryHandle(part);
@@ -312,7 +313,7 @@ async function readFile(
   root: FileSystemDirectoryHandle,
   relativePath: string,
 ): Promise<Uint8Array> {
-  const parts = safeRelativePath(relativePath).split("/");
+  const parts = safePath(relativePath).split("/");
   let directory = root;
   for (const part of parts.slice(0, -1)) directory = await directory.getDirectoryHandle(part);
   const file = await (await directory.getFileHandle(parts.at(-1)!)).getFile();
@@ -320,7 +321,7 @@ async function readFile(
 }
 
 async function fileExists(root: FileSystemDirectoryHandle, relativePath: string): Promise<boolean> {
-  const parts = safeRelativePath(relativePath).split("/");
+  const parts = safePath(relativePath).split("/");
   let directory = root;
   try {
     for (const part of parts.slice(0, -1)) directory = await directory.getDirectoryHandle(part);
@@ -335,17 +336,4 @@ async function fileExists(root: FileSystemDirectoryHandle, relativePath: string)
 function isRuntimeStoragePath(path: string): boolean {
   const first = path.split("/", 1)[0].toLowerCase();
   return [".rustyera", "sav", "data", "logs", "project"].includes(first);
-}
-
-function safeRelativePath(path: string): string {
-  const normalized = path.replaceAll("\\", "/").normalize("NFC");
-  const parts = normalized.split("/").filter((part) => part && part !== ".");
-  if (normalized.startsWith("/") || /^[A-Za-z]:/.test(normalized) || parts.includes("..")) {
-    throw new Error("路径必须位于项目目录内");
-  }
-  return parts.join("/");
-}
-
-function hex(bytes: Uint8Array): string {
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }

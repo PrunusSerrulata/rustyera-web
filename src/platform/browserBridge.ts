@@ -16,6 +16,7 @@ import {
   type TraditionalSaveAccess,
 } from "@/core/types";
 import { decodeImageMetadata } from "@/core/imageMetadata";
+import { yieldToMainThread } from "@/platform/mainThread";
 import type { DiagnosisArchiveInput, DiagnosisArchiveProgress } from "@/core/diagnosis";
 import {
   pickBrowserDirectory,
@@ -794,18 +795,6 @@ function readBlobWithFileReader(blob: Blob): Promise<ArrayBuffer> {
       else reject(new Error("项目文件读取结果不是二进制数据"));
     };
     reader.readAsArrayBuffer(blob);
-  });
-}
-
-function yieldToMainThread(): Promise<void> {
-  return new Promise((resolve) => {
-    const channel = new MessageChannel();
-    channel.port1.onmessage = () => {
-      channel.port1.close();
-      channel.port2.close();
-      resolve();
-    };
-    channel.port2.postMessage(undefined);
   });
 }
 
