@@ -13,7 +13,6 @@ import {
   type RuntimeMessage,
   type SessionOptions,
   type SystemFontQueryResult,
-  type TraditionalSaveAccess,
 } from "@/core/types";
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import { yieldToMainThread } from "@/platform/mainThread";
@@ -29,36 +28,22 @@ import {
   BrowserProject,
   cacheIdentityManifest,
   type BrowserManifest,
-  saveSlotName,
 } from "@/platform/browserProject";
 import { database, loadBrowserPreferences, saveBrowserPreferences } from "@/platform/database";
 import { WorkerClient } from "@/platform/workerClient";
 import { ProjectFontRegistry } from "@/platform/projectFonts";
+import { browserTraditionalSaves } from "@/platform/browserBridge/traditionalSaves";
 
 const PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 
 export class BrowserBridge implements FrontendBridge {
   readonly kind = "browser" as const;
-  readonly traditionalSaves: TraditionalSaveAccess = {
-    listSlots: async () => {
-      const project = this.requireProject();
-      const count = await this.worker.call<number>("traditionalSaveSlotCount");
-      return project.listTraditionalSaveSlots(count);
-    },
-    exportSlot: async (slot) => {
-      const bytes = await this.requireProject().readTraditionalSave(slot);
-      downloadBrowserFile(saveSlotName(slot), bytes);
-    },
-    pickImport: async () => {
-      const file = await pickBrowserFile(".sav,application/octet-stream");
-      return file
-        ? { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) }
-        : undefined;
-    },
-    inspect: (bytes) => this.worker.call("inspectTraditionalSave", bytes),
-    writeSlot: (slot, bytes) => this.requireProject().writeTraditionalSave(slot, bytes),
-  };
   private readonly worker = new WorkerClient();
+  readonly traditionalSaves = browserTraditionalSaves({
+    project: () => this.requireProject(),
+    worker: this.worker,
+    download: downloadBrowserFile,
+  });
   private readonly projectFontRegistry = new ProjectFontRegistry();
   private project?: BrowserProject;
   private cacheWriter?: FileSystemWritableFileStream;
