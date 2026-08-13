@@ -42,7 +42,6 @@ import {
   isRecoverableStaleDebugLog,
   projectGameInformation,
   safeNumber,
-  saveSlotFileName,
   snapshotFileName,
 } from "@/core/runtimeSupport";
 import { formatRuntimeFault } from "@/core/runtimeFault";
@@ -62,7 +61,6 @@ import {
   type PumpBatch,
   type RuntimeMessage,
   type SessionOptions,
-  type TraditionalSaveSlot,
 } from "@/core/types";
 import { platformBridge } from "@/platform";
 import {
@@ -76,6 +74,7 @@ import { handleRuntimeService } from "@/stores/runtimeServices";
 import { RuntimeStatusState } from "@/stores/runtimeStatus";
 import { RuntimeStartupTelemetryState } from "@/stores/runtimeStartupTelemetry";
 import { RuntimeTestEnvironment } from "@/stores/runtimeTestEnvironment";
+import { RuntimeTraditionalSaveState } from "@/stores/runtimeTraditionalSaves";
 import { useSystemFontAccess } from "@/stores/systemFontAccess";
 import { transportValue } from "@/stores/runtimeTransport";
 
@@ -194,12 +193,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const diagnosisProgress = ref<DiagnosisProgress>();
   const diagnosisResult = ref("");
   const logNotifications = runtimeLogs.notifications;
-  const traditionalSaveDialogMode = ref<"export" | "import" | null>(null);
-  const traditionalSaveSlots = ref<TraditionalSaveSlot[]>([]);
-  const traditionalSaveImportName = ref("");
-  const traditionalSaveTransferBusy = ref(false);
-  const traditionalSaveTransferError = ref("");
-  const traditionalSaveOverwriteSlot = ref<number | null>(null);
+  const traditionalSaves = new RuntimeTraditionalSaveState(
+    bridge.traditionalSaves,
+    (message) => (baseStatus.value = message),
+  );
+  const traditionalSaveDialogMode = traditionalSaves.mode;
+  const traditionalSaveSlots = traditionalSaves.slots;
+  const traditionalSaveImportName = traditionalSaves.importName;
+  const traditionalSaveTransferBusy = traditionalSaves.busy;
+  const traditionalSaveTransferError = traditionalSaves.error;
+  const traditionalSaveOverwriteSlot = traditionalSaves.overwriteSlot;
   const heldKeys = new Set<number>();
   const testAudioPlayback = new Map<string, { starts: number; active: number }>();
   const audio = new AudioEngine(
@@ -215,7 +218,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let diagnosisState: DiagnosisState | undefined;
   let importBytes: Uint8Array | undefined;
   let importKind: Exclude<RuntimeStartKind, "new_game"> | undefined;
-  let traditionalSaveImportBytes: Uint8Array | undefined;
   let pendingStart: RuntimeTestConfiguration["start"] = { type: "new_game" };
   let nextEnvironmentRevision = 1;
   let projectLoadStartedAt: number | undefined;
@@ -1538,13 +1540,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     diagnosisExporting.value = false;
     diagnosisProgress.value = undefined;
     diagnosisResult.value = "";
-    traditionalSaveDialogMode.value = null;
-    traditionalSaveSlots.value = [];
-    traditionalSaveImportName.value = "";
-    traditionalSaveImportBytes = undefined;
-    traditionalSaveTransferBusy.value = false;
-    traditionalSaveTransferError.value = "";
-    traditionalSaveOverwriteSlot.value = null;
+    traditionalSaves.reset();
     importBytes = undefined;
     importKind = undefined;
     projectConfiguration.value = null;
@@ -1759,114 +1755,27 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function openTraditionalSaveDialog(mode: "export" | "import"): Promise<void> {
-    const access = bridge.traditionalSaves;
-    if (!access || !canManageTraditionalSaves.value) return;
-    traditionalSaveDialogMode.value = mode;
-    traditionalSaveSlots.value = [];
-    traditionalSaveImportName.value = "";
-    traditionalSaveImportBytes = undefined;
-    traditionalSaveTransferError.value = "";
-    traditionalSaveOverwriteSlot.value = null;
-    traditionalSaveTransferBusy.value = true;
-    try {
-      traditionalSaveSlots.value = await access.listSlots();
-    } catch (error) {
-      traditionalSaveTransferError.value = `无法读取存档槽位：${String(error)}`;
-    } finally {
-      traditionalSaveTransferBusy.value = false;
-    }
+    await traditionalSaves.open(mode, canManageTraditionalSaves.value);
   }
 
   function closeTraditionalSaveDialog(): void {
-    if (traditionalSaveTransferBusy.value) return;
-    traditionalSaveDialogMode.value = null;
-    traditionalSaveSlots.value = [];
-    traditionalSaveImportName.value = "";
-    traditionalSaveImportBytes = undefined;
-    traditionalSaveTransferError.value = "";
-    traditionalSaveOverwriteSlot.value = null;
+    traditionalSaves.close();
   }
 
   async function pickTraditionalSaveImport(): Promise<void> {
-    const access = bridge.traditionalSaves;
-    if (
-      !access ||
-      traditionalSaveDialogMode.value !== "import" ||
-      traditionalSaveTransferBusy.value
-    )
-      return;
-    traditionalSaveTransferError.value = "";
-    traditionalSaveTransferBusy.value = true;
-    try {
-      const selected = await access.pickImport();
-      if (!selected) return;
-      traditionalSaveImportName.value = selected.name;
-      traditionalSaveImportBytes = selected.bytes;
-      traditionalSaveOverwriteSlot.value = null;
-    } catch (error) {
-      traditionalSaveTransferError.value = `选择存档失败：${String(error)}`;
-    } finally {
-      traditionalSaveTransferBusy.value = false;
-    }
+    await traditionalSaves.pickImport();
   }
 
   async function confirmTraditionalSaveTransfer(slot: number): Promise<void> {
-    const access = bridge.traditionalSaves;
-    const selected = traditionalSaveSlots.value.find((entry) => entry.slot === slot);
-    if (!access || !selected || traditionalSaveTransferBusy.value) return;
-    traditionalSaveTransferError.value = "";
-    traditionalSaveTransferBusy.value = true;
-    try {
-      if (traditionalSaveDialogMode.value === "export") {
-        if (!selected.occupied) throw new Error("所选存档槽位为空");
-        await access.exportSlot(slot);
-        baseStatus.value = `已导出 ${saveSlotFileName(slot)}`;
-        traditionalSaveTransferBusy.value = false;
-        closeTraditionalSaveDialog();
-        return;
-      }
-      if (traditionalSaveDialogMode.value !== "import") return;
-      if (!traditionalSaveImportBytes) throw new Error("请先选择要导入的 .sav 存档文件");
-      if (!/\.sav$/i.test(traditionalSaveImportName.value)) throw new Error("请选择 .sav 存档文件");
-      await access.inspect(traditionalSaveImportBytes);
-      traditionalSaveSlots.value = await access.listSlots();
-      if (traditionalSaveSlots.value.find((entry) => entry.slot === slot)?.occupied) {
-        traditionalSaveOverwriteSlot.value = slot;
-        return;
-      }
-      await writeTraditionalSaveImport(slot);
-    } catch (error) {
-      traditionalSaveTransferError.value = `导入存档失败：${String(error)}`;
-    } finally {
-      traditionalSaveTransferBusy.value = false;
-    }
+    await traditionalSaves.confirm(slot);
   }
 
   function cancelTraditionalSaveOverwrite(): void {
-    traditionalSaveOverwriteSlot.value = null;
+    traditionalSaves.cancelOverwrite();
   }
 
   async function confirmTraditionalSaveOverwrite(): Promise<void> {
-    const slot = traditionalSaveOverwriteSlot.value;
-    if (slot == null || traditionalSaveTransferBusy.value) return;
-    traditionalSaveTransferBusy.value = true;
-    traditionalSaveTransferError.value = "";
-    try {
-      await writeTraditionalSaveImport(slot);
-    } catch (error) {
-      traditionalSaveTransferError.value = `导入存档失败：${String(error)}`;
-    } finally {
-      traditionalSaveTransferBusy.value = false;
-    }
-  }
-
-  async function writeTraditionalSaveImport(slot: number): Promise<void> {
-    const access = bridge.traditionalSaves;
-    if (!access || !traditionalSaveImportBytes) throw new Error("没有可导入的存档文件");
-    await access.writeSlot(slot, traditionalSaveImportBytes);
-    baseStatus.value = `已导入 ${saveSlotFileName(slot)}`;
-    traditionalSaveTransferBusy.value = false;
-    closeTraditionalSaveDialog();
+    await traditionalSaves.confirmOverwrite();
   }
 
   async function beginCompiledCacheExport(): Promise<void> {
