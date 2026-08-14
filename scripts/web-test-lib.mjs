@@ -1211,6 +1211,54 @@ async function queryLocator(locator, fields = ["count", "text", "visible", "enab
           spread: Math.round(spread * 100) / 100,
         };
       });
+    if (fields.includes("footer_corner"))
+      result.footer_corner = await first.evaluate((element) => {
+        const characterBoxes = (subject) => {
+          const boxes = [];
+          const ownerDocument = subject.ownerDocument;
+          const walker = ownerDocument.createTreeWalker(
+            subject,
+            ownerDocument.defaultView.NodeFilter.SHOW_TEXT,
+          );
+          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            const text = node.nodeValue ?? "";
+            for (let index = 0; index < text.length; index += 1) {
+              const range = ownerDocument.createRange();
+              range.setStart(node, index);
+              range.setEnd(node, index + 1);
+              const rect = range.getBoundingClientRect();
+              if (rect.width || rect.height)
+                boxes.push({ character: text[index], left: rect.left });
+            }
+          }
+          return boxes;
+        };
+        const target = element.closest(".game-line") ?? element;
+        const elementRight = element.getBoundingClientRect().right;
+        const corner = characterBoxes(target)
+          .filter((box) => ["┘", "┛", "╝"].includes(box.character) && box.left >= elementRight - 1)
+          .sort((left, right) => left.left - right.left)[0];
+        const parent = target.parentElement;
+        const lines = parent ? [...parent.querySelectorAll(":scope > .game-line")] : [target];
+        const targetIndex = Math.max(0, lines.indexOf(target));
+        const edgeCharacters = new Set(["│", "┃", "║", "┐", "┓", "╗", "┤", "┫", "╣"]);
+        const edges = lines.slice(Math.max(0, targetIndex - 24), targetIndex).flatMap((line) =>
+          characterBoxes(line)
+            .filter((box) => edgeCharacters.has(box.character))
+            .map((box) => box.left),
+        );
+        if (!corner || edges.length === 0) return { aligned: false, count: edges.length };
+        const edge = edges.reduce((closest, value) =>
+          Math.abs(value - corner.left) < Math.abs(closest - corner.left) ? value : closest,
+        );
+        const offset = corner.left - edge;
+        return {
+          aligned: Math.abs(offset) <= 1,
+          corner: Math.round(corner.left * 100) / 100,
+          edge: Math.round(edge * 100) / 100,
+          offset: Math.round(offset * 100) / 100,
+        };
+      });
     if (fields.includes("content_signature"))
       result.content_signature = await locator.evaluateAll((elements) => {
         const content = elements.map((element) => element.outerHTML).join("\u0000");
