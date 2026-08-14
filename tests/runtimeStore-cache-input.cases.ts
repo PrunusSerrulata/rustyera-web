@@ -704,6 +704,43 @@ describe("runtime store cache-input", () => {
     expect(store.canInteract).toBe(false);
   });
 
+  it("logs an active-wait value mismatch without creating a corner notification", async () => {
+    let nextMessageId = 10;
+    bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    });
+    bridge.submitRuntime.mockClear();
+    store.prompt = "invalid";
+    await store.submitText();
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "command_rejected",
+          { message: "input value does not match the active wait" },
+          10,
+        ),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+
+    expect(
+      store.logs.some((entry) =>
+        entry.message.includes("input value does not match the active wait"),
+      ),
+    ).toBe(true);
+    expect(
+      store.logNotifications.some((entry) =>
+        entry.message.includes("input value does not match the active wait"),
+      ),
+    ).toBe(false);
+    expect(store.canInteract).toBe(true);
+  });
+
   it("retries one correlated timed-wait race on the next wait of the same kind", async () => {
     let nextMessageId = 10;
     bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
@@ -740,8 +777,13 @@ describe("runtime store cache-input", () => {
       value: { intent: { type: "commit_text", value: "412" }, message_skip: false },
     });
     expect(store.logs.some((entry) => entry.message.includes("input wait identity is stale"))).toBe(
-      false,
+      true,
     );
+    expect(
+      store.logNotifications.some((entry) =>
+        entry.message.includes("input wait identity is stale"),
+      ),
+    ).toBe(false);
     expect(store.canInteract).toBe(false);
 
     bridge.pump.mockResolvedValueOnce({
@@ -757,7 +799,107 @@ describe("runtime store cache-input", () => {
     expect(store.logs.some((entry) => entry.message.includes("input wait identity is stale"))).toBe(
       true,
     );
+    expect(
+      store.logNotifications.some((entry) =>
+        entry.message.includes("input wait identity is stale"),
+      ),
+    ).toBe(false);
     expect(store.canInteract).toBe(true);
+  });
+
+  it("releases a stale input without notifying when no next wait is available", async () => {
+    let nextMessageId = 10;
+    bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    });
+    bridge.submitRuntime.mockClear();
+    store.prompt = "412";
+    await store.submitText();
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("wait_changed", { type: "closed" }),
+        runtimeEvent("command_rejected", { message: "input wait identity is stale" }, 10),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "input",
+      ),
+    ).toHaveLength(1);
+    expect(store.logs.some((entry) => entry.message.includes("input wait identity is stale"))).toBe(
+      true,
+    );
+    expect(
+      store.logNotifications.some((entry) =>
+        entry.message.includes("input wait identity is stale"),
+      ),
+    ).toBe(false);
+
+    const laterWait = {
+      kind: "integer_value",
+      wait_id: 18,
+      submission_token: { epoch: 2, id: 6 },
+    };
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("wait_changed", { type: "opened", value: laterWait })],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.canInteract).toBe(true);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "input",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("releases a stale input without notifying when the next wait kind changes", async () => {
+    let nextMessageId = 10;
+    bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    });
+    bridge.submitRuntime.mockClear();
+    store.prompt = "412";
+    await store.submitText();
+
+    const nextWait = {
+      kind: "string_value",
+      wait_id: 18,
+      submission_token: { epoch: 2, id: 6 },
+    };
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("wait_changed", { type: "opened", value: nextWait }),
+        runtimeEvent("command_rejected", { message: "input wait identity is stale" }, 10),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+
+    expect(store.canInteract).toBe(true);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "input",
+      ),
+    ).toHaveLength(1);
+    expect(store.logs.some((entry) => entry.message.includes("input wait identity is stale"))).toBe(
+      true,
+    );
+    expect(
+      store.logNotifications.some((entry) =>
+        entry.message.includes("input wait identity is stale"),
+      ),
+    ).toBe(false);
   });
 
   it("does not advance a timed wait beside input and resumes timing after rejection", async () => {
@@ -859,6 +1001,11 @@ describe("runtime store cache-input", () => {
     expect(store.logs.some((entry) => entry.message.includes("input wait identity is stale"))).toBe(
       true,
     );
+    expect(
+      store.logNotifications.some((entry) =>
+        entry.message.includes("input wait identity is stale"),
+      ),
+    ).toBe(false);
     expect(
       store.logs.filter((entry) =>
         entry.message.includes("projection observation does not match the canonical presentation"),

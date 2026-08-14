@@ -155,6 +155,11 @@ snapshots are RustyEra-only unless the scenario supplies an equivalent reference
 
 ## Validate changes
 
+Run every Vitest command whose selected tests include `tests/viteTestServer.test.ts` outside the
+filesystem sandbox with `sandbox_permissions=require_escalated`; this includes the complete
+`npm test` suite. State in the approval justification that the test must bind a temporary local
+loopback server. Do not make an initial sandboxed attempt.
+
 Run focused Vitest first, then run `npm test` once, followed by typecheck, ESLint, Prettier check,
 build, WASM build, the relevant Chromium game scenario, and native Firefox compatibility. On
 macOS, also run native Safari compatibility; on other operating systems, do not run Safari. If the

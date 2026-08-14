@@ -13,6 +13,16 @@ export interface RuntimeRejectionClassification {
   staleProjection: boolean;
   rejectedInput: PendingGameInput | undefined;
   willRetryInput: boolean;
+  suppressInputWarningNotification: boolean;
+}
+
+const NON_NOTIFIED_INPUT_WARNINGS = new Set([
+  "input wait identity is stale",
+  "input value does not match the active wait",
+]);
+
+export function isNonNotifiedInputWarning(message: unknown): boolean {
+  return NON_NOTIFIED_INPUT_WARNINGS.has(String(message ?? ""));
 }
 
 export function classifyRuntimeRejection(
@@ -23,6 +33,7 @@ export function classifyRuntimeRejection(
   pendingInput: PendingGameInput | undefined,
 ): RuntimeRejectionClassification {
   const message = String(value.message ?? "");
+  const suppressInputWarningNotification = isNonNotifiedInputWarning(message);
   const compiledCachePreparing =
     activeExport?.kind === "compiled_cache" &&
     activeExport.requestMessageId === correlation &&
@@ -66,5 +77,6 @@ export function classifyRuntimeRejection(
     staleProjection,
     rejectedInput,
     willRetryInput,
+    suppressInputWarningNotification,
   };
 }

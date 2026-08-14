@@ -56,7 +56,7 @@ import { RuntimeExportTransferState } from "@/stores/runtimeExportTransfer";
 import { normalizeProjectProgress, RuntimeProjectLoadState } from "@/stores/runtimeProjectLoad";
 import { RuntimeProjectReloadState } from "@/stores/runtimeProjectReload";
 import { RuntimeProjectFileExportState } from "@/stores/runtimeProjectFileExport";
-import { classifyRuntimeRejection } from "@/stores/runtimeRejections";
+import { classifyRuntimeRejection, isNonNotifiedInputWarning } from "@/stores/runtimeRejections";
 import { RuntimeLogState } from "@/stores/runtimeLogs";
 import { RuntimeInputState } from "@/stores/runtimeInput";
 import { RuntimeImportState } from "@/stores/runtimeImport";
@@ -268,7 +268,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     send,
     sampleMonotonic: () => testEnvironment.sampleMonotonic(),
     phase: () => phase.value,
-    logWarning: (message) => log("warning", message, true),
+    logWarning: (message) =>
+      log("warning", message, true, isNonNotifiedInputWarning(message) ? "none" : "all"),
   });
   const pendingGameInput = runtimeInput.pending;
   const pendingInputUndo = runtimeInput.pendingUndo;
@@ -941,6 +942,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           staleProjection,
           rejectedInput,
           willRetryInput,
+          suppressInputWarningNotification,
         } = classifyRuntimeRejection(
           value,
           correlation,
@@ -953,14 +955,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
         }
         runtimeInput.rejectUndo(correlation);
         if (
-          !staleProjection &&
-          !willRetryInput &&
-          !compiledCachePreparing &&
-          !fullProjectPreparing &&
-          !earlyFullProjectPreparation &&
-          !reloadRejected
+          suppressInputWarningNotification ||
+          (!staleProjection &&
+            !willRetryInput &&
+            !compiledCachePreparing &&
+            !fullProjectPreparing &&
+            !earlyFullProjectPreparation &&
+            !reloadRejected)
         )
-          log("warning", formatDiagnostic(value), true);
+          log(
+            "warning",
+            formatDiagnostic(value),
+            true,
+            suppressInputWarningNotification ? "none" : "all",
+          );
         runtimeConfiguration.reject(correlationId, value.message ?? "Runtime 拒绝了命令");
         if (fullProjectPreparing && isFullProjectExport(activeExport)) {
           scheduleFullProjectExportRetry(activeExport);
