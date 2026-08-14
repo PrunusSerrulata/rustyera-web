@@ -9,6 +9,7 @@ use era_web_bridge::{
     FRONTEND_PUMP_MAXIMUM_QUIET_SLICES, WebSession, WebSessionOptions, project_identity,
 };
 use serde::de::DeserializeOwned;
+use std::time::Duration;
 use wasm_bindgen::prelude::*;
 
 #[derive(serde::Serialize)]
@@ -43,18 +44,23 @@ impl WasmRuntime {
             from_js(options)?
         };
         let mut inner = WebSession::new(options).map_err(js_error)?;
-        let progress_started = std::time::Instant::now();
+        let progress_started_ms = js_sys::Date::now();
         if let Some(progress_callback) = progress_callback {
-            inner.set_project_progress_reporter(Some(ProjectProgressReporter::new(
+            inner.set_project_progress_reporter(Some(ProjectProgressReporter::new_with_elapsed(
                 move |progress| {
                     if let Ok(value) = to_js(WasmProjectProgress {
                         stage: progress.stage,
                         completed: u32::try_from(progress.completed).unwrap_or(u32::MAX),
                         total: u32::try_from(progress.total).unwrap_or(u32::MAX),
-                        elapsed_ms: progress_started.elapsed().as_secs_f64() * 1000.0,
+                        elapsed_ms: (js_sys::Date::now() - progress_started_ms).max(0.0),
                     }) {
                         let _ = progress_callback.call1(&JsValue::UNDEFINED, &value);
                     }
+                },
+                move || {
+                    Duration::from_secs_f64(
+                        ((js_sys::Date::now() - progress_started_ms).max(0.0)) / 1000.0,
+                    )
                 },
             )));
         }

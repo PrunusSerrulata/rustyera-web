@@ -91,6 +91,40 @@ describe("Era sprite images", () => {
     wrapper.unmount();
   });
 
+  it("builds a stable resource identity from WebAssembly bigint coordinates", async () => {
+    store.presentation.resources.sprites = [
+      {
+        name: "TW_TITLE000",
+        size: [1041, 16],
+        frames: [
+          {
+            resource_id: "resources/title.webp",
+            source_rectangle: [0n, 16n, 1041n, 16n],
+          },
+        ],
+      },
+    ];
+    const wrapper = mount(MediaImage, {
+      props: {
+        placement: {
+          resource_id: "TW_TITLE000",
+          width: 0n,
+          height: 16_000n,
+          depth: 0n,
+          opacity: { numerator: 1n, denominator: 1n },
+          revision: 3n,
+        },
+      },
+    });
+
+    await flushPromises();
+
+    expect(resourceUrl).toHaveBeenCalledWith({}, "resources/title.webp", 3n, 0);
+    expect(wrapper.get<HTMLElement>(".media-sprite").attributes("style")).toContain(
+      "width: 1041px",
+    );
+  });
+
   it("matches sprite names case-insensitively and crops the source sheet", async () => {
     const wrapper = mount(MediaImage, {
       props: {

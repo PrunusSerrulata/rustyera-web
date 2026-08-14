@@ -51,6 +51,16 @@
       "fields": ["count", "visible", "dialog_border"],
       "expect": { "visible": true, "dialog_border": { "aligned": true } }
     },
+    {
+      "type": "click",
+      "locator": { "css": ".game-viewport button:has-text(\"[*] 友人\")", "nth": -1 }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-viewport button:has-text(\"[能]\")", "nth": -1 },
+      "fields": ["count", "visible", "dialog_border"],
+      "expect": { "count": 1, "visible": true }
+    },
     { "type": "input", "value": 50 },
     {
       "type": "assert_dom",

@@ -425,6 +425,7 @@ select {
   padding: 0;
   background: transparent;
   color: inherit;
+  appearance: none;
   text-decoration: none;
   pointer-events: auto;
 }

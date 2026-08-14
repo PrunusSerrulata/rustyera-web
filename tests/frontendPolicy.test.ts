@@ -197,6 +197,7 @@ describe("frontend host and image-line policy", () => {
     const buttonRule = stylesheet.match(
       /\.game-button,\s*\.html-node:is\(button\)\s*\{(?<body>[^}]*)\}/,
     );
+    expect(buttonRule?.groups?.body).toContain("appearance: none");
     expect(buttonRule?.groups?.body).toContain("text-decoration: none");
     expect(buttonRule?.groups?.body).not.toContain("text-decoration: underline");
     expect(stylesheet).toMatch(

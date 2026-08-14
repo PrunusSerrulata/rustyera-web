@@ -235,6 +235,8 @@ describe("browser game runner progress policy", () => {
     expect(mapScenario).toContain('"interior_rows": 5');
     expect(mapScenario).toContain('"interior_counts": [1, 1, 1, 1, 1]');
     expect(dialogueScenario).toContain('"dialog_border"');
+    expect(characterScenario).toContain('button:has-text(\\"[*] 友人\\")');
+    expect(characterScenario).toContain('button:has-text(\\"[能]\\")');
     expect(characterScenario).toContain('"text": "特质"');
     expect(characterScenario).toContain('"count": 128');
     expect(characterScenario).toContain('"font_family": "\\"等距时代黑体 SC\\""');

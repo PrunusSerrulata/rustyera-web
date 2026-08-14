@@ -34,13 +34,16 @@ const canvasReplay = computed(() => {
     : store.presentation.resources.canvases?.find((item: any) => item.canvas_id === canvasId);
 });
 const resourceIdentity = computed(() =>
-  JSON.stringify([
-    Number(store.projectResourceGeneration ?? 0),
-    activeResourceId.value,
-    frame.value?.resource_id ?? activeResourceId.value,
-    frame.value?.source_rectangle ?? null,
-    props.placement.revision,
-  ]),
+  JSON.stringify(
+    [
+      Number(store.projectResourceGeneration ?? 0),
+      activeResourceId.value,
+      frame.value?.resource_id ?? activeResourceId.value,
+      frame.value?.source_rectangle ?? null,
+      props.placement.revision,
+    ],
+    (_key, value) => (typeof value === "bigint" ? value.toString() : value),
+  ),
 );
 // Emuera paints complete frames into a double-buffered control. Generated portraits instead
 // arrive here as a canvas-backed sprite followed by their final file-backed sprite. Retain the
