@@ -33,6 +33,13 @@ or frontend-state actions, and [tauri-e2e.md](references/tauri-e2e.md) before ch
 - Start each distinct full test suite at most once per task. After a failure is fixed, rerun only
   the directly affected test file, named case, browser scenario, or native scenario; never rerun
   the full suite.
+- Run every command that may outlive its initial tool response in a persistent PTY. Start it with
+  `exec_command` using `tty: true` and a short yield, retain the returned `session_id`, and poll only
+  with `write_stdin` at intervals no longer than 30 seconds until an explicit exit code is observed.
+  Do not resume a yielded exec cell with a separate wait call: the cell may be reclaimed before its
+  result is collected. If a PTY session disappears without an exit code, report the command as
+  unverified; never restart a full suite, and rerun a targeted command only when the suite rules
+  permit it.
 - From launch through exit, every browser and Tauri end-to-end run must emit a complete snapshot
   every 5 seconds. Each snapshot enumerates every current HTML element with its tag, attributes,
   text/value, and visibility, and includes runtime, presentation, output, status, and log state.
