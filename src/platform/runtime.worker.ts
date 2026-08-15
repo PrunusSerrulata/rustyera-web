@@ -17,6 +17,7 @@ type WasmModule = {
       contents: string,
     ): Uint8Array;
     loadProjectWithCompiledCache(manifest: unknown, cache: Uint8Array): bigint;
+    loadProjectWithCompiledCacheBinary(manifest: Uint8Array, cache: Uint8Array): bigint;
     traditionalSaveSlotCount(): number;
     inspectTraditionalSave(bytes: Uint8Array): unknown;
     pump(instructions: number, transitions: number): unknown;
@@ -71,6 +72,12 @@ self.onmessage = async (event: MessageEvent) => {
         }
         case "loadProjectWithCompiledCache":
           result = runtime.loadProjectWithCompiledCache(args[0], args[1] as Uint8Array);
+          break;
+        case "loadProjectWithCompiledCacheBinary":
+          result = runtime.loadProjectWithCompiledCacheBinary(
+            args[0] as Uint8Array,
+            args[1] as Uint8Array,
+          );
           break;
         case "traditionalSaveSlotCount":
           result = runtime.traditionalSaveSlotCount();

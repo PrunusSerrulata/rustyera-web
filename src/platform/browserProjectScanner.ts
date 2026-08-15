@@ -1,12 +1,16 @@
 import { blake3 } from "@noble/hashes/blake3.js";
 
+import { decodeImageMetadata, type ImageMetadata } from "@/core/imageMetadata";
 import { classify, safePath } from "@/platform/browserProjectFilesystem";
 import { decodeProjectSource, normalizeResourceManifest } from "@/platform/browserProjectUtilities";
 
 export interface ScannedFile {
   relative_path: string;
   category: string;
-  payload: { type: "utf8"; value: string } | { type: "bytes"; value: Uint8Array };
+  payload:
+    | { type: "utf8"; value: string }
+    | { type: "bytes"; value: Uint8Array }
+    | { type: "external"; byteLength: number; imageMetadata?: ImageMetadata };
   content_hash: Uint8Array;
 }
 
@@ -20,10 +24,16 @@ export function scanBrowserProjectFile(
   const category = classify(relative, topLevel);
   if (!category) return undefined;
   if (category === "resource") {
+    let imageMetadata: ImageMetadata | undefined;
+    try {
+      imageMetadata = decodeImageMetadata(bytes.subarray(0, 1024 * 1024));
+    } catch {
+      // Audio, fonts, and unsupported image formats legitimately have no image metadata.
+    }
     return {
       relative_path: relative,
       category,
-      payload: { type: "bytes", value: bytes },
+      payload: { type: "external", byteLength: bytes.byteLength, imageMetadata },
       content_hash: blake3(bytes),
     };
   }

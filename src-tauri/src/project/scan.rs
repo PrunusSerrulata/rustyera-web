@@ -124,6 +124,7 @@ pub(super) fn indexed_file(file: &SubmittedFile) -> Result<IndexedFile, String> 
         content_hash,
         pending_file: None,
         source_signature: None,
+        index_reused: false,
     })
 }
 
@@ -444,7 +445,20 @@ pub(super) fn read_file(
     let bytes = fs::read(path).map_err(|error| format!("cannot read {relative_path}: {error}"))?;
     let (payload, content_hash) = if category == FileCategory::Resource {
         let content_hash = blake3::hash(&bytes);
-        (FilePayload::Bytes(ProtocolBytes::new(bytes)), content_hash)
+        let image_metadata = crate::image_metadata::decode(&bytes[..bytes.len().min(1024 * 1024)])
+            .map(|metadata| ImageMetadataResponse {
+                width: metadata.width,
+                height: metadata.height,
+                format: metadata.format.to_owned(),
+                animated: metadata.animated,
+            });
+        (
+            FilePayload::ExternalResource(ExternalResource {
+                byte_length: bytes.len() as u64,
+                image_metadata,
+            }),
+            content_hash,
+        )
     } else {
         let text = normalized_project_text(&relative_path, &bytes, category).ok_or_else(|| {
             if relative_path.eq_ignore_ascii_case("reraconfig.toml") {
@@ -545,28 +559,79 @@ pub(super) fn scan_indexed_entry(
     let prior = previous
         .get(&relative_path)
         .filter(|prior| prior.signature == signature && prior.category == category as u8)
-        .and_then(|prior| decode_hash(&prior.hash).ok().map(|hash| (hash, prior.size)));
-    let (content_hash, size, pending_file, signature) = if let Some((hash, size)) = prior {
-        (hash, size, None, signature)
-    } else {
-        let (file, stable_signature) = stable_read_file(root, path, category)?;
-        let content_hash = file
-            .content_hash
-            .as_ref()
-            .and_then(|hash| hash.as_slice().try_into().ok())
-            .ok_or_else(|| format!("{relative_path} has an invalid content hash"))?;
-        let size = match &file.payload {
-            FilePayload::Utf8(text) => text.len(),
-            FilePayload::Bytes(bytes) => bytes.as_slice().len(),
-            FilePayload::IoError(_) => 0,
+        .and_then(|prior| {
+            decode_hash(&prior.hash)
+                .ok()
+                .map(|hash| (hash, prior.size, prior.image_metadata.clone()))
+        });
+    let (content_hash, size, pending_file, signature, index_reused) =
+        if let Some((hash, size, metadata)) = prior {
+            let mut image_metadata = metadata.and_then(IndexedImageMetadata::into_protocol);
+            let image_path = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| IMAGE_SUFFIXES.contains(&value.to_ascii_lowercase().as_str()));
+            if category == FileCategory::Resource && image_path && image_metadata.is_none() {
+                let mut prefix = Vec::new();
+                fs::File::open(path)
+                    .map_err(|error| format!("cannot open {relative_path}: {error}"))?
+                    .take(1024 * 1024)
+                    .read_to_end(&mut prefix)
+                    .map_err(|error| format!("cannot read {relative_path}: {error}"))?;
+                if fs::metadata(path)
+                    .map_err(|error| format!("cannot stat {relative_path}: {error}"))
+                    .map(|current| metadata_signature(&current))?
+                    != signature
+                {
+                    return Err("project changed while it was being scanned".into());
+                }
+                image_metadata =
+                    crate::image_metadata::decode(&prefix).map(|metadata| ImageMetadataResponse {
+                        width: metadata.width,
+                        height: metadata.height,
+                        format: metadata.format.to_owned(),
+                        animated: metadata.animated,
+                    });
+            }
+            let pending_file = (category == FileCategory::Resource).then(|| SubmittedFile {
+                relative_path: relative_path.clone(),
+                category,
+                payload: FilePayload::ExternalResource(ExternalResource {
+                    byte_length: size,
+                    image_metadata,
+                }),
+                content_hash: Some(ProtocolBytes::new(hash.to_vec())),
+            });
+            (hash, size, pending_file, signature, true)
+        } else {
+            let (file, stable_signature) = stable_read_file(root, path, category)?;
+            let content_hash = file
+                .content_hash
+                .as_ref()
+                .and_then(|hash| hash.as_slice().try_into().ok())
+                .ok_or_else(|| format!("{relative_path} has an invalid content hash"))?;
+            let size = match &file.payload {
+                FilePayload::Utf8(text) => text.len(),
+                FilePayload::Bytes(bytes) => bytes.as_slice().len(),
+                FilePayload::ExternalResource(resource) => usize::try_from(resource.byte_length)
+                    .map_err(|_| format!("{relative_path} is too large"))?,
+                FilePayload::IoError(_) => 0,
+            };
+            (
+                content_hash,
+                u64::try_from(size).map_err(|_| format!("{relative_path} is too large"))?,
+                Some(file),
+                stable_signature,
+                false,
+            )
         };
-        (
-            content_hash,
-            u64::try_from(size).map_err(|_| format!("{relative_path} is too large"))?,
-            Some(file),
-            stable_signature,
-        )
-    };
+    let image_metadata = pending_file.as_ref().and_then(|file| match &file.payload {
+        FilePayload::ExternalResource(resource) => resource
+            .image_metadata
+            .as_ref()
+            .map(IndexedImageMetadata::from),
+        _ => None,
+    });
     Ok((
         IndexedFile {
             relative_path,
@@ -575,12 +640,14 @@ pub(super) fn scan_indexed_entry(
             content_hash,
             pending_file,
             source_signature: Some(signature),
+            index_reused,
         },
         SourceIndexEntry {
             category: category as u8,
             signature,
             hash: encode_hash(&content_hash),
             size,
+            image_metadata,
         },
     ))
 }

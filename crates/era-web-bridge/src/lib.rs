@@ -21,6 +21,7 @@ use erabasic_vm::VmConfig;
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_ENVELOPE_BYTES: u64 = 512 * 1024 * 1024;
+const MAXIMUM_TRANSFER_BYTES: u64 = 1024 * 1024 * 1024;
 const DEBUG_SCOPE_ALL: u64 = (1 << 10) - 1;
 pub const FRONTEND_PUMP_MAXIMUM_QUIET_SLICES: usize = 16;
 
@@ -142,7 +143,7 @@ impl WebSession {
             maximum_pending_requests: 128,
             maximum_journal_entries: 4096,
             maximum_drive_instructions: 1_000_000,
-            maximum_transfer_bytes: maximum_payload_bytes,
+            maximum_transfer_bytes: MAXIMUM_TRANSFER_BYTES,
         };
         let wire_limits = WireLimits {
             maximum_envelope_bytes: usize::try_from(maximum_envelope_bytes)

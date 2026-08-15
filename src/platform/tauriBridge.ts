@@ -345,9 +345,19 @@ export class TauriBridge implements FrontendBridge {
     return true;
   }
 
-  async stageFullProjectManifest(): Promise<void> {
-    if (this.projectIsFile) return;
-    await invoke("stage_full_project_manifest");
+  async stageFullProjectManifest(): Promise<{ totalBytes: number } | undefined> {
+    if (this.projectIsFile) return undefined;
+    return invoke<{ totalBytes: number }>("stage_full_project_manifest");
+  }
+
+  async readFullProjectManifestChunk(offset: number, maximumBytes: number): Promise<Uint8Array> {
+    return new Uint8Array(
+      await invoke<number[]>("read_full_project_manifest_chunk", { offset, maximumBytes }),
+    );
+  }
+
+  async releaseFullProjectManifest(): Promise<void> {
+    await invoke("release_full_project_manifest");
   }
 
   async writeProjectFileChunk(bytes: Uint8Array, reset: boolean, complete: boolean): Promise<void> {
@@ -364,6 +374,7 @@ export class TauriBridge implements FrontendBridge {
 
   async cancelProjectFileExport(): Promise<void> {
     await invoke("cancel_full_project_export").catch(() => undefined);
+    await this.releaseFullProjectManifest().catch(() => undefined);
     if (!this.projectFileExportPath) return;
     await invoke("cancel_export").catch(() => undefined);
     this.projectFileExportPath = undefined;

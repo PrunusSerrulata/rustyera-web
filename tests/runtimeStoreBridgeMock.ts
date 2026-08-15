@@ -1,11 +1,20 @@
 import { vi } from "vitest";
 
-import { defaultPreferences, type ProjectProgress, type SystemFontQueryResult } from "@/core/types";
+import {
+  defaultPreferences,
+  type ProjectProgress,
+  type RuntimeMessage,
+  type SystemFontQueryResult,
+} from "@/core/types";
 
 export const bridge = {
   kind: "tauri" as "tauri" | "browser",
   createSession: vi.fn(),
-  submitRuntime: vi.fn(async () => 1),
+  submitRuntime: vi.fn(async (_message: RuntimeMessage, _correlationId?: number) => {
+    void _message;
+    void _correlationId;
+    return 1;
+  }),
   submitDebug: vi.fn(async () => 1),
   pump: vi.fn(),
   projectProgressListener: undefined as ((progress: ProjectProgress) => void) | undefined,
@@ -35,6 +44,8 @@ export const bridge = {
   openUpload: vi.fn(),
   saveDownload: vi.fn(),
   stageFullProjectManifest: vi.fn(),
+  readFullProjectManifestChunk: vi.fn(),
+  releaseFullProjectManifest: vi.fn(),
   beginProjectFileExport: vi.fn(),
   writeProjectFileChunk: vi.fn(),
   cancelProjectFileExport: vi.fn(),

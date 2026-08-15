@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 use encoding_rs::{GBK, SHIFT_JIS, UTF_8};
 use era_protocol::ProtocolBytes;
 use era_runtime_protocol::{
-    FileCategory, FileChange, FilePayload, ProjectIdentity, ProjectManifest, ReloadProject,
-    SubmittedFile, validate_relative_path,
+    ExternalResource, FileCategory, FileChange, FilePayload, ImageMetadataResponse,
+    ProjectIdentity, ProjectManifest, ReloadProject, SubmittedFile, validate_relative_path,
 };
 
 const PROJECT_CONFIGURATION_UPDATE_HEADROOM: usize = 1024 * 1024;
@@ -25,9 +25,10 @@ use walkdir::{DirEntry, WalkDir};
 const RESOURCE_SUFFIXES: &[&str] = &[
     "bmp", "gif", "jpeg", "jpg", "png", "webp", "wav", "mp3", "ogg", "opus", "aac", "m4a", "flac",
 ];
+const IMAGE_SUFFIXES: &[&str] = &["bmp", "gif", "jpeg", "jpg", "png", "webp"];
 const AUDIO_SUFFIXES: &[&str] = &["wav", "mp3", "ogg", "opus", "aac", "m4a", "flac"];
 const FONT_SUFFIXES: &[&str] = &["otf", "ttc", "ttf", "woff", "woff2"];
-const SOURCE_INDEX_VERSION: u32 = 1;
+const SOURCE_INDEX_VERSION: u32 = 2;
 const COMPILED_CACHE_NAME: &str = "compiled-project.reracache";
 const STABLE_SCAN_ATTEMPTS: usize = 3;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(34);
@@ -40,6 +41,7 @@ struct IndexedFile {
     content_hash: [u8; 32],
     pending_file: Option<SubmittedFile>,
     source_signature: Option<[u64; 5]>,
+    index_reused: bool,
 }
 
 struct PendingProjectReload {
@@ -60,6 +62,44 @@ struct SourceIndexEntry {
     signature: [u64; 5],
     hash: String,
     size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image_metadata: Option<IndexedImageMetadata>,
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+struct IndexedImageMetadata {
+    width: u32,
+    height: u32,
+    format: String,
+    animated: bool,
+}
+
+impl IndexedImageMetadata {
+    fn into_protocol(self) -> Option<ImageMetadataResponse> {
+        (self.width > 0
+            && self.height > 0
+            && matches!(
+                self.format.as_str(),
+                "png" | "bmp" | "gif" | "jpeg" | "webp"
+            ))
+        .then_some(ImageMetadataResponse {
+            width: self.width,
+            height: self.height,
+            format: self.format,
+            animated: self.animated,
+        })
+    }
+}
+
+impl From<&ImageMetadataResponse> for IndexedImageMetadata {
+    fn from(value: &ImageMetadataResponse) -> Self {
+        Self {
+            width: value.width,
+            height: value.height,
+            format: value.format.clone(),
+            animated: value.animated,
+        }
+    }
 }
 
 pub struct ProjectHost {
@@ -100,6 +140,75 @@ enum ProjectReloadSelector {
     All,
     Folder(String),
     Script(String),
+}
+
+fn write_counted(output: &mut impl Write, written: &mut u64, bytes: &[u8]) -> Result<(), String> {
+    *written = written
+        .checked_add(
+            u64::try_from(bytes.len())
+                .map_err(|_| "full project manifest length overflow".to_owned())?,
+        )
+        .ok_or_else(|| "full project manifest length overflow".to_owned())?;
+    if *written > 1024 * 1024 * 1024 {
+        return Err("full project manifest exceeds the 1 GiB transfer limit".into());
+    }
+    output
+        .write_all(bytes)
+        .map_err(|error| format!("cannot write full project manifest: {error}"))
+}
+
+fn write_cbor_head(
+    output: &mut impl Write,
+    written: &mut u64,
+    major: u8,
+    value: u64,
+) -> Result<(), String> {
+    let mut bytes = [0_u8; 9];
+    let length = if value < 24 {
+        bytes[0] = major << 5 | u8::try_from(value).expect("value below 24 fits in u8");
+        1
+    } else if let Ok(value) = u8::try_from(value) {
+        bytes[0] = major << 5 | 0x18;
+        bytes[1] = value;
+        2
+    } else if let Ok(value) = u16::try_from(value) {
+        bytes[0] = major << 5 | 0x19;
+        bytes[1..3].copy_from_slice(&value.to_be_bytes());
+        3
+    } else if let Ok(value) = u32::try_from(value) {
+        bytes[0] = major << 5 | 0x1a;
+        bytes[1..5].copy_from_slice(&value.to_be_bytes());
+        5
+    } else {
+        bytes[0] = major << 5 | 0x1b;
+        bytes[1..9].copy_from_slice(&value.to_be_bytes());
+        9
+    };
+    write_counted(output, written, &bytes[..length])
+}
+
+fn write_cbor_text(output: &mut impl Write, written: &mut u64, value: &str) -> Result<(), String> {
+    write_cbor_head(
+        output,
+        written,
+        3,
+        u64::try_from(value.len()).map_err(|_| "CBOR text length overflow".to_owned())?,
+    )?;
+    write_counted(output, written, value.as_bytes())
+}
+
+fn write_cbor_bytes(
+    output: &mut impl Write,
+    written: &mut u64,
+    value: &[u8],
+) -> Result<(), String> {
+    write_cbor_head(
+        output,
+        written,
+        2,
+        u64::try_from(value.len()).map_err(|_| "CBOR byte string length overflow".to_owned())?,
+    )?;
+    write_counted(output, written, value)
 }
 
 impl ProjectReloadSelector {
@@ -222,7 +331,7 @@ impl ProjectHost {
         let stored_index = fs::read(&index_path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<SourceIndex>(&bytes).ok())
-            .filter(|index| index.version == SOURCE_INDEX_VERSION);
+            .filter(|index| matches!(index.version, 1 | SOURCE_INDEX_VERSION));
         let previous = stored_index
             .as_ref()
             .map(|index| &index.files)
@@ -277,11 +386,11 @@ impl ProjectHost {
         let source_index_stats = (
             indexed_files
                 .iter()
-                .filter(|file| file.pending_file.is_none())
+                .filter(|file| file.index_reused)
                 .count(),
             indexed_files
                 .iter()
-                .filter(|file| file.pending_file.is_some())
+                .filter(|file| !file.index_reused)
                 .count(),
         );
         Ok(Self {
@@ -503,6 +612,7 @@ impl ProjectHost {
             content_hash,
             pending_file: Some(pending_file),
             source_signature,
+            index_reused: false,
         };
         if let Some(index) = self
             .indexed_files
@@ -584,6 +694,135 @@ impl ProjectHost {
         self.manifest
             .as_ref()
             .ok_or_else(|| "project manifest was not materialized".to_owned())
+    }
+
+    pub fn write_full_manifest_with_progress_and_cancel(
+        &mut self,
+        output: &mut impl Write,
+        progress: Option<&dyn Fn(usize, usize)>,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<u64, String> {
+        let manifest = self
+            .materialize_with_progress_and_cancel(progress, cancelled)?
+            .clone();
+        let mut written = 0_u64;
+        write_counted(output, &mut written, &[0xa2, 0x00])?;
+        write_cbor_head(output, &mut written, 0, manifest.project_revision)?;
+        write_counted(output, &mut written, &[0x01])?;
+        write_cbor_head(output, &mut written, 4, manifest.files.len() as u64)?;
+        let total = manifest.files.len();
+        for (index, file) in manifest.files.iter().enumerate() {
+            if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                return Err("project export was cancelled".into());
+            }
+            write_cbor_head(
+                output,
+                &mut written,
+                5,
+                3 + u64::from(file.content_hash.is_some()),
+            )?;
+            write_counted(output, &mut written, &[0x00])?;
+            write_cbor_text(output, &mut written, &file.relative_path)?;
+            write_counted(output, &mut written, &[0x01])?;
+            write_cbor_head(output, &mut written, 0, file.category as u64)?;
+            write_counted(output, &mut written, &[0x02, 0x82])?;
+            match &file.payload {
+                FilePayload::Utf8(text) => {
+                    write_counted(output, &mut written, &[0x00, 0x81])?;
+                    write_cbor_text(output, &mut written, text)?;
+                }
+                FilePayload::Bytes(bytes) => {
+                    write_counted(output, &mut written, &[0x01, 0x81])?;
+                    write_cbor_bytes(output, &mut written, bytes.as_slice())?;
+                }
+                FilePayload::ExternalResource(resource) => {
+                    write_counted(output, &mut written, &[0x01, 0x81])?;
+                    write_cbor_head(output, &mut written, 2, resource.byte_length)?;
+                    self.write_resource_to(output, &mut written, file, cancelled)?;
+                }
+                FilePayload::IoError(_) => {
+                    return Err(format!(
+                        "cannot export unreadable project file: {}",
+                        file.relative_path
+                    ));
+                }
+            }
+            if let Some(hash) = &file.content_hash {
+                write_counted(output, &mut written, &[0x03])?;
+                write_cbor_bytes(output, &mut written, hash.as_slice())?;
+            }
+            if let Some(progress) = progress {
+                progress(index + 1, total);
+            }
+        }
+        Ok(written)
+    }
+
+    fn write_resource_to(
+        &self,
+        output: &mut impl Write,
+        written: &mut u64,
+        file: &SubmittedFile,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<(), String> {
+        let indexed = self
+            .indexed_files
+            .iter()
+            .find(|indexed| {
+                indexed
+                    .relative_path
+                    .eq_ignore_ascii_case(&file.relative_path)
+            })
+            .ok_or_else(|| format!("unknown resource: {}", file.relative_path))?;
+        let path = self.resource_path(&file.relative_path)?;
+        let metadata =
+            fs::metadata(&path).map_err(|error| format!("cannot stat resource: {error}"))?;
+        if indexed
+            .source_signature
+            .is_none_or(|expected| metadata_signature(&metadata) != expected)
+        {
+            return Err(format!(
+                "resource changed after project scan: {}",
+                file.relative_path
+            ));
+        }
+        let mut input =
+            fs::File::open(&path).map_err(|error| format!("cannot open resource: {error}"))?;
+        let mut buffer = vec![0_u8; 4 * 1024 * 1024];
+        let mut hasher = blake3::Hasher::new();
+        let mut resource_bytes = 0_u64;
+        loop {
+            if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                return Err("project export was cancelled".into());
+            }
+            let count = input
+                .read(&mut buffer)
+                .map_err(|error| format!("cannot read resource: {error}"))?;
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+            write_counted(output, written, &buffer[..count])?;
+            resource_bytes += count as u64;
+        }
+        let expected_length = match &file.payload {
+            FilePayload::ExternalResource(resource) => resource.byte_length,
+            _ => 0,
+        };
+        if resource_bytes != expected_length
+            || file.content_hash.as_ref().map(ProtocolBytes::as_slice)
+                != Some(hasher.finalize().as_bytes().as_slice())
+            || fs::metadata(path)
+                .map(|current| metadata_signature(&current))
+                .map_err(|error| format!("cannot stat resource: {error}"))?
+                != metadata_signature(&metadata)
+        {
+            return Err(format!(
+                "resource changed after project scan: {}",
+                file.relative_path
+            ));
+        }
+        Ok(())
     }
 
     pub fn retained_manifest_with_progress(
@@ -856,8 +1095,29 @@ impl ProjectHost {
         if let Some(bytes) = self.embedded_resources.get(&relative_path.to_lowercase()) {
             return Ok(bytes.clone());
         }
-        fs::read(self.resource_path(relative_path)?)
-            .map_err(|error| format!("cannot read resource: {error}"))
+        let path = self.resource_path(relative_path)?;
+        let indexed = self
+            .indexed_files
+            .iter()
+            .find(|file| file.relative_path.eq_ignore_ascii_case(relative_path))
+            .ok_or_else(|| format!("unknown resource: {relative_path}"))?;
+        let metadata =
+            fs::metadata(&path).map_err(|error| format!("cannot stat resource: {error}"))?;
+        if indexed
+            .source_signature
+            .is_some_and(|signature| metadata_signature(&metadata) != signature)
+        {
+            return Err(format!(
+                "resource changed after project scan: {relative_path}"
+            ));
+        }
+        let bytes = fs::read(path).map_err(|error| format!("cannot read resource: {error}"))?;
+        if blake3::hash(&bytes).as_bytes() != &indexed.content_hash {
+            return Err(format!(
+                "resource changed after project scan: {relative_path}"
+            ));
+        }
+        Ok(bytes)
     }
 
     pub fn read_resource_prefix(
@@ -868,13 +1128,37 @@ impl ProjectHost {
         if let Some(bytes) = self.embedded_resources.get(&relative_path.to_lowercase()) {
             return Ok(bytes[..bytes.len().min(maximum_bytes as usize)].to_vec());
         }
+        let indexed = self
+            .indexed_files
+            .iter()
+            .find(|file| file.relative_path.eq_ignore_ascii_case(relative_path))
+            .ok_or_else(|| format!("unknown resource: {relative_path}"))?;
         let path = self.resource_path(relative_path)?;
-        let file =
-            fs::File::open(path).map_err(|error| format!("cannot open resource: {error}"))?;
+        let metadata =
+            fs::metadata(&path).map_err(|error| format!("cannot stat resource: {error}"))?;
+        if indexed
+            .source_signature
+            .is_none_or(|signature| metadata_signature(&metadata) != signature)
+        {
+            return Err(format!(
+                "resource changed after project scan: {relative_path}"
+            ));
+        }
         let mut bytes = Vec::with_capacity(maximum_bytes as usize);
-        file.take(u64::from(maximum_bytes))
+        fs::File::open(&path)
+            .map_err(|error| format!("cannot open resource: {error}"))?
+            .take(u64::from(maximum_bytes))
             .read_to_end(&mut bytes)
             .map_err(|error| format!("cannot read resource header: {error}"))?;
+        if fs::metadata(path)
+            .map(|current| metadata_signature(&current))
+            .map_err(|error| format!("cannot stat resource: {error}"))?
+            != metadata_signature(&metadata)
+        {
+            return Err(format!(
+                "resource changed after project scan: {relative_path}"
+            ));
+        }
         Ok(bytes)
     }
 

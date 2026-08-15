@@ -59,6 +59,15 @@ function manifestIdentityHex(manifest: {
   ).join("");
 }
 
+function pngHeader(width: number, height: number): Uint8Array {
+  const bytes = new Uint8Array(24);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  bytes.set([0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52], 8);
+  new DataView(bytes.buffer).setUint32(16, width);
+  new DataView(bytes.buffer).setUint32(20, height);
+  return bytes;
+}
+
 describe("browser project source decoding", () => {
   it("decodes UTF-8 and removes its byte order mark", () => {
     expect(
@@ -112,7 +121,7 @@ describe("browser project font resources", () => {
       expect(scanBrowserProjectFile(`FoNt/game.${extension}`, bytes, new Set())).toMatchObject({
         relative_path: `FoNt/game.${extension}`,
         category: "resource",
-        payload: { type: "bytes", value: bytes },
+        payload: { type: "external", byteLength: bytes.byteLength },
       });
     }
     expect(scanBrowserProjectFile("font/license.txt", new Uint8Array(), new Set())).toBeUndefined();
@@ -137,7 +146,7 @@ describe("browser project font resources", () => {
     });
     await expect(font?.read()).resolves.toEqual(Uint8Array.of(1, 2, 3));
     await expect(project.materialize()).resolves.toMatchObject({
-      files: [{ payload: { type: "bytes", value: Uint8Array.of(1, 2, 3) } }],
+      files: [{ payload: { type: "external", byteLength: 3 } }],
     });
   });
 });
@@ -260,7 +269,11 @@ describe("browser project reads", () => {
     const materialized = await project.materialize();
 
     expect(materialized.files.map((file) => file.relative_path)).toEqual(["one.erb", "two.erb"]);
-    expect(materialized.files.every((file) => file.payload.value.length > 0)).toBe(true);
+    expect(
+      materialized.files.every(
+        (file) => file.payload.type !== "external" && file.payload.value.length > 0,
+      ),
+    ).toBe(true);
   });
 
   it("treats a corrupt source index as a disposable cold-scan cache", async () => {
@@ -275,6 +288,47 @@ describe("browser project reads", () => {
     const manifest = await new BrowserProject(root as any, 1, "game", true).scanQuick();
 
     expect(manifest.files[0].payload).toEqual({ type: "utf8", value: "@MAIN\nRETURN\n" });
+  });
+
+  it.each([
+    { version: 1, metadata: undefined, label: "v1 without metadata" },
+    {
+      version: 2,
+      metadata: { width: 0, height: 3, format: "invalid", animated: false },
+      label: "malformed v2 metadata",
+    },
+  ])("migrates $label by reading only the cached image prefix", async ({ version, metadata }) => {
+    const root = new SaveDirectoryHandle("game");
+    const resources = await root.getDirectoryHandle("resources", { create: true });
+    await writeFixtureFile(resources, "image.png", pngHeader(2, 3));
+    await new BrowserProject(root as any, 1, "game", true).scanQuick();
+    const privateDirectory = await root.getDirectoryHandle(".rustyera");
+    const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
+    const indexHandle = await cacheDirectory.getFileHandle("source-index-v1.json");
+    const index = JSON.parse(await (await indexHandle.getFile()).text());
+    index.version = version;
+    index.files["resources/image.png"].imageMetadata = metadata;
+    await (
+      await indexHandle.createWritable()
+    ).write(new TextEncoder().encode(JSON.stringify(index)));
+
+    const warm = new BrowserProject(root as any, 1, "game", true);
+    const manifest = await warm.scanQuick();
+
+    expect(warm.sourceIndexStats()).toMatchObject({ reusedFiles: 1, hashedFiles: 0 });
+    expect(manifest.files[0].payload).toEqual({
+      type: "external",
+      byteLength: 24,
+      imageMetadata: { width: 2, height: 3, format: "png", animated: false },
+    });
+    const migrated = JSON.parse(await (await indexHandle.getFile()).text());
+    expect(migrated.version).toBe(2);
+    expect(migrated.files["resources/image.png"].imageMetadata).toEqual({
+      width: 2,
+      height: 3,
+      format: "png",
+      animated: false,
+    });
   });
 
   it("keeps startup functional when the disposable source index cannot be written", async () => {
@@ -340,7 +394,11 @@ describe("browser project reads", () => {
     const project = new BrowserProject(root as any, 1, "game", true);
     const manifest = await project.scanQuick();
 
-    expect(manifest.files[0].payload).toEqual({ type: "bytes", value: new Uint8Array() });
+    expect(manifest.files[0].payload).toEqual({
+      type: "external",
+      byteLength: 3,
+      imageMetadata: undefined,
+    });
     await expect(project.readResource("RESOURCES/É.PNG")).resolves.toEqual(Uint8Array.of(4, 5, 6));
     await expect(project.readResourcePrefix("resources/é.png", 2)).resolves.toEqual(
       Uint8Array.of(4, 5),
@@ -349,6 +407,8 @@ describe("browser project reads", () => {
 
   it("indexes Emuera sound-directory audio and serves it lazily", async () => {
     const root = new SaveDirectoryHandle("game");
+    const storage = new SaveDirectoryHandle("opfs");
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
     const sound = await root.getDirectoryHandle("sound", { create: true });
     const handle = await sound.getFileHandle("主题.mp3", { create: true });
     await (await handle.createWritable()).write(Uint8Array.of(4, 5, 6));
@@ -361,10 +421,14 @@ describe("browser project reads", () => {
       {
         relative_path: "sound/主题.mp3",
         category: "resource",
-        payload: { type: "bytes", value: new Uint8Array() },
+        payload: { type: "external", byteLength: 3, imageMetadata: undefined },
       },
     ]);
     await expect(project.readResource("SOUND/主题.MP3")).resolves.toEqual(Uint8Array.of(4, 5, 6));
+    const spool = await project.stageFullManifest();
+    expect(spool.totalBytes).toBeGreaterThan(3);
+    expect(await spool.read(0, spool.totalBytes)).toHaveLength(spool.totalBytes);
+    await spool.release();
   });
 
   it("reloads only the selected script folder and retains other changes for a later reload", async () => {
@@ -403,10 +467,18 @@ describe("browser project reads", () => {
     const active = await project.materialize();
     expect(active.project_revision).toBe(2);
     expect(
-      active.files.find((file) => file.relative_path === "ERB/selected/command.erb")?.payload.value,
+      (
+        active.files.find((file) => file.relative_path === "ERB/selected/command.erb")?.payload as {
+          value: string;
+        }
+      ).value,
     ).toContain("PRINTL SELECTED");
     expect(
-      active.files.find((file) => file.relative_path === "ERB/other/command.erb")?.payload.value,
+      (
+        active.files.find((file) => file.relative_path === "ERB/other/command.erb")?.payload as {
+          value: string;
+        }
+      ).value,
     ).toContain("PRINTL OLD");
 
     const remainingReload = await project.reloadRequest({
@@ -430,7 +502,7 @@ describe("browser project reads", () => {
 
     const active = await project.materialize();
     expect(active.project_revision).toBe(1);
-    expect(active.files[0].payload.value).toContain("PRINTL OLD");
+    expect((active.files[0].payload as { value: string }).value).toContain("PRINTL OLD");
   });
 
   it("materializes every payload when fully reloading a cached project", async () => {
@@ -756,11 +828,27 @@ describe("browser project reads", () => {
     const root = new SaveDirectoryHandle("storage");
     const resources = await root.getDirectoryHandle("resources", { create: true });
     const handle = await resources.getFileHandle("a.png", { create: true });
-    await (await handle.createWritable()).write(Uint8Array.of(4, 5, 6));
+    const bytes = Uint8Array.of(4, 5, 6);
+    await (await handle.createWritable()).write(bytes);
     const project = new BrowserProject(root as any, 1, "game");
-    project.useImportedManifest({ project_revision: 1, files: [] });
+    project.useImportedManifest({
+      project_revision: 1,
+      files: [
+        {
+          relative_path: "resources/a.png",
+          category: "resource",
+          payload: { type: "external", byteLength: bytes.byteLength },
+          content_hash: blake3(bytes),
+        },
+      ],
+    });
 
-    await expect(project.readResource("resources/a.png")).resolves.toEqual(Uint8Array.of(4, 5, 6));
+    await expect(project.readResourcePrefix("resources/a.png", 2)).resolves.toEqual(
+      Uint8Array.of(4, 5),
+    );
+    await expect(project.readResource("resources/a.png")).resolves.toEqual(bytes);
+    await (await handle.createWritable()).write(Uint8Array.of(7, 8, 9));
+    await expect(project.readResource("resources/a.png")).rejects.toThrow("发生变化");
   });
 
   it("limits concurrency and reports failures in file order", async () => {

@@ -2,6 +2,16 @@ use std::cell::RefCell;
 
 use super::*;
 
+fn png_header(width: u32, height: u32) -> [u8; 24] {
+    let mut bytes = [0_u8; 24];
+    bytes[..16].copy_from_slice(&[
+        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+    ]);
+    bytes[16..20].copy_from_slice(&width.to_be_bytes());
+    bytes[20..24].copy_from_slice(&height.to_be_bytes());
+    bytes
+}
+
 #[test]
 fn supported_media_extensions_are_classified_as_resources() {
     let root = Path::new("/project");
@@ -68,6 +78,32 @@ fn scanned_font_resources_remain_available_after_a_sparse_quick_scan() {
         project.read_font("font/Project.ttf").unwrap(),
         b"font bytes"
     );
+}
+
+#[test]
+fn resource_scan_uses_external_descriptor_and_full_export_restores_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let resources = directory.path().join("resources");
+    fs::create_dir(&resources).unwrap();
+    fs::write(resources.join("theme.ogg"), b"OggS example").unwrap();
+
+    let mut project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+    let manifest = project.materialize().unwrap();
+    assert!(matches!(
+        &manifest.files[0].payload,
+        FilePayload::ExternalResource(resource) if resource.byte_length == 12
+    ));
+
+    let mut full = Vec::new();
+    let size = project
+        .write_full_manifest_with_progress_and_cancel(&mut full, None, None)
+        .unwrap();
+    assert_eq!(usize::try_from(size).unwrap(), full.len());
+    let decoded: ProjectManifest = era_protocol::decode_canonical(&full).unwrap();
+    assert!(matches!(
+        &decoded.files[0].payload,
+        FilePayload::Bytes(bytes) if bytes.as_slice() == b"OggS example"
+    ));
 }
 
 #[test]
@@ -340,6 +376,63 @@ fn corrupt_source_index_is_rebuilt_from_file_contents() {
     assert_eq!(project.source_index_stats(), (0, 1));
     let stored: SourceIndex = serde_json::from_slice(&fs::read(index).unwrap()).unwrap();
     assert_eq!(stored.files.len(), 1);
+}
+
+#[test]
+fn legacy_and_malformed_image_metadata_are_migrated_with_a_prefix_read() {
+    for malformed in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let resources = directory.path().join("resources");
+        fs::create_dir(&resources).unwrap();
+        fs::write(resources.join("image.png"), png_header(2, 3)).unwrap();
+        ProjectHost::scan_quick(directory.path(), 1).unwrap();
+        let index_path = directory
+            .path()
+            .join(".rustyera/cache/source-index-v1.json");
+        let mut index: serde_json::Value =
+            serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
+        if malformed {
+            index["version"] = 2.into();
+            index["files"]["resources/image.png"]["image_metadata"] = serde_json::json!({
+                "width": 0,
+                "height": 3,
+                "format": "invalid",
+                "animated": false,
+            });
+        } else {
+            index["version"] = 1.into();
+            index["files"]["resources/image.png"]
+                .as_object_mut()
+                .unwrap()
+                .remove("image_metadata");
+        }
+        fs::write(&index_path, serde_json::to_vec(&index).unwrap()).unwrap();
+
+        let mut warm = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+
+        assert_eq!(warm.source_index_stats(), (1, 0));
+        let manifest = warm.materialize().unwrap();
+        assert!(matches!(
+            &manifest.files[0].payload,
+            FilePayload::ExternalResource(ExternalResource {
+                image_metadata: Some(ImageMetadataResponse {
+                    width: 2,
+                    height: 3,
+                    format,
+                    animated: false,
+                }),
+                ..
+            }) if format == "png"
+        ));
+        let migrated: SourceIndex =
+            serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
+        assert_eq!(migrated.version, SOURCE_INDEX_VERSION);
+        assert!(
+            migrated.files["resources/image.png"]
+                .image_metadata
+                .is_some()
+        );
+    }
 }
 
 #[test]

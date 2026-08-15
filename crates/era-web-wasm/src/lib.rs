@@ -3,7 +3,8 @@
 use era_debug_protocol::DebugMessage;
 use era_runtime::{ProjectProgressReporter, RuntimeDriveBudget};
 use era_runtime_protocol::{
-    FileCategory, FilePayload, ProjectManifest, ProtocolBytes, RuntimeMessage, SubmittedFile,
+    ExternalResource, FileCategory, FilePayload, ImageMetadataResponse, ProjectManifest,
+    ProtocolBytes, RuntimeMessage, SubmittedFile,
 };
 use era_web_bridge::{
     FRONTEND_PUMP_MAXIMUM_QUIET_SLICES, WebSession, WebSessionOptions, project_identity,
@@ -214,6 +215,26 @@ impl WasmRuntime {
         )
     }
 
+    /// Import a compiled cache using the browser's binary identity manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error when the binary manifest, cache, or runtime transfer is invalid.
+    #[wasm_bindgen(js_name = loadProjectWithCompiledCacheBinary)]
+    pub fn load_project_with_compiled_cache_binary(
+        &mut self,
+        manifest: &js_sys::Uint8Array,
+        cache: &js_sys::Uint8Array,
+    ) -> Result<JsValue, JsValue> {
+        let manifest = decode_browser_manifest(&manifest.to_vec()).map_err(js_error)?;
+        let identity = project_identity(&manifest).map_err(js_error)?;
+        to_js(
+            self.inner
+                .load_project_with_compiled_cache(identity, cache.to_vec())
+                .map_err(js_error)?,
+        )
+    }
+
     /// Drive one bounded worker slice and return all typed events.
     ///
     /// # Errors
@@ -290,6 +311,7 @@ fn decode_browser_manifest(bytes: &[u8]) -> Result<ProjectManifest, String> {
                     .map_err(|_| "browser project text payload is not UTF-8")?,
             ),
             1 => FilePayload::Bytes(ProtocolBytes::new(payload_bytes.to_vec())),
+            2 => decode_external_resource(payload_bytes)?,
             _ => return Err("browser project payload tag is invalid".into()),
         };
         let content_hash = (hash_length != 0)
@@ -313,6 +335,40 @@ fn decode_browser_manifest(bytes: &[u8]) -> Result<ProjectManifest, String> {
         project_revision,
         files,
     })
+}
+
+fn decode_external_resource(bytes: &[u8]) -> Result<FilePayload, String> {
+    if bytes.len() != 18 {
+        return Err("browser external resource descriptor has an invalid size".into());
+    }
+    let byte_length = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+    let image_metadata = if bytes[16] == 0xff {
+        None
+    } else {
+        let format = match bytes[16] {
+            0 => "png",
+            1 => "bmp",
+            2 => "gif",
+            3 => "jpeg",
+            4 => "webp",
+            _ => return Err("browser external resource image format is invalid".into()),
+        };
+        let width = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        let height = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+        if width == 0 || height == 0 || bytes[17] > 1 {
+            return Err("browser external resource image metadata is invalid".into());
+        }
+        Some(ImageMetadataResponse {
+            width,
+            height,
+            format: format.to_owned(),
+            animated: bytes[17] != 0,
+        })
+    };
+    Ok(FilePayload::ExternalResource(ExternalResource {
+        byte_length,
+        image_metadata,
+    }))
 }
 
 fn decode_file_category(value: u8) -> Result<FileCategory, String> {
@@ -380,9 +436,15 @@ mod tests {
     fn browser_manifest_binary_decodes_text_and_resource_payloads() {
         let mut bytes = b"RERMAN01".to_vec();
         bytes.extend_from_slice(&7_u64.to_le_bytes());
-        bytes.extend_from_slice(&2_u32.to_le_bytes());
+        bytes.extend_from_slice(&3_u32.to_le_bytes());
         append_file(&mut bytes, 2, b"main.erb", 0, b"@MAIN\nRETURN\n", &[3; 32]);
         append_file(&mut bytes, 4, b"resources/a.png", 1, &[1, 2, 3], &[4; 32]);
+        let mut external = Vec::new();
+        external.extend_from_slice(&1234_u64.to_le_bytes());
+        external.extend_from_slice(&640_u32.to_le_bytes());
+        external.extend_from_slice(&480_u32.to_le_bytes());
+        external.extend_from_slice(&[0, 0]);
+        append_file(&mut bytes, 4, b"resources/b.png", 2, &external, &[5; 32]);
 
         let manifest = decode_browser_manifest(&bytes).unwrap();
 
@@ -398,6 +460,12 @@ mod tests {
             manifest.files[1].content_hash.as_ref().unwrap().as_slice(),
             [4; 32]
         );
+        assert!(matches!(
+            &manifest.files[2].payload,
+            FilePayload::ExternalResource(resource)
+                if resource.byte_length == 1234
+                    && resource.image_metadata.as_ref().is_some_and(|value| value.width == 640)
+        ));
     }
 
     fn append_file(

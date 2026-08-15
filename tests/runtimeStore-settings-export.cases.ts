@@ -872,4 +872,192 @@ describe("runtime store settings-export", () => {
     expect(bridge.writeProjectFileChunk).toHaveBeenCalledWith(Uint8Array.of(1, 2, 3), true, true);
     expect(store.gameInteractionsBlocked).toBe(false);
   });
+
+  it("imports a full manifest in chunks before requesting project packaging", async () => {
+    const manifest = Uint8Array.of(1, 2, 3, 4, 5);
+    bridge.stageFullProjectManifest.mockResolvedValueOnce({ totalBytes: manifest.byteLength });
+    bridge.readFullProjectManifestChunk.mockImplementationOnce(async (offset, maximumBytes) =>
+      manifest.slice(offset, offset + maximumBytes),
+    );
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 })],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("state_import_accepted", { transfer_id: 19 }, 1)],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_import_ready", { transfer_id: 19, kind: "full_project_manifest" }, 1),
+        ],
+      });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+
+    await store.exportProjectFile();
+    await vi.advanceTimersByTimeAsync(48);
+
+    const messages = bridge.submitRuntime.mock.calls.map(([message]) => message);
+    expect(messages).toContainEqual({
+      type: "state_import_begin",
+      value: {
+        kind: "full_project_manifest",
+        total_bytes: manifest.byteLength,
+        digest: null,
+        artifact_id: null,
+      },
+    });
+    expect(messages).toContainEqual({
+      type: "state_import_chunk",
+      value: { transfer_id: 19, offset: 0, data: manifest },
+    });
+    expect(messages).toContainEqual({
+      type: "state_import_commit",
+      value: { transfer_id: 19, digest: blake3(manifest) },
+    });
+    expect(messages).toContainEqual({
+      type: "state_export_request",
+      value: { kind: "full_project_file", snapshot_purpose: "normal" },
+    });
+    await store.cancelProjectFileExport();
+  });
+
+  it("reads full manifests larger than four MiB through exact bounded bridge chunks", async () => {
+    const manifest = new Uint8Array(4 * 1024 * 1024 + 3).fill(7);
+    let messageId = 1;
+    bridge.submitRuntime.mockImplementation(async () => messageId++);
+    bridge.stageFullProjectManifest.mockResolvedValueOnce({ totalBytes: manifest.byteLength });
+    bridge.readFullProjectManifestChunk.mockImplementation(async (offset, maximumBytes) =>
+      manifest.slice(offset, offset + maximumBytes),
+    );
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 })],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("state_import_accepted", { transfer_id: 19 }, 1)],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_import_ready", { transfer_id: 19, kind: "full_project_manifest" }, 4),
+        ],
+      });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+
+    await store.exportProjectFile();
+    await vi.advanceTimersByTimeAsync(48);
+
+    expect(bridge.readFullProjectManifestChunk.mock.calls).toEqual([
+      [0, 4 * 1024 * 1024],
+      [4 * 1024 * 1024, 3],
+    ]);
+    const chunks = bridge.submitRuntime.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message.type === "state_import_chunk");
+    expect(chunks.map((message) => [message.value.offset, message.value.data.byteLength])).toEqual([
+      [0, 4 * 1024 * 1024],
+      [4 * 1024 * 1024, 3],
+    ]);
+    expect(bridge.releaseFullProjectManifest).toHaveBeenCalledOnce();
+    await store.cancelProjectFileExport();
+  });
+
+  it("does not package a project for mismatched manifest Ready events", async () => {
+    let messageId = 1;
+    bridge.submitRuntime.mockImplementation(async () => messageId++);
+    bridge.stageFullProjectManifest.mockResolvedValueOnce({ totalBytes: 1 });
+    bridge.readFullProjectManifestChunk.mockResolvedValueOnce(Uint8Array.of(1));
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 })],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("state_import_accepted", { transfer_id: 19 }, 1)],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("state_import_ready", { transfer_id: 20, kind: "full_project_manifest" }, 3),
+          runtimeEvent("state_import_ready", { transfer_id: 19, kind: "vm_snapshot" }, 3),
+        ],
+      });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+
+    await store.exportProjectFile();
+    await vi.advanceTimersByTimeAsync(48);
+
+    expect(
+      bridge.submitRuntime.mock.calls.some(
+        ([message]) =>
+          message.type === "state_export_request" && message.value.kind === "full_project_file",
+      ),
+    ).toBe(false);
+    await store.cancelProjectFileExport();
+  });
+
+  it.each([
+    { phase: "begin", rejectionBatch: 2, correlation: 1, accepted: false },
+    { phase: "chunk", rejectionBatch: 3, correlation: 2, accepted: true },
+    { phase: "commit", rejectionBatch: 3, correlation: 3, accepted: true },
+  ])(
+    "cleans a rejected full-manifest $phase command",
+    async ({ rejectionBatch, correlation, accepted }) => {
+      let messageId = 1;
+      bridge.submitRuntime.mockImplementation(async () => messageId++);
+      bridge.stageFullProjectManifest.mockResolvedValueOnce({ totalBytes: 1 });
+      bridge.readFullProjectManifestChunk.mockResolvedValueOnce(Uint8Array.of(1));
+      bridge.pump.mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 })],
+      });
+      if (accepted) {
+        bridge.pump.mockResolvedValueOnce({
+          ...emptyBatch(),
+          events: [runtimeEvent("state_import_accepted", { transfer_id: 19 }, 1)],
+        });
+      }
+      bridge.pump.mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent(
+            "command_rejected",
+            { code: "invalid_value", message: "rejected" },
+            correlation,
+          ),
+        ],
+      });
+      const store = useRuntimeStore();
+      store.projectOpen = true;
+      await store.enableDebug();
+      await vi.advanceTimersByTimeAsync(0);
+
+      await store.exportProjectFile();
+      await vi.advanceTimersByTimeAsync(rejectionBatch * 16);
+
+      expect(bridge.releaseFullProjectManifest).toHaveBeenCalled();
+      expect(bridge.cancelProjectFileExport).toHaveBeenCalled();
+      if (accepted)
+        expect(bridge.submitRuntime).toHaveBeenCalledWith(
+          { type: "state_transfer_cancel", value: { transfer_id: 19 } },
+          undefined,
+        );
+      expect(store.gameInteractionsBlocked).toBe(false);
+    },
+  );
 });

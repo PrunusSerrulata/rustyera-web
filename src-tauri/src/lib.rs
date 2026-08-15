@@ -20,6 +20,7 @@ mod services;
 mod storage;
 
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -29,7 +30,7 @@ use era_debug_protocol::DebugMessage;
 use era_runtime::{
     ProjectProgress, ProjectProgressReporter, ProjectProgressStage, RuntimeDriveBudget,
 };
-use era_runtime_protocol::{FullProjectManifest, RuntimeMessage, StorageRequest, StorageResponse};
+use era_runtime_protocol::{RuntimeMessage, StorageRequest, StorageResponse};
 use era_web_bridge::{FRONTEND_PUMP_MAXIMUM_QUIET_SLICES, WebSession, WebSessionOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -52,6 +53,18 @@ struct AppState {
     cache_writer: Arc<Mutex<Option<AtomicFileWriter>>>,
     export_writer: Arc<Mutex<Option<AtomicFileWriter>>>,
     full_project_cancelled: Arc<AtomicBool>,
+    full_manifest_spool: Arc<Mutex<Option<NativeManifestSpool>>>,
+}
+
+struct NativeManifestSpool {
+    file: tempfile::NamedTempFile,
+    total_bytes: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StagedManifestDescriptor {
+    total_bytes: u64,
 }
 
 fn emit_scanning_progress(app: &AppHandle, completed: usize, total: usize) {
@@ -90,6 +103,7 @@ async fn create_session(
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut session = WebSession::new(options)?;
+        *state.full_manifest_spool.lock().map_err(lock_error)? = None;
         let progress_app = app.clone();
         session.set_project_progress_reporter(Some(ProjectProgressReporter::new(
             move |progress| {
@@ -127,32 +141,76 @@ async fn submit_runtime(
 async fn stage_full_project_manifest(
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<StagedManifestDescriptor, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         state.full_project_cancelled.store(false, Ordering::Relaxed);
+        *state.full_manifest_spool.lock().map_err(lock_error)? = None;
         let progress = |completed, total| emit_scanning_progress(&app, completed, total);
-        let manifest = {
+        let mut spool = tempfile::NamedTempFile::new()
+            .map_err(|error| format!("cannot create full manifest spool: {error}"))?;
+        let total_bytes = {
             let mut project = state.project.lock().map_err(lock_error)?;
             project
                 .as_mut()
                 .ok_or_else(|| "no project is open".to_owned())?
-                .materialize_with_progress_and_cancel(
+                .write_full_manifest_with_progress_and_cancel(
+                    spool.as_file_mut(),
                     Some(&progress),
                     Some(&state.full_project_cancelled),
                 )?
-                .clone()
         };
-        with_session(&state, |session| {
-            session.submit_runtime(
-                &RuntimeMessage::FullProjectManifest(FullProjectManifest { manifest }),
-                None,
-            )
-        })?;
-        Ok(())
+        spool
+            .as_file_mut()
+            .sync_all()
+            .map_err(|error| format!("cannot sync full manifest spool: {error}"))?;
+        *state.full_manifest_spool.lock().map_err(lock_error)? = Some(NativeManifestSpool {
+            file: spool,
+            total_bytes,
+        });
+        Ok(StagedManifestDescriptor { total_bytes })
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn read_full_project_manifest_chunk(
+    state: State<'_, AppState>,
+    offset: u64,
+    maximum_bytes: u32,
+) -> Result<Vec<u8>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if maximum_bytes == 0 || maximum_bytes > 4 * 1024 * 1024 {
+            return Err("full manifest chunk size is invalid".into());
+        }
+        let mut guard = state.full_manifest_spool.lock().map_err(lock_error)?;
+        let spool = guard
+            .as_mut()
+            .ok_or_else(|| "full manifest spool is unavailable".to_owned())?;
+        if offset > spool.total_bytes {
+            return Err("full manifest chunk offset is invalid".into());
+        }
+        let length = usize::try_from((spool.total_bytes - offset).min(u64::from(maximum_bytes)))
+            .map_err(|_| "full manifest chunk length exceeds this platform's limits")?;
+        let mut bytes = vec![0_u8; length];
+        spool
+            .file
+            .as_file_mut()
+            .seek(SeekFrom::Start(offset))
+            .and_then(|_| spool.file.as_file_mut().read_exact(&mut bytes))
+            .map_err(|error| format!("cannot read full manifest spool: {error}"))?;
+        Ok(bytes)
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+fn release_full_project_manifest(state: State<'_, AppState>) -> Result<(), String> {
+    *state.full_manifest_spool.lock().map_err(lock_error)? = None;
+    Ok(())
 }
 
 #[tauri::command]
@@ -564,6 +622,8 @@ pub fn run() {
             create_session,
             submit_runtime,
             stage_full_project_manifest,
+            read_full_project_manifest_chunk,
+            release_full_project_manifest,
             submit_debug,
             pump,
             open_project,

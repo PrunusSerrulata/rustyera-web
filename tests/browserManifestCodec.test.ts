@@ -54,4 +54,30 @@ describe("browser manifest codec", () => {
     ).toBe(new TextDecoder().decode(new TextEncoder().encode(text)));
     expect(encoded.subarray(payloadOffset + payloadBytes)).toEqual(hash);
   });
+
+  it("encodes external resource length and image metadata without resource bytes", async () => {
+    const encoded = await encodeBrowserManifest({
+      project_revision: 1,
+      files: [
+        {
+          relative_path: "resources/image.png",
+          category: "resource",
+          payload: {
+            type: "external",
+            byteLength: 987654,
+            imageMetadata: { width: 640, height: 480, format: "png", animated: false },
+          },
+          content_hash: new Uint8Array(32).fill(9),
+        },
+      ],
+    });
+    const view = new DataView(encoded.buffer);
+    const pathBytes = view.getUint32(21, true);
+    expect(view.getUint8(25)).toBe(2);
+    expect(view.getBigUint64(26, true)).toBe(18n);
+    const descriptor = 35 + pathBytes;
+    expect(view.getBigUint64(descriptor, true)).toBe(987654n);
+    expect(view.getUint32(descriptor + 8, true)).toBe(640);
+    expect(view.getUint32(descriptor + 12, true)).toBe(480);
+  });
 });

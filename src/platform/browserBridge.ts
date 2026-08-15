@@ -50,6 +50,7 @@ export class BrowserBridge implements FrontendBridge {
   private discardCompiledCacheExport = false;
   private projectFileWriter?: FileSystemWritableFileStream;
   private projectFileExportAbort?: AbortController;
+  private fullManifestSpool?: import("@/platform/browserProject").BrowserFullManifestSpool;
   private projectFileFallback?:
     | { name: string; chunks: Uint8Array[] }
     | {
@@ -348,10 +349,11 @@ export class BrowserBridge implements FrontendBridge {
     let sourceReadMs = 0;
     if (cache) {
       try {
+        const identityManifest = await encodeBrowserManifest(cacheIdentityManifest(manifest));
         await this.worker.callWithTransfer(
-          "loadProjectWithCompiledCache",
-          [cacheIdentityManifest(manifest), cache],
-          [cache.buffer],
+          "loadProjectWithCompiledCacheBinary",
+          [identityManifest, cache],
+          [identityManifest.buffer, cache.buffer],
         );
         cacheImported = true;
         project.markRuntimeManifestSparse();
@@ -516,18 +518,31 @@ export class BrowserBridge implements FrontendBridge {
     return true;
   }
 
-  async stageFullProjectManifest(): Promise<void> {
+  async stageFullProjectManifest(): Promise<{ totalBytes: number } | undefined> {
     const project = this.requireProject();
-    if (project.embeddedManifest()) return;
+    if (project.embeddedManifest()) return undefined;
     const abort = new AbortController();
     this.projectFileExportAbort = abort;
     try {
-      const manifest = await project.materialize(this.scanProgress, abort.signal);
+      await this.releaseFullProjectManifest();
       abort.signal.throwIfAborted();
-      await this.submitRuntime({ type: "full_project_manifest", value: { manifest } });
+      this.fullManifestSpool = await project.stageFullManifest(this.scanProgress, abort.signal);
+      abort.signal.throwIfAborted();
+      return { totalBytes: this.fullManifestSpool.totalBytes };
     } finally {
       if (this.projectFileExportAbort === abort) this.projectFileExportAbort = undefined;
     }
+  }
+
+  async readFullProjectManifestChunk(offset: number, maximumBytes: number): Promise<Uint8Array> {
+    if (!this.fullManifestSpool) throw new Error("完整项目 manifest 尚未暂存");
+    return this.fullManifestSpool.read(offset, maximumBytes);
+  }
+
+  async releaseFullProjectManifest(): Promise<void> {
+    const spool = this.fullManifestSpool;
+    this.fullManifestSpool = undefined;
+    await spool?.release();
   }
 
   async writeProjectFileChunk(
@@ -577,6 +592,7 @@ export class BrowserBridge implements FrontendBridge {
   async cancelProjectFileExport(): Promise<void> {
     this.projectFileExportAbort?.abort(new DOMException("Export cancelled", "AbortError"));
     this.projectFileExportAbort = undefined;
+    await this.releaseFullProjectManifest().catch(() => undefined);
     if (this.projectFileWriter) {
       await this.projectFileWriter.abort().catch(() => undefined);
       this.projectFileWriter = undefined;

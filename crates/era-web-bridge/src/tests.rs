@@ -59,6 +59,12 @@ fn client_advertises_canvas_image_decode() {
 }
 
 #[test]
+fn web_session_negotiates_one_gibibyte_transfer_limit() {
+    let session = WebSession::new(WebSessionOptions::default()).unwrap();
+    assert_eq!(session.maximum_transfer_bytes(), 1024 * 1024 * 1024);
+}
+
+#[test]
 fn native_storage_partition_honors_zero_and_exact_limits() {
     let mut calls = 0;
     let events = vec![test_event("before"), storage_event(1), test_event("after")];

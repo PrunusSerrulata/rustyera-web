@@ -1,5 +1,6 @@
 import { blake3 } from "@noble/hashes/blake3.js";
 
+import { decodeImageMetadata } from "@/core/imageMetadata";
 import type { ProjectReloadScope, ProjectReloadTargets } from "@/core/types";
 import {
   equalBytes,
@@ -22,10 +23,11 @@ import {
 import { enumerateBrowserProject } from "@/platform/browserProjectEnumeration";
 import {
   decodeSourceIndexHash,
-  isBrowserSourceIndexEntry,
+  isBrowserSourceIndexIdentity,
   readBrowserSourceIndex,
   removeBrowserSourceIndex,
   sourceIndexesEqual,
+  validIndexedImageMetadata,
   type BrowserSourceIndexEntry,
   writeBrowserSourceIndex,
 } from "@/platform/browserProjectSourceIndex";
@@ -54,6 +56,12 @@ export interface BrowserTraditionalSaveSlot {
 export interface BrowserManifest {
   project_revision: number;
   files: ScannedFile[];
+}
+
+export interface BrowserFullManifestSpool {
+  totalBytes: number;
+  read(offset: number, maximumBytes: number): Promise<Uint8Array>;
+  release(): Promise<void>;
 }
 
 export type FileScanProgress = (completed: number, total: number) => void;
@@ -98,6 +106,7 @@ export class BrowserProject {
   private readonly files = new Map<string, FileSystemFileHandle>();
   private readonly embeddedResources = new Map<string, Uint8Array>();
   private readonly canonicalPaths = new Map<string, string>();
+  private readonly resourceSignatures = new Map<string, string>();
   private usesEmbeddedManifest = false;
   private manifestValue?: BrowserManifest;
   private pendingSnapshot?: PendingBrowserSnapshot;
@@ -283,6 +292,7 @@ export class BrowserProject {
   ): Promise<BrowserManifest> {
     throwIfAborted(signal);
     this.files.clear();
+    this.resourceSignatures.clear();
     progress?.(0, 0);
     const enumerateStarted = performance.now();
     const { files: candidates, topLevel } = await this.enumerateFiles();
@@ -299,10 +309,13 @@ export class BrowserProject {
       } else {
         positions.push(files.length);
         files.push(undefined as unknown as ScannedFile);
-        requests.push({
-          relativePath: candidate.relativePath,
-          file: await candidate.handle.getFile(),
-        });
+        const file = await candidate.handle.getFile();
+        if (candidate.category === "resource")
+          this.resourceSignatures.set(
+            candidate.relativePath.toLowerCase(),
+            `${file.size}:${file.lastModified}`,
+          );
+        requests.push({ relativePath: candidate.relativePath, file });
       }
     }
     const statMs = performance.now() - statStarted;
@@ -331,6 +344,7 @@ export class BrowserProject {
 
   async scanQuick(progress?: FileScanProgress): Promise<BrowserManifest> {
     this.files.clear();
+    this.resourceSignatures.clear();
     progress?.(0, 0);
     const enumerateStarted = performance.now();
     const { files: candidates, topLevel } = await this.enumerateFiles();
@@ -367,17 +381,34 @@ export class BrowserProject {
       if (
         this.sourceIndexTrusted &&
         sourceIndex.valid &&
-        isBrowserSourceIndexEntry(prior) &&
+        isBrowserSourceIndexIdentity(prior) &&
         prior.category === candidate.category &&
         prior.signature === signature &&
         prior.size === file.size &&
         /^[0-9a-f]{64}$/i.test(prior.hash)
       ) {
         reused[index] = true;
+        let imageMetadata = validIndexedImageMetadata(prior.imageMetadata);
+        if (
+          candidate.category === "resource" &&
+          !imageMetadata &&
+          /\.(?:bmp|gif|jpe?g|png|webp)$/i.test(candidate.relativePath)
+        ) {
+          try {
+            imageMetadata = decodeImageMetadata(
+              new Uint8Array(await file.slice(0, 1024 * 1024).arrayBuffer()),
+            );
+          } catch {
+            // Invalid or unsupported image metadata remains a cache miss for Runtime services.
+          }
+          const current = await candidate.handle.getFile();
+          if (`${current.size}:${current.lastModified}` !== signature)
+            throw new Error(`项目文件在读取期间发生变化：${candidate.relativePath}`);
+        }
         files[index] = {
           relative_path: candidate.relativePath,
           category: candidate.category,
-          payload: emptyPayload(candidate.category),
+          payload: emptyPayload(candidate.category, file.size, imageMetadata),
           content_hash: decodeSourceIndexHash(prior.hash),
         };
       } else {
@@ -399,7 +430,9 @@ export class BrowserProject {
       const file = snapshots[index]!;
       const signature = signatures[index]!;
       const scanned = files[index]!;
-      const prepared = reused[index] ? undefined : scanned;
+      if (candidate.category === "resource")
+        this.resourceSignatures.set(candidate.relativePath.toLowerCase(), signature);
+      const prepared = reused[index] && candidate.category !== "resource" ? undefined : scanned;
       pending[index] = { ...candidate, signature, prepared };
       indexEntries[index] = [
         candidate.relativePath,
@@ -408,6 +441,8 @@ export class BrowserProject {
           signature,
           hash: hex(scanned.content_hash),
           size: file.size,
+          imageMetadata:
+            scanned.payload.type === "external" ? scanned.payload.imageMetadata : undefined,
         },
       ];
     }
@@ -502,6 +537,113 @@ export class BrowserProject {
     this.pendingSnapshot = undefined;
     this.manifestValue = { project_revision: this.revision, files };
     return this.manifestValue;
+  }
+
+  async stageFullManifest(
+    progress?: FileScanProgress,
+    signal?: AbortSignal,
+  ): Promise<BrowserFullManifestSpool> {
+    const manifest = await this.materialize(progress, signal);
+    const root = await navigator.storage.getDirectory();
+    const name = `.rustyera-full-manifest-${crypto.randomUUID()}.cbor`;
+    const handle = await root.getFileHandle(name, { create: true });
+    const writer = await handle.createWritable({ keepExistingData: false });
+    let totalBytes = 0;
+    const write = async (bytes: Uint8Array) => {
+      totalBytes += bytes.byteLength;
+      if (totalBytes > 1024 * 1024 * 1024)
+        throw new Error("full project manifest exceeds the 1 GiB transfer limit");
+      await writer.write(bytes as FileSystemWriteChunkType);
+    };
+    let completed = 0;
+    progress?.(completed, manifest.files.length);
+    try {
+      await write(Uint8Array.of(0xa2, 0x00));
+      await write(cborHead(0, manifest.project_revision));
+      await write(Uint8Array.of(0x01));
+      await write(cborHead(4, manifest.files.length));
+      for (const file of manifest.files) {
+        throwIfAborted(signal);
+        await write(cborHead(5, 4));
+        await write(Uint8Array.of(0x00));
+        await write(cborText(file.relative_path));
+        await write(Uint8Array.of(0x01));
+        await write(cborHead(0, projectCategoryCode(file.category)));
+        await write(Uint8Array.of(0x02, 0x82));
+        if (file.payload.type === "utf8") {
+          await write(Uint8Array.of(0x00, 0x81));
+          await write(cborText(file.payload.value));
+        } else if (file.payload.type === "bytes") {
+          await write(Uint8Array.of(0x01, 0x81));
+          await write(cborHead(2, file.payload.value.byteLength));
+          await write(file.payload.value);
+        } else {
+          await write(Uint8Array.of(0x01, 0x81));
+          await write(cborHead(2, file.payload.byteLength));
+          await this.writeResourceToSpool(file, write, signal);
+        }
+        await write(Uint8Array.of(0x03));
+        await write(cborHead(2, file.content_hash.byteLength));
+        await write(file.content_hash);
+        completed += 1;
+        progress?.(completed, manifest.files.length);
+      }
+      await writer.close();
+    } catch (error) {
+      await writer.abort().catch(() => undefined);
+      await root.removeEntry(name).catch(() => undefined);
+      throw error;
+    }
+    return {
+      totalBytes,
+      async read(offset, maximumBytes) {
+        const file = await handle.getFile();
+        return new Uint8Array(
+          await file.slice(offset, Math.min(file.size, offset + maximumBytes)).arrayBuffer(),
+        );
+      },
+      async release() {
+        await root.removeEntry(name).catch((error) => {
+          if (errorKind(error) !== "not_found") throw error;
+        });
+      },
+    };
+  }
+
+  private async writeResourceToSpool(
+    source: ScannedFile,
+    write: (bytes: Uint8Array) => Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (source.payload.type !== "external") throw new Error("resource descriptor is missing");
+    const normalized = safePath(source.relative_path);
+    const key = normalized.toLowerCase();
+    const handle =
+      this.files.get(key) ??
+      (await optionalFileHandle(
+        this.root,
+        (this.canonicalPaths.get(key) ?? normalized).split("/"),
+      ));
+    if (!handle) throw new Error(`未知资源：${source.relative_path}`);
+    const file = await handle.getFile();
+    const signature = `${file.size}:${file.lastModified}`;
+    if (file.size !== source.payload.byteLength || this.resourceSignatures.get(key) !== signature)
+      throw new Error(`资源在项目扫描后发生变化：${source.relative_path}`);
+    const hasher = blake3.create();
+    for (let offset = 0; offset < file.size; offset += 4 * 1024 * 1024) {
+      throwIfAborted(signal);
+      const bytes = new Uint8Array(
+        await file.slice(offset, offset + 4 * 1024 * 1024).arrayBuffer(),
+      );
+      hasher.update(bytes);
+      await write(bytes);
+    }
+    const current = await handle.getFile();
+    if (
+      `${current.size}:${current.lastModified}` !== signature ||
+      !equalBytes(hasher.digest(), source.content_hash)
+    )
+      throw new Error(`资源在项目扫描后发生变化：${source.relative_path}`);
   }
 
   async readCompiledCache(progress?: FileScanProgress): Promise<Uint8Array | undefined> {
@@ -695,7 +837,20 @@ export class BrowserProject {
         (this.canonicalPaths.get(key) ?? normalized).split("/"),
       ));
     if (!handle) throw new Error(`未知资源：${relativePath}`);
-    return new Uint8Array(await (await handle.getFile()).arrayBuffer());
+    const current = await handle.getFile();
+    const bytes = new Uint8Array(await current.arrayBuffer());
+    const expected = this.manifestValue?.files.find(
+      (file) => file.category === "resource" && file.relative_path.toLowerCase() === key,
+    )?.content_hash;
+    const expectedSignature = this.resourceSignatures.get(key);
+    if (
+      !expected ||
+      (expectedSignature != null &&
+        `${current.size}:${current.lastModified}` !== expectedSignature) ||
+      !equalBytes(blake3(bytes), expected)
+    )
+      throw new Error(`资源在项目扫描后发生变化：${relativePath}`);
+    return bytes;
   }
 
   async readResourcePrefix(relativePath: string, maximumBytes: number): Promise<Uint8Array> {
@@ -711,7 +866,16 @@ export class BrowserProject {
       ));
     if (!handle) throw new Error(`未知资源：${relativePath}`);
     const file = await handle.getFile();
-    return new Uint8Array(await file.slice(0, maximumBytes).arrayBuffer());
+    const expectedSignature = this.resourceSignatures.get(key);
+    const signature = `${file.size}:${file.lastModified}`;
+    if (expectedSignature && signature !== expectedSignature)
+      throw new Error(`资源在项目扫描后发生变化：${relativePath}`);
+    const bytes = new Uint8Array(await file.slice(0, maximumBytes).arrayBuffer());
+    const current = await handle.getFile();
+    if (`${current.size}:${current.lastModified}` !== signature)
+      throw new Error(`资源在项目扫描后发生变化：${relativePath}`);
+    if (!expectedSignature) this.resourceSignatures.set(key, signature);
+    return bytes;
   }
 
   fontSources(): ProjectFontSource[] {
@@ -795,7 +959,22 @@ function runtimeReloadUpsert(file: ScannedFile): any {
       payload:
         file.payload.type === "bytes"
           ? { type: "bytes", value: [...file.payload.value] }
-          : file.payload,
+          : file.payload.type === "external"
+            ? {
+                type: "external_resource",
+                value: {
+                  byte_length: file.payload.byteLength,
+                  image_metadata: file.payload.imageMetadata
+                    ? {
+                        width: file.payload.imageMetadata.width,
+                        height: file.payload.imageMetadata.height,
+                        format: file.payload.imageMetadata.format,
+                        animated: file.payload.imageMetadata.animated,
+                      }
+                    : null,
+                },
+              }
+            : file.payload,
       content_hash: [...file.content_hash],
     },
   };
@@ -858,15 +1037,21 @@ export function cacheIdentityManifest(manifest: BrowserManifest): BrowserManifes
       ...file,
       payload:
         file.category === "resource"
-          ? { type: "bytes", value: new Uint8Array() }
+          ? file.payload.type === "external"
+            ? file.payload
+            : { type: "bytes", value: new Uint8Array() }
           : { type: "utf8", value: "" },
     })),
   };
 }
 
-function emptyPayload(category: string): ScannedFile["payload"] {
+function emptyPayload(
+  category: string,
+  byteLength = 0,
+  imageMetadata?: Extract<ScannedFile["payload"], { type: "external" }>["imageMetadata"],
+): ScannedFile["payload"] {
   return category === "resource"
-    ? { type: "bytes", value: new Uint8Array() }
+    ? { type: "external", byteLength, imageMetadata }
     : { type: "utf8", value: "" };
 }
 
@@ -886,6 +1071,43 @@ function emptyScanMetrics(): BrowserProjectScanMetrics {
 
 function compareScannedFiles(left: ScannedFile, right: ScannedFile): number {
   return comparePaths(left.relative_path, right.relative_path);
+}
+
+function projectCategoryCode(category: string): number {
+  const code = {
+    csv: 0,
+    erh: 1,
+    erb: 2,
+    resource_manifest: 3,
+    resource: 4,
+    configuration: 5,
+  }[category];
+  if (code == null) throw new Error(`未知项目文件类别：${category}`);
+  return code;
+}
+
+function cborText(value: string): Uint8Array {
+  const encoded = new TextEncoder().encode(value);
+  const header = cborHead(3, encoded.byteLength);
+  const result = new Uint8Array(header.byteLength + encoded.byteLength);
+  result.set(header);
+  result.set(encoded, header.byteLength);
+  return result;
+}
+
+function cborHead(major: number, value: number | bigint): Uint8Array {
+  const integer = BigInt(value);
+  if (integer < 0n) throw new Error("CBOR length cannot be negative");
+  if (integer < 24n) return Uint8Array.of((major << 5) | Number(integer));
+  if (integer <= 0xffn) return Uint8Array.of((major << 5) | 24, Number(integer));
+  const bytes = integer <= 0xffffn ? 2 : integer <= 0xffff_ffffn ? 4 : 8;
+  const result = new Uint8Array(1 + bytes);
+  result[0] = (major << 5) | (bytes === 2 ? 25 : bytes === 4 ? 26 : 27);
+  const view = new DataView(result.buffer);
+  if (bytes === 2) view.setUint16(1, Number(integer));
+  else if (bytes === 4) view.setUint32(1, Number(integer));
+  else view.setBigUint64(1, integer);
+  return result;
 }
 
 function comparePaths(left: string, right: string): number {

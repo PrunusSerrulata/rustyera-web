@@ -264,7 +264,7 @@ describe("browser startup bridge", () => {
     });
     let cacheAttempts = 0;
     respond = (method) => {
-      if (method === "loadProjectWithCompiledCache" && cacheAttempts++ === 0)
+      if (method === "loadProjectWithCompiledCacheBinary" && cacheAttempts++ === 0)
         throw new Error("stale cache");
       return 1n;
     };
@@ -283,7 +283,7 @@ describe("browser startup bridge", () => {
     expect(fallback?.transfer).toHaveLength(1);
     expect(fallback?.transfer[0]).toBe(encoded.buffer);
     expect(
-      requests.filter((request) => request.message.method === "loadProjectWithCompiledCache"),
+      requests.filter((request) => request.message.method === "loadProjectWithCompiledCacheBinary"),
     ).toHaveLength(2);
     expect(scan).not.toHaveBeenCalled();
     scan.mockRestore();
@@ -383,7 +383,7 @@ describe("browser startup bridge", () => {
     });
     const bridge = new BrowserBridge();
     await bridge.openProject();
-    const materialize = vi.spyOn(BrowserProject.prototype, "materialize").mockImplementation(
+    const materialize = vi.spyOn(BrowserProject.prototype, "stageFullManifest").mockImplementation(
       async (_progress, signal) =>
         new Promise((_resolve, reject) => {
           signal?.addEventListener("abort", () => reject(signal.reason), { once: true });

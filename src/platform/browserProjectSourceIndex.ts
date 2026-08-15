@@ -1,6 +1,7 @@
+import type { ImageMetadata } from "@/core/imageMetadata";
 import { errorKind } from "@/platform/browserProjectFilesystem";
 
-const SOURCE_INDEX_VERSION = 1;
+const SOURCE_INDEX_VERSION = 2;
 const SOURCE_INDEX_NAME = "source-index-v1.json";
 
 export interface BrowserSourceIndexEntry {
@@ -8,6 +9,7 @@ export interface BrowserSourceIndexEntry {
   signature: string;
   hash: string;
   size: number;
+  imageMetadata?: ImageMetadata;
 }
 
 export interface BrowserSourceIndex {
@@ -15,6 +17,10 @@ export interface BrowserSourceIndex {
   present: boolean;
   valid: boolean;
 }
+
+type BrowserSourceIndexIdentity = Omit<BrowserSourceIndexEntry, "imageMetadata"> & {
+  imageMetadata?: unknown;
+};
 
 export async function readBrowserSourceIndex(
   root: FileSystemDirectoryHandle,
@@ -30,7 +36,8 @@ export async function readBrowserSourceIndex(
   }
   try {
     const value = JSON.parse(await file.text()) as { version?: unknown; files?: unknown };
-    const valid = value.version === SOURCE_INDEX_VERSION && isRecord(value.files);
+    const valid =
+      (value.version === 1 || value.version === SOURCE_INDEX_VERSION) && isRecord(value.files);
     return {
       files: valid ? (value.files as Record<string, BrowserSourceIndexEntry>) : {},
       present: true,
@@ -93,13 +100,21 @@ export function sourceIndexesEqual(
         previous.category === entry.category &&
         previous.signature === entry.signature &&
         previous.hash.toLowerCase() === entry.hash.toLowerCase() &&
-        previous.size === entry.size
+        previous.size === entry.size &&
+        JSON.stringify(previous.imageMetadata) === JSON.stringify(entry.imageMetadata)
       );
     })
   );
 }
 
 export function isBrowserSourceIndexEntry(value: unknown): value is BrowserSourceIndexEntry {
+  return (
+    isBrowserSourceIndexIdentity(value) &&
+    (value.imageMetadata === undefined || isImageMetadata(value.imageMetadata))
+  );
+}
+
+export function isBrowserSourceIndexIdentity(value: unknown): value is BrowserSourceIndexIdentity {
   return (
     isRecord(value) &&
     typeof value.category === "string" &&
@@ -109,6 +124,27 @@ export function isBrowserSourceIndexEntry(value: unknown): value is BrowserSourc
     typeof value.size === "number" &&
     Number.isSafeInteger(value.size) &&
     value.size >= 0
+  );
+}
+
+export function validIndexedImageMetadata(value: unknown): ImageMetadata | undefined {
+  return isImageMetadata(value) ? value : undefined;
+}
+
+function isImageMetadata(value: unknown): value is ImageMetadata {
+  return (
+    isRecord(value) &&
+    typeof value.width === "number" &&
+    Number.isSafeInteger(value.width) &&
+    value.width > 0 &&
+    value.width <= 0xffff_ffff &&
+    typeof value.height === "number" &&
+    Number.isSafeInteger(value.height) &&
+    value.height > 0 &&
+    value.height <= 0xffff_ffff &&
+    typeof value.format === "string" &&
+    ["png", "bmp", "gif", "jpeg", "webp"].includes(value.format) &&
+    typeof value.animated === "boolean"
   );
 }
 

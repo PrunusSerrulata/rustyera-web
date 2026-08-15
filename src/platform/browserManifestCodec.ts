@@ -8,6 +8,7 @@ const PREPARE_PROGRESS = 25;
 const PROGRESS_TOTAL = 100;
 const FILES_PER_YIELD = 128;
 const BYTES_PER_YIELD = 1024 * 1024;
+const EXTERNAL_DESCRIPTOR_BYTES = 18;
 const CATEGORY_CODES: Record<string, number> = {
   csv: 0,
   erh: 1,
@@ -39,7 +40,9 @@ export async function encodeBrowserManifest(
     const payloadBytes =
       source.payload.type === "utf8"
         ? utf8ByteLength(source.payload.value)
-        : source.payload.value.byteLength;
+        : source.payload.type === "bytes"
+          ? source.payload.value.byteLength
+          : EXTERNAL_DESCRIPTOR_BYTES;
     if (!(source.category in CATEGORY_CODES))
       throw new Error(`未知项目文件类别：${source.category}`);
     if (source.content_hash.byteLength !== 32) throw new Error("项目文件内容哈希必须为 32 字节");
@@ -77,7 +80,10 @@ export async function encodeBrowserManifest(
     offset += 1;
     view.setUint32(offset, path.byteLength, true);
     offset += 4;
-    view.setUint8(offset, source.payload.type === "utf8" ? 0 : 1);
+    view.setUint8(
+      offset,
+      source.payload.type === "utf8" ? 0 : source.payload.type === "bytes" ? 1 : 2,
+    );
     offset += 1;
     view.setBigUint64(offset, BigInt(payloadBytes), true);
     offset += 8;
@@ -98,13 +104,45 @@ export async function encodeBrowserManifest(
         copyState.yieldedAt = copyState.copied;
         await yieldToMainThread();
       }
-    } else {
+    } else if (source.payload.type === "bytes") {
       offset = await copyBytes(output, source.payload.value, offset, copyState, copyTotal, report);
+    } else {
+      const descriptor = encodeExternalDescriptor(source.payload);
+      offset = await copyBytes(output, descriptor, offset, copyState, copyTotal, report);
     }
     offset = await copyBytes(output, source.content_hash, offset, copyState, copyTotal, report);
   }
   report(PROGRESS_TOTAL);
   return output;
+}
+
+function encodeExternalDescriptor(
+  payload: Extract<ScannedFile["payload"], { type: "external" }>,
+): Uint8Array {
+  const result = new Uint8Array(EXTERNAL_DESCRIPTOR_BYTES);
+  const view = new DataView(result.buffer);
+  view.setBigUint64(0, BigInt(payload.byteLength), true);
+  const metadata = payload.imageMetadata;
+  if (!metadata) {
+    view.setUint8(16, 0xff);
+    return result;
+  }
+  if (
+    !Number.isInteger(metadata.width) ||
+    metadata.width <= 0 ||
+    metadata.width > 0xffff_ffff ||
+    !Number.isInteger(metadata.height) ||
+    metadata.height <= 0 ||
+    metadata.height > 0xffff_ffff
+  )
+    throw new Error("图片元数据尺寸无效");
+  const format = { png: 0, bmp: 1, gif: 2, jpeg: 3, webp: 4 }[metadata.format];
+  if (format === undefined) throw new Error("图片元数据格式无效");
+  view.setUint32(8, metadata.width, true);
+  view.setUint32(12, metadata.height, true);
+  view.setUint8(16, format);
+  view.setUint8(17, metadata.animated ? 1 : 0);
+  return result;
 }
 
 async function copyBytes(

@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
+import { blake3 } from "@noble/hashes/blake3.js";
 
 import { AudioEngine } from "@/core/audio";
 import { diagnosisProjectName, diagnosisProjectTitle } from "@/core/diagnosis";
@@ -96,6 +97,8 @@ import type {
   RuntimeStartKind,
   RuntimeTestConfiguration,
 } from "@/stores/runtimeState";
+
+const FULL_PROJECT_MANIFEST_CHUNK_BYTES = 4 * 1024 * 1024;
 
 export const useRuntimeStore = defineStore("runtime", () => {
   const bridge = platformBridge();
@@ -275,6 +278,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const pendingInputUndo = runtimeInput.pendingUndo;
   const pendingProjectionMessages = runtimeViewport.pendingMessages;
   const runtimeImport = new RuntimeImportState(bridge, send);
+  let fullManifestImport:
+    | {
+        totalBytes: number;
+        purpose: "project_file" | "diagnosis_project";
+        beginMessageId?: string;
+        transferId?: number;
+        commitMessageId?: string;
+        commandMessageIds: Set<string>;
+      }
+    | undefined;
   const runtimePump = new RuntimePumpCoordinator(bridge, {
     handleBatch,
     advanceTimedWait,
@@ -606,6 +619,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function recreateSessionForProjectSelection(): Promise<void> {
     runtimePump.setTransitioning(true);
     try {
+      if (fullManifestImport) await cleanupFullManifestImport(true);
       clearSessionTimers();
       resetSessionState(true);
       baseStatus.value = "正在创建新的 Runtime session…";
@@ -866,12 +880,24 @@ export const useRuntimeStore = defineStore("runtime", () => {
         await exportTransfer.handleChunk(value, dataBytes);
         break;
       case "state_import_accepted":
-        await runtimeImport.accept(value);
+        if (fullManifestImport) {
+          try {
+            await acceptFullManifestImport(value, correlationId);
+          } catch (error) {
+            const active = exportState;
+            await cleanupFullManifestImport(true);
+            const message = `完整项目 manifest 传输失败：${String(error)}`;
+            if (active?.kind === "diagnosis_project") await failDiagnosisExport(active, message);
+            else await finishProjectFileExport("failed", message, false);
+          }
+        } else await runtimeImport.accept(value);
         break;
       case "state_import_ready":
-        await runtimeImport.ready(value);
+        if (fullManifestImport) await finishFullManifestImport(value, correlationId);
+        else await runtimeImport.ready(value);
         break;
       case "fault": {
+        if (fullManifestImport) await cleanupFullManifestImport(false);
         gameProgressLossConfirmation.value = null;
         const startupWasLoading = startupTelemetry.value?.outcome === "loading";
         startupTelemetryState.fail(value.message ?? "Runtime fault");
@@ -916,6 +942,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
           log(value.level ?? "info", value.message, true, suppressNotification ? "none" : "all");
         break;
       case "command_rejected": {
+        if (fullManifestImport?.commandMessageIds.has(String(correlationId))) {
+          const active = exportState;
+          await cleanupFullManifestImport(true);
+          const message = `完整项目 manifest 导入被 Runtime 拒绝：${value.message ?? "未知原因"}`;
+          if (active?.kind === "diagnosis_project") await failDiagnosisExport(active, message);
+          else await finishProjectFileExport("failed", message, false);
+          break;
+        }
         if (
           startupTelemetry.value?.outcome === "loading" &&
           String(correlationId) === startupTelemetryState.startMessageId
@@ -1529,9 +1563,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     exportState = activeExport;
     baseStatus.value = "正在读取全量项目文件…";
     try {
-      await bridge.stageFullProjectManifest();
-      if (!projectFileExporting.value || exportState !== activeExport) return;
-      await requestFullProjectExport(activeExport);
+      await stageFullManifestImport(activeExport, "project_file");
     } catch (error) {
       const cancelled = !projectFileExporting.value && exportState == null;
       await finishProjectFileExport(cancelled ? "cancelled" : "failed");
@@ -1565,6 +1597,128 @@ export const useRuntimeStore = defineStore("runtime", () => {
       messageId,
     );
     if (preparationRejected) scheduleFullProjectExportRetry(activeExport);
+  }
+
+  async function stageFullManifestImport(
+    activeExport: FullProjectExportState,
+    purpose: "project_file" | "diagnosis_project",
+  ): Promise<void> {
+    const descriptor = await bridge.stageFullProjectManifest();
+    if (!projectFileExporting.value && purpose === "project_file") {
+      await bridge.releaseFullProjectManifest();
+      return;
+    }
+    if (exportState !== activeExport) {
+      await bridge.releaseFullProjectManifest();
+      return;
+    }
+    if (!descriptor) {
+      await requestFullProjectExport(activeExport);
+      return;
+    }
+    if (descriptor.totalBytes > 1024 * 1024 * 1024) {
+      await bridge.releaseFullProjectManifest();
+      throw new Error("full project manifest exceeds the 1 GiB transfer limit");
+    }
+    const pending: NonNullable<typeof fullManifestImport> = {
+      totalBytes: descriptor.totalBytes,
+      purpose,
+      commandMessageIds: new Set<string>(),
+    };
+    fullManifestImport = pending;
+    const messageId = await send({
+      type: "state_import_begin",
+      value: {
+        kind: "full_project_manifest",
+        total_bytes: descriptor.totalBytes,
+        digest: null,
+        artifact_id: null,
+      },
+    });
+    pending.beginMessageId = String(messageId);
+    pending.commandMessageIds.add(String(messageId));
+  }
+
+  async function acceptFullManifestImport(
+    value: any,
+    correlationId?: number | bigint,
+  ): Promise<void> {
+    const pending = fullManifestImport;
+    if (!pending) return;
+    if (pending.beginMessageId !== String(correlationId)) {
+      log("warning", "Runtime 返回了不匹配的完整项目 manifest Accepted", true);
+      await send({ type: "state_transfer_cancel", value: { transfer_id: value.transfer_id } });
+      return;
+    }
+    if (pending.transferId != null) {
+      log("warning", "Runtime 返回了重复的完整项目 manifest transfer", true);
+      return;
+    }
+    if (!exportState || !isFullProjectExport(exportState)) {
+      await cleanupFullManifestImport(false);
+      await send({ type: "state_transfer_cancel", value: { transfer_id: value.transfer_id } });
+      return;
+    }
+    pending.transferId = Number(value.transfer_id);
+    const hasher = blake3.create();
+    for (let offset = 0; offset < pending.totalBytes; offset += FULL_PROJECT_MANIFEST_CHUNK_BYTES) {
+      if (!exportState || !isFullProjectExport(exportState)) {
+        await cleanupFullManifestImport(false);
+        await send({ type: "state_transfer_cancel", value: { transfer_id: value.transfer_id } });
+        return;
+      }
+      const expected = Math.min(FULL_PROJECT_MANIFEST_CHUNK_BYTES, pending.totalBytes - offset);
+      const data = await bridge.readFullProjectManifestChunk(offset, expected);
+      if (data.byteLength !== expected) throw new Error("完整项目 manifest 临时文件读取不完整");
+      hasher.update(data);
+      const messageId = await send({
+        type: "state_import_chunk",
+        value: {
+          transfer_id: value.transfer_id,
+          offset,
+          data,
+        },
+      });
+      pending.commandMessageIds.add(String(messageId));
+    }
+    const messageId = await send({
+      type: "state_import_commit",
+      value: { transfer_id: value.transfer_id, digest: hasher.digest() },
+    });
+    pending.commandMessageIds.add(String(messageId));
+    pending.commitMessageId = String(messageId);
+    await bridge.releaseFullProjectManifest();
+  }
+
+  async function finishFullManifestImport(
+    value: any,
+    correlationId?: number | bigint,
+  ): Promise<void> {
+    const pending = fullManifestImport;
+    if (
+      !pending ||
+      pending.transferId !== Number(value.transfer_id) ||
+      value.kind !== "full_project_manifest" ||
+      pending.commitMessageId !== String(correlationId)
+    ) {
+      log("warning", "Runtime 返回了不匹配的完整项目 manifest Ready", true);
+      return;
+    }
+    fullManifestImport = undefined;
+    if (!exportState || !isFullProjectExport(exportState)) return;
+    await requestFullProjectExport(exportState);
+  }
+
+  async function cleanupFullManifestImport(cancelRuntime: boolean): Promise<void> {
+    const pending = fullManifestImport;
+    fullManifestImport = undefined;
+    if (pending) await Promise.resolve(bridge.releaseFullProjectManifest()).catch(() => undefined);
+    if (cancelRuntime && pending?.transferId != null) {
+      await send({
+        type: "state_transfer_cancel",
+        value: { transfer_id: pending.transferId },
+      }).catch(() => undefined);
+    }
   }
 
   function settleFullProjectRequestSubmission(
@@ -1626,6 +1780,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     message?: string,
     cancelRuntime = outcome !== "success",
   ): Promise<void> {
+    if (fullManifestImport) await cleanupFullManifestImport(cancelRuntime);
     exportState = undefined;
     const resumeCache = projectFileExportState.finish();
     if (outcome !== "success") {
@@ -1685,8 +1840,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           received: 0,
         };
         exportState = activeExport;
-        await bridge.stageFullProjectManifest();
-        if (exportState === activeExport) await requestFullProjectExport(activeExport);
+        await stageFullManifestImport(activeExport, "diagnosis_project");
       } else {
         if (!runtimeDiagnosis.active?.snapshot || !runtimeDiagnosis.active.inputReplay)
           throw new Error("诊断归档输入缺失");
@@ -1738,6 +1892,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function failDiagnosisExport(activeExport: ExportState, message: string): Promise<void> {
     if (exportState !== activeExport || !activeExport.kind.startsWith("diagnosis_")) return;
+    if (fullManifestImport) await cleanupFullManifestImport(true);
     exportState = undefined;
     runtimeDiagnosis.active = undefined;
     if (activeExport.kind === "diagnosis_replay" || activeExport.kind === "diagnosis_snapshot") {
@@ -2144,6 +2299,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function shutdown(): Promise<void> {
     if (diagnosisExporting.value) return;
+    if (fullManifestImport) await cleanupFullManifestImport(true);
     if (bridge.kind === "browser") {
       requestBrowserTabClose();
       return;
