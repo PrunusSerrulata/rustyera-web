@@ -74,6 +74,19 @@ describe("browser game runner progress policy", () => {
     expect(cacheSmoke).not.toContain("亚斯特丽德的工房");
   });
 
+  it("covers cold and incremental compiled-cache handoff in both directions", () => {
+    const runner = readFileSync(resolve("scripts/cache-handoff-test.mjs"), "utf8");
+
+    expect(runner).toContain('"tui_cold_to_web"');
+    expect(runner).toContain('"web_cold_to_tui"');
+    expect(runner).toContain('"tui_incremental_to_web"');
+    expect(runner).toContain('"web_incremental_to_tui"');
+    expect(runner).toContain('assertSameFile(tuiColdCache, webColdCache, "cold")');
+    expect(runner).toContain(
+      'assertSameFile(tuiIncrementalCache, webIncrementalCache, "incremental")',
+    );
+  });
+
   it("provides a native-browser font hot-apply flow", () => {
     const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
 

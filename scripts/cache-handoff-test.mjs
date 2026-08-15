@@ -10,121 +10,136 @@ const web = fileURLToPath(new URL("..", import.meta.url));
 const root = path.resolve(web, "..");
 const runtime = process.env.ERA_RUNTIME_LIBRARY;
 if (!runtime) throw new Error("ERA_RUNTIME_LIBRARY is required");
+
 const temporary = await mkdtemp(path.join(tmpdir(), "rustyera-cache-handoff-"));
 const project = path.join(temporary, "initial-project");
 const tuiScenario = path.join(temporary, "tui.json");
 const webScenario = path.join(temporary, "web.json");
-const tuiCache = path.join(temporary, "tui.reracache");
-const tuiProject = path.join(temporary, "tui-project");
-const webCache = path.join(temporary, "web.reracache");
-const webProject = path.join(temporary, "web-project");
-const tuiFinalCache = path.join(temporary, "tui-final.reracache");
-const tuiFinalProject = path.join(temporary, "tui-final-project");
-const webFinalCache = path.join(temporary, "web-final.reracache");
-const webFinalProject = path.join(temporary, "web-final-project");
-const browserInputProject = path.join(temporary, "browser-input-project");
+const tuiColdCache = path.join(temporary, "tui-cold.reracache");
+const tuiColdProject = path.join(temporary, "tui-cold-project");
+const webColdCache = path.join(temporary, "web-cold.reracache");
+const webColdProject = path.join(temporary, "web-cold-project");
+const tuiIncrementalCache = path.join(temporary, "tui-incremental.reracache");
+const tuiIncrementalProject = path.join(temporary, "tui-incremental-project");
+const webIncrementalCache = path.join(temporary, "web-incremental.reracache");
+const webIncrementalProject = path.join(temporary, "web-incremental-project");
+const originalSource = "REPLAY_DIAGNOSIS_READY";
+const updatedSource = "HANDOFF_INCREMENTAL";
+
 try {
   await cp(path.join(web, "tests", "fixtures", "diagnosis-project"), project, {
     recursive: true,
   });
-  await cp(project, browserInputProject, { recursive: true });
-  await writeFile(
-    tuiScenario,
-    JSON.stringify({
-      schema_version: 1,
-      project,
-      mode: "fixed",
-      seed: 123456,
-      limits: { max_steps: 10, timeout_seconds: 60 },
-    }),
-  );
-  await writeBrowserScenario(webScenario, "HANDOFF_TUI", "HANDOFF_WEB");
+  await writeTuiScenario(tuiScenario);
 
-  await serve(
-    "uv",
-    ["run", "rustyera-test", "serve", "--scenario", tuiScenario, "--runtime-library", runtime],
-    path.join(root, "rustyera-tui"),
-    { RUSTYERA_TEST_COMPILED_CACHE_OUTPUT: tuiCache, RUSTYERA_TEST_PROJECT_OUTPUT: tuiProject },
-    [
-      {
-        op: "edit_source",
-        path: "erb/diagnosis.erb",
-        expected: "REPLAY_DIAGNOSIS_READY",
-        replacement: "HANDOFF_TUI",
-      },
-      { op: "reload", scope: "file", path: "erb/diagnosis.erb" },
-      { op: "stop" },
-    ],
+  // TUI cold -> Browser/WASM incremental -> TUI cache hit.
+  await serveTui(
+    project,
+    { RUSTYERA_TEST_COMPILED_CACHE_OUTPUT: tuiColdCache },
+    [{ op: "wait_status", text: "项目缓存已保存。" }, { op: "stop" }],
+    tuiColdProject,
   );
-  await run(
-    process.execPath,
-    ["scripts/web-test.mjs", "run", "--scenario", webScenario, "--project", tuiProject],
-    web,
+  await writeWebScenario(webScenario, [
+    editSource(originalSource, updatedSource),
+    reloadSource(),
+    { type: "wait_compiled_cache_saved" },
+    assertInteractive(),
+  ]);
+  await runWeb(tuiColdProject, {
+    RUSTYERA_TEST_COMPILED_CACHE_INPUT: tuiColdCache,
+    RUSTYERA_TEST_COMPILED_CACHE_OUTPUT: webIncrementalCache,
+    RUSTYERA_TEST_PROJECT_OUTPUT: webIncrementalProject,
+  });
+  await serveTui(webIncrementalProject, {
+    RUSTYERA_TEST_COMPILED_CACHE_INPUT: webIncrementalCache,
+  });
+
+  // Browser/WASM cold -> TUI incremental -> Browser/WASM cache hit.
+  await writeWebScenario(webScenario, [{ type: "wait_compiled_cache_saved" }, assertInteractive()]);
+  await runWeb(project, {
+    RUSTYERA_TEST_COMPILED_CACHE_OUTPUT: webColdCache,
+    RUSTYERA_TEST_PROJECT_OUTPUT: webColdProject,
+  });
+  await serveTui(
+    webColdProject,
     {
-      RUSTYERA_TEST_COMPILED_CACHE_INPUT: tuiCache,
-      RUSTYERA_TEST_COMPILED_CACHE_OUTPUT: webCache,
-      RUSTYERA_TEST_PROJECT_OUTPUT: webProject,
-    },
-  );
-  await serve(
-    "uv",
-    [
-      "run",
-      "rustyera-test",
-      "serve",
-      "--scenario",
-      tuiScenario,
-      "--project",
-      webProject,
-      "--runtime-library",
-      runtime,
-    ],
-    path.join(root, "rustyera-tui"),
-    {
-      RUSTYERA_TEST_COMPILED_CACHE_INPUT: webCache,
-      RUSTYERA_TEST_COMPILED_CACHE_OUTPUT: tuiFinalCache,
-      RUSTYERA_TEST_PROJECT_OUTPUT: tuiFinalProject,
+      RUSTYERA_TEST_COMPILED_CACHE_INPUT: webColdCache,
+      RUSTYERA_TEST_COMPILED_CACHE_OUTPUT: tuiIncrementalCache,
     },
     [
       {
         op: "edit_source",
         path: "erb/diagnosis.erb",
-        expected: "HANDOFF_WEB",
-        replacement: "HANDOFF_FINAL",
+        expected: originalSource,
+        replacement: updatedSource,
       },
       { op: "reload", scope: "file", path: "erb/diagnosis.erb" },
       { op: "stop" },
     ],
+    tuiIncrementalProject,
   );
-  await writeBrowserScenario(webScenario, "HANDOFF_WEB", "HANDOFF_FINAL");
-  await replace(browserInputProject, "REPLAY_DIAGNOSIS_READY", "HANDOFF_WEB");
-  await run(
-    process.execPath,
-    ["scripts/web-test.mjs", "run", "--scenario", webScenario, "--project", browserInputProject],
-    web,
-    {
-      RUSTYERA_TEST_COMPILED_CACHE_OUTPUT: webFinalCache,
-      RUSTYERA_TEST_PROJECT_OUTPUT: webFinalProject,
-    },
+  await writeWebScenario(webScenario, [assertInteractive()]);
+  await runWeb(tuiIncrementalProject, {
+    RUSTYERA_TEST_COMPILED_CACHE_INPUT: tuiIncrementalCache,
+  });
+
+  await assertSameFile(tuiColdCache, webColdCache, "cold");
+  await assertSameFile(tuiIncrementalCache, webIncrementalCache, "incremental");
+  await assertSameFile(
+    path.join(tuiIncrementalProject, "erb", "diagnosis.erb"),
+    path.join(webIncrementalProject, "erb", "diagnosis.erb"),
+    "incremental project",
   );
-  if (!(await readFile(tuiFinalCache)).equals(await readFile(webFinalCache)))
-    throw new Error("same-generation Browser/WASM and TUI caches differ");
-  if (
-    !(await readFile(path.join(tuiFinalProject, "erb", "diagnosis.erb"))).equals(
-      await readFile(path.join(webFinalProject, "erb", "diagnosis.erb")),
-    )
-  )
-    throw new Error("same-generation project outputs differ");
+  process.stdout.write(
+    `${JSON.stringify({
+      type: "cache_handoff_result",
+      status: "passed",
+      checks: [
+        "tui_cold_to_web",
+        "web_cold_to_tui",
+        "tui_incremental_to_web",
+        "web_incremental_to_tui",
+        "cold_bytes_identical",
+        "incremental_bytes_identical",
+      ],
+    })}\n`,
+  );
 } finally {
   await rm(temporary, { recursive: true, force: true });
 }
 
-async function run(command, args, cwd, extraEnv) {
-  await child(command, args, cwd, extraEnv, []);
+async function serveTui(projectOverride, extraEnv, requests = [{ op: "stop" }], projectOutput) {
+  const args = [
+    "run",
+    "rustyera-test",
+    "serve",
+    "--scenario",
+    tuiScenario,
+    "--project",
+    projectOverride,
+    "--runtime-library",
+    runtime,
+  ];
+  await child(
+    "uv",
+    args,
+    path.join(root, "rustyera-tui"),
+    {
+      ...extraEnv,
+      ...(projectOutput ? { RUSTYERA_TEST_PROJECT_OUTPUT: projectOutput } : {}),
+    },
+    requests,
+  );
 }
 
-async function serve(command, args, cwd, extraEnv, requests) {
-  await child(command, args, cwd, extraEnv, requests);
+async function runWeb(projectOverride, extraEnv) {
+  await child(
+    process.execPath,
+    ["scripts/web-test.mjs", "run", "--scenario", webScenario, "--project", projectOverride],
+    web,
+    extraEnv,
+    [],
+  );
 }
 
 async function child(command, args, cwd, extraEnv, requests) {
@@ -142,7 +157,7 @@ async function child(command, args, cwd, extraEnv, requests) {
   if (code !== 0) throw new Error(`${command} exited ${code}`);
 }
 
-async function writeBrowserScenario(target, expected, replacement) {
+async function writeTuiScenario(target) {
   await writeFile(
     target,
     JSON.stringify({
@@ -150,19 +165,43 @@ async function writeBrowserScenario(target, expected, replacement) {
       project,
       mode: "fixed",
       seed: 123456,
-      actions: [
-        { type: "edit_project_source", relative_path: "erb/diagnosis.erb", expected, replacement },
-        { type: "reload_project", scope: "script", path: "erb/diagnosis.erb" },
-        { type: "wait_compiled_cache_saved" },
-        { type: "assert_state", expect: { projectOpen: true, canInteract: true } },
-      ],
       limits: { max_steps: 10, timeout_seconds: 60 },
     }),
   );
 }
 
-async function replace(root, expected, replacement) {
-  const target = path.join(root, "erb", "diagnosis.erb");
-  const source = await readFile(target, "utf8");
-  await writeFile(target, source.replace(expected, replacement), "utf8");
+async function writeWebScenario(target, actions) {
+  await writeFile(
+    target,
+    JSON.stringify({
+      schema_version: 1,
+      project,
+      mode: "fixed",
+      seed: 123456,
+      actions,
+      limits: { max_steps: 10, timeout_seconds: 60 },
+    }),
+  );
+}
+
+function editSource(expected, replacement) {
+  return {
+    type: "edit_project_source",
+    relative_path: "erb/diagnosis.erb",
+    expected,
+    replacement,
+  };
+}
+
+function reloadSource() {
+  return { type: "reload_project", scope: "script", path: "erb/diagnosis.erb" };
+}
+
+function assertInteractive() {
+  return { type: "assert_state", expect: { projectOpen: true, canInteract: true } };
+}
+
+async function assertSameFile(left, right, generation) {
+  if (!(await readFile(left)).equals(await readFile(right)))
+    throw new Error(`same-generation ${generation} TUI and Browser/WASM outputs differ`);
 }
