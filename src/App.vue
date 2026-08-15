@@ -178,6 +178,7 @@ onMounted(() => void store.initialize());
     <FaultDialog />
     <AboutDialog
       :open="aboutOpen"
+      :core-version="store.coreVersion"
       :game-information="store.gameInformation"
       @close="aboutOpen = false"
     />

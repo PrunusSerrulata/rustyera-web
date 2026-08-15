@@ -23,6 +23,7 @@ export default defineConfig({
     "import.meta.env.VITE_RUSTYERA_CORE_VERSION": JSON.stringify(
       `${coreVersion} (${coreRevision.slice(0, 8)})`,
     ),
+    "import.meta.env.VITE_RUSTYERA_CORE_REVISION": JSON.stringify(coreRevision.slice(0, 8)),
   },
   clearScreen: false,
   server: { strictPort: true },

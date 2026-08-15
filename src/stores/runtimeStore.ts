@@ -131,6 +131,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const status = runtimeStatus.current;
   const projectOpen = ref(false);
   const gameInformation = ref<ProjectGameInformation | null>(null);
+  const coreVersion = ref(import.meta.env.VITE_RUSTYERA_CORE_VERSION);
   const projectLoad = new RuntimeProjectLoadState();
   const projectLoading = projectLoad.loading;
   const projectSelecting = ref(false);
@@ -718,6 +719,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const value = message.value;
     switch (message.type) {
       case "server_hello":
+        coreVersion.value = `${value.implementation_version} (${import.meta.env.VITE_RUSTYERA_CORE_REVISION})`;
         if (!runtimeConfiguration.acceptProfile(value.configuration_profile))
           log("error", "Runtime 返回的设置宿主类别与当前客户端不一致，项目设置已停用");
         baseStatus.value = "Runtime 已就绪";
@@ -2481,6 +2483,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     status,
     projectOpen,
     gameInformation,
+    coreVersion,
     projectLoading,
     startupTelemetry,
     projectLoadProgressLabel,

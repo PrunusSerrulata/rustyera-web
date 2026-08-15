@@ -9,7 +9,7 @@ describe("AboutDialog", () => {
   it("shows authorship, frontend/core versions, and license", async () => {
     const wrapper = mount(AboutDialog, {
       attachTo: document.body,
-      props: { open: true },
+      props: { open: true, coreVersion: import.meta.env.VITE_RUSTYERA_CORE_VERSION },
     });
 
     expect(document.body.textContent).toContain("PrunusSerrulata");
@@ -42,7 +42,7 @@ describe("AboutDialog", () => {
     window.__TAURI_INTERNALS__ = {};
     const wrapper = mount(AboutDialog, {
       attachTo: document.body,
-      props: { open: true },
+      props: { open: true, coreVersion: import.meta.env.VITE_RUSTYERA_CORE_VERSION },
     });
 
     expect(document.body.textContent).toContain("0.6.0-tauri");
@@ -56,6 +56,7 @@ describe("AboutDialog", () => {
       attachTo: document.body,
       props: {
         open: true,
+        coreVersion: import.meta.env.VITE_RUSTYERA_CORE_VERSION,
         gameInformation: {
           title: "Demo",
           version: "1.001",

@@ -16,6 +16,15 @@ fn session_negotiates_and_projects_server_hello() {
                 == Some("server_hello")
     }));
     assert!(session.is_negotiated());
+    let hello = batch
+        .events
+        .iter()
+        .find(|event| event.message["type"] == "server_hello")
+        .unwrap();
+    assert_eq!(
+        hello.message["value"]["implementation_version"],
+        era_runtime::VERSION
+    );
 }
 
 #[test]

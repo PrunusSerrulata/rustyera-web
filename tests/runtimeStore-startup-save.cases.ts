@@ -16,6 +16,26 @@ import {
 describe("runtime store startup-save", () => {
   installRuntimeStoreTestHarness();
 
+  it("uses the runtime-reported core product version", async () => {
+    mockProjectSelection({
+      submittedAtMs: 0,
+      quickScanMs: 1,
+      cacheReadMs: 0,
+      sourceReadMs: 1,
+      submitMs: 1,
+      cacheImported: false,
+    });
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("server_hello", { implementation_version: "9.8.7" })],
+    });
+    const store = useRuntimeStore();
+
+    await store.openProject();
+
+    expect(store.coreVersion).toBe(`9.8.7 (${import.meta.env.VITE_RUSTYERA_CORE_REVISION})`);
+  });
+
   it("advances deadline waits from the frontend monotonic clock without user input", async () => {
     vi.stubEnv("VITE_RUSTYERA_TEST", "1");
     const wait = {

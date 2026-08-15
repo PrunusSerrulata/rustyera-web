@@ -5,10 +5,13 @@ import DraggableDialog from "@/components/DraggableDialog.vue";
 import type { ProjectGameInformation } from "@/core/types";
 import { platformFrontendVersion } from "@/platform";
 
-const props = defineProps<{ open: boolean; gameInformation?: ProjectGameInformation | null }>();
+const props = defineProps<{
+  open: boolean;
+  coreVersion: string;
+  gameInformation?: ProjectGameInformation | null;
+}>();
 defineEmits<{ close: [] }>();
 const frontendVersion = platformFrontendVersion();
-const coreVersion = import.meta.env.VITE_RUSTYERA_CORE_VERSION;
 const gameEntries = computed(() =>
   [
     ["游戏名称", props.gameInformation?.title],

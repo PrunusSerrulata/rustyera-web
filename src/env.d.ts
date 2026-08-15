@@ -10,6 +10,7 @@ interface ImportMetaEnv {
   readonly VITE_RUSTYERA_TAURI_EXPORT_PATH?: string;
   readonly VITE_RUSTYERA_FRONTEND_VERSION: string;
   readonly VITE_RUSTYERA_CORE_VERSION: string;
+  readonly VITE_RUSTYERA_CORE_REVISION: string;
 }
 
 interface Window {
