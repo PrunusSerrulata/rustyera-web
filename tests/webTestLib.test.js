@@ -649,6 +649,33 @@ describe("web game test scenario", () => {
     ).resolves.toEqual(expect.objectContaining({ query: expect.any(Object) }));
   });
 
+  it("asserts left alignment against a reference element", async () => {
+    const box = (left) => ({
+      getBoundingClientRect: () => ({
+        left,
+        top: 0,
+        right: left + 100,
+        bottom: 40,
+        width: 100,
+        height: 40,
+      }),
+    });
+    const subject = { evaluateAll: vi.fn((callback) => callback([box(40.5)])) };
+    const reference = { evaluateAll: vi.fn((callback) => callback([box(40)])) };
+    const page = {
+      locator: vi.fn((selector) => (selector === ".control" ? subject : reference)),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "assert_layout",
+        locator: { css: ".control" },
+        relative_to: { css: ".label" },
+        expect: { left_aligned_within: 1 },
+      }),
+    ).resolves.toEqual(expect.objectContaining({ query: expect.any(Object) }));
+  });
+
   it("asserts horizontal centering against a reference box", async () => {
     const box = (left, width) => ({
       getBoundingClientRect: () => ({

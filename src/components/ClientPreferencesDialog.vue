@@ -75,7 +75,6 @@ const groups = computed(() => {
 const title = computed(() => `RustyEra ${props.hostKind === "tauri" ? "Tauri" : "Web"} · 偏好设置`);
 const auxiliaryDescriptions = {
   imageScale: "调整游戏图片和画布在当前客户端中的显示缩放比例。",
-  masterVolume: "调整当前客户端播放游戏音频时使用的主音量。",
   trustProjectFileMetadata: "允许快速启动使用文件大小和修改时间判断项目文件是否变化。",
 } as const;
 
@@ -115,7 +114,7 @@ function resetDraft(): void {
 }
 
 function overridden(code: string): boolean {
-  return Object.hasOwn(draft.settings, code);
+  return Reflect.has(draft.settings, code) && Object.hasOwn(draft.settings, code);
 }
 
 function toggle(field: SettingsField, enabled: boolean): void {
@@ -140,21 +139,25 @@ function setBoolean(code: string, checked: boolean): void {
   draft.settings[code] = checked ? "YES" : "NO";
 }
 
-function auxiliaryOverridden(key: "imageScale" | "masterVolume" | "trustProjectFileMetadata") {
+function auxiliaryOverridden(key: "imageScale" | "trustProjectFileMetadata") {
   return scope.value === "global" || draft[key] != null;
 }
 
-function toggleAuxiliary(
-  key: "imageScale" | "masterVolume" | "trustProjectFileMetadata",
-  enabled: boolean,
-): void {
+function toggleAuxiliary(key: "imageScale" | "trustProjectFileMetadata", enabled: boolean): void {
   if (key === "imageScale") {
     draft.imageScale = !enabled && scope.value === "project" ? undefined : 1;
-  } else if (key === "masterVolume") {
-    draft.masterVolume = !enabled && scope.value === "project" ? undefined : 1;
   } else {
     draft.trustProjectFileMetadata = !enabled && scope.value === "project" ? undefined : false;
   }
+}
+
+function settingItemClasses(field: SettingsField): Record<string, boolean> {
+  return {
+    "preference-color-setting": field.control === "color",
+    "setting-wide":
+      field.control === "color" ||
+      ["AudioVolume", "ReplaceContinuationBR", "WindowMaximixed", "FontName"].includes(field.code),
+  };
 }
 
 function save(): void {
@@ -229,10 +232,7 @@ async function scopeKeydown(event: KeyboardEvent): Promise<void> {
               v-for="field in group.fields"
               :key="field.code"
               class="setting-item preference-setting-item"
-              :class="{
-                'setting-wide': field.control === 'color',
-                'long-label-setting': field.code === 'ReplaceContinuationBR',
-              }"
+              :class="settingItemClasses(field)"
             >
               <label
                 class="preference-setting-label"
@@ -250,7 +250,10 @@ async function scopeKeydown(event: KeyboardEvent): Promise<void> {
                 <span>{{ field.label }}</span>
                 <small>{{ overridden(field.code) ? "已覆盖" : "继承" }}</small>
               </label>
-              <div class="setting-control">
+              <div
+                v-if="field.control === 'color' || overridden(field.code)"
+                class="setting-control preference-setting-control"
+              >
                 <label
                   v-if="field.control === 'boolean'"
                   class="preference-boolean-control"
@@ -330,7 +333,10 @@ async function scopeKeydown(event: KeyboardEvent): Promise<void> {
         <fieldset class="settings-group">
           <legend>客户端显示与项目加载</legend>
           <div class="settings-grid">
-            <div class="setting-item">
+            <div
+              class="setting-item preference-auxiliary-item"
+              :class="{ 'preference-has-override': scope === 'project' }"
+            >
               <label
                 class="preference-auxiliary-label"
                 :for="scope === 'global' ? `preference-${scope}-imageScale` : undefined"
@@ -349,7 +355,10 @@ async function scopeKeydown(event: KeyboardEvent): Promise<void> {
                 />
                 <span>图片缩放</span>
               </label>
-              <div class="setting-control">
+              <div
+                v-if="auxiliaryOverridden('imageScale')"
+                class="setting-control preference-setting-control"
+              >
                 <input
                   :id="`preference-${scope}-imageScale`"
                   v-model.number="draft.imageScale"
@@ -361,41 +370,7 @@ async function scopeKeydown(event: KeyboardEvent): Promise<void> {
                 />
               </div>
             </div>
-            <div class="setting-item setting-wide">
-              <label
-                class="preference-auxiliary-label"
-                :for="scope === 'global' ? `preference-${scope}-masterVolume` : undefined"
-                :title="auxiliaryDescriptions.masterVolume"
-                :aria-description="auxiliaryDescriptions.masterVolume"
-              >
-                <input
-                  v-if="scope === 'project'"
-                  :id="`preference-${scope}-masterVolume-override`"
-                  type="checkbox"
-                  :checked="auxiliaryOverridden('masterVolume')"
-                  :disabled="busy"
-                  @change="
-                    toggleAuxiliary('masterVolume', ($event.target as HTMLInputElement).checked)
-                  "
-                />
-                <span>主音量</span>
-              </label>
-              <div class="setting-control range-setting-control">
-                <input
-                  :id="`preference-${scope}-masterVolume`"
-                  v-model.number="draft.masterVolume"
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  :disabled="busy || !auxiliaryOverridden('masterVolume')"
-                />
-                <output :for="`preference-${scope}-masterVolume`">
-                  {{ Math.round((draft.masterVolume ?? 1) * 100) }}%
-                </output>
-              </div>
-            </div>
-            <div class="setting-item">
+            <div class="setting-item setting-wide preference-metadata-setting">
               <label
                 class="preference-auxiliary-label"
                 :for="
@@ -420,6 +395,7 @@ async function scopeKeydown(event: KeyboardEvent): Promise<void> {
                 <span>快速启动文件元数据</span>
               </label>
               <label
+                v-if="auxiliaryOverridden('trustProjectFileMetadata')"
                 class="setting-control preference-boolean-control"
                 :for="`preference-${scope}-trustProjectFileMetadata`"
                 :title="auxiliaryDescriptions.trustProjectFileMetadata"

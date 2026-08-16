@@ -853,9 +853,13 @@ select {
   text-align: left;
 }
 .preference-setting-label {
-  display: flex;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: 1.2rem max-content 3em;
+  align-items: center;
   gap: 8px;
+  width: max-content;
+  max-width: 100%;
+  padding-top: 0;
 }
 .preference-setting-label input[type="checkbox"] {
   width: 1.2rem;
@@ -865,14 +869,58 @@ select {
 }
 .preference-setting-label small {
   width: 3em;
-  flex: 0 0 3em;
-  margin-left: auto;
+  margin: 0;
   white-space: nowrap;
   text-align: left;
 }
 .preference-setting-label > span,
 .preference-auxiliary-label > span {
   white-space: nowrap;
+}
+.preference-auxiliary-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.preference-auxiliary-label input[type="checkbox"] {
+  width: 1.2rem;
+  height: 1.2rem;
+  flex: 0 0 auto;
+  margin: 0;
+}
+.preference-setting-item,
+.preference-auxiliary-item {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+.preference-setting-control {
+  width: auto;
+  margin-left: calc(1.2rem + 8px);
+}
+.preference-auxiliary-item .preference-setting-control {
+  margin-left: 0;
+}
+.preference-auxiliary-item.preference-has-override .preference-setting-control {
+  margin-left: calc(1.2rem + 8px);
+}
+.preference-color-setting {
+  grid-template-columns: 14rem minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+.preference-color-setting .preference-setting-label {
+  grid-template-columns: 1.2rem 8rem 3em;
+}
+.preference-color-setting .preference-setting-control {
+  margin-left: 0;
+}
+.preference-metadata-setting {
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+}
+.preference-metadata-setting > label {
+  min-height: var(--settings-control-height);
+  padding-top: 0;
 }
 .preference-boolean-control {
   display: flex;

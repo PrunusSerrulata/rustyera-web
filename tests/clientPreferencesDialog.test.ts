@@ -1,8 +1,16 @@
 import { mount } from "@vue/test-utils";
+import { nextTick } from "vue";
 import { afterEach, describe, expect, it } from "vitest";
 
 import ClientPreferencesDialog from "@/components/ClientPreferencesDialog.vue";
 import { defaultPreferences, type ProjectConfigurationEntry } from "@/core/types";
+
+async function setCheckbox(selector: string, checked: boolean): Promise<void> {
+  const checkbox = document.body.querySelector<HTMLInputElement>(selector)!;
+  checkbox.checked = checked;
+  checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+  await nextTick();
+}
 
 describe("client preferences dialog", () => {
   afterEach(() => document.body.replaceChildren());
@@ -34,9 +42,6 @@ describe("client preferences dialog", () => {
       },
     });
 
-    const controls = [
-      ...document.body.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
-    ];
     const useMouseLabel = document.body.querySelector<HTMLLabelElement>(
       "label[title='允许使用鼠标点击游戏按钮并提交交互。']",
     );
@@ -44,10 +49,8 @@ describe("client preferences dialog", () => {
       "允许使用鼠标点击游戏按钮并提交交互。",
     );
     expect(document.body.querySelectorAll("fieldset.settings-group")).toHaveLength(2);
-    controls[0]!.checked = true;
-    controls[0]!.dispatchEvent(new Event("change", { bubbles: true }));
-    controls[1]!.checked = true;
-    controls[1]!.dispatchEvent(new Event("change", { bubbles: true }));
+    await setCheckbox("#preference-global-UseMouse-override", true);
+    await setCheckbox("#preference-global-UseMouse", true);
     document.body
       .querySelector<HTMLFormElement>("form")!
       .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
@@ -93,10 +96,7 @@ describe("client preferences dialog", () => {
     tabs.find((tab) => tab.textContent?.includes("项目偏好"))!.click();
     await wrapper.vm.$nextTick();
 
-    const override = document.body.querySelector<HTMLInputElement>(
-      "#preference-project-UseMouse-override",
-    )!;
-    override.click();
+    await setCheckbox("#preference-project-UseMouse-override", false);
     tabs.find((tab) => tab.textContent?.includes("全局偏好"))!.click();
     await wrapper.vm.$nextTick();
     tabs.find((tab) => tab.textContent?.includes("项目偏好"))!.click();
@@ -106,14 +106,12 @@ describe("client preferences dialog", () => {
     )!;
     expect(restoredOverride.checked).toBe(true);
 
-    restoredOverride.click();
+    await setCheckbox("#preference-project-UseMouse-override", false);
     for (const id of [
       "#preference-project-imageScale-override",
-      "#preference-project-masterVolume-override",
       "#preference-project-trustProjectFileMetadata-override",
     ]) {
-      const checkbox = document.body.querySelector<HTMLInputElement>(id)!;
-      checkbox.click();
+      await setCheckbox(id, false);
     }
     document.body
       .querySelector<HTMLFormElement>("form")!
@@ -124,7 +122,7 @@ describe("client preferences dialog", () => {
       {
         settings: {},
         imageScale: undefined,
-        masterVolume: undefined,
+        masterVolume: 0.4,
         trustProjectFileMetadata: undefined,
       },
     ]);
@@ -157,7 +155,7 @@ describe("client preferences dialog", () => {
       },
     });
 
-    document.body.querySelector<HTMLInputElement>("#preference-global-FontSize-override")!.click();
+    await setCheckbox("#preference-global-FontSize-override", true);
     const input = document.body.querySelector<HTMLInputElement>("#preference-global-FontSize")!;
     input.value = "20";
     input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -219,15 +217,9 @@ describe("client preferences dialog", () => {
     const useMouseStatus = useMouseOverride.closest("label")!.querySelector("small")!;
     expect(useMouseStatus.textContent).toBe("继承");
     expect(useMouseOverride.disabled).toBe(false);
-    useMouseOverride.click();
-    await wrapper.vm.$nextTick();
+    await setCheckbox("#preference-global-UseMouse-override", true);
     expect(useMouseStatus.textContent).toBe("已覆盖");
-    expect(
-      document.body
-        .querySelector("#preference-global-masterVolume")
-        ?.closest(".setting-item")
-        ?.classList.contains("setting-wide"),
-    ).toBe(true);
+    expect(document.body.querySelector("#preference-global-masterVolume")).toBeNull();
     imageScale.value = "1.5";
     imageScale.dispatchEvent(new Event("input", { bubbles: true }));
     document.body
@@ -238,5 +230,73 @@ describe("client preferences dialog", () => {
       "global",
       expect.objectContaining({ settings: { UseMouse: "YES" }, imageScale: 1.5 }),
     ]);
+  });
+
+  it("lays out override controls without overlap and removes the master volume item", async () => {
+    const entries = Object.entries({
+      WindowMaximixed: "NO",
+      WindowX: "760",
+      WindowY: "480",
+      FontName: "ＭＳ ゴシック",
+      FontSize: "18",
+      LineHeight: "19",
+      ForeColor: "192,192,192",
+      BackColor: "0,0,0",
+      FocusColor: "255,255,0",
+      AudioVolume: "100",
+      ReplaceFullWidthSpaces: "NO",
+    }).map(([code, value]): ProjectConfigurationEntry => ({
+      code,
+      japanese: code,
+      english: code,
+      value,
+      kind: "string",
+      allowed: [],
+      fixed: false,
+      applicability: 12,
+      default_value: value,
+      effective_value: value,
+      application: "hot",
+      preference_eligible: true,
+      client_effective_value: value,
+    }));
+    mount(ClientPreferencesDialog, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        globalValue: defaultPreferences(),
+        projectValue: { settings: {}, masterVolume: 0.4 },
+        entries,
+        projectWritable: true,
+      },
+    });
+
+    const item = (code: string) =>
+      document.body
+        .querySelector(`#preference-global-${code}-override`)
+        ?.closest<HTMLElement>(".setting-item");
+    expect(item("WindowMaximixed")?.classList.contains("setting-wide")).toBe(true);
+    expect(item("WindowX")?.classList.contains("setting-wide")).toBe(false);
+    expect(item("WindowY")?.classList.contains("setting-wide")).toBe(false);
+    expect(item("FontName")?.classList.contains("setting-wide")).toBe(true);
+    expect(item("FontSize")?.classList.contains("setting-wide")).toBe(false);
+    expect(item("LineHeight")?.classList.contains("setting-wide")).toBe(false);
+    expect(item("AudioVolume")?.classList.contains("setting-wide")).toBe(true);
+
+    const longNameItem = item("ReplaceFullWidthSpaces")!;
+    expect(longNameItem.querySelector(".preference-setting-control")).toBeNull();
+    await setCheckbox("#preference-global-ReplaceFullWidthSpaces-override", true);
+    expect(longNameItem.querySelector(".preference-setting-control")).not.toBeNull();
+
+    for (const code of ["ForeColor", "BackColor", "FocusColor"]) {
+      const colorItem = item(code)!;
+      expect(colorItem.classList.contains("preference-color-setting")).toBe(true);
+      expect(colorItem.querySelector(".preference-setting-control")).not.toBeNull();
+    }
+    const metadata = document.body.querySelector<HTMLElement>(".preference-metadata-setting")!;
+    expect(metadata.classList.contains("setting-wide")).toBe(true);
+    expect(metadata.querySelector(".preference-boolean-control")).not.toBeNull();
+    expect(document.body.textContent).not.toContain("主音量");
+    expect(document.body.querySelector("[id*='masterVolume']")).toBeNull();
   });
 });

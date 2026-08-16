@@ -166,10 +166,77 @@
       "locator": { "role": "dialog", "name": "RustyEra Web · 偏好设置", "exact": true },
       "expect": { "count": 1, "visible": true }
     },
+    {
+      "type": "assert_dom",
+      "locator": { "css": "[id*='masterVolume']" },
+      "fields": ["count"],
+      "expect": { "count": 0 }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": "#preference-global-ReplaceFullWidthSpaces" },
+      "fields": ["count"],
+      "expect": { "count": 0 }
+    },
+    {
+      "type": "assert_layout",
+      "locator": {
+        "css": ".setting-item:has(#preference-global-FontSize-override), .setting-item:has(#preference-global-LineHeight-override)"
+      },
+      "expect": { "count": 2, "visible": true, "same_top_within": 1 }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".setting-item:has(#preference-global-AudioVolume-override)" },
+      "relative_to": { "css": ".settings-grid:has(#preference-global-AudioVolume-override)" },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "left_aligned_within": 1,
+        "right_aligned_within": 1
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": {
+        "css": "#preference-global-ForeColor, #preference-global-BackColor, #preference-global-FocusColor"
+      },
+      "expect": { "count": 3, "visible": true, "same_left_within": 1 }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": "#preference-global-ForeColor" },
+      "relative_to": { "css": "label[for='preference-global-ForeColor-override']" },
+      "expect": { "count": 1, "visible": true, "no_overlap": true }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".preference-metadata-setting > .preference-boolean-control" },
+      "relative_to": { "css": ".preference-metadata-setting > .preference-auxiliary-label" },
+      "expect": { "count": 1, "visible": true, "top_aligned_within": 1 }
+    },
     { "type": "click", "locator": { "role": "tab", "name": "项目偏好", "exact": true } },
     { "type": "click", "locator": { "css": "#preference-project-FontSize-override" } },
+    {
+      "type": "assert_layout",
+      "locator": {
+        "css": ".setting-item:has(#preference-project-FontSize-override) .preference-setting-control"
+      },
+      "relative_to": { "css": "label[for='preference-project-FontSize-override'] > span" },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "below": { "min": 4, "max": 10 },
+        "no_overlap": true,
+        "left_aligned_within": 1
+      }
+    },
     { "type": "fill", "locator": { "css": "#preference-project-FontSize" }, "value": "20" },
-    { "type": "click", "locator": { "role": "button", "name": "应用", "exact": true } },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "应用", "exact": true },
+      "settle_ms": 500
+    },
     { "type": "assert_state", "expect": { "status": "项目偏好已应用" } },
     { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
     { "type": "click", "locator": { "role": "button", "name": "偏好设置…", "exact": true } },
@@ -183,7 +250,7 @@
     { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } }
   ],
   "limits": {
-    "max_steps": 50,
+    "max_steps": 60,
     "timeout_seconds": 120
   }
 }

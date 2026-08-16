@@ -108,6 +108,8 @@ An action has `type`:
   `above`/`below` gap ranges (`min`/`max`), `inside.tolerance`, `right_aligned_within`, and
   `horizontal_centered_within`, `top_aligned_within`/`bottom_aligned_within`. Prefer these relative
   checks over hard-coded viewport coordinates.
+  `left_aligned_within` is also available for controls that must share a leading edge with their
+  label or container.
 - `assert_canvas_pixels`: `locator` plus an `expect` subset such as `count`, `width`, `height`, or
   `nontransparent_at_least`. Use it to prove that a generated canvas contains rendered pixels, not
   merely that an empty canvas element has layout dimensions.

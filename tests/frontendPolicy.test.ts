@@ -693,9 +693,12 @@ describe("frontend host and image-line policy", () => {
 
   it("keeps preference labels and override status columns stable", () => {
     const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
+    const labelRule = stylesheet.match(/\.preference-setting-label\s*\{([^}]*)\}/s)?.[1];
     const statusRule = stylesheet.match(/\.preference-setting-label small\s*\{([^}]*)\}/s)?.[1];
+    expect(labelRule).toMatch(/display:\s*grid;/);
+    expect(labelRule).toMatch(/grid-template-columns:\s*1\.2rem max-content 3em;/);
     expect(statusRule).toMatch(/width:\s*3em;/);
-    expect(statusRule).toMatch(/flex:\s*0 0 3em;/);
+    expect(statusRule).toMatch(/white-space:\s*nowrap;/);
     expect(statusRule).toMatch(/text-align:\s*left;/);
     expect(stylesheet).toMatch(
       /\.preference-setting-label > span,[\s\S]*?\.preference-auxiliary-label > span\s*\{[^}]*white-space:\s*nowrap;/s,

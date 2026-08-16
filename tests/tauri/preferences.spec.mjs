@@ -31,9 +31,38 @@ preferences("Tauri client preferences", () => {
 
     const dialog = await $(".dialog-panel[aria-label='RustyEra Tauri · 偏好设置']");
     await dialog.waitForDisplayed();
+    const globalLayout = await preferenceLayoutMetrics("global");
+    console.log(JSON.stringify({ preferenceLayout: "global", ...globalLayout }));
+    assert.equal(globalLayout.masterVolumeCount, 0);
+    assert.equal(globalLayout.inheritedLongControlCount, 0);
+    assertWithin(globalLayout.windowPairTopSpread, 1, "viewport size fields must share a row");
+    assertWithin(globalLayout.fontPairTopSpread, 1, "font size and line height must share a row");
+    assertWithin(globalLayout.audioLeftDifference, 1, "game volume must start at the row edge");
+    assertWithin(globalLayout.audioRightDifference, 1, "game volume must end at the row edge");
+    assertWithin(globalLayout.colorLeftSpread, 1, "color controls must share a leading edge");
+    assert.equal(globalLayout.colorsOverlapLabels, false);
+    assertWithin(
+      globalLayout.metadataTopDifference,
+      1,
+      "metadata trust control must align with its setting name",
+    );
+
     await dialog.$("button=项目偏好").click();
     await dialog.$("#preference-project-FontSize-override").click();
     await dialog.$("#preference-project-LineHeight-override").click();
+    const projectLayout = await preferenceLayoutMetrics("project");
+    console.log(JSON.stringify({ preferenceLayout: "project", ...projectLayout }));
+    assert.ok(
+      Number.isFinite(projectLayout.fontSizeControlGap) &&
+        projectLayout.fontSizeControlGap >= 4 &&
+        projectLayout.fontSizeControlGap <= 10,
+      `font size control must occupy the next row: ${projectLayout.fontSizeControlGap}`,
+    );
+    assertWithin(
+      projectLayout.fontSizeControlLeftDifference,
+      1,
+      "font size control must align with its setting name",
+    );
     const fontSize = await dialog.$("#preference-project-FontSize");
     const initialFontSize = await fontSize.getValue();
     assert.match(initialFontSize, /^\d+$/);
@@ -156,6 +185,10 @@ async function findInitialFlowButton() {
   assert.fail("project did not expose its initial game-flow button");
 }
 
+function assertWithin(actual, maximum, message) {
+  assert.ok(Number.isFinite(actual) && actual <= maximum, `${message}: ${actual}`);
+}
+
 async function waitForInteractiveProject() {
   await waitForRuntimeProgress({
     browser,
@@ -214,4 +247,73 @@ async function newestGameTextMetrics() {
     const style = getComputedStyle(text);
     return { fontSize: style.fontSize, lineHeight: style.lineHeight };
   });
+}
+
+async function preferenceLayoutMetrics(scope) {
+  return browser.execute((activeScope) => {
+    const box = (element) => element?.getBoundingClientRect();
+    const item = (code) =>
+      document
+        .querySelector(`#preference-${activeScope}-${code}-override`)
+        ?.closest(".setting-item");
+    const topSpread = (codes) => {
+      const tops = codes.map((code) => box(item(code))?.top);
+      if (tops.some((top) => top == null)) return null;
+      return Math.max(...tops) - Math.min(...tops);
+    };
+    const audioItem = box(item("AudioVolume"));
+    const audioGrid = box(item("AudioVolume")?.closest(".settings-grid"));
+    const colorCodes = ["ForeColor", "BackColor", "FocusColor"];
+    const colorControls = colorCodes.map((code) =>
+      box(document.querySelector(`#preference-${activeScope}-${code}`)),
+    );
+    const colorLabels = colorCodes.map((code) =>
+      box(document.querySelector(`label[for='preference-${activeScope}-${code}-override']`)),
+    );
+    const colorLefts = colorControls.map((rect) => rect?.left);
+    const colorsOverlapLabels = colorControls.some((control, index) => {
+      const label = colorLabels[index];
+      return (
+        control != null &&
+        label != null &&
+        control.left < label.right &&
+        control.right > label.left &&
+        control.top < label.bottom &&
+        control.bottom > label.top
+      );
+    });
+    const metadataName = box(
+      document.querySelector(".preference-metadata-setting > .preference-auxiliary-label"),
+    );
+    const metadataControl = box(
+      document.querySelector(".preference-metadata-setting > .preference-boolean-control"),
+    );
+    const fontSizeControl = box(document.querySelector(`#preference-${activeScope}-FontSize`));
+    const fontSizeName = box(
+      document.querySelector(`label[for='preference-${activeScope}-FontSize-override'] > span`),
+    );
+
+    return {
+      masterVolumeCount: document.querySelectorAll("[id*='masterVolume']").length,
+      inheritedLongControlCount: document.querySelectorAll(
+        `#preference-${activeScope}-ReplaceFullWidthSpaces`,
+      ).length,
+      windowPairTopSpread: topSpread(["WindowX", "WindowY"]),
+      fontPairTopSpread: topSpread(["FontSize", "LineHeight"]),
+      audioLeftDifference:
+        audioItem && audioGrid ? Math.abs(audioItem.left - audioGrid.left) : null,
+      audioRightDifference:
+        audioItem && audioGrid ? Math.abs(audioItem.right - audioGrid.right) : null,
+      colorLeftSpread: colorLefts.every((left) => left != null)
+        ? Math.max(...colorLefts) - Math.min(...colorLefts)
+        : null,
+      colorsOverlapLabels,
+      metadataTopDifference:
+        metadataName && metadataControl ? Math.abs(metadataName.top - metadataControl.top) : null,
+      fontSizeControlGap:
+        fontSizeControl && fontSizeName ? fontSizeControl.top - fontSizeName.bottom : null,
+      fontSizeControlLeftDifference:
+        fontSizeControl && fontSizeName ? Math.abs(fontSizeControl.left - fontSizeName.left) : null,
+    };
+  }, scope);
 }
