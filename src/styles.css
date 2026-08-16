@@ -864,7 +864,14 @@ select {
   margin: 0;
 }
 .preference-setting-label small {
+  width: 3em;
+  flex: 0 0 3em;
   margin-left: auto;
+  white-space: nowrap;
+  text-align: left;
+}
+.preference-setting-label > span,
+.preference-auxiliary-label > span {
   white-space: nowrap;
 }
 .preference-boolean-control {

@@ -332,6 +332,7 @@ async function scopeKeydown(event: KeyboardEvent): Promise<void> {
           <div class="settings-grid">
             <div class="setting-item">
               <label
+                class="preference-auxiliary-label"
                 :for="scope === 'global' ? `preference-${scope}-imageScale` : undefined"
                 :title="auxiliaryDescriptions.imageScale"
                 :aria-description="auxiliaryDescriptions.imageScale"
@@ -360,8 +361,9 @@ async function scopeKeydown(event: KeyboardEvent): Promise<void> {
                 />
               </div>
             </div>
-            <div class="setting-item">
+            <div class="setting-item setting-wide">
               <label
+                class="preference-auxiliary-label"
                 :for="scope === 'global' ? `preference-${scope}-masterVolume` : undefined"
                 :title="auxiliaryDescriptions.masterVolume"
                 :aria-description="auxiliaryDescriptions.masterVolume"
@@ -395,6 +397,7 @@ async function scopeKeydown(event: KeyboardEvent): Promise<void> {
             </div>
             <div class="setting-item">
               <label
+                class="preference-auxiliary-label"
                 :for="
                   scope === 'global' ? `preference-${scope}-trustProjectFileMetadata` : undefined
                 "

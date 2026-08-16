@@ -216,8 +216,18 @@ describe("client preferences dialog", () => {
     const useMouseOverride = document.body.querySelector<HTMLInputElement>(
       "#preference-global-UseMouse-override",
     )!;
+    const useMouseStatus = useMouseOverride.closest("label")!.querySelector("small")!;
+    expect(useMouseStatus.textContent).toBe("继承");
     expect(useMouseOverride.disabled).toBe(false);
     useMouseOverride.click();
+    await wrapper.vm.$nextTick();
+    expect(useMouseStatus.textContent).toBe("已覆盖");
+    expect(
+      document.body
+        .querySelector("#preference-global-masterVolume")
+        ?.closest(".setting-item")
+        ?.classList.contains("setting-wide"),
+    ).toBe(true);
     imageScale.value = "1.5";
     imageScale.dispatchEvent(new Event("input", { bubbles: true }));
     document.body

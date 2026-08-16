@@ -691,6 +691,17 @@ describe("frontend host and image-line policy", () => {
     expect(stylesheet).toMatch(/radial-gradient\(circle closest-side, #fff 0%, #fff0 100%\)/);
   });
 
+  it("keeps preference labels and override status columns stable", () => {
+    const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
+    const statusRule = stylesheet.match(/\.preference-setting-label small\s*\{([^}]*)\}/s)?.[1];
+    expect(statusRule).toMatch(/width:\s*3em;/);
+    expect(statusRule).toMatch(/flex:\s*0 0 3em;/);
+    expect(statusRule).toMatch(/text-align:\s*left;/);
+    expect(stylesheet).toMatch(
+      /\.preference-setting-label > span,[\s\S]*?\.preference-auxiliary-label > span\s*\{[^}]*white-space:\s*nowrap;/s,
+    );
+  });
+
   it("keeps game output on physical lines and exposes horizontal overflow", () => {
     const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
     expect(stylesheet).toMatch(/\.game-viewport\s*\{[^}]*overflow:\s*auto;/s);
