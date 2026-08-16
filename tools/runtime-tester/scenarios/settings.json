@@ -180,6 +180,40 @@
     },
     {
       "type": "assert_layout",
+      "locator": { "css": ".preference-image-scale-setting > .preference-setting-control" },
+      "relative_to": { "css": ".preference-image-scale-setting > .preference-auxiliary-label" },
+      "expect": { "count": 1, "visible": true, "no_overlap": true, "top_aligned_within": 1 }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".preference-image-scale-setting > .preference-setting-control" },
+      "relative_to": { "css": ".preference-image-scale-setting" },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "inside": { "tolerance": 0 },
+        "right_aligned_within": 1
+      }
+    },
+    { "type": "click", "locator": { "css": "#preference-global-AudioVolume-override" } },
+    {
+      "type": "assert_layout",
+      "locator": { "css": "#preference-global-AudioVolume" },
+      "relative_to": {
+        "css": ".setting-item:has(#preference-global-AudioVolume-override)"
+      },
+      "expect": { "count": 1, "visible": true, "inside": { "tolerance": 0 } }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": "output[for='preference-global-AudioVolume']" },
+      "relative_to": {
+        "css": ".setting-item:has(#preference-global-AudioVolume-override)"
+      },
+      "expect": { "count": 1, "visible": true, "inside": { "tolerance": 0 } }
+    },
+    {
+      "type": "assert_layout",
       "locator": {
         "css": ".setting-item:has(#preference-global-FontSize-override), .setting-item:has(#preference-global-LineHeight-override)"
       },
@@ -193,6 +227,21 @@
         "count": 1,
         "visible": true,
         "left_aligned_within": 1,
+        "right_aligned_within": 1
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": {
+        "css": ".setting-item:has(#preference-global-AudioVolume-override) .preference-setting-control"
+      },
+      "relative_to": {
+        "css": ".setting-item:has(#preference-global-AudioVolume-override)"
+      },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "inside": { "tolerance": 0 },
         "right_aligned_within": 1
       }
     },
@@ -219,9 +268,7 @@
     { "type": "click", "locator": { "css": "#preference-project-FontSize-override" } },
     {
       "type": "assert_layout",
-      "locator": {
-        "css": ".setting-item:has(#preference-project-FontSize-override) .preference-setting-control"
-      },
+      "locator": { "css": "#preference-project-FontSize" },
       "relative_to": { "css": "label[for='preference-project-FontSize-override'] > span" },
       "expect": {
         "count": 1,
@@ -229,6 +276,19 @@
         "below": { "min": 4, "max": 10 },
         "no_overlap": true,
         "left_aligned_within": 1
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": {
+        "css": ".setting-item:has(#preference-project-FontSize-override) .preference-setting-control"
+      },
+      "relative_to": { "css": ".setting-item:has(#preference-project-FontSize-override)" },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "inside": { "tolerance": 0 },
+        "right_aligned_within": 1
       }
     },
     { "type": "fill", "locator": { "css": "#preference-project-FontSize" }, "value": "20" },
@@ -250,7 +310,7 @@
     { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } }
   ],
   "limits": {
-    "max_steps": 60,
+    "max_steps": 70,
     "timeout_seconds": 120
   }
 }

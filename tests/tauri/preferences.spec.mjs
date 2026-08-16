@@ -31,6 +31,7 @@ preferences("Tauri client preferences", () => {
 
     const dialog = await $(".dialog-panel[aria-label='RustyEra Tauri · 偏好设置']");
     await dialog.waitForDisplayed();
+    await dialog.$("#preference-global-AudioVolume-override").click();
     const globalLayout = await preferenceLayoutMetrics("global");
     console.log(JSON.stringify({ preferenceLayout: "global", ...globalLayout }));
     assert.equal(globalLayout.masterVolumeCount, 0);
@@ -39,6 +40,23 @@ preferences("Tauri client preferences", () => {
     assertWithin(globalLayout.fontPairTopSpread, 1, "font size and line height must share a row");
     assertWithin(globalLayout.audioLeftDifference, 1, "game volume must start at the row edge");
     assertWithin(globalLayout.audioRightDifference, 1, "game volume must end at the row edge");
+    assertWithin(
+      globalLayout.audioControlRightDifference,
+      1,
+      "game volume control must respect the row edge",
+    );
+    assert.equal(globalLayout.audioControlContained, true);
+    assertWithin(
+      globalLayout.imageScaleTopDifference,
+      1,
+      "image scale input must share a row with its label",
+    );
+    assertWithin(
+      globalLayout.imageScaleRightDifference,
+      1,
+      "image scale input must respect the column edge",
+    );
+    assert.equal(globalLayout.imageScaleOverlapsLabel, false);
     assertWithin(globalLayout.colorLeftSpread, 1, "color controls must share a leading edge");
     assert.equal(globalLayout.colorsOverlapLabels, false);
     assertWithin(
@@ -63,6 +81,12 @@ preferences("Tauri client preferences", () => {
       1,
       "font size control must align with its setting name",
     );
+    assertWithin(
+      projectLayout.fontSizeControlRightDifference,
+      1,
+      "font size control must respect the column edge",
+    );
+    assert.equal(projectLayout.fontSizeControlContained, true);
     const fontSize = await dialog.$("#preference-project-FontSize");
     const initialFontSize = await fontSize.getValue();
     assert.match(initialFontSize, /^\d+$/);
@@ -263,6 +287,14 @@ async function preferenceLayoutMetrics(scope) {
     };
     const audioItem = box(item("AudioVolume"));
     const audioGrid = box(item("AudioVolume")?.closest(".settings-grid"));
+    const audioControl = box(item("AudioVolume")?.querySelector(".preference-setting-control"));
+    const imageScaleItem = box(document.querySelector(".preference-image-scale-setting"));
+    const imageScaleLabel = box(
+      document.querySelector(".preference-image-scale-setting > .preference-auxiliary-label"),
+    );
+    const imageScaleControl = box(
+      document.querySelector(".preference-image-scale-setting > .preference-setting-control"),
+    );
     const colorCodes = ["ForeColor", "BackColor", "FocusColor"];
     const colorControls = colorCodes.map((code) =>
       box(document.querySelector(`#preference-${activeScope}-${code}`)),
@@ -289,6 +321,7 @@ async function preferenceLayoutMetrics(scope) {
       document.querySelector(".preference-metadata-setting > .preference-boolean-control"),
     );
     const fontSizeControl = box(document.querySelector(`#preference-${activeScope}-FontSize`));
+    const fontSizeItem = box(item("FontSize"));
     const fontSizeName = box(
       document.querySelector(`label[for='preference-${activeScope}-FontSize-override'] > span`),
     );
@@ -304,6 +337,28 @@ async function preferenceLayoutMetrics(scope) {
         audioItem && audioGrid ? Math.abs(audioItem.left - audioGrid.left) : null,
       audioRightDifference:
         audioItem && audioGrid ? Math.abs(audioItem.right - audioGrid.right) : null,
+      audioControlRightDifference:
+        audioItem && audioControl ? Math.abs(audioItem.right - audioControl.right) : null,
+      audioControlContained:
+        audioItem != null &&
+        audioControl != null &&
+        audioControl.left >= audioItem.left &&
+        audioControl.right <= audioItem.right,
+      imageScaleTopDifference:
+        imageScaleLabel && imageScaleControl
+          ? Math.abs(imageScaleLabel.top - imageScaleControl.top)
+          : null,
+      imageScaleRightDifference:
+        imageScaleItem && imageScaleControl
+          ? Math.abs(imageScaleItem.right - imageScaleControl.right)
+          : null,
+      imageScaleOverlapsLabel:
+        imageScaleLabel != null &&
+        imageScaleControl != null &&
+        imageScaleControl.left < imageScaleLabel.right &&
+        imageScaleControl.right > imageScaleLabel.left &&
+        imageScaleControl.top < imageScaleLabel.bottom &&
+        imageScaleControl.bottom > imageScaleLabel.top,
       colorLeftSpread: colorLefts.every((left) => left != null)
         ? Math.max(...colorLefts) - Math.min(...colorLefts)
         : null,
@@ -314,6 +369,15 @@ async function preferenceLayoutMetrics(scope) {
         fontSizeControl && fontSizeName ? fontSizeControl.top - fontSizeName.bottom : null,
       fontSizeControlLeftDifference:
         fontSizeControl && fontSizeName ? Math.abs(fontSizeControl.left - fontSizeName.left) : null,
+      fontSizeControlRightDifference:
+        fontSizeControl && fontSizeItem
+          ? Math.abs(fontSizeControl.right - fontSizeItem.right)
+          : null,
+      fontSizeControlContained:
+        fontSizeControl != null &&
+        fontSizeItem != null &&
+        fontSizeControl.left >= fontSizeItem.left &&
+        fontSizeControl.right <= fontSizeItem.right,
     };
   }, scope);
 }

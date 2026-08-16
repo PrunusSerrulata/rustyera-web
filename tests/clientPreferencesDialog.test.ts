@@ -207,10 +207,13 @@ describe("client preferences dialog", () => {
     const imageScale = document.body.querySelector<HTMLInputElement>(
       "#preference-global-imageScale",
     )!;
+    const imageScaleItem = imageScale.closest(".setting-item")!;
     expect(imageScale.disabled).toBe(false);
-    expect(imageScale.closest(".setting-item")?.querySelector("label")?.title).toBe(
+    expect(imageScaleItem.classList.contains("preference-image-scale-setting")).toBe(true);
+    expect(imageScaleItem.querySelector("label")?.title).toBe(
       "调整游戏图片和画布在当前客户端中的显示缩放比例。",
     );
+    expect(imageScaleItem.querySelector(":scope > .preference-setting-control")).not.toBeNull();
     const useMouseOverride = document.body.querySelector<HTMLInputElement>(
       "#preference-global-UseMouse-override",
     )!;

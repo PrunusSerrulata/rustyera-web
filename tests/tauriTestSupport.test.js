@@ -158,4 +158,27 @@ describe("Tauri end-to-end test support", () => {
     await expect(monitor.stop()).resolves.toBeUndefined();
     expect(browser.execute).toHaveBeenCalledOnce();
   });
+
+  it("captures an overdue snapshot before stopping", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    let capture = 0;
+    const output = vi.fn();
+    const browser = {
+      execute: vi.fn(async () => ({
+        document: [{ tag: "main", text: String(++capture) }],
+        runtime: { phase: String(capture) },
+      })),
+    };
+    const monitor = startTauriSessionMonitor(browser, {
+      interval: 5_000,
+      output,
+    });
+    await vi.waitFor(() => expect(output).toHaveBeenCalledOnce());
+
+    vi.setSystemTime(5_001);
+    await monitor.stop();
+
+    expect(browser.execute).toHaveBeenCalledTimes(2);
+  });
 });

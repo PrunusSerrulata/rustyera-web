@@ -75,6 +75,9 @@ export function startTauriSessionMonitor(
   } = {},
 ) {
   let stopped = false;
+  let stopAfterNextCapture = false;
+  let waitingForNextCapture = false;
+  let nextTick = Date.now();
   let wake;
   let monitorError;
   let rejectFailure;
@@ -87,7 +90,11 @@ export function startTauriSessionMonitor(
   return {
     failure,
     async stop() {
-      stopped = true;
+      if (waitingForNextCapture && Date.now() >= nextTick) {
+        stopAfterNextCapture = true;
+      } else {
+        stopped = true;
+      }
       wake?.();
       await loop;
       if (monitorError) throw monitorError;
@@ -96,7 +103,6 @@ export function startTauriSessionMonitor(
 
   async function monitor() {
     let previousSnapshot;
-    let nextTick = Date.now();
     try {
       while (!stopped) {
         if (deadline != null && Date.now() >= deadline) {
@@ -125,8 +131,13 @@ export function startTauriSessionMonitor(
         );
         assertSnapshotProgress(previousSnapshot, snapshot, label);
         previousSnapshot = snapshot;
+        if (stopAfterNextCapture) {
+          stopped = true;
+          break;
+        }
         if (stopped) break;
         nextTick += interval;
+        waitingForNextCapture = true;
         await new Promise((resolve) => {
           const cadenceRemaining = Math.max(0, nextTick - Date.now());
           const deadlineRemaining =
@@ -137,6 +148,7 @@ export function startTauriSessionMonitor(
             resolve();
           };
         });
+        waitingForNextCapture = false;
         wake = undefined;
       }
     } catch (error) {

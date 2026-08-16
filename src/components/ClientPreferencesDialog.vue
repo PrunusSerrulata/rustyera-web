@@ -333,10 +333,7 @@ async function scopeKeydown(event: KeyboardEvent): Promise<void> {
         <fieldset class="settings-group">
           <legend>客户端显示与项目加载</legend>
           <div class="settings-grid">
-            <div
-              class="setting-item preference-auxiliary-item"
-              :class="{ 'preference-has-override': scope === 'project' }"
-            >
+            <div class="setting-item preference-auxiliary-item preference-image-scale-setting">
               <label
                 class="preference-auxiliary-label"
                 :for="scope === 'global' ? `preference-${scope}-imageScale` : undefined"

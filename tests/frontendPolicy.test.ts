@@ -701,6 +701,12 @@ describe("frontend host and image-line policy", () => {
     expect(statusRule).toMatch(/white-space:\s*nowrap;/);
     expect(statusRule).toMatch(/text-align:\s*left;/);
     expect(stylesheet).toMatch(
+      /\.setting-control\.preference-setting-control\s*\{[^}]*width:\s*auto;/s,
+    );
+    expect(stylesheet).toMatch(
+      /\.preference-image-scale-setting\s*\{[^}]*grid-template-columns:\s*max-content minmax\(0, 1fr\);/s,
+    );
+    expect(stylesheet).toMatch(
       /\.preference-setting-label > span,[\s\S]*?\.preference-auxiliary-label > span\s*\{[^}]*white-space:\s*nowrap;/s,
     );
   });

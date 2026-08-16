@@ -893,15 +893,21 @@ select {
   grid-template-columns: minmax(0, 1fr);
   gap: 6px;
 }
-.preference-setting-control {
+.setting-control.preference-setting-control {
   width: auto;
   margin-left: calc(1.2rem + 8px);
 }
 .preference-auxiliary-item .preference-setting-control {
   margin-left: 0;
 }
-.preference-auxiliary-item.preference-has-override .preference-setting-control {
-  margin-left: calc(1.2rem + 8px);
+.preference-image-scale-setting {
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+.preference-image-scale-setting > label {
+  min-height: var(--settings-control-height);
+  padding-top: 0;
 }
 .preference-color-setting {
   grid-template-columns: 14rem minmax(0, 1fr);
