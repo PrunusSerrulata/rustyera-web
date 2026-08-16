@@ -45,6 +45,17 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain('telemetry.outcome !== "success"');
   });
 
+  it("checks global preferences through the real UI before native-browser project load", () => {
+    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+
+    expect(runner).toContain("verifyGlobalPreferencesBeforeProject(browser)");
+    expect(runner).toContain('activeBrowser.$("#welcome-preferences")');
+    expect(runner).toContain("project preferences were enabled without a project");
+    expect(runner).toContain('imageScale.setValue("1.25")');
+    expect(runner).toContain('snapshot().status === "全局偏好已应用"');
+    expect(runner).toContain('setValue("1")');
+  });
+
   it("materializes portable browser files without joining large base64 payloads", () => {
     const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
 

@@ -145,6 +145,7 @@ describe("application menus", () => {
     store.canExportDiagnosis = false;
     store.canManageTraditionalSaves = false;
     store.configurationEntries = [];
+    store.projectOpen = true;
     store.projectLoading = true;
     store.diagnosisExporting = false;
     store.diagnosisProgressValue = undefined;
@@ -242,6 +243,19 @@ describe("application menus", () => {
     wrapper = mountApp();
     states = await menuStates(wrapper);
     expect(states.get("项目设置…")).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("opens global preferences from the welcome page before loading a project", async () => {
+    store.projectOpen = false;
+    store.projectLoading = false;
+    const wrapper = mountApp();
+
+    const preferences = wrapper.get("#welcome-preferences");
+    expect(preferences.attributes("disabled")).toBeUndefined();
+    await preferences.trigger("click");
+
+    expect(store.openPreferencesFromUser).toHaveBeenCalledOnce();
     wrapper.unmount();
   });
 

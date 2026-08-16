@@ -852,6 +852,34 @@ select {
   font-weight: 400;
   text-align: left;
 }
+.preference-setting-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.preference-setting-label input[type="checkbox"] {
+  width: 1.2rem;
+  height: 1.2rem;
+  flex: 0 0 auto;
+  margin: 0;
+}
+.preference-setting-label small {
+  margin-left: auto;
+  white-space: nowrap;
+}
+.preference-boolean-control {
+  display: flex;
+  min-height: var(--settings-control-height, 2.25rem);
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+}
+.preference-boolean-control input[type="checkbox"] {
+  width: 1.2rem;
+  height: 1.2rem;
+  flex: 0 0 auto;
+  margin: 0;
+}
 .setting-control {
   width: 100%;
   min-width: 0;

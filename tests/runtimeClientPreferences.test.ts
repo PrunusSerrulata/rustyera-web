@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { defaultPreferences, defaultProjectPreferences } from "@/core/types";
 import { RuntimeClientPreferencesState } from "@/stores/runtimeClientPreferences";
 
-function fixture() {
+function fixture(withProject = true) {
   const global = ref(defaultPreferences());
   const project = ref(defaultProjectPreferences());
   const open = ref(true);
@@ -21,13 +21,16 @@ function fixture() {
     global,
     project,
     open,
-    snapshot: () => ({
-      project_revision: 3,
-      source_digest: new Uint8Array(32),
-      entries: [],
-      restart_pending: false,
-      generated_source: null,
-    }),
+    snapshot: () =>
+      withProject
+        ? {
+            project_revision: 3,
+            source_digest: new Uint8Array(32),
+            entries: [],
+            restart_pending: false,
+            generated_source: null,
+          }
+        : undefined,
     entries: () => [
       {
         code: "UseMouse",
@@ -59,6 +62,27 @@ function fixture() {
 }
 
 describe("runtime client preference transactions", () => {
+  it("saves and closes global preferences without a loaded project", async () => {
+    const { state, global, open, send, savePreferences, finishStatus } = fixture(false);
+
+    await state.save("global", {
+      settings: {},
+      imageScale: 1.5,
+      masterVolume: 0.4,
+      trustProjectFileMetadata: true,
+    });
+
+    expect(savePreferences).toHaveBeenCalledOnce();
+    expect(global.value).toMatchObject({
+      imageScale: 1.5,
+      masterVolume: 0.4,
+      trustProjectFileMetadata: true,
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(open.value).toBe(false);
+    expect(finishStatus).toHaveBeenCalledWith(1, "全局偏好已应用");
+  });
+
   it("does not report or close a save before the matching Applied response", async () => {
     const { state, open, applyAudio, finishStatus } = fixture();
     const saving = state.save("global", { settings: { UseMouse: "NO" } });

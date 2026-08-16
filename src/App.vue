@@ -82,6 +82,9 @@ onMounted(() => void store.initialize());
       <button class="large" :disabled="!store.canOpenProject" @click="store.openProjectFile">
         从项目文件启动…
       </button>
+      <button id="welcome-preferences" class="large" @click="store.openPreferencesFromUser">
+        偏好设置…
+      </button>
       <p v-if="store.bridgeKind === 'browser'" class="hint">
         Chromium 可直接读写项目目录；Firefox 和 Safari 会将所选项目导入浏览器存储。
       </p>
@@ -135,6 +138,7 @@ onMounted(() => void store.initialize());
       :global-value="store.preferences"
       :project-value="store.projectPreferences"
       :entries="store.configurationEntries"
+      :host-kind="store.bridgeKind"
       :project-writable="store.projectPreferencesWritable"
       :busy="store.settingsBusy"
       :error="store.preferencesError"

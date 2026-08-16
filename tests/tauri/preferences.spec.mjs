@@ -29,7 +29,7 @@ preferences("Tauri client preferences", () => {
     await $("button=文件").click();
     await $("button=偏好设置…").click();
 
-    const dialog = await $(".dialog-panel[aria-label='RustyEra · 偏好设置']");
+    const dialog = await $(".dialog-panel[aria-label='RustyEra Tauri · 偏好设置']");
     await dialog.waitForDisplayed();
     await dialog.$("button=项目偏好").click();
     await dialog.$("#preference-project-FontSize-override").click();

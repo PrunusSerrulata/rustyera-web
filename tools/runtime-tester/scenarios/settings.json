@@ -163,7 +163,7 @@
     { "type": "click", "locator": { "role": "button", "name": "偏好设置…", "exact": true } },
     {
       "type": "assert_dom",
-      "locator": { "role": "dialog", "name": "RustyEra · 偏好设置", "exact": true },
+      "locator": { "role": "dialog", "name": "RustyEra Web · 偏好设置", "exact": true },
       "expect": { "count": 1, "visible": true }
     },
     { "type": "click", "locator": { "role": "tab", "name": "项目偏好", "exact": true } },

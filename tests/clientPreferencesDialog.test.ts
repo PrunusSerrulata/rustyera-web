@@ -37,6 +37,13 @@ describe("client preferences dialog", () => {
     const controls = [
       ...document.body.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
     ];
+    const useMouseLabel = document.body.querySelector<HTMLLabelElement>(
+      "label[title='允许使用鼠标点击游戏按钮并提交交互。']",
+    );
+    expect(useMouseLabel?.getAttribute("aria-description")).toBe(
+      "允许使用鼠标点击游戏按钮并提交交互。",
+    );
+    expect(document.body.querySelectorAll("fieldset.settings-group")).toHaveLength(2);
     controls[0]!.checked = true;
     controls[0]!.dispatchEvent(new Event("change", { bubbles: true }));
     controls[1]!.checked = true;
@@ -86,24 +93,26 @@ describe("client preferences dialog", () => {
     tabs.find((tab) => tab.textContent?.includes("项目偏好"))!.click();
     await wrapper.vm.$nextTick();
 
-    const override = [...document.body.querySelectorAll<HTMLLabelElement>("label")]
-      .find((label) => label.textContent?.includes("覆盖 启用鼠标操作"))!
-      .querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    const override = document.body.querySelector<HTMLInputElement>(
+      "#preference-project-UseMouse-override",
+    )!;
     override.click();
     tabs.find((tab) => tab.textContent?.includes("全局偏好"))!.click();
     await wrapper.vm.$nextTick();
     tabs.find((tab) => tab.textContent?.includes("项目偏好"))!.click();
     await wrapper.vm.$nextTick();
-    const restoredOverride = [...document.body.querySelectorAll<HTMLLabelElement>("label")]
-      .find((label) => label.textContent?.includes("覆盖 启用鼠标操作"))!
-      .querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    const restoredOverride = document.body.querySelector<HTMLInputElement>(
+      "#preference-project-UseMouse-override",
+    )!;
     expect(restoredOverride.checked).toBe(true);
 
     restoredOverride.click();
-    for (const labelText of ["图片缩放", "主音量", "覆盖快速启动文件元数据策略"]) {
-      const checkbox = [...document.body.querySelectorAll<HTMLLabelElement>("label")]
-        .find((label) => label.textContent?.includes(labelText))!
-        .querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    for (const id of [
+      "#preference-project-imageScale-override",
+      "#preference-project-masterVolume-override",
+      "#preference-project-trustProjectFileMetadata-override",
+    ]) {
+      const checkbox = document.body.querySelector<HTMLInputElement>(id)!;
       checkbox.click();
     }
     document.body
@@ -183,5 +192,41 @@ describe("client preferences dialog", () => {
       .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 
     expect(wrapper.emitted("save")?.at(-1)?.[0]).toBe("global");
+  });
+
+  it("keeps global client preferences editable without project configuration", async () => {
+    const wrapper = mount(ClientPreferencesDialog, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        globalValue: defaultPreferences(),
+        projectValue: { settings: {} },
+        entries: [],
+        projectWritable: false,
+      },
+    });
+
+    const imageScale = document.body.querySelector<HTMLInputElement>(
+      "#preference-global-imageScale",
+    )!;
+    expect(imageScale.disabled).toBe(false);
+    expect(imageScale.closest(".setting-item")?.querySelector("label")?.title).toBe(
+      "调整游戏图片和画布在当前客户端中的显示缩放比例。",
+    );
+    const useMouseOverride = document.body.querySelector<HTMLInputElement>(
+      "#preference-global-UseMouse-override",
+    )!;
+    expect(useMouseOverride.disabled).toBe(false);
+    useMouseOverride.click();
+    imageScale.value = "1.5";
+    imageScale.dispatchEvent(new Event("input", { bubbles: true }));
+    document.body
+      .querySelector<HTMLFormElement>("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    expect(wrapper.emitted("save")?.at(-1)).toEqual([
+      "global",
+      expect.objectContaining({ settings: { UseMouse: "YES" }, imageScale: 1.5 }),
+    ]);
   });
 });

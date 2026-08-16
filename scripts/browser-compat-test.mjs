@@ -136,6 +136,14 @@ try {
     throw new Error(`failed to clear OPFS for cold startup: ${JSON.stringify(opfsReset)}`);
   }
   console.log(JSON.stringify({ browser: browserName, type: "opfs-reset", ...opfsReset }));
+  const globalPreferencesBeforeProject = await verifyGlobalPreferencesBeforeProject(browser);
+  console.log(
+    JSON.stringify({
+      browser: browserName,
+      type: "global-preferences-before-project",
+      ...globalPreferencesBeforeProject,
+    }),
+  );
   let minimized = false;
   compatibilityStage = "installing portable project picker";
   await browser.execute(() => {
@@ -734,6 +742,52 @@ try {
   }
   await browser?.deleteSession().catch(() => {});
   await server?.close().catch(() => {});
+}
+
+async function verifyGlobalPreferencesBeforeProject(activeBrowser) {
+  const openDialog = async () => {
+    compatibilityStage = "opening global preferences before project load";
+    const button = await activeBrowser.$("#welcome-preferences");
+    await button.waitForClickable({ timeout: 5_000 });
+    await button.click();
+    const dialog = await activeBrowser.$("section[aria-label='RustyEra Web · 偏好设置']");
+    await dialog.waitForDisplayed({ timeout: 5_000 });
+    return dialog;
+  };
+
+  let dialog = await openDialog();
+  const projectTab = await dialog.$("#preference-tab-project");
+  const imageScale = await dialog.$("#preference-global-imageScale");
+  const imageScaleLabel = await dialog.$("label[for='preference-global-imageScale']");
+  if (await projectTab.isEnabled())
+    throw new Error("project preferences were enabled without a project");
+  if (!(await imageScale.isEnabled()))
+    throw new Error("global image scale was disabled without a project");
+  const tooltip = await imageScaleLabel.getAttribute("title");
+  if (!tooltip) throw new Error("global image scale did not expose its explanatory tooltip");
+
+  compatibilityStage = "saving global preferences before project load";
+  await imageScale.setValue("1.25");
+  await (await dialog.$("button=应用")).click();
+  await dialog.waitForDisplayed({ reverse: true, timeout: 5_000 });
+  await activeBrowser.waitUntil(
+    () =>
+      activeBrowser.execute(() => window.__RUSTYERA_TEST__?.snapshot().status === "全局偏好已应用"),
+    {
+      timeout: 5_000,
+      interval: 50,
+      timeoutMsg: "global preferences were not saved before project load",
+    },
+  );
+
+  dialog = await openDialog();
+  const persisted = await (await dialog.$("#preference-global-imageScale")).getValue();
+  if (persisted !== "1.25")
+    throw new Error(`global preferences did not reopen with the saved value: ${persisted}`);
+  await (await dialog.$("#preference-global-imageScale")).setValue("1");
+  await (await dialog.$("button=应用")).click();
+  await dialog.waitForDisplayed({ reverse: true, timeout: 5_000 });
+  return { projectTabEnabled: false, imageScaleEditable: true, persisted, restored: "1", tooltip };
 }
 
 async function inspectOpfsProjectCache(activeBrowser, prefixBytes = undefined) {
