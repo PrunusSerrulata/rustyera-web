@@ -124,8 +124,49 @@ describe("client preferences dialog", () => {
         imageScale: undefined,
         masterVolume: 0.4,
         trustProjectFileMetadata: undefined,
+        interactionAssistMode: undefined,
       },
     ]);
+  });
+
+  it("edits a global interaction panel mode and a sparse project override", async () => {
+    const wrapper = mount(ClientPreferencesDialog, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        globalValue: defaultPreferences(),
+        projectValue: { settings: {} },
+        entries: [],
+        projectWritable: true,
+      },
+    });
+
+    const globalModes = document.body.querySelectorAll<HTMLInputElement>(
+      "input[name='preference-global-interactionAssistMode']",
+    );
+    expect([...globalModes].map((option) => option.parentElement?.textContent?.trim())).toEqual([
+      "关闭",
+      "开启",
+      "自动",
+    ]);
+    await setCheckbox("#preference-global-interactionAssistMode-on", true);
+    document.body
+      .querySelector<HTMLFormElement>("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(wrapper.emitted("save")?.at(-1)?.[1]).toMatchObject({ interactionAssistMode: "on" });
+
+    const projectTab = [...document.body.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(
+      (tab) => tab.textContent?.includes("项目偏好"),
+    )!;
+    projectTab.click();
+    await wrapper.vm.$nextTick();
+    expect(document.body.querySelector("#preference-project-interactionAssistMode")).toBeNull();
+    await setCheckbox("#preference-project-interactionAssistMode-override", true);
+    await setCheckbox("#preference-project-interactionAssistMode-off", true);
+    document.body
+      .querySelector<HTMLFormElement>("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(wrapper.emitted("save")?.at(-1)?.[1]).toMatchObject({ interactionAssistMode: "off" });
   });
 
   it("keeps numeric project-setting overrides as protocol strings", async () => {

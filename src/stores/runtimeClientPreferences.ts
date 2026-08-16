@@ -149,6 +149,7 @@ export class RuntimeClientPreferencesState {
                 imageScale: value.imageScale ?? 1,
                 masterVolume: value.masterVolume ?? 1,
                 trustProjectFileMetadata: value.trustProjectFileMetadata ?? false,
+                interactionAssistMode: value.interactionAssistMode ?? "auto",
               })
             : Promise.reject(new Error("客户端偏好操作已取消")),
         );

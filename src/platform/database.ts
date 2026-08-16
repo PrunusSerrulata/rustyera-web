@@ -14,11 +14,12 @@ interface HandleRecord {
 
 type StoredPreferences = Omit<
   Preferences,
-  "schemaVersion" | "settings" | "trustProjectFileMetadata"
+  "schemaVersion" | "settings" | "trustProjectFileMetadata" | "interactionAssistMode"
 > & {
   schemaVersion: number;
   settings?: Record<string, string>;
   trustProjectFileMetadata?: boolean;
+  interactionAssistMode?: unknown;
 };
 
 class FrontendDatabase extends Dexie {
@@ -61,7 +62,7 @@ export function normalizePreferences(value: StoredPreferences): Preferences {
   if (!obsoleteFontOverrides && value.fontSizeOverridePx != null && settings.FontSize == null)
     settings.FontSize = String(Math.round(Math.min(72, Math.max(8, value.fontSizeOverridePx))));
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     settings,
     fontFamilyOverride: null,
     fontSizeOverridePx: null,
@@ -73,5 +74,10 @@ export function normalizePreferences(value: StoredPreferences): Preferences {
       : 1,
     trustProjectFileMetadata:
       Number(value.schemaVersion ?? 1) >= 4 && value.trustProjectFileMetadata === true,
+    interactionAssistMode: interactionAssistMode(value.interactionAssistMode),
   };
+}
+
+function interactionAssistMode(value: unknown): Preferences["interactionAssistMode"] {
+  return value === "off" || value === "on" || value === "auto" ? value : "auto";
 }

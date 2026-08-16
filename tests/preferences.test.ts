@@ -8,7 +8,12 @@ describe("preference normalization", () => {
     expect(defaultPreferences().fontSizeOverridePx).toBeNull();
     expect(
       normalizePreferences({ ...defaultPreferences(), fontSizeOverridePx: null }),
-    ).toMatchObject({ fontSizeOverridePx: null, schemaVersion: 5, settings: {} });
+    ).toMatchObject({
+      fontSizeOverridePx: null,
+      schemaVersion: 6,
+      settings: {},
+      interactionAssistMode: "auto",
+    });
   });
 
   it("clamps every user-controlled numeric projection", () => {
@@ -21,13 +26,14 @@ describe("preference normalization", () => {
         masterVolume: -1,
       }),
     ).toEqual({
-      schemaVersion: 5,
+      schemaVersion: 6,
       settings: { FontSize: "72" },
       fontFamilyOverride: null,
       fontSizeOverridePx: null,
       imageScale: 4,
       masterVolume: 0,
       trustProjectFileMetadata: false,
+      interactionAssistMode: "auto",
     });
   });
 
@@ -44,13 +50,14 @@ describe("preference normalization", () => {
           masterVolume: 0.4,
         }),
       ).toEqual({
-        schemaVersion: 5,
+        schemaVersion: 6,
         settings: {},
         fontFamilyOverride: null,
         fontSizeOverridePx: null,
         imageScale: 1.75,
         masterVolume: 0.4,
         trustProjectFileMetadata: false,
+        interactionAssistMode: "auto",
       });
     },
   );
@@ -66,26 +73,39 @@ describe("preference normalization", () => {
         masterVolume: 0.5,
       }),
     ).toEqual({
-      schemaVersion: 5,
+      schemaVersion: 6,
       settings: { FontName: "Accessible Font", FontSize: "72" },
       fontFamilyOverride: null,
       fontSizeOverridePx: null,
       imageScale: 2,
       masterVolume: 0.5,
       trustProjectFileMetadata: false,
+      interactionAssistMode: "auto",
     });
   });
 
   it("enables metadata trust only for an explicit schema 4 preference", () => {
     expect(
       normalizePreferences({ ...defaultPreferences(), trustProjectFileMetadata: true }),
-    ).toMatchObject({ schemaVersion: 5, trustProjectFileMetadata: true });
+    ).toMatchObject({ schemaVersion: 6, trustProjectFileMetadata: true });
     expect(
       normalizePreferences({
         ...defaultPreferences(),
         schemaVersion: 3,
         trustProjectFileMetadata: true,
       }),
-    ).toMatchObject({ schemaVersion: 5, trustProjectFileMetadata: false });
+    ).toMatchObject({ schemaVersion: 6, trustProjectFileMetadata: false });
+  });
+
+  it("defaults invalid and legacy interaction assistance modes to automatic", () => {
+    expect(
+      normalizePreferences({ ...defaultPreferences(), interactionAssistMode: "off" }),
+    ).toMatchObject({ interactionAssistMode: "off" });
+    expect(
+      normalizePreferences({
+        ...defaultPreferences(),
+        interactionAssistMode: "invalid" as any,
+      }),
+    ).toMatchObject({ interactionAssistMode: "auto" });
   });
 });

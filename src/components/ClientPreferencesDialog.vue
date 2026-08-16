@@ -94,7 +94,13 @@ const title = computed(() => `RustyEra ${props.hostKind === "tauri" ? "Tauri" : 
 const auxiliaryDescriptions = {
   imageScale: "调整游戏图片和画布在当前客户端中的显示缩放比例。",
   trustProjectFileMetadata: "允许快速启动使用文件大小和修改时间判断项目文件是否变化。",
+  interactionAssistMode: "控制是否在游戏主视口下方显示当前可用交互项的辅助按钮。",
 } as const;
+const interactionAssistModes = [
+  { value: "off", label: "关闭" },
+  { value: "on", label: "开启" },
+  { value: "auto", label: "自动" },
+] as const;
 
 watch(
   [
@@ -119,6 +125,7 @@ function source(): ProjectPreferences {
         imageScale: props.globalValue.imageScale,
         masterVolume: props.globalValue.masterVolume,
         trustProjectFileMetadata: props.globalValue.trustProjectFileMetadata,
+        interactionAssistMode: props.globalValue.interactionAssistMode,
       }
     : props.projectValue;
 }
@@ -129,6 +136,7 @@ function resetDraft(): void {
   draft.imageScale = value.imageScale;
   draft.masterVolume = value.masterVolume;
   draft.trustProjectFileMetadata = value.trustProjectFileMetadata;
+  draft.interactionAssistMode = value.interactionAssistMode;
 }
 
 function overridden(code: string): boolean {
@@ -157,15 +165,22 @@ function setBoolean(code: string, checked: boolean): void {
   draft.settings[code] = checked ? "YES" : "NO";
 }
 
-function auxiliaryOverridden(key: "imageScale" | "trustProjectFileMetadata") {
+function auxiliaryOverridden(
+  key: "imageScale" | "trustProjectFileMetadata" | "interactionAssistMode",
+) {
   return scope.value === "global" || draft[key] != null;
 }
 
-function toggleAuxiliary(key: "imageScale" | "trustProjectFileMetadata", enabled: boolean): void {
+function toggleAuxiliary(
+  key: "imageScale" | "trustProjectFileMetadata" | "interactionAssistMode",
+  enabled: boolean,
+): void {
   if (key === "imageScale") {
     draft.imageScale = !enabled && scope.value === "project" ? undefined : 1;
-  } else {
+  } else if (key === "trustProjectFileMetadata") {
     draft.trustProjectFileMetadata = !enabled && scope.value === "project" ? undefined : false;
+  } else {
+    draft.interactionAssistMode = !enabled && scope.value === "project" ? undefined : "auto";
   }
 }
 
@@ -184,6 +199,7 @@ function save(): void {
     imageScale: draft.imageScale,
     masterVolume: draft.masterVolume,
     trustProjectFileMetadata: draft.trustProjectFileMetadata,
+    interactionAssistMode: draft.interactionAssistMode,
   });
 }
 
@@ -434,6 +450,51 @@ async function scopeKeydown(event: KeyboardEvent): Promise<void> {
                 />
                 <span>信任大小和修改时间</span>
               </label>
+            </div>
+            <div class="setting-item setting-wide preference-interaction-assist-setting">
+              <label
+                class="preference-auxiliary-label"
+                :title="auxiliaryDescriptions.interactionAssistMode"
+                :aria-description="auxiliaryDescriptions.interactionAssistMode"
+              >
+                <input
+                  v-if="scope === 'project'"
+                  :id="`preference-${scope}-interactionAssistMode-override`"
+                  type="checkbox"
+                  :checked="auxiliaryOverridden('interactionAssistMode')"
+                  :disabled="busy"
+                  @change="
+                    toggleAuxiliary(
+                      'interactionAssistMode',
+                      ($event.target as HTMLInputElement).checked,
+                    )
+                  "
+                />
+                <span :id="`preference-${scope}-interactionAssistMode-label`">交互辅助面板</span>
+              </label>
+              <div
+                v-if="auxiliaryOverridden('interactionAssistMode')"
+                :id="`preference-${scope}-interactionAssistMode`"
+                class="setting-control preference-setting-control interaction-assist-mode-control"
+                role="radiogroup"
+                :aria-labelledby="`preference-${scope}-interactionAssistMode-label`"
+              >
+                <label
+                  v-for="mode in interactionAssistModes"
+                  :key="mode.value"
+                  :for="`preference-${scope}-interactionAssistMode-${mode.value}`"
+                >
+                  <input
+                    :id="`preference-${scope}-interactionAssistMode-${mode.value}`"
+                    v-model="draft.interactionAssistMode"
+                    type="radio"
+                    :name="`preference-${scope}-interactionAssistMode`"
+                    :value="mode.value"
+                    :disabled="busy || !auxiliaryOverridden('interactionAssistMode')"
+                  />
+                  <span>{{ mode.label }}</span>
+                </label>
+              </div>
             </div>
           </div>
         </fieldset>

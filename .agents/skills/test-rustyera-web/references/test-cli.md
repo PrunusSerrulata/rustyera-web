@@ -64,6 +64,9 @@ Use JSON `schema_version: 1`. The format is a compatible superset of the TUI sce
   the scenario must still exercise import/export through the production UI.
 - `prepare_in_game_save`: In the isolated short reference fixture only, make `SYSTEM_TITLE` invoke
   `SAVEGAME` and provide `SAVEINFO`, so visible slot actions exercise production storage writes.
+- `prepare_interaction_assist`: In the isolated short reference fixture only, expose a stable
+  `ASSISTED_ACTION` text button before its input wait so interaction-assistance UI can activate a
+  real runtime token.
 - `inputs`: TUI-compatible semantic input prefix. Each value is submitted through the real form.
 - `actions`: Ordered Web action prefix; it is mutually exclusive with `inputs`.
 - `watches`: Debug expressions such as `RESULT` or `FLAG:0,1`, sampled at stable waits.
@@ -88,6 +91,8 @@ An action has `type`:
 - `scroll_key`: `locator`, optional `key` (default `PageUp`) and `settle_ms` (default 50); focuses
   the locator and scrolls it through Playwright's real keyboard input.
 - `fill`: `locator`, `value`.
+- `set_viewport`: positive integer `width` and `height`; resizes Chromium's layout viewport so
+  responsive production behavior can be checked without overriding media-query state.
 - `press`: `locator`, `key`; set `advances_game: true` and add `semantic_input` if it advances a
   compared game.
 - `query`: `locator`, optional `fields` from `count`, `text`, `html`, `value`, `visible`,

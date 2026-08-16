@@ -70,6 +70,7 @@ describe("runtime client preference transactions", () => {
       imageScale: 1.5,
       masterVolume: 0.4,
       trustProjectFileMetadata: true,
+      interactionAssistMode: "on",
     });
 
     expect(savePreferences).toHaveBeenCalledOnce();
@@ -77,6 +78,7 @@ describe("runtime client preference transactions", () => {
       imageScale: 1.5,
       masterVolume: 0.4,
       trustProjectFileMetadata: true,
+      interactionAssistMode: "on",
     });
     expect(send).not.toHaveBeenCalled();
     expect(open.value).toBe(false);

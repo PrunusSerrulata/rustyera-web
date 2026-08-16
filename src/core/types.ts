@@ -19,24 +19,28 @@ export interface PumpBatch {
   events: WebEvent[];
 }
 
+export type InteractionAssistMode = "off" | "on" | "auto";
+
 export interface Preferences {
-  schemaVersion: 5;
+  schemaVersion: 6;
   settings: Record<string, string>;
   fontFamilyOverride: string | null;
   fontSizeOverridePx: number | null;
   imageScale: number;
   masterVolume: number;
   trustProjectFileMetadata: boolean;
+  interactionAssistMode: InteractionAssistMode;
 }
 
 export const defaultPreferences = (): Preferences => ({
-  schemaVersion: 5,
+  schemaVersion: 6,
   settings: {},
   fontFamilyOverride: null,
   fontSizeOverridePx: null,
   imageScale: 1,
   masterVolume: 1,
   trustProjectFileMetadata: false,
+  interactionAssistMode: "auto",
 });
 
 export interface ProjectPreferences {
@@ -44,6 +48,7 @@ export interface ProjectPreferences {
   imageScale?: number;
   masterVolume?: number;
   trustProjectFileMetadata?: boolean;
+  interactionAssistMode?: InteractionAssistMode;
 }
 
 export const defaultProjectPreferences = (): ProjectPreferences => ({ settings: {} });

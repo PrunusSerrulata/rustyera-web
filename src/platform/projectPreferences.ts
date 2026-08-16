@@ -73,6 +73,7 @@ export class BrowserProjectPreferenceStore {
         typeof client.trustProjectFileMetadata === "boolean"
           ? client.trustProjectFileMetadata
           : undefined,
+      interactionAssistMode: interactionAssistMode(client.interactionAssistMode),
     };
   }
 
@@ -96,6 +97,9 @@ export class BrowserProjectPreferenceStore {
         ...(value.trustProjectFileMetadata == null
           ? {}
           : { trustProjectFileMetadata: value.trustProjectFileMetadata }),
+        ...(value.interactionAssistMode == null
+          ? {}
+          : { interactionAssistMode: value.interactionAssistMode }),
       },
     };
     const handle = await directory.getFileHandle(FILE_NAME, { create: true });
@@ -139,7 +143,13 @@ function validateActiveProfile(value: unknown): void {
   if (!isRecord(value.client)) throw new Error(`${PROFILE}.client 不是对象`);
   if (
     Object.keys(value.client).some(
-      (key) => !["imageScale", "masterVolume", "trustProjectFileMetadata"].includes(key),
+      (key) =>
+        ![
+          "imageScale",
+          "masterVolume",
+          "trustProjectFileMetadata",
+          "interactionAssistMode",
+        ].includes(key),
     )
   )
     throw new Error(`${PROFILE}.client 包含未知字段`);
@@ -166,6 +176,17 @@ function validateActiveProfile(value: unknown): void {
     typeof value.client.trustProjectFileMetadata !== "boolean"
   )
     throw new Error("trustProjectFileMetadata 必须是布尔值");
+  if (
+    value.client.interactionAssistMode != null &&
+    !["off", "on", "auto"].includes(String(value.client.interactionAssistMode))
+  )
+    throw new Error("interactionAssistMode 必须是 off、on 或 auto");
+}
+
+function interactionAssistMode(
+  value: unknown,
+): ProjectPreferences["interactionAssistMode"] | undefined {
+  return value === "off" || value === "on" || value === "auto" ? value : undefined;
 }
 
 function finite(value: unknown): number | undefined {

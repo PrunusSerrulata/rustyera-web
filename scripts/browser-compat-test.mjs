@@ -14,6 +14,7 @@ import { createLoopbackViteServer, viteServerPort } from "./vite-test-server.mjs
 import {
   browserProjectProgressErrors,
   injectInGameSaveFlow,
+  injectInteractionAssistFlow,
   nativeFirefoxCapabilities,
   runtimeProgressDiagnostic,
   runtimeProgressSignature,
@@ -45,7 +46,9 @@ if (projectIndex < 0) {
   const oracle = files.find((entry) => entry.path.toLowerCase() === "erb/oracle.erb");
   if (!oracle) throw new Error("browser compatibility fixture lacks erb/oracle.erb");
   oracle.base64 = Buffer.from(
-    injectInGameSaveFlow(Buffer.from(oracle.base64, "base64").toString("utf8")),
+    injectInteractionAssistFlow(
+      injectInGameSaveFlow(Buffer.from(oracle.base64, "base64").toString("utf8")),
+    ),
   ).toString("base64");
 }
 let server;
@@ -349,6 +352,15 @@ try {
       await button.waitForClickable({ timeout: 30_000 });
       await button.click();
     };
+    compatibilityStage = "checking automatic interaction assistance";
+    const automaticInteractionAssist = await inspectAutomaticInteractionAssist(browser);
+    compatibilityStage = "enabling interaction assistance";
+    await enableGlobalInteractionAssist(browser);
+    compatibilityStage = "checking the interaction assistance panel";
+    const interactionAssist = await inspectInteractionAssistPanel(browser);
+    console.log(
+      JSON.stringify({ browser: browserName, automaticInteractionAssist, interactionAssist }),
+    );
     for (const action of [
       { menuLabel: "重新开始", title: "重新开始游戏" },
       { menuLabel: "返回标题", title: "返回标题" },
@@ -744,6 +756,92 @@ try {
   await server?.close().catch(() => {});
 }
 
+async function inspectInteractionAssistPanel(activeBrowser) {
+  const panel = await activeBrowser.$("section[aria-label='交互辅助面板']");
+  await panel.waitForDisplayed({ timeout: 30_000 });
+  const firstAction = await panel.$(".interaction-assist-action");
+  await firstAction.waitForClickable({ timeout: 30_000 });
+  const before = await activeBrowser.execute(() => {
+    const viewport = document.querySelector(".game-viewport");
+    return {
+      height: viewport?.getBoundingClientRect().height,
+      scrollTop: viewport instanceof HTMLElement ? viewport.scrollTop : null,
+    };
+  });
+  await (await panel.$("button=展开")).click();
+  const expanded = await activeBrowser.execute(() => {
+    const viewport = document.querySelector(".game-viewport");
+    const panel = document.querySelector("section[aria-label='交互辅助面板']");
+    const actions = [...document.querySelectorAll(".interaction-assist-action")];
+    return {
+      viewportHeight: viewport?.getBoundingClientRect().height,
+      viewportScrollTop: viewport instanceof HTMLElement ? viewport.scrollTop : null,
+      panelHeight: panel?.getBoundingClientRect().height,
+      actionCount: actions.length,
+      firstLabel: actions[0]?.getAttribute("aria-label"),
+      expanded: panel?.classList.contains("expanded"),
+    };
+  });
+  if (
+    !expanded.expanded ||
+    expanded.actionCount < 1 ||
+    !expanded.firstLabel ||
+    Math.abs(expanded.viewportHeight - before.height) > 0.5 ||
+    expanded.viewportScrollTop !== before.scrollTop ||
+    expanded.panelHeight > before.height * 0.75 + 0.5
+  ) {
+    throw new Error(
+      `interaction assistance panel geometry mismatch: ${JSON.stringify({ before, expanded })}`,
+    );
+  }
+  await (await panel.$("button=折叠")).click();
+  return { before, expanded };
+}
+
+async function inspectAutomaticInteractionAssist(activeBrowser) {
+  const original = await activeBrowser.getWindowSize();
+  const desktop = { width: Math.max(1024, original.width), height: Math.max(800, original.height) };
+  await activeBrowser.setWindowSize(desktop.width, desktop.height);
+  const panel = await activeBrowser.$("section[aria-label='交互辅助面板']");
+  await panel.waitForDisplayed({ reverse: true, timeout: 5_000 });
+
+  const mobile = { width: 600, height: 800 };
+  await activeBrowser.setWindowSize(mobile.width, mobile.height);
+  await panel.waitForDisplayed({ timeout: 5_000 });
+  const mobileState = await activeBrowser.execute(() => ({
+    visible: document.querySelector("section[aria-label='交互辅助面板']")?.ariaHidden === "false",
+  }));
+  if (!mobileState.visible)
+    throw new Error(
+      `automatic interaction assistance did not enable on mobile: ${JSON.stringify(mobileState)}`,
+    );
+
+  await activeBrowser.setWindowSize(desktop.width, desktop.height);
+  await panel.waitForDisplayed({ reverse: true, timeout: 5_000 });
+  return { desktop, mobile, mobileState };
+}
+
+async function enableGlobalInteractionAssist(activeBrowser) {
+  const fileMenu = await activeBrowser.$("//button[normalize-space(.)='文件']");
+  await fileMenu.waitForClickable({ timeout: 5_000 });
+  await fileMenu.click();
+  const preferences = await activeBrowser.$("//button[normalize-space(.)='偏好设置…']");
+  await preferences.waitForClickable({ timeout: 5_000 });
+  await preferences.click();
+  const dialog = await activeBrowser.$("section[aria-label='RustyEra Web · 偏好设置']");
+  await dialog.waitForDisplayed({ timeout: 5_000 });
+  await (await dialog.$("#preference-global-interactionAssistMode-on")).click();
+  await (await dialog.$("button=应用")).click();
+  await dialog.waitForDisplayed({ reverse: true, timeout: 5_000 });
+  await activeBrowser.waitUntil(
+    () =>
+      activeBrowser.execute(
+        () => document.querySelector("section[aria-label='交互辅助面板']")?.ariaHidden === "false",
+      ),
+    { timeout: 5_000, interval: 50, timeoutMsg: "interaction assistance did not switch on" },
+  );
+}
+
 async function verifyGlobalPreferencesBeforeProject(activeBrowser) {
   const openDialog = async () => {
     compatibilityStage = "opening global preferences before project load";
@@ -758,6 +856,7 @@ async function verifyGlobalPreferencesBeforeProject(activeBrowser) {
   let dialog = await openDialog();
   const projectTab = await dialog.$("#preference-tab-project");
   const imageScale = await dialog.$("#preference-global-imageScale");
+  const interactionAssistMode = await dialog.$("#preference-global-interactionAssistMode-auto");
   const imageScaleLabel = await dialog.$("label[for='preference-global-imageScale']");
   if (await projectTab.isEnabled())
     throw new Error("project preferences were enabled without a project");
@@ -787,6 +886,7 @@ async function verifyGlobalPreferencesBeforeProject(activeBrowser) {
 
   compatibilityStage = "saving global preferences before project load";
   await imageScale.setValue("1.25");
+  if (!(await interactionAssistMode.isSelected())) await interactionAssistMode.click();
   await (await dialog.$("button=应用")).click();
   await dialog.waitForDisplayed({ reverse: true, timeout: 5_000 });
   await activeBrowser.waitUntil(
@@ -801,8 +901,17 @@ async function verifyGlobalPreferencesBeforeProject(activeBrowser) {
 
   dialog = await openDialog();
   const persisted = await (await dialog.$("#preference-global-imageScale")).getValue();
+  const persistedInteractionAssistMode = (await (
+    await dialog.$("#preference-global-interactionAssistMode-auto")
+  ).isSelected())
+    ? "auto"
+    : "other";
   if (persisted !== "1.25")
     throw new Error(`global preferences did not reopen with the saved value: ${persisted}`);
+  if (persistedInteractionAssistMode !== "auto")
+    throw new Error(
+      `global interaction assistance mode did not persist: ${persistedInteractionAssistMode}`,
+    );
   await (await dialog.$("#preference-global-imageScale")).setValue("1");
   await (await dialog.$("button=应用")).click();
   await dialog.waitForDisplayed({ reverse: true, timeout: 5_000 });
@@ -812,6 +921,7 @@ async function verifyGlobalPreferencesBeforeProject(activeBrowser) {
     fontInputDetails,
     typedFont,
     persisted,
+    persistedInteractionAssistMode,
     restored: "1",
     tooltip,
   };

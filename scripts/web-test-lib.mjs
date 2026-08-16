@@ -371,6 +371,24 @@ export function injectInGameSaveFlow(source) {
   return `${source.replace(marker[0], `${marker[0]}SAVEGAME${newline}`)}${newline}@SAVEINFO${newline}SAVEDATA_TEXT = "browser game save"${newline}RETURN${newline}`;
 }
 
+export function injectInteractionAssistFlow(source) {
+  const marker = /PRINTL ORACLE_READY(\r\n|\n)/.exec(source);
+  if (!marker) throw new Error("interaction-assist fixture lacks ORACLE_READY marker");
+  if (source.includes('PRINTBUTTON "ASSISTED_ACTION", 0'))
+    throw new Error("interaction-assist fixture already exposes its action");
+  const newline = marker[1];
+  const saveAnchor = `${marker[0]}SAVEGAME${newline}`;
+  const anchor = source.includes(saveAnchor) ? saveAnchor : marker[0];
+  const interactionLoop = [
+    "$RUSTYERA_INTERACTION_ASSIST_WAIT",
+    'PRINTBUTTON "ASSISTED_ACTION", 0',
+    "INPUT",
+    "GOTO RUSTYERA_INTERACTION_ASSIST_WAIT",
+    "",
+  ].join(newline);
+  return source.replace(anchor, `${anchor}${interactionLoop}`);
+}
+
 export function nativeFirefoxCapabilities(platform = process.platform) {
   const options = { args: ["-headless"] };
   if (platform === "darwin") {
@@ -763,12 +781,28 @@ export async function runAction(page, action) {
     }
   }
   if (action.type === "sample_queries") return sampleQueries(page, action);
+  if (action.type === "set_viewport") {
+    const width = Number(action.width);
+    const height = Number(action.height);
+    if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0)
+      throw new Error("set_viewport requires positive integer width and height");
+    await page.setViewportSize({ width, height });
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
+        ),
+    );
+    return { query: { viewport: { width, height } } };
+  }
   const locator = action.locator ? resolveLocator(page, action.locator) : undefined;
   if (action.type === "click") {
     const runtimeInput = await locator.evaluate((element) =>
       Boolean(
-        element.closest(".game-viewport") &&
-        (element.matches("button") || element.closest("button")),
+        (element.closest(".game-viewport") &&
+          (element.matches("button") || element.closest("button"))) ||
+        element.matches(".interaction-assist-action") ||
+        element.closest(".interaction-assist-action"),
       ),
     );
     const beforeWaitId = runtimeInput

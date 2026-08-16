@@ -354,6 +354,106 @@ select {
   contain: strict;
   overflow-anchor: none;
 }
+.game-area {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+}
+.interaction-assist-slot {
+  min-width: 0;
+}
+.interaction-assist-slot.interaction-assist-hidden {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.interaction-assist-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  border-top: 1px solid #3a3f4b;
+  background: #202329f5;
+  box-shadow: 0 -4px 14px #0005;
+}
+.interaction-assist-panel.expanded {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 24;
+}
+.interaction-assist-header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 7px;
+  color: #cbd1dd;
+  font-size: 0.78rem;
+}
+.interaction-assist-header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.interaction-assist-toggle {
+  flex: 0 0 auto;
+  padding: 0.18rem 0.55rem;
+  font-size: 0.78rem;
+}
+.interaction-assist-actions {
+  min-width: 0;
+  padding: 4px 7px 7px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.interaction-assist-actions.expanded {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  overflow: auto;
+}
+.interaction-assist-row {
+  display: flex;
+  width: max-content;
+  min-width: 100%;
+  gap: 6px;
+}
+.interaction-assist-action {
+  width: 10rem;
+  min-width: 10rem;
+  max-width: 10rem;
+  padding: 0.42rem 0.65rem;
+  text-align: left;
+}
+.interaction-assist-action > span {
+  display: block;
+  overflow: hidden;
+  font-size: 1rem;
+  line-height: 1rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.interaction-assist-mode-control {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.85rem;
+}
+.interaction-assist-mode-control label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+.interaction-assist-mode-control input {
+  margin: 0;
+}
 .game-tooltip {
   position: fixed;
   z-index: 1100;

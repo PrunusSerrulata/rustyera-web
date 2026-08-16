@@ -13,6 +13,7 @@ import {
   compareObservations,
   goalStatus,
   injectInGameSaveFlow,
+  injectInteractionAssistFlow,
   installRemoteFileSystem,
   isolatedProject,
   loadScenario,
@@ -67,6 +68,10 @@ async function execute(args) {
   if (scenario.prepare_in_game_save) {
     const entry = path.join(webProject.project, "erb", "oracle.erb");
     await writeFile(entry, injectInGameSaveFlow(await readFile(entry, "utf8")));
+  }
+  if (scenario.prepare_interaction_assist) {
+    const entry = path.join(webProject.project, "erb", "oracle.erb");
+    await writeFile(entry, injectInteractionAssistFlow(await readFile(entry, "utf8")));
   }
   let referenceProject;
   let reference;

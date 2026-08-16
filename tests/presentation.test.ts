@@ -143,12 +143,12 @@ describe("presentation projection", () => {
       ],
     });
 
-    expect(hasEnabledButton(state.lines, { epoch: 1, id: 1 })).toBe(false);
-    expect(hasEnabledButton(state.lines, { epoch: 1, id: 2 })).toBe(false);
-    expect(hasEnabledButton(state.lines, { epoch: 1, id: 3 })).toBe(true);
-    expect(hasEnabledButton(state.lines, { epoch: 1, id: 4 })).toBe(true);
-    expect(hasEnabledButton(state.lines, { epoch: 1, id: 5 })).toBe(false);
-    expect(hasEnabledButton(state.lines, { epoch: 1, id: 6 })).toBe(false);
+    expect(hasEnabledButton(state, { epoch: 1, id: 1 })).toBe(false);
+    expect(hasEnabledButton(state, { epoch: 1, id: 2 })).toBe(false);
+    expect(hasEnabledButton(state, { epoch: 1, id: 3 })).toBe(true);
+    expect(hasEnabledButton(state, { epoch: 1, id: 4 })).toBe(true);
+    expect(hasEnabledButton(state, { epoch: 1, id: 5 })).toBe(false);
+    expect(hasEnabledButton(state, { epoch: 1, id: 6 })).toBe(false);
   });
 
   it("forgets local button generation after an authoritative snapshot", () => {
@@ -190,8 +190,8 @@ describe("presentation projection", () => {
     });
 
     expect(state.buttonGeneration).toBeNull();
-    expect(hasEnabledButton(state.lines, { epoch: 1, id: 8 })).toBe(true);
-    expect(hasEnabledButton(state.lines, { epoch: 1, id: 9 })).toBe(true);
+    expect(hasEnabledButton(state, { epoch: 1, id: 8 })).toBe(true);
+    expect(hasEnabledButton(state, { epoch: 1, id: 9 })).toBe(true);
   });
 
   it("retires submitted history while allowing later dynamic partial updates", () => {
@@ -225,19 +225,62 @@ describe("presentation projection", () => {
       operations: [{ type: "append_line", line: line(2, 2) }],
     });
 
-    expect(hasEnabledButton(state.lines, { epoch: 1, id: 1 })).toBe(false);
-    expect(hasEnabledButton(state.lines, { epoch: 1, id: 2 })).toBe(true);
+    expect(hasEnabledButton(state, { epoch: 1, id: 1 })).toBe(false);
+    expect(hasEnabledButton(state, { epoch: 1, id: 2 })).toBe(true);
 
     applySnapshot(state, {
       revision: 3,
       title: "resynchronized",
       history: { logical_lines: [line(1, 1), line(2, 2)] },
     });
-    expect(hasEnabledButton(state.lines, { epoch: 1, id: 1 })).toBe(false);
-    expect(hasEnabledButton(state.lines, { epoch: 1, id: 2 })).toBe(true);
+    expect(hasEnabledButton(state, { epoch: 1, id: 1 })).toBe(false);
+    expect(hasEnabledButton(state, { epoch: 1, id: 2 })).toBe(true);
 
     restoreButtons(state, retired);
-    expect(hasEnabledButton(state.lines, { epoch: 1, id: 1 })).toBe(true);
+    expect(hasEnabledButton(state, { epoch: 1, id: 1 })).toBe(true);
+  });
+
+  it("validates, retires, restores, and generation-filters HTML island interactions", () => {
+    const state = emptyPresentation();
+    const island = (id: number, generation: number) => [
+      {
+        nodes: [
+          {
+            type: "element",
+            kind: "button",
+            semantic: { type: "button", title: "island" },
+            interaction: { epoch: 2, id, enabled: true, generation },
+            children: [{ type: "text", text: "island action" }],
+          },
+        ],
+      },
+    ];
+    applySnapshot(state, {
+      revision: 1,
+      title: "island",
+      history: { logical_lines: [] },
+      html_island: island(9, 0),
+    });
+    expect(hasEnabledButton(state, { epoch: 2, id: 9 })).toBe(true);
+
+    const retired = retireEnabledButtons(state);
+    expect(retired).toEqual(["2:9"]);
+    expect(hasEnabledButton(state, { epoch: 2, id: 9 })).toBe(false);
+    restoreButtons(state, retired);
+    expect(hasEnabledButton(state, { epoch: 2, id: 9 })).toBe(true);
+
+    applyDelta(state, {
+      base_revision: 1,
+      new_revision: 2,
+      operations: [{ type: "set_button_generation", generation: 1 }],
+    });
+    expect(hasEnabledButton(state, { epoch: 2, id: 9 })).toBe(false);
+    applyDelta(state, {
+      base_revision: 2,
+      new_revision: 3,
+      operations: [{ type: "set_html_island", html_island: island(10, 1) }],
+    });
+    expect(hasEnabledButton(state, { epoch: 2, id: 10 })).toBe(true);
   });
 
   it("keeps an equal-length dynamic tail replacement at its current scroll position", () => {

@@ -9,6 +9,7 @@ import {
   browserProjectProgressErrors,
   compareObservations,
   injectInGameSaveFlow,
+  injectInteractionAssistFlow,
   isolatedProject,
   loadScenario,
   nativeFirefoxCapabilities,
@@ -29,6 +30,26 @@ describe("web game test scenario", () => {
     );
   });
 
+  it.each(["\n", "\r\n"])(
+    "injects an interaction-assist button using the fixture's %j newline",
+    (newline) => {
+      const source = `@SYSTEM_TITLE${newline}PRINTL ORACLE_READY${newline}INPUT${newline}RETURN${newline}`;
+
+      expect(injectInteractionAssistFlow(source)).toBe(
+        `@SYSTEM_TITLE${newline}PRINTL ORACLE_READY${newline}$RUSTYERA_INTERACTION_ASSIST_WAIT${newline}PRINTBUTTON "ASSISTED_ACTION", 0${newline}INPUT${newline}GOTO RUSTYERA_INTERACTION_ASSIST_WAIT${newline}INPUT${newline}RETURN${newline}`,
+      );
+      expect(injectInteractionAssistFlow(`PRINTL ORACLE_READY${newline}SAVEGAME${newline}`)).toBe(
+        `PRINTL ORACLE_READY${newline}SAVEGAME${newline}$RUSTYERA_INTERACTION_ASSIST_WAIT${newline}PRINTBUTTON "ASSISTED_ACTION", 0${newline}INPUT${newline}GOTO RUSTYERA_INTERACTION_ASSIST_WAIT${newline}`,
+      );
+      expect(() => injectInteractionAssistFlow("@SYSTEM_TITLE\nINPUT\n")).toThrow(
+        "lacks ORACLE_READY",
+      );
+      expect(() => injectInteractionAssistFlow(injectInteractionAssistFlow(source))).toThrow(
+        "already exposes",
+      );
+    },
+  );
+
   it.each(["win32", "linux"])("lets WebDriver discover Firefox on %s", (platform) => {
     expect(nativeFirefoxCapabilities(platform)["moz:firefoxOptions"]).toEqual({
       args: ["-headless"],
@@ -40,6 +61,19 @@ describe("web game test scenario", () => {
       args: ["-headless"],
       binary: "/Applications/Firefox.app/Contents/MacOS/firefox",
     });
+  });
+
+  it("resizes the real Chromium layout viewport through a declared action", async () => {
+    const page = { evaluate: vi.fn(async () => undefined), setViewportSize: vi.fn() };
+
+    await expect(
+      runAction(page, { type: "set_viewport", width: 600, height: 800 }),
+    ).resolves.toEqual({ query: { viewport: { width: 600, height: 800 } } });
+    expect(page.setViewportSize).toHaveBeenCalledWith({ width: 600, height: 800 });
+    expect(page.evaluate).toHaveBeenCalledOnce();
+    await expect(runAction(page, { type: "set_viewport", width: 0, height: 800 })).rejects.toThrow(
+      "positive integer",
+    );
   });
 
   it("accepts coalesced cold-start progress once runtime preparation completes", () => {
@@ -478,31 +512,75 @@ describe("web game test scenario", () => {
     vi.unstubAllGlobals();
   });
 
-  it("waits for a clicked runtime button to consume the current wait", async () => {
-    let waitId = "8";
-    vi.stubGlobal("window", {
-      __RUSTYERA_TEST__: { snapshot: () => ({ fault: null, wait: { wait_id: waitId } }) },
-    });
+  it.each([".game-viewport", ".interaction-assist-panel"])(
+    "waits for a clicked runtime button in %s to consume the current wait",
+    async (container) => {
+      let waitId = "8";
+      vi.stubGlobal("window", {
+        __RUSTYERA_TEST__: { snapshot: () => ({ fault: null, wait: { wait_id: waitId } }) },
+      });
+      const locator = {
+        evaluate: vi.fn((callback) =>
+          callback({
+            closest: (selector) => {
+              if (selector === ".game-viewport" && container === ".game-viewport") return {};
+              if (
+                selector === ".interaction-assist-action" &&
+                container === ".interaction-assist-panel"
+              )
+                return {};
+              return selector === "button" ? {} : null;
+            },
+            matches: (selector) =>
+              selector === "button" ||
+              (selector === ".interaction-assist-action" &&
+                container === ".interaction-assist-panel"),
+          }),
+        ),
+        click: vi.fn(() => (waitId = "9")),
+      };
+      const page = {
+        getByText: vi.fn(() => locator),
+        evaluate: vi.fn((callback) => callback()),
+        waitForFunction: vi.fn((callback, argument) => callback(argument)),
+      };
+
+      await expect(
+        runAction(page, {
+          type: "click",
+          locator: { text: "[画像表示]", exact: true },
+        }),
+      ).resolves.toEqual({ semanticInput: undefined });
+
+      expect(locator.click).toHaveBeenCalledOnce();
+      expect(page.waitForFunction).toHaveBeenCalledWith(expect.any(Function), "8");
+      vi.unstubAllGlobals();
+    },
+  );
+
+  it("does not wait for a panel disclosure button to consume a runtime wait", async () => {
     const locator = {
-      evaluate: vi.fn(() => true),
-      click: vi.fn(() => (waitId = "9")),
+      evaluate: vi.fn((callback) =>
+        callback({
+          closest: (selector) => (selector === "button" ? {} : null),
+          matches: (selector) => selector === "button",
+        }),
+      ),
+      click: vi.fn(),
     };
     const page = {
-      getByText: vi.fn(() => locator),
-      evaluate: vi.fn((callback) => callback()),
-      waitForFunction: vi.fn((callback, argument) => callback(argument)),
+      getByRole: vi.fn(() => locator),
+      evaluate: vi.fn(),
+      waitForFunction: vi.fn(),
     };
 
-    await expect(
-      runAction(page, {
-        type: "click",
-        locator: { text: "[画像表示]", exact: true },
-      }),
-    ).resolves.toEqual({ semanticInput: undefined });
+    await runAction(page, {
+      type: "click",
+      locator: { role: "button", name: "展开", exact: true },
+    });
 
     expect(locator.click).toHaveBeenCalledOnce();
-    expect(page.waitForFunction).toHaveBeenCalledWith(expect.any(Function), "8");
-    vi.unstubAllGlobals();
+    expect(page.waitForFunction).not.toHaveBeenCalled();
   });
 
   it("drives hover through the production DOM locator", async () => {

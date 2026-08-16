@@ -3,6 +3,15 @@ use super::*;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum InteractionAssistMode {
+    Off,
+    On,
+    #[default]
+    Auto,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Preferences {
@@ -15,6 +24,8 @@ pub(super) struct Preferences {
     pub(super) master_volume: f64,
     #[serde(default)]
     pub(super) trust_project_file_metadata: bool,
+    #[serde(default)]
+    pub(super) interaction_assist_mode: InteractionAssistMode,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -28,6 +39,8 @@ pub(super) struct ProjectPreferences {
     pub(super) master_volume: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) trust_project_file_metadata: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) interaction_assist_mode: Option<InteractionAssistMode>,
 }
 
 impl ProjectPreferences {
@@ -107,7 +120,7 @@ impl Preferences {
                     .or_insert_with(|| value.clamp(8, 72).to_string());
             }
         }
-        self.schema_version = 5;
+        self.schema_version = 6;
         if obsolete_font_overrides {
             self.font_family_override = None;
         }
@@ -177,6 +190,7 @@ pub(super) fn save_preferences(
             Some(preferences.image_scale),
             Some(preferences.master_volume),
             Some(preferences.trust_project_file_metadata),
+            Some(preferences.interaction_assist_mode),
         ),
     );
     write_json_atomically(&path, &document, "preferences")?;
@@ -242,6 +256,7 @@ pub(super) fn save_project_preferences(
             preferences.image_scale,
             preferences.master_volume,
             preferences.trust_project_file_metadata,
+            preferences.interaction_assist_mode,
         ),
     );
     write_json_atomically(&preference_path, &document, "project preferences")?;
@@ -257,13 +272,14 @@ pub(super) fn preferences_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 pub(super) fn default_preferences() -> Preferences {
     Preferences {
-        schema_version: 5,
+        schema_version: 6,
         settings: BTreeMap::new(),
         font_family_override: None,
         font_size_override_px: None,
         image_scale: 1.0,
         master_volume: 1.0,
         trust_project_file_metadata: false,
+        interaction_assist_mode: InteractionAssistMode::Auto,
     }
 }
 
@@ -335,7 +351,7 @@ fn validate_active_profile(document: &ProjectPreferenceDocument) -> std::io::Res
     for key in profile.client.keys() {
         if !matches!(
             key.as_str(),
-            "imageScale" | "masterVolume" | "trustProjectFileMetadata"
+            "imageScale" | "masterVolume" | "trustProjectFileMetadata" | "interactionAssistMode"
         ) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -353,6 +369,16 @@ fn validate_active_profile(document: &ProjectPreferenceDocument) -> std::io::Res
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "trustProjectFileMetadata must be a boolean",
+        ));
+    }
+    if profile
+        .client
+        .get("interactionAssistMode")
+        .is_some_and(|value| !matches!(value.as_str(), Some("off" | "on" | "auto")))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "interactionAssistMode must be off, on, or auto",
         ));
     }
     Ok(())
@@ -390,19 +416,24 @@ fn profile_preferences(document: &ProjectPreferenceDocument) -> ProjectPreferenc
             .client
             .get("trustProjectFileMetadata")
             .and_then(Value::as_bool),
+        interaction_assist_mode: profile
+            .client
+            .get("interactionAssistMode")
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
     }
 }
 
 fn global_profile_preferences(document: &ProjectPreferenceDocument) -> Preferences {
     let project = profile_preferences(document);
     Preferences {
-        schema_version: 5,
+        schema_version: 6,
         settings: project.settings,
         font_family_override: None,
         font_size_override_px: None,
         image_scale: project.image_scale.unwrap_or(1.0),
         master_volume: project.master_volume.unwrap_or(1.0),
         trust_project_file_metadata: project.trust_project_file_metadata.unwrap_or(false),
+        interaction_assist_mode: project.interaction_assist_mode.unwrap_or_default(),
     }
 }
 
@@ -411,6 +442,7 @@ fn profile_from_values(
     image_scale: Option<f64>,
     master_volume: Option<f64>,
     trust_project_file_metadata: Option<bool>,
+    interaction_assist_mode: Option<InteractionAssistMode>,
 ) -> ProjectPreferenceProfile {
     let mut client = serde_json::Map::new();
     if let Some(value) = image_scale {
@@ -421,6 +453,12 @@ fn profile_from_values(
     }
     if let Some(value) = trust_project_file_metadata {
         client.insert("trustProjectFileMetadata".into(), Value::from(value));
+    }
+    if let Some(value) = interaction_assist_mode {
+        client.insert(
+            "interactionAssistMode".into(),
+            serde_json::to_value(value).expect("interaction assist mode serializes"),
+        );
     }
     ProjectPreferenceProfile {
         settings,
@@ -487,7 +525,13 @@ mod tests {
         let preserved = serde_json::to_value(document.profiles.get("tui").unwrap()).unwrap();
         document.profiles.insert(
             "tauri".into(),
-            profile_from_values(BTreeMap::new(), Some(1.5), None, Some(false)),
+            profile_from_values(
+                BTreeMap::new(),
+                Some(1.5),
+                None,
+                Some(false),
+                Some(InteractionAssistMode::On),
+            ),
         );
         write_json_atomically(&path, &document, "project preferences").unwrap();
         let rewritten: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
@@ -497,6 +541,10 @@ mod tests {
         assert_eq!(
             rewritten["profiles"]["tauri"]["client"]["trustProjectFileMetadata"],
             false
+        );
+        assert_eq!(
+            rewritten["profiles"]["tauri"]["client"]["interactionAssistMode"],
+            "on"
         );
     }
 
@@ -513,6 +561,10 @@ mod tests {
             serde_json::json!({
                 "schemaVersion": 1,
                 "profiles": { "tauri": { "settings": {}, "client": { "imageScale": 9 } } }
+            }),
+            serde_json::json!({
+                "schemaVersion": 1,
+                "profiles": { "tauri": { "settings": {}, "client": { "interactionAssistMode": "sometimes" } } }
             }),
             serde_json::json!({
                 "schemaVersion": 1,
@@ -534,6 +586,7 @@ mod tests {
             image_scale: Some(f64::INFINITY),
             master_volume: Some(-1.0),
             trust_project_file_metadata: Some(true),
+            interaction_assist_mode: Some(InteractionAssistMode::On),
         }
         .normalized();
 
@@ -544,5 +597,9 @@ mod tests {
         assert_eq!(normalized.image_scale, None);
         assert_eq!(normalized.master_volume, Some(0.0));
         assert_eq!(normalized.trust_project_file_metadata, Some(true));
+        assert!(matches!(
+            normalized.interaction_assist_mode,
+            Some(InteractionAssistMode::On)
+        ));
     }
 }

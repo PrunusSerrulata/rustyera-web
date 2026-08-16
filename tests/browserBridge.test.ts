@@ -92,6 +92,7 @@ describe("browser project preferences", () => {
       settings: { UseMouse: "NO" },
       imageScale: 1.5,
       trustProjectFileMetadata: true,
+      interactionAssistMode: "on",
     });
 
     const rustyera = await root.getDirectoryHandle(".rustyera");
@@ -99,7 +100,11 @@ describe("browser project preferences", () => {
     const document = JSON.parse(await (await file.getFile()).text());
     expect(document.profiles.browser).toEqual({
       settings: { UseMouse: "NO" },
-      client: { imageScale: 1.5, trustProjectFileMetadata: true },
+      client: {
+        imageScale: 1.5,
+        trustProjectFileMetadata: true,
+        interactionAssistMode: "on",
+      },
     });
   });
 
@@ -159,6 +164,13 @@ describe("browser project preferences", () => {
       document: {
         schemaVersion: 1,
         profiles: { browser: { settings: {}, client: { imageScale: 9 } } },
+      },
+    },
+    {
+      label: "invalid interaction assistance mode",
+      document: {
+        schemaVersion: 1,
+        profiles: { browser: { settings: {}, client: { interactionAssistMode: "sometimes" } } },
       },
     },
   ])("keeps a $label project preference document read-only", async ({ document }) => {

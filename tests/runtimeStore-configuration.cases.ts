@@ -268,6 +268,7 @@ describe("runtime store configuration", () => {
     bridge.currentProjectPreferences.mockReturnValue({
       settings: { FontSize: "24" },
       masterVolume: 0.4,
+      interactionAssistMode: "off",
     });
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
@@ -304,6 +305,7 @@ describe("runtime store configuration", () => {
       undefined,
     );
     expect(store.effectivePreferences.masterVolume).toBe(0.4);
+    expect(store.effectivePreferences.interactionAssistMode).toBe("off");
     expect(store.projectPreferencesWritable).toBe(true);
   });
 

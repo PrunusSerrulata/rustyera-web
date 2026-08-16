@@ -714,6 +714,25 @@ describe("frontend host and image-line policy", () => {
     );
   });
 
+  it("keeps interaction assistance compact and overlays expanded rows", () => {
+    const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
+    expect(stylesheet).toMatch(
+      /\.game-area\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\) auto;/s,
+    );
+    expect(stylesheet).toMatch(
+      /\.interaction-assist-panel\.expanded\s*\{[^}]*position:\s*absolute;[^}]*bottom:\s*0;/s,
+    );
+    expect(stylesheet).toMatch(
+      /\.interaction-assist-actions\s*\{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*hidden;/s,
+    );
+    expect(stylesheet).toMatch(
+      /\.interaction-assist-action\s*\{[^}]*width:\s*10rem;[^}]*min-width:\s*10rem;[^}]*max-width:\s*10rem;/s,
+    );
+    expect(stylesheet).toMatch(
+      /\.interaction-assist-action > span\s*\{[^}]*font-size:\s*1rem;[^}]*line-height:\s*1rem;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s,
+    );
+  });
+
   it("keeps game output on physical lines and exposes horizontal overflow", () => {
     const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
     expect(stylesheet).toMatch(/\.game-viewport\s*\{[^}]*overflow:\s*auto;/s);

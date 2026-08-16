@@ -310,6 +310,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
       masterVolume: projectPreferences.value.masterVolume ?? global.masterVolume,
       trustProjectFileMetadata:
         projectPreferences.value.trustProjectFileMetadata ?? global.trustProjectFileMetadata,
+      interactionAssistMode:
+        projectPreferences.value.interactionAssistMode ?? global.interactionAssistMode,
     };
   });
   const runtimeClientPreferences = new RuntimeClientPreferencesState({
@@ -1203,7 +1205,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function activate(token: InteractionToken): Promise<void> {
-    if (!canInteract.value || !hasEnabledButton(currentPresentation().lines, token)) return;
+    if (!canInteract.value || !hasEnabledButton(currentPresentation(), token)) return;
     await submitIntent({ type: "activate", value: token }, false);
   }
 

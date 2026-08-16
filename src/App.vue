@@ -9,6 +9,7 @@ import FaultDialog from "@/components/FaultDialog.vue";
 import FullProjectExportDialog from "@/components/FullProjectExportDialog.vue";
 import GameProgressLossDialog from "@/components/GameProgressLossDialog.vue";
 import GameViewport from "@/components/GameViewport.vue";
+import InteractionAssistPanel from "@/components/InteractionAssistPanel.vue";
 import LogDialog from "@/components/LogDialog.vue";
 import OpenProjectDialog from "@/components/OpenProjectDialog.vue";
 import ProjectSettingsDialog from "@/components/ProjectSettingsDialog.vue";
@@ -90,7 +91,10 @@ onMounted(() => void store.initialize());
       </p>
     </section>
     <template v-else>
-      <GameViewport />
+      <div class="game-area">
+        <GameViewport />
+        <InteractionAssistPanel />
+      </div>
       <form class="prompt-bar" @submit.prevent="store.submitText">
         <span v-if="store.presentation.inputWait?.countdown_remaining_ms != null" class="countdown"
           >{{

@@ -24,6 +24,14 @@ export interface PresentationState {
   retiredButtonTokens: Set<string>;
 }
 
+export type PresentationInteractionSource = { kind: "run"; run: any } | { kind: "html"; node: any };
+
+export interface PresentationInteractionLocation {
+  rowKey: string;
+  interaction: any;
+  source: PresentationInteractionSource;
+}
+
 export function emptyPresentation(): PresentationState {
   return {
     revision: 0,
@@ -64,6 +72,7 @@ export function applySnapshot(state: PresentationState, snapshot: any): void {
   // generation knowledge from before this authoritative resynchronization.
   state.buttonGeneration = null;
   for (const line of state.lines) disableRetiredButtonsInLine(line, state.retiredButtonTokens);
+  disableRetiredButtonsInHtmlIsland(state.htmlIsland, state.retiredButtonTokens);
 }
 
 export function defaultTooltipSettings(): TooltipSettings {
@@ -133,13 +142,14 @@ export function applyDelta(state: PresentationState, delta: any): void {
         break;
       case "set_html_island":
         state.htmlIsland = operation.html_island;
+        prepareHtmlIsland(state, state.htmlIsland);
         break;
       case "set_redraw":
         state.redraw = operation.redraw;
         break;
       case "set_button_generation":
         state.buttonGeneration = operation.generation;
-        disableOldButtons(state.lines, operation.generation);
+        disableOldButtons(state, operation.generation);
         break;
       case "trim_lines":
         state.lines.splice(0, Math.min(Number(operation.count), state.lines.length));
@@ -194,8 +204,10 @@ function stableContent(value: any): string {
   );
 }
 
-function disableOldButtons(lines: DisplayLine[], generation: number): void {
-  for (const line of lines) disableOldButtonsInLine(line, generation);
+function disableOldButtons(state: PresentationState, generation: number): void {
+  visitPresentationInteractions(state, ({ interaction }) => {
+    if (interaction.enabled && interaction.generation !== generation) interaction.enabled = false;
+  });
 }
 
 function prepareLine(state: PresentationState, line: DisplayLine): void {
@@ -203,31 +215,69 @@ function prepareLine(state: PresentationState, line: DisplayLine): void {
   disableRetiredButtonsInLine(line, state.retiredButtonTokens);
 }
 
+function prepareHtmlIsland(state: PresentationState, documents: any[]): void {
+  for (const [index, document] of documents.entries()) {
+    visitHtmlNodes(document?.nodes ?? [], `island:${index}`, ({ interaction }) => {
+      if (
+        interaction.enabled &&
+        state.buttonGeneration != null &&
+        interaction.generation !== state.buttonGeneration
+      )
+        interaction.enabled = false;
+      if (interaction.enabled && state.retiredButtonTokens.has(interactionIdentity(interaction)))
+        interaction.enabled = false;
+    });
+  }
+}
+
 function disableOldButtonsInLine(line: DisplayLine, generation: number | null): void {
   if (generation == null) return;
-  visitRuns(line.runs, (interaction) => {
+  visitRuns(line.runs, `line:${String(line.line_id)}`, ({ interaction }) => {
     if (interaction.enabled && interaction.generation !== generation) interaction.enabled = false;
   });
 }
 
-function visitRuns(runs: any[], visitInteraction: (interaction: any) => void): void {
+function visitRuns(
+  runs: any[],
+  rowKey: string,
+  visitInteraction: (location: PresentationInteractionLocation) => void,
+): void {
   for (const run of runs) {
     if (run.type === "button") {
-      visitInteraction(run);
-      visitRuns(run.runs ?? [], visitInteraction);
+      visitInteraction({ rowKey, interaction: run, source: { kind: "run", run } });
+      visitRuns(run.runs ?? [], rowKey, visitInteraction);
     } else if (run.type === "column_cell") {
-      visitRuns(run.content ?? [], visitInteraction);
+      visitRuns(run.content ?? [], rowKey, visitInteraction);
     } else if (run.type === "html_document") {
-      visitHtmlNodes(run.document?.nodes ?? [], visitInteraction);
+      visitHtmlNodes(run.document?.nodes ?? [], rowKey, visitInteraction);
     }
   }
 }
 
-function visitHtmlNodes(nodes: any[], visitInteraction: (interaction: any) => void): void {
+function visitHtmlNodes(
+  nodes: any[],
+  rowKey: string,
+  visitInteraction: (location: PresentationInteractionLocation) => void,
+): void {
   for (const node of nodes) {
-    if (node.interaction) visitInteraction(node.interaction);
-    visitHtmlNodes(node.children ?? [], visitInteraction);
+    if (node.interaction)
+      visitInteraction({
+        rowKey,
+        interaction: node.interaction,
+        source: { kind: "html", node },
+      });
+    visitHtmlNodes(node.children ?? [], rowKey, visitInteraction);
   }
+}
+
+export function visitPresentationInteractions(
+  state: PresentationState,
+  visitInteraction: (location: PresentationInteractionLocation) => void,
+): void {
+  for (const line of state.lines)
+    visitRuns(line.runs, `line:${String(line.line_id)}`, visitInteraction);
+  for (const [index, document] of state.htmlIsland.entries())
+    visitHtmlNodes(document?.nodes ?? [], `island:${index}`, visitInteraction);
 }
 
 function interactionIdentity(interaction: any): string {
@@ -237,23 +287,30 @@ function interactionIdentity(interaction: any): string {
 
 function disableRetiredButtonsInLine(line: DisplayLine, tokens: Set<string>): void {
   if (!tokens.size) return;
-  visitRuns(line.runs, (interaction) => {
+  visitRuns(line.runs, `line:${String(line.line_id)}`, ({ interaction }) => {
     if (interaction.enabled && tokens.has(interactionIdentity(interaction)))
       interaction.enabled = false;
   });
 }
 
+function disableRetiredButtonsInHtmlIsland(documents: any[], tokens: Set<string>): void {
+  if (!tokens.size) return;
+  for (const [index, document] of documents.entries())
+    visitHtmlNodes(document?.nodes ?? [], `island:${index}`, ({ interaction }) => {
+      if (interaction.enabled && tokens.has(interactionIdentity(interaction)))
+        interaction.enabled = false;
+    });
+}
+
 export function retireEnabledButtons(state: PresentationState): string[] {
   const retired: string[] = [];
-  for (const line of state.lines) {
-    visitRuns(line.runs, (interaction) => {
-      if (!interaction.enabled) return;
-      const identity = interactionIdentity(interaction);
-      state.retiredButtonTokens.add(identity);
-      interaction.enabled = false;
-      retired.push(identity);
-    });
-  }
+  visitPresentationInteractions(state, ({ interaction }) => {
+    if (!interaction.enabled) return;
+    const identity = interactionIdentity(interaction);
+    state.retiredButtonTokens.add(identity);
+    interaction.enabled = false;
+    retired.push(identity);
+  });
   return retired;
 }
 
@@ -261,31 +318,26 @@ export function restoreButtons(state: PresentationState, tokens: string[]): void
   if (!tokens.length) return;
   const restored = new Set(tokens);
   for (const token of restored) state.retiredButtonTokens.delete(token);
-  for (const line of state.lines) {
-    visitRuns(line.runs, (interaction) => {
-      if (
-        !interaction.enabled &&
-        restored.has(interactionIdentity(interaction)) &&
-        (state.buttonGeneration == null || interaction.generation === state.buttonGeneration)
-      )
-        interaction.enabled = true;
-    });
-  }
+  visitPresentationInteractions(state, ({ interaction }) => {
+    if (
+      !interaction.enabled &&
+      restored.has(interactionIdentity(interaction)) &&
+      (state.buttonGeneration == null || interaction.generation === state.buttonGeneration)
+    )
+      interaction.enabled = true;
+  });
 }
 
-export function hasEnabledButton(lines: DisplayLine[], token: InteractionToken): boolean {
+export function hasEnabledButton(state: PresentationState, token: InteractionToken): boolean {
   let found = false;
-  for (const line of lines) {
-    visitRuns(line.runs, (interaction) => {
-      const interactionToken = interaction.token ?? interaction;
-      found ||=
-        interaction.enabled === true &&
-        interactionToken.epoch === token.epoch &&
-        interactionToken.id === token.id;
-    });
-    if (found) return true;
-  }
-  return false;
+  visitPresentationInteractions(state, ({ interaction }) => {
+    const interactionToken = interaction.token ?? interaction;
+    found ||=
+      interaction.enabled === true &&
+      interactionToken.epoch === token.epoch &&
+      interactionToken.id === token.id;
+  });
+  return found;
 }
 
 export function plainRun(run: any): string {

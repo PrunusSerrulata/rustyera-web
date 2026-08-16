@@ -399,7 +399,8 @@ describe("runtime store settings-export", () => {
       masterVolume: 0.75,
     });
     expect(migrated).toMatchObject({
-      schemaVersion: 5,
+      schemaVersion: 6,
+      interactionAssistMode: "auto",
       fontFamilyOverride: null,
       fontSizeOverridePx: null,
       imageScale: 1.5,

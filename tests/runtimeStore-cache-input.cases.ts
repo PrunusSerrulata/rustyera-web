@@ -416,6 +416,91 @@ describe("runtime store cache-input", () => {
     );
   });
 
+  it("submits and immediately retires an enabled HTML-island interaction", async () => {
+    const wait = {
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    };
+    const interaction = { epoch: 2, id: 8, enabled: true, generation: 1 };
+    const store = await storeWithInputWait(wait, [
+      runtimeEvent("presentation_delta", {
+        base_revision: 1,
+        new_revision: 2,
+        operations: [
+          {
+            type: "set_html_island",
+            html_island: [
+              {
+                nodes: [
+                  {
+                    type: "element",
+                    interaction,
+                    semantic: { type: "button", title: "island action" },
+                    children: [{ type: "text", text: "island action" }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    ]);
+    bridge.submitRuntime.mockClear();
+
+    await store.activate({ epoch: 2, id: 8 });
+
+    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "input",
+        value: expect.objectContaining({
+          wait_id: 17,
+          intent: { type: "activate", value: { epoch: 2, id: 8 } },
+        }),
+      }),
+      undefined,
+    );
+    expect(interaction.enabled).toBe(false);
+  });
+
+  it("restores HTML-island interactions when input submission fails", async () => {
+    const wait = {
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    };
+    const interaction = { epoch: 2, id: 8, enabled: true, generation: 1 };
+    const store = await storeWithInputWait(wait, [
+      runtimeEvent("presentation_delta", {
+        base_revision: 1,
+        new_revision: 2,
+        operations: [
+          {
+            type: "set_html_island",
+            html_island: [
+              {
+                nodes: [
+                  {
+                    type: "element",
+                    interaction,
+                    semantic: { type: "button", title: "island action" },
+                    children: [{ type: "text", text: "island action" }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    ]);
+    bridge.submitRuntime.mockRejectedValueOnce(new Error("input transport failed"));
+
+    await expect(store.activate({ epoch: 2, id: 8 })).rejects.toThrow("input transport failed");
+
+    expect(interaction.enabled).toBe(true);
+  });
+
   it("shares the active-wait lock across text, buttons, left click, and right click", async () => {
     const store = await storeWithInputWait({
       kind: "enter_key",

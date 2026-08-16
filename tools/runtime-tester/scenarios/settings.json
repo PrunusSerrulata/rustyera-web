@@ -3,6 +3,7 @@
   "project": "../../../../emuera.em/emuera-reference-cli/tests/fixture",
   "mode": "fixed",
   "seed": 123456,
+  "prepare_interaction_assist": true,
   "actions": [
     { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
     { "type": "click", "locator": { "role": "button", "name": "项目设置…", "exact": true } },
@@ -353,10 +354,44 @@
       "fields": ["value", "enabled"],
       "expect": { "value": "20", "enabled": true }
     },
-    { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } }
+    { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".interaction-assist-panel" },
+      "fields": ["count", "visible", "attributes"],
+      "expect": { "count": 1, "visible": false, "attributes": { "aria-hidden": "true" } }
+    },
+    { "type": "set_viewport", "width": 600, "height": 800 },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".interaction-assist-panel" },
+      "fields": ["count", "visible", "attributes"],
+      "expect": { "count": 1, "visible": true, "attributes": { "aria-hidden": "false" } }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".interaction-assist-action", "nth": 0 },
+      "fields": ["count", "visible", "enabled", "attributes"],
+      "expect": { "count": 1, "visible": true, "enabled": true }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "展开", "exact": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "button", "name": "折叠", "exact": true },
+      "fields": ["count", "visible", "attributes"],
+      "expect": { "count": 1, "visible": true, "attributes": { "aria-expanded": "true" } }
+    },
+    {
+      "type": "click",
+      "locator": { "css": ".interaction-assist-action", "nth": 0 },
+      "advances_game": true
+    }
   ],
   "limits": {
-    "max_steps": 85,
+    "max_steps": 90,
     "timeout_seconds": 120
   }
 }

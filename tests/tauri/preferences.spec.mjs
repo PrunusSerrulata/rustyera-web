@@ -26,6 +26,9 @@ preferences("Tauri client preferences", () => {
     await $(".welcome .primary").click();
     await waitForInteractiveProject();
     await waitForBackgroundProjectExport();
+    const automaticPanel = await $("section[aria-label='交互辅助面板']");
+    assert.equal(await automaticPanel.isDisplayed(), false, "Tauri auto mode must hide the panel");
+    assert.equal(await automaticPanel.getAttribute("aria-hidden"), "true");
     await $("button=文件").click();
     await $("button=偏好设置…").click();
 
@@ -81,6 +84,10 @@ preferences("Tauri client preferences", () => {
     );
 
     await dialog.$("button=项目偏好").click();
+    await dialog.$("#preference-project-interactionAssistMode-override").click();
+    const interactionAssistMode = await dialog.$("#preference-project-interactionAssistMode-on");
+    await interactionAssistMode.click();
+    assert.equal(await interactionAssistMode.isSelected(), true);
     await dialog.$("#preference-project-FontSize-override").click();
     await dialog.$("#preference-project-LineHeight-override").click();
     const projectLayout = await preferenceLayoutMetrics("project");
@@ -155,6 +162,7 @@ preferences("Tauri client preferences", () => {
       FontSize: "20",
       LineHeight: "20",
     });
+    assert.equal(preferenceDocument.profiles.tauri.client.interactionAssistMode, "on");
 
     const state = await snapshot();
     const metrics = await gameLineMetrics();
@@ -178,8 +186,23 @@ preferences("Tauri client preferences", () => {
     assert.equal(metrics.lineHeight, "20px");
     assert.equal(metrics.minHeight, "20px");
 
+    const interactionAssist = await interactionAssistMetrics();
+    console.log(JSON.stringify({ interactionAssist }));
+    assert.ok(interactionAssist.actionCount > 0, "enabled panel must expose active interactions");
+    assert.ok(interactionAssist.firstLabel, "assisted interactions must have accessible labels");
+    assertWithin(
+      Math.abs(interactionAssist.expandedViewportHeight - interactionAssist.viewportHeight),
+      0.5,
+      "expanding the panel must not resize the game viewport",
+    );
+    assert.equal(interactionAssist.expandedScrollTop, interactionAssist.scrollTop);
+    assert.ok(
+      interactionAssist.expandedPanelHeight <= interactionAssist.viewportHeight * 0.75 + 0.5,
+      "expanded panel must stay within three quarters of the viewport",
+    );
+
     const revisionBeforeFlowReset = state.presentationRevision;
-    const flowButton = await findInitialFlowButton();
+    const flowButton = await findInitialFlowButton(".interaction-assist-action");
     await flowButton.click();
     await waitForRuntimeProgress({
       browser,
@@ -216,12 +239,44 @@ preferences("Tauri client preferences", () => {
   });
 });
 
-async function findInitialFlowButton() {
+async function findInitialFlowButton(scope = "") {
   for (const label of INITIAL_FLOW_LABELS) {
-    const button = await $(`button*=${label}`);
+    const button = await $(`${scope}*=${label}`);
     if (await button.isExisting()) return button;
   }
   assert.fail("project did not expose its initial game-flow button");
+}
+
+async function interactionAssistMetrics() {
+  const panel = await $("section[aria-label='交互辅助面板']");
+  await panel.waitForDisplayed({ timeout: 30_000 });
+  const before = await browser.execute(() => {
+    const viewport = document.querySelector(".game-viewport");
+    const actions = [...document.querySelectorAll(".interaction-assist-action")];
+    return {
+      viewportHeight: viewport?.getBoundingClientRect().height,
+      scrollTop: viewport instanceof HTMLElement ? viewport.scrollTop : null,
+      actionCount: actions.length,
+      firstLabel: actions[0]?.getAttribute("aria-label"),
+    };
+  });
+  await (await panel.$("button=展开")).click();
+  const expanded = await browser.execute(() => {
+    const viewport = document.querySelector(".game-viewport");
+    const panel = document.querySelector("section[aria-label='交互辅助面板']");
+    return {
+      viewportHeight: viewport?.getBoundingClientRect().height,
+      scrollTop: viewport instanceof HTMLElement ? viewport.scrollTop : null,
+      panelHeight: panel?.getBoundingClientRect().height,
+    };
+  });
+  await (await panel.$("button=折叠")).click();
+  return {
+    ...before,
+    expandedViewportHeight: expanded.viewportHeight,
+    expandedScrollTop: expanded.scrollTop,
+    expandedPanelHeight: expanded.panelHeight,
+  };
 }
 
 function assertWithin(actual, maximum, message) {
