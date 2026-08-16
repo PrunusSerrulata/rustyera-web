@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ProjectOpenMetrics } from "@/core/types";
 import {
   installRuntimeStoreTestHarness,
+  advanceUntil,
   deferred,
   emptyBatch,
   flushMicrotasks,
@@ -97,11 +98,31 @@ describe("runtime store startup-save", () => {
     });
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
-      events: [
-        runtimeEvent("project_load_report", { success: true, diagnostics: [] }),
-        runtimeEvent("state_import_accepted", { transfer_id: 9 }),
-        runtimeEvent("state_import_ready", { transfer_id: 9, kind: "traditional_save" }),
-      ],
+      events: [runtimeEvent("project_load_report", { success: true, diagnostics: [] })],
+    });
+    let accepted = false;
+    let ready = false;
+    bridge.pump.mockImplementation(async () => {
+      const commands = bridge.submitRuntime.mock.calls.map(
+        ([message]: unknown[]) => (message as { type?: string }).type,
+      );
+      if (!accepted && commands.includes("state_import_begin")) {
+        accepted = true;
+        return {
+          ...emptyBatch(),
+          events: [runtimeEvent("state_import_accepted", { transfer_id: 9 })],
+        };
+      }
+      if (!ready && commands.includes("state_import_commit")) {
+        ready = true;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("state_import_ready", { transfer_id: 9, kind: "traditional_save" }),
+          ],
+        };
+      }
+      return emptyBatch();
     });
     const store = useRuntimeStore();
     store.configureTestRun({
@@ -109,6 +130,11 @@ describe("runtime store startup-save", () => {
     });
 
     await store.enableDebug();
+    await advanceUntil(() =>
+      bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) => (message as { type?: string }).type === "start",
+      ),
+    );
 
     expect(bridge.submitRuntime).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -384,7 +410,7 @@ describe("runtime store startup-save", () => {
         ...emptyBatch(),
         events: [runtimeEvent("state_changed", { phase: "waiting_external", epoch: 2 })],
       });
-    await vi.advanceTimersByTimeAsync(16);
+    await advanceUntil(() => store.startupTelemetry?.outcome === "success");
 
     expect(store.projectLoading).toBe(false);
     expect(store.projectLoadProgressLabel).toBe("");

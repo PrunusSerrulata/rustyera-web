@@ -5,7 +5,7 @@
   "seed": 123456,
   "actions": [
     { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
-    { "type": "click", "locator": { "role": "button", "name": "设置…", "exact": true } },
+    { "type": "click", "locator": { "role": "button", "name": "项目设置…", "exact": true } },
     { "type": "click", "locator": { "css": "#setting-UseMenu" } },
     { "type": "click", "locator": { "role": "button", "name": "应用", "exact": true } },
     {

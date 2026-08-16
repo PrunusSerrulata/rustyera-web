@@ -49,6 +49,7 @@ use crate::storage::StorageHost;
 struct AppState {
     session: Arc<Mutex<Option<WebSession>>>,
     project: Arc<Mutex<Option<ProjectHost>>>,
+    project_preferences: Arc<Mutex<Option<preferences::ProjectPreferenceLocation>>>,
     storage: Arc<Mutex<Option<StorageHost>>>,
     cache_writer: Arc<Mutex<Option<AtomicFileWriter>>>,
     export_writer: Arc<Mutex<Option<AtomicFileWriter>>>,
@@ -278,7 +279,13 @@ async fn open_project(
     tauri::async_runtime::spawn_blocking(move || {
         let scan_progress = |completed, total| emit_scanning_progress(&app, completed, total);
         let started = Instant::now();
-        let mut host = ProjectHost::scan_quick_with_progress(&path, 1, Some(&scan_progress))?;
+        let source_index_trusted = preferences::effective_source_metadata_trust(&app, &path)?;
+        let mut host = ProjectHost::scan_quick_with_progress_and_trust(
+            &path,
+            1,
+            Some(&scan_progress),
+            source_index_trusted,
+        )?;
         let (source_index_reused_files, source_index_hashed_files) = host.source_index_stats();
         let quick_scan_ms = started.elapsed().as_secs_f64() * 1000.0;
         let identity = host.identity();
@@ -312,13 +319,18 @@ async fn open_project(
         let submit_ms = submit_started.elapsed().as_secs_f64() * 1000.0 - source_read_ms;
         *state.storage.lock().map_err(lock_error)? = Some(StorageHost::new(host.root().to_owned()));
         *state.project.lock().map_err(lock_error)? = Some(host);
+        *state.project_preferences.lock().map_err(lock_error)? =
+            Some(preferences::ProjectPreferenceLocation {
+                path: path.clone(),
+                project_file: false,
+            });
         Ok(ProjectOpenMetrics {
             quick_scan_ms,
             cache_read_ms,
             source_read_ms,
             submit_ms,
             cache_imported,
-            source_index_trusted: Some(true),
+            source_index_trusted: Some(source_index_trusted),
             source_index_reused_files: Some(source_index_reused_files),
             source_index_hashed_files: Some(source_index_hashed_files),
         })
@@ -354,6 +366,11 @@ async fn open_project_file(
         // fallback because its embedded source identity differs from the cached build identity.
         // `submit_project_source` clones this retained manifest when the runtime requests it.
         *state.project.lock().map_err(lock_error)? = Some(host);
+        *state.project_preferences.lock().map_err(lock_error)? =
+            Some(preferences::ProjectPreferenceLocation {
+                path,
+                project_file: true,
+            });
         Ok(ProjectOpenMetrics {
             quick_scan_ms: 0.0,
             cache_read_ms: 0.0,
@@ -642,6 +659,8 @@ pub fn run() {
             list_fonts,
             preferences::load_preferences,
             preferences::save_preferences,
+            preferences::load_project_preferences,
+            preferences::save_project_preferences,
             export::write_export,
             export::write_export_chunk,
             export::cancel_export,

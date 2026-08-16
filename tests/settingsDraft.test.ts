@@ -184,6 +184,8 @@ function entry(
     value,
     default_value: value,
     effective_value: value,
+    preference_eligible: true,
+    client_effective_value: value,
     application,
     kind,
     allowed: [],

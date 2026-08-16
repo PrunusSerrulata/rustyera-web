@@ -3,6 +3,7 @@ import {
   type DebugMessage,
   type FrontendBridge,
   type Preferences,
+  type ProjectPreferences,
   type ProjectProgress,
   type ProjectOpenMetrics,
   type ProjectReloadScope,
@@ -33,6 +34,7 @@ import { database, loadBrowserPreferences, saveBrowserPreferences } from "@/plat
 import { WorkerClient } from "@/platform/workerClient";
 import { ProjectFontRegistry } from "@/platform/projectFonts";
 import { browserTraditionalSaves } from "@/platform/browserBridge/traditionalSaves";
+import { BrowserProjectPreferenceStore } from "@/platform/projectPreferences";
 
 const PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 
@@ -61,6 +63,7 @@ export class BrowserBridge implements FrontendBridge {
       };
   private projectProgressListener?: (progress: ProjectProgress) => void;
   private preferences = defaultPreferences();
+  private projectPreferenceStore?: BrowserProjectPreferenceStore;
   private readonly prepareProjectConfigurationUpdate = (
     projectFile: Uint8Array,
     expectedDigest: Uint8Array,
@@ -125,11 +128,13 @@ export class BrowserBridge implements FrontendBridge {
     // structured-cloned into IndexedDB. Production handles continue to be persisted normally.
     if (picked.persistHandle && import.meta.env.VITE_RUSTYERA_TEST !== "1")
       await database.handles.put({ key: "last-project", handle });
+    this.projectPreferenceStore = await BrowserProjectPreferenceStore.source(handle);
+    const projectPreferences = this.projectPreferenceStore.values();
     const project = new BrowserProject(
       handle,
       1,
       picked.projectName,
-      this.preferences.trustProjectFileMetadata,
+      projectPreferences.trustProjectFileMetadata ?? this.preferences.trustProjectFileMetadata,
     );
     project.useConfigurationUpdatePreparer(this.prepareProjectConfigurationUpdate);
     const started = performance.now();
@@ -186,6 +191,7 @@ export class BrowserBridge implements FrontendBridge {
     const bytes = await readProjectFile(file, (completed, total) =>
       this.projectProgressListener?.({ stage: "scanning", completed, total }),
     );
+    this.projectPreferenceStore = await BrowserProjectPreferenceStore.packaged(bytes);
     const loaded = await this.worker.callWithTransfer<{
       manifest: BrowserManifest;
       storageKey: string;
@@ -426,8 +432,29 @@ export class BrowserBridge implements FrontendBridge {
 
   async savePreferences(preferences: Preferences): Promise<Preferences> {
     this.preferences = await saveBrowserPreferences(preferences);
-    this.project?.setSourceIndexTrusted(this.preferences.trustProjectFileMetadata);
+    this.applyEffectiveMetadataTrust();
     return this.preferences;
+  }
+
+  currentProjectPreferences(): ProjectPreferences | undefined {
+    return this.projectPreferenceStore?.values();
+  }
+
+  async saveProjectPreferences(preferences: ProjectPreferences): Promise<ProjectPreferences> {
+    if (!this.projectPreferenceStore) return Promise.reject(new Error("没有打开的项目"));
+    const saved = await this.projectPreferenceStore.save(preferences);
+    this.applyEffectiveMetadataTrust(saved);
+    return saved;
+  }
+
+  private applyEffectiveMetadataTrust(project = this.projectPreferenceStore?.values()): void {
+    this.project?.setSourceIndexTrusted(
+      project?.trustProjectFileMetadata ?? this.preferences.trustProjectFileMetadata,
+    );
+  }
+
+  projectPreferencesWritable(): boolean {
+    return this.projectPreferenceStore?.writable ?? false;
   }
 
   projectConfigurationWritable(): boolean {

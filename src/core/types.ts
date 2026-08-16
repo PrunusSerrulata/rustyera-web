@@ -20,7 +20,8 @@ export interface PumpBatch {
 }
 
 export interface Preferences {
-  schemaVersion: 4;
+  schemaVersion: 5;
+  settings: Record<string, string>;
   fontFamilyOverride: string | null;
   fontSizeOverridePx: number | null;
   imageScale: number;
@@ -29,13 +30,23 @@ export interface Preferences {
 }
 
 export const defaultPreferences = (): Preferences => ({
-  schemaVersion: 4,
+  schemaVersion: 5,
+  settings: {},
   fontFamilyOverride: null,
   fontSizeOverridePx: null,
   imageScale: 1,
   masterVolume: 1,
   trustProjectFileMetadata: false,
 });
+
+export interface ProjectPreferences {
+  settings: Record<string, string>;
+  imageScale?: number;
+  masterVolume?: number;
+  trustProjectFileMetadata?: boolean;
+}
+
+export const defaultProjectPreferences = (): ProjectPreferences => ({ settings: {} });
 
 export interface SessionOptions {
   clientName: string;
@@ -197,6 +208,9 @@ export interface FrontendBridge {
   listFonts(): Promise<SystemFontQueryResult>;
   loadPreferences(): Promise<Preferences>;
   savePreferences(preferences: Preferences): Promise<Preferences>;
+  currentProjectPreferences(): ProjectPreferences | undefined;
+  saveProjectPreferences(preferences: ProjectPreferences): Promise<ProjectPreferences>;
+  projectPreferencesWritable(): boolean;
   projectConfigurationWritable(): boolean;
   writeProjectConfiguration(expectedDigest: Uint8Array, contents: string): Promise<void>;
   applyProjectConfiguration(
@@ -263,6 +277,8 @@ export interface ProjectConfigurationEntry {
   default_value: string;
   effective_value: string;
   application: "hot" | "restart";
+  preference_eligible: boolean;
+  client_effective_value: string;
 }
 
 export interface ProjectConfigurationSnapshot {

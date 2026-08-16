@@ -96,7 +96,7 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain('style.fontFamily === "monospace"');
     expect(runner).toContain('style.fontSize === "19px"');
     expect(runner).toContain('state.status === "游戏运行中"');
-    expect(runner).toContain('snapshot().status === "设置已应用"');
+    expect(runner).toContain('snapshot().status === "项目设置已应用"');
     expect(runner).toContain("cacheUpdate =");
     expect(runner).toContain("cache.prefixDigest !== cacheBeforeSettings.prefixDigest");
   });
@@ -110,7 +110,7 @@ describe("browser game runner progress policy", () => {
     expect(scenario).toContain('"scenario": "warm"');
     expect(scenario).toContain('"cacheHit": true');
     expect(scenario).toContain('"export": null');
-    expect(scenario).toContain('"status": "设置已应用"');
+    expect(scenario).toContain('"status": "项目设置已应用"');
     expect(scenario).toContain('"status": "游戏运行中"');
   });
 

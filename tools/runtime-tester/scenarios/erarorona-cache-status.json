@@ -32,7 +32,7 @@
     },
     {
       "type": "click",
-      "locator": { "role": "button", "name": "设置…", "exact": true },
+      "locator": { "role": "button", "name": "项目设置…", "exact": true },
       "observe": false
     },
     {

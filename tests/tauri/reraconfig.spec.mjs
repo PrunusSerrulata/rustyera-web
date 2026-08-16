@@ -29,8 +29,8 @@ reraconfig("Tauri reraconfig settings", () => {
     });
 
     await $("button=文件").click();
-    await $("button=设置…").click();
-    const dialog = await $(".dialog-panel[aria-label='RustyEra Tauri · 设置']");
+    await $("button=项目设置…").click();
+    const dialog = await $(".dialog-panel[aria-label='RustyEra Tauri · 项目设置']");
     await dialog.waitForDisplayed();
     await dialog.$("button=交互与输出").click();
 
@@ -71,8 +71,8 @@ reraconfig("Tauri reraconfig settings", () => {
     await dialog.$("button=取消").click();
     await dialog.waitForExist({ reverse: true });
     await $("button=文件").click();
-    await $("button=设置…").click();
-    const reopened = await $(".dialog-panel[aria-label='RustyEra Tauri · 设置']");
+    await $("button=项目设置…").click();
+    const reopened = await $(".dialog-panel[aria-label='RustyEra Tauri · 项目设置']");
     await reopened.waitForDisplayed();
     await reopened.$("button=交互与输出").click();
     assert.equal(await reopened.$("#setting-AudioVolume").getValue(), "42");

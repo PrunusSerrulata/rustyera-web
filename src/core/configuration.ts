@@ -107,6 +107,11 @@ function parseEntry(value: unknown): ProjectConfigurationEntry {
     effective_value:
       typeof value.effective_value === "string" ? value.effective_value : (value.value as string),
     application: value.application === "hot" ? "hot" : "restart",
+    preference_eligible: value.preference_eligible === true,
+    client_effective_value:
+      typeof value.client_effective_value === "string"
+        ? value.client_effective_value
+        : (value.effective_value as string) || (value.value as string),
   };
 }
 

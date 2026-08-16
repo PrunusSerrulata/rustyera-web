@@ -224,7 +224,7 @@ describe("runtime store cache-input", () => {
     const preferencesWrite = deferred<Preferences>();
     bridge.savePreferences.mockReturnValueOnce(preferencesWrite.promise);
 
-    const saving = store.savePreferences(defaultPreferences());
+    const saving = store.saveClientPreferences("global", defaultPreferences());
     expect(store.status).toBe("正在保存客户端偏好…");
     await vi.advanceTimersByTimeAsync(1_000);
     expect(store.status).toMatch(/^正在保存客户端偏好… · 已等待 1 秒$/);
@@ -232,7 +232,7 @@ describe("runtime store cache-input", () => {
 
     preferencesWrite.resolve(defaultPreferences());
     await saving;
-    expect(store.status).toBe("设置已应用");
+    expect(store.status).toBe("全局偏好已应用");
     await vi.advanceTimersByTimeAsync(2_000);
     expect(store.status).toContain("正在后台生成项目缓存");
 
@@ -260,7 +260,7 @@ describe("runtime store cache-input", () => {
     const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);
     const preferencesWrite = deferred<Preferences>();
     bridge.savePreferences.mockReturnValueOnce(preferencesWrite.promise);
-    const saving = store.savePreferences(defaultPreferences());
+    const saving = store.saveClientPreferences("global", defaultPreferences());
     bridge.pump.mockResolvedValueOnce({
       ...emptyBatch(),
       events: [
@@ -280,18 +280,18 @@ describe("runtime store cache-input", () => {
     expect(store.status).toContain("正在保存客户端偏好");
     preferencesWrite.resolve(defaultPreferences());
     await saving;
-    expect(store.status).toBe("设置已应用");
+    expect(store.status).toBe("全局偏好已应用");
   });
 
   it("does not let an earlier settings timer clear a later save", async () => {
     const store = useRuntimeStore();
-    await store.savePreferences(defaultPreferences());
-    expect(store.status).toBe("设置已应用");
+    await store.saveClientPreferences("global", defaultPreferences());
+    expect(store.status).toBe("全局偏好已应用");
     await vi.advanceTimersByTimeAsync(1_000);
     const secondWrite = deferred<Preferences>();
     bridge.savePreferences.mockReturnValueOnce(secondWrite.promise);
 
-    const secondSave = store.savePreferences(defaultPreferences());
+    const secondSave = store.saveClientPreferences("global", defaultPreferences());
     await vi.advanceTimersByTimeAsync(1_100);
 
     expect(store.status).toContain("正在保存客户端偏好");
@@ -302,12 +302,12 @@ describe("runtime store cache-input", () => {
   it("invalidates settings feedback when the session restarts", async () => {
     const store = useRuntimeStore();
     store.projectOpen = true;
-    await store.savePreferences(defaultPreferences());
-    expect(store.status).toBe("设置已应用");
+    await store.saveClientPreferences("global", defaultPreferences());
+    expect(store.status).toBe("全局偏好已应用");
 
     await store.restart();
     const restartedStatus = store.status;
-    expect(restartedStatus).not.toBe("设置已应用");
+    expect(restartedStatus).not.toBe("全局偏好已应用");
     await vi.advanceTimersByTimeAsync(2_000);
     expect(store.status).toBe(restartedStatus);
   });

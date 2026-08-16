@@ -3,6 +3,7 @@ use era_runtime_protocol::{
     DECODE_CANVAS_IMAGE_OPERATION, DecodeCanvasImageRequest, DecodeCanvasImageResponse,
     ServiceKind, ServiceRequest, ServiceResult,
 };
+use std::collections::BTreeMap;
 
 use super::*;
 use crate::export::{
@@ -120,6 +121,7 @@ fn obsolete_global_font_overrides_yield_to_project_configuration() {
     for schema_version in [1, 2] {
         let normalized = Preferences {
             schema_version,
+            settings: BTreeMap::new(),
             font_family_override: Some("Legacy Font".into()),
             font_size_override_px: Some(24),
             image_scale: 1.75,
@@ -128,7 +130,7 @@ fn obsolete_global_font_overrides_yield_to_project_configuration() {
         }
         .normalized();
 
-        assert_eq!(normalized.schema_version, 4);
+        assert_eq!(normalized.schema_version, 5);
         assert_eq!(normalized.font_family_override, None);
         assert_eq!(normalized.font_size_override_px, None);
         assert!((normalized.image_scale - 1.75).abs() < f64::EPSILON);
@@ -151,7 +153,7 @@ fn stored_camel_case_font_overrides_migrate_without_resetting_other_preferences(
     .unwrap()
     .normalized();
 
-    assert_eq!(stored.schema_version, 4);
+    assert_eq!(stored.schema_version, 5);
     assert_eq!(stored.font_family_override, None);
     assert_eq!(stored.font_size_override_px, None);
     assert!((stored.image_scale - 1.75).abs() < f64::EPSILON);
@@ -162,6 +164,7 @@ fn stored_camel_case_font_overrides_migrate_without_resetting_other_preferences(
 fn current_accessibility_font_overrides_remain_normalized() {
     let normalized = Preferences {
         schema_version: 3,
+        settings: BTreeMap::new(),
         font_family_override: Some("Accessible Font".into()),
         font_size_override_px: Some(100),
         image_scale: 2.0,
@@ -170,11 +173,16 @@ fn current_accessibility_font_overrides_remain_normalized() {
     }
     .normalized();
 
+    assert_eq!(normalized.font_family_override, None);
+    assert_eq!(normalized.font_size_override_px, None);
     assert_eq!(
-        normalized.font_family_override.as_deref(),
+        normalized.settings.get("FontName").map(String::as_str),
         Some("Accessible Font")
     );
-    assert_eq!(normalized.font_size_override_px, Some(72));
+    assert_eq!(
+        normalized.settings.get("FontSize").map(String::as_str),
+        Some("72")
+    );
     assert!((normalized.image_scale - 2.0).abs() < f64::EPSILON);
     assert!((normalized.master_volume - 0.5).abs() < f64::EPSILON);
 }

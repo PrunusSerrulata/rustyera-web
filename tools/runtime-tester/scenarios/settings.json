@@ -5,10 +5,10 @@
   "seed": 123456,
   "actions": [
     { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
-    { "type": "click", "locator": { "role": "button", "name": "设置…", "exact": true } },
+    { "type": "click", "locator": { "role": "button", "name": "项目设置…", "exact": true } },
     {
       "type": "assert_dom",
-      "locator": { "role": "dialog", "name": "RustyEra Web · 设置", "exact": true },
+      "locator": { "role": "dialog", "name": "RustyEra Web · 项目设置", "exact": true },
       "expect": { "count": 1, "visible": true }
     },
     {
@@ -158,10 +158,32 @@
       "fields": ["text"],
       "expect": { "text": "10,20,30" }
     },
+    { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } },
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    { "type": "click", "locator": { "role": "button", "name": "偏好设置…", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "dialog", "name": "RustyEra · 偏好设置", "exact": true },
+      "expect": { "count": 1, "visible": true }
+    },
+    { "type": "click", "locator": { "role": "tab", "name": "项目偏好", "exact": true } },
+    { "type": "click", "locator": { "css": "#preference-project-FontSize-override" } },
+    { "type": "fill", "locator": { "css": "#preference-project-FontSize" }, "value": "20" },
+    { "type": "click", "locator": { "role": "button", "name": "应用", "exact": true } },
+    { "type": "assert_state", "expect": { "status": "项目偏好已应用" } },
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    { "type": "click", "locator": { "role": "button", "name": "偏好设置…", "exact": true } },
+    { "type": "click", "locator": { "role": "tab", "name": "项目偏好", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": "#preference-project-FontSize" },
+      "fields": ["value", "enabled"],
+      "expect": { "value": "20", "enabled": true }
+    },
     { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } }
   ],
   "limits": {
-    "max_steps": 35,
+    "max_steps": 50,
     "timeout_seconds": 120
   }
 }

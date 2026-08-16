@@ -2,7 +2,7 @@ import { mount } from "@vue/test-utils";
 import { nextTick, reactive } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { defaultPreferences, type ProjectConfigurationEntry } from "@/core/types";
+import type { ProjectConfigurationEntry } from "@/core/types";
 
 const debugCommand = vi.hoisted(() => vi.fn(async () => {}));
 const closeDebugDialog = vi.hoisted(() => vi.fn());
@@ -31,7 +31,7 @@ import ColorPickerDialog from "@/components/ColorPickerDialog.vue";
 import GameProgressLossDialog from "@/components/GameProgressLossDialog.vue";
 import LogDialog from "@/components/LogDialog.vue";
 import OpenProjectDialog from "@/components/OpenProjectDialog.vue";
-import PreferencesDialog from "@/components/PreferencesDialog.vue";
+import ProjectSettingsDialog from "@/components/ProjectSettingsDialog.vue";
 
 describe("dialog actions", () => {
   beforeEach(() => {
@@ -52,40 +52,15 @@ describe("dialog actions", () => {
   });
 
   it("applies all tab drafts together and resets only the active tab", async () => {
-    const wrapper = mount(PreferencesDialog, {
+    const wrapper = mount(ProjectSettingsDialog, {
       attachTo: document.body,
       props: {
         open: true,
-        value: { ...defaultPreferences(), fontSizeOverridePx: 24 },
         fontFamilies: ["Project Font"],
         hostKind: "tauri",
         configurationEntries: [
-          {
-            code: "FontSize",
-            japanese: "フォントサイズ",
-            english: "Font size",
-            value: "12",
-            kind: "integer",
-            allowed: [],
-            fixed: false,
-            applicability: 12,
-            default_value: "18",
-            effective_value: "12",
-            application: "hot",
-          },
-          {
-            code: "UseMouse",
-            japanese: "マウスを使用する",
-            english: "Use mouse",
-            value: "YES",
-            kind: "boolean",
-            allowed: [],
-            fixed: false,
-            applicability: 12,
-            default_value: "YES",
-            effective_value: "YES",
-            application: "hot",
-          },
+          configurationEntry("FontSize", "12", "integer"),
+          configurationEntry("UseMouse", "YES", "boolean"),
         ],
       },
     });
@@ -107,8 +82,7 @@ describe("dialog actions", () => {
     useMouse.dispatchEvent(new Event("change", { bubbles: true }));
     await nextTick();
     await clickButton("应用");
-    expect(wrapper.emitted("save")?.at(-1)?.[0]).toMatchObject({ fontSizeOverridePx: 24 });
-    expect(wrapper.emitted("save")?.at(-1)?.[1]).toEqual([
+    expect(wrapper.emitted("save")?.at(-1)?.[0]).toEqual([
       { code: "FontSize", value: "18" },
       { code: "UseMouse", value: "NO" },
     ]);
@@ -118,45 +92,13 @@ describe("dialog actions", () => {
     wrapper.unmount();
   });
 
-  it("shows metadata trust only for browser directory projects", async () => {
-    const wrapper = mount(PreferencesDialog, {
-      attachTo: document.body,
-      props: {
-        open: true,
-        value: defaultPreferences(),
-        fontFamilies: [],
-        hostKind: "browser",
-        projectSource: "directory",
-        configurationEntries: [],
-        configurationReadOnly: true,
-      },
-    });
-    await clickButton("交互与输出");
-    const label = [...document.body.querySelectorAll("label")].find((item) =>
-      item.textContent?.includes("信任文件大小和修改时间"),
-    );
-    const checkbox = label?.querySelector<HTMLInputElement>('input[type="checkbox"]');
-    expect(checkbox).toBeTruthy();
-    checkbox!.checked = true;
-    checkbox!.dispatchEvent(new Event("change", { bubbles: true }));
-    await nextTick();
-    await clickButton("应用");
-
-    expect(wrapper.emitted("save")?.at(-1)?.[0]).toMatchObject({
-      schemaVersion: 4,
-      trustProjectFileMetadata: true,
-    });
-    wrapper.unmount();
-  });
-
   it.each([
     { hostKind: "browser" as const, projectSource: "file" as const },
     { hostKind: "tauri" as const, projectSource: "directory" as const },
   ])("hides browser directory metadata trust for $hostKind/$projectSource", (host) => {
-    const wrapper = mount(PreferencesDialog, {
+    const wrapper = mount(ProjectSettingsDialog, {
       props: {
         open: true,
-        value: defaultPreferences(),
         fontFamilies: [],
         ...host,
       },
@@ -165,41 +107,11 @@ describe("dialog actions", () => {
     wrapper.unmount();
   });
 
-  it("restores persisted metadata trust after cancelling and reopening", async () => {
-    const wrapper = mount(PreferencesDialog, {
-      attachTo: document.body,
-      props: {
-        open: true,
-        value: { ...defaultPreferences(), trustProjectFileMetadata: true },
-        fontFamilies: [],
-        hostKind: "browser",
-        projectSource: "directory",
-      },
-    });
-    await clickButton("交互与输出");
-    const checkbox = [
-      ...document.body.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
-    ].find((item) => item.parentElement?.textContent?.includes("信任文件大小和修改时间"));
-    expect(checkbox).toBeTruthy();
-    checkbox!.checked = false;
-    checkbox!.dispatchEvent(new Event("change", { bubbles: true }));
-    await nextTick();
-    await clickButton("取消");
-    await wrapper.setProps({ open: false });
-    await wrapper.setProps({ open: true });
-    const restored = [
-      ...document.body.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
-    ].find((item) => item.parentElement?.textContent?.includes("信任文件大小和修改时间"));
-    expect(restored?.checked).toBe(true);
-    wrapper.unmount();
-  });
-
   it("shows compact display rows and synchronizes the visual picker with HEX input", async () => {
-    const wrapper = mount(PreferencesDialog, {
+    const wrapper = mount(ProjectSettingsDialog, {
       attachTo: document.body,
       props: {
         open: true,
-        value: defaultPreferences(),
         fontFamilies: [],
         hostKind: "browser",
         viewportMeasurement: {
@@ -210,71 +122,11 @@ describe("dialog actions", () => {
           chromeHeight: 0,
         },
         configurationEntries: [
-          {
-            code: "WindowX",
-            japanese: "ウィンドウ幅",
-            english: "Window width",
-            value: "900",
-            kind: "integer",
-            allowed: [],
-            fixed: false,
-            applicability: 12,
-            default_value: "900",
-            effective_value: "900",
-            application: "hot",
-          },
-          {
-            code: "WindowY",
-            japanese: "ウィンドウ高さ",
-            english: "Window height",
-            value: "600",
-            kind: "integer",
-            allowed: [],
-            fixed: false,
-            applicability: 12,
-            default_value: "600",
-            effective_value: "600",
-            application: "hot",
-          },
-          {
-            code: "FontSize",
-            japanese: "フォントサイズ",
-            english: "Font size",
-            value: "16",
-            kind: "integer",
-            allowed: [],
-            fixed: false,
-            applicability: 12,
-            default_value: "16",
-            effective_value: "16",
-            application: "hot",
-          },
-          {
-            code: "LineHeight",
-            japanese: "行高",
-            english: "Line height",
-            value: "18",
-            kind: "integer",
-            allowed: [],
-            fixed: false,
-            applicability: 12,
-            default_value: "18",
-            effective_value: "18",
-            application: "hot",
-          },
-          {
-            code: "ForeColor",
-            japanese: "文字色",
-            english: "Text color",
-            value: "192,192,192",
-            kind: "color",
-            allowed: [],
-            fixed: false,
-            applicability: 12,
-            default_value: "192,192,192",
-            effective_value: "192,192,192",
-            application: "hot",
-          },
+          configurationEntry("WindowX", "900", "integer"),
+          configurationEntry("WindowY", "600", "integer"),
+          configurationEntry("FontSize", "16", "integer"),
+          configurationEntry("LineHeight", "18", "integer"),
+          configurationEntry("ForeColor", "192,192,192", "color"),
         ],
       },
     });
@@ -320,11 +172,10 @@ describe("dialog actions", () => {
   });
 
   it("lays out the volume and Tauri viewport actions as full settings rows", async () => {
-    const wrapper = mount(PreferencesDialog, {
+    const wrapper = mount(ProjectSettingsDialog, {
       attachTo: document.body,
       props: {
         open: true,
-        value: defaultPreferences(),
         fontFamilies: [],
         hostKind: "tauri",
         viewportMeasurement: {
@@ -383,11 +234,10 @@ describe("dialog actions", () => {
   });
 
   it("offers an editable system-font list and exposes permission progress", async () => {
-    const wrapper = mount(PreferencesDialog, {
+    const wrapper = mount(ProjectSettingsDialog, {
       attachTo: document.body,
       props: {
         open: true,
-        value: defaultPreferences(),
         fontFamilies: ["Alpha Sans", "Beta Serif"],
         fontAccessStatus: "loading",
         hostKind: "browser",
@@ -421,7 +271,7 @@ describe("dialog actions", () => {
     input.value = "Manually Entered Font";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     await clickButton("应用");
-    expect(wrapper.emitted("save")?.at(-1)?.[1]).toEqual([
+    expect(wrapper.emitted("save")?.at(-1)?.[0]).toEqual([
       { code: "FontName", value: "Manually Entered Font" },
     ]);
     wrapper.unmount();
@@ -433,11 +283,10 @@ describe("dialog actions", () => {
       ...configurationEntry("AutoSave", "YES", "boolean"),
       application: "restart" as const,
     };
-    const wrapper = mount(PreferencesDialog, {
+    const wrapper = mount(ProjectSettingsDialog, {
       attachTo: document.body,
       props: {
         open: true,
-        value: defaultPreferences(),
         fontFamilies: [],
         hostKind: "browser",
         configurationEntries: [hot, restart],
@@ -460,7 +309,7 @@ describe("dialog actions", () => {
     expect(document.body.querySelector<HTMLInputElement>("#setting-AutoSave")!.disabled).toBe(true);
     expect(findButton("应用并重启").disabled).toBe(true);
     await clickButton("应用");
-    expect(wrapper.emitted("save")?.at(-1)?.[1]).toEqual([{ code: "FontSize", value: "18" }]);
+    expect(wrapper.emitted("save")?.at(-1)?.[0]).toEqual([{ code: "FontSize", value: "18" }]);
     wrapper.unmount();
   });
 
@@ -483,11 +332,10 @@ describe("dialog actions", () => {
     "identifies the %s configuration source precisely",
     async (_case, source, sessionOnly, expected) => {
       const hot = configurationEntry("FontSize", "16", "integer");
-      const wrapper = mount(PreferencesDialog, {
+      const wrapper = mount(ProjectSettingsDialog, {
         attachTo: document.body,
         props: {
           open: true,
-          value: defaultPreferences(),
           fontFamilies: [],
           hostKind: "browser",
           configurationEntries: [hot],
@@ -749,6 +597,8 @@ function configurationEntry(
     applicability: 12,
     default_value: value,
     effective_value: value,
+    preference_eligible: true,
+    client_effective_value: value,
     application: "hot",
   };
 }

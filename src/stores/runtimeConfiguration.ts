@@ -226,7 +226,7 @@ export class RuntimeConfigurationState {
       } catch (error) {
         this.context.log("warning", `客户端项目配置应用失败：${String(error)}`);
       }
-      this.context.updateSettingsStatus(pending.statusToken, "正在保存客户端偏好…");
+      this.context.updateSettingsStatus(pending.statusToken, "正在刷新项目设置缓存…");
       if (!pending.sessionOnly) await this.context.refreshCompiledCache();
     }
     pending.resolve();

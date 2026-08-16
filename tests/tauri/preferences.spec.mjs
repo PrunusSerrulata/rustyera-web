@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
 import { waitForRuntimeProgress } from "./runtime-progress.mjs";
 
@@ -13,8 +15,8 @@ const INITIAL_FLOW_LABELS = [
 ];
 const preferences = process.env.VITE_RUSTYERA_TAURI_PREFERENCES ? describe : describe.skip;
 
-preferences("Tauri emuera.config preferences", () => {
-  it("hot-applies font settings to history and preserves them across game flow resets", async () => {
+preferences("Tauri client preferences", () => {
+  it("persists project preferences and preserves hot display settings across game flow resets", async () => {
     await browser.waitUntil(async () => Boolean(await snapshot()), {
       timeout: 20_000,
       timeoutMsg: "test control was not installed in the Tauri WebView",
@@ -25,35 +27,24 @@ preferences("Tauri emuera.config preferences", () => {
     await waitForInteractiveProject();
     await waitForBackgroundProjectExport();
     await $("button=文件").click();
-    await $("button=设置…").click();
+    await $("button=偏好设置…").click();
 
-    const dialog = await $(".dialog-panel[aria-label='RustyEra Tauri · 设置']");
+    const dialog = await $(".dialog-panel[aria-label='RustyEra · 偏好设置']");
     await dialog.waitForDisplayed();
-    const settingsText = await dialog.getText();
-    assert.doesNotMatch(settingsText, /当前运行的是项目文件/);
-    assert.doesNotMatch(settingsText, /当前项目文件为只读/);
-    assert.doesNotMatch(settingsText, /当前项目文件夹(?:无法直接写入|的设置为只读)/);
-    await dialog.$("button=显示").click();
-    assert.equal(await dialog.$("#setting-WindowX").isDisplayed(), true);
-    assert.equal(await dialog.$("button=使用当前主视口大小").isDisplayed(), true);
-    const fontName = await dialog.$("#setting-FontName");
-    assert.equal(await fontName.getTagName(), "input");
-    assert.equal(await fontName.getAttribute("list"), "available-game-fonts");
-    assert.equal((await dialog.$$("#available-game-fonts option")).length > 0, true);
-    assert.equal(await dialog.$(".font-access-status").getAttribute("data-state"), "ready");
-    const configuredFont = await chooseDifferentSystemFont(await fontName.getValue());
-    await fontName.setValue(configuredFont);
-    const fontSize = await dialog.$("#setting-FontSize");
+    await dialog.$("button=项目偏好").click();
+    await dialog.$("#preference-project-FontSize-override").click();
+    await dialog.$("#preference-project-LineHeight-override").click();
+    const fontSize = await dialog.$("#preference-project-FontSize");
     const initialFontSize = await fontSize.getValue();
     assert.match(initialFontSize, /^\d+$/);
     await fontSize.setValue("20");
-    await dialog.$("#setting-LineHeight").setValue("20");
+    await dialog.$("#preference-project-LineHeight").setValue("20");
     await dialog.$("button=应用").click();
 
-    await browser.waitUntil(async () => (await snapshot())?.status === "设置已应用", {
+    await browser.waitUntil(async () => (await snapshot())?.status === "项目偏好已应用", {
       timeout: 20_000,
       interval: 100,
-      timeoutMsg: "settings completion feedback was not displayed",
+      timeoutMsg: "project preference completion feedback was not displayed",
     });
     await browser.waitUntil(
       async () => {
@@ -76,15 +67,26 @@ preferences("Tauri emuera.config preferences", () => {
           state.phase === "waiting_input" &&
           state.canInteract &&
           metrics?.fontSize === "20px" &&
-          metrics.lineHeight === "20px" &&
-          sameFont(metrics.flowButtonFontFamily, configuredFont)
+          metrics.lineHeight === "20px"
         );
       },
       {
         timeout: PROJECT_TIMEOUT,
-        timeoutMsg: "project did not hot-apply the saved emuera.config font size",
+        timeoutMsg: "project did not hot-apply the saved client preference font size",
       },
     );
+
+    const preferenceDocument = JSON.parse(
+      await readFile(
+        path.join(process.env.VITE_RUSTYERA_TEST_PROJECT, ".rustyera", "preferences-v1.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(preferenceDocument.schemaVersion, 1);
+    assert.deepEqual(preferenceDocument.profiles.tauri.settings, {
+      FontSize: "20",
+      LineHeight: "20",
+    });
 
     const state = await snapshot();
     const metrics = await gameLineMetrics();
@@ -96,13 +98,17 @@ preferences("Tauri emuera.config preferences", () => {
         phase: state.phase,
         wait: state.wait,
         metrics,
+        preferencePath: path.join(
+          process.env.VITE_RUSTYERA_TEST_PROJECT,
+          ".rustyera",
+          "preferences-v1.json",
+        ),
       }),
     );
     assert.equal(state.fault, null);
     assert.equal(metrics.fontSize, "20px");
     assert.equal(metrics.lineHeight, "20px");
     assert.equal(metrics.minHeight, "20px");
-    assert.equal(sameFont(metrics.flowButtonFontFamily, configuredFont), true);
 
     const revisionBeforeFlowReset = state.presentationRevision;
     const flowButton = await findInitialFlowButton();
@@ -113,42 +119,34 @@ preferences("Tauri emuera.config preferences", () => {
       label: "project did not reach the next input wait after resetting the game flow style",
       totalTimeout: PROJECT_TIMEOUT,
       stallTimeout: PROJECT_TIMEOUT,
-      accept: async (nextState) =>
-        nextState?.projectOpen &&
-        nextState.phase === "waiting_input" &&
-        nextState.canInteract &&
-        nextState.presentationRevision !== revisionBeforeFlowReset &&
-        sameFont(await newestGameTextFontFamily(), configuredFont),
+      accept: async (nextState) => {
+        const nextMetrics = await newestGameTextMetrics();
+        return (
+          nextState?.projectOpen &&
+          nextState.phase === "waiting_input" &&
+          nextState.canInteract &&
+          nextState.presentationRevision !== revisionBeforeFlowReset &&
+          nextMetrics?.fontSize === "20px" &&
+          nextMetrics.lineHeight === "20px"
+        );
+      },
     });
 
     const resetState = await snapshot();
-    const resetFontFamily = await newestGameTextFontFamily();
+    const resetMetrics = await newestGameTextMetrics();
     console.log(
       JSON.stringify({
         flowReset: true,
         phase: resetState.phase,
         presentationRevision: resetState.presentationRevision,
-        configuredFont,
-        resetFontFamily,
+        resetMetrics,
       }),
     );
     assert.equal(resetState.fault, null);
-    assert.equal(sameFont(resetFontFamily, configuredFont), true);
+    assert.equal(resetMetrics.fontSize, "20px");
+    assert.equal(resetMetrics.lineHeight, "20px");
   });
 });
-
-async function chooseDifferentSystemFont(currentFont) {
-  const values = await browser.execute(() =>
-    [...document.querySelectorAll("#available-game-fonts option")].map((option) => option.value),
-  );
-  const candidates = values.filter((value) => value && !sameFont(value, currentFont));
-  const preferred = ["Arial", "Helvetica", "Menlo"].find((name) =>
-    candidates.some((candidate) => sameFont(candidate, name)),
-  );
-  const selected = preferred ?? candidates[0];
-  assert.ok(selected, "system font list must contain an alternative to the configured font");
-  return selected;
-}
 
 async function findInitialFlowButton() {
   for (const label of INITIAL_FLOW_LABELS) {
@@ -156,15 +154,6 @@ async function findInitialFlowButton() {
     if (await button.isExisting()) return button;
   }
   assert.fail("project did not expose its initial game-flow button");
-}
-
-function sameFont(actual, expected) {
-  const normalize = (value) =>
-    String(value ?? "")
-      .replaceAll(/["']/g, "")
-      .trim()
-      .toLowerCase();
-  return normalize(actual) === normalize(expected);
 }
 
 async function waitForInteractiveProject() {
@@ -201,33 +190,28 @@ async function snapshot() {
 }
 
 async function gameLineMetrics() {
-  return browser.execute((flowLabels) => {
+  return browser.execute(() => {
     const line = [...document.querySelectorAll(".game-line")].find(
       (candidate) =>
         !candidate.querySelector(".media-image, .canvas-replay") && candidate.textContent?.trim(),
     );
     if (!(line instanceof HTMLElement)) return null;
     const style = getComputedStyle(line);
-    const flowButton = [...document.querySelectorAll(".game-button")].find((candidate) =>
-      flowLabels.some((label) => candidate.textContent?.includes(label)),
-    );
     return {
       fontSize: style.fontSize,
       lineHeight: style.lineHeight,
       minHeight: style.minHeight,
-      flowButtonFontFamily:
-        flowButton instanceof HTMLElement && flowButton.querySelector("span") instanceof HTMLElement
-          ? getComputedStyle(flowButton.querySelector("span")).fontFamily
-          : null,
     };
-  }, INITIAL_FLOW_LABELS);
+  });
 }
 
-async function newestGameTextFontFamily() {
+async function newestGameTextMetrics() {
   return browser.execute(() => {
     const text = [...document.querySelectorAll(".game-line span")]
       .filter((candidate) => candidate.textContent?.trim())
       .at(-1);
-    return text instanceof HTMLElement ? getComputedStyle(text).fontFamily : null;
+    if (!(text instanceof HTMLElement)) return null;
+    const style = getComputedStyle(text);
+    return { fontSize: style.fontSize, lineHeight: style.lineHeight };
   });
 }

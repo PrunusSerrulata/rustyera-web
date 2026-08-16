@@ -23,6 +23,7 @@ import { defaultPreferences } from "@/core/types";
 import { loadBrowserPreferences, saveBrowserPreferences } from "@/platform/database";
 import { overlayBrowserDirectory } from "@/platform/browserDirectoryOverlay";
 import { BrowserProject } from "@/platform/browserProject";
+import { BrowserProjectPreferenceStore } from "@/platform/projectPreferences";
 
 class MemoryFileHandle {
   readonly kind = "file";
@@ -55,7 +56,8 @@ class MemoryFileHandle {
     if (!options?.keepExistingData) this.bytes = new Uint8Array();
     let cursor = 0;
     return {
-      write: async (bytes: Uint8Array) => {
+      write: async (input: string | Uint8Array) => {
+        const bytes = typeof input === "string" ? new TextEncoder().encode(input) : input;
         const end = cursor + bytes.byteLength;
         if (end > this.bytes.byteLength) {
           const grown = new Uint8Array(end);
@@ -78,6 +80,104 @@ class MemoryFileHandle {
     };
   }
 }
+
+describe("browser project preferences", () => {
+  it("stores source-project preferences in .rustyera and preserves sparse client values", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    const store = await BrowserProjectPreferenceStore.source(
+      root as unknown as FileSystemDirectoryHandle,
+    );
+
+    await store.save({
+      settings: { UseMouse: "NO" },
+      imageScale: 1.5,
+      trustProjectFileMetadata: true,
+    });
+
+    const rustyera = await root.getDirectoryHandle(".rustyera");
+    const file = await rustyera.getFileHandle("preferences-v1.json");
+    const document = JSON.parse(await (await file.getFile()).text());
+    expect(document.profiles.browser).toEqual({
+      settings: { UseMouse: "NO" },
+      client: { imageScale: 1.5, trustProjectFileMetadata: true },
+    });
+  });
+
+  it("preserves other client profiles when updating the browser partition", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    const rustyera = await root.getDirectoryHandle(".rustyera", { create: true });
+    const file = await rustyera.getFileHandle("preferences-v1.json", { create: true });
+    await (
+      await file.createWritable()
+    ).write(
+      JSON.stringify({
+        schemaVersion: 1,
+        profiles: {
+          tui: { settings: { UseMouse: "YES" }, client: { imageScale: 2 } },
+          browser: { settings: { UseMouse: "YES" }, client: {} },
+        },
+      }),
+    );
+    const store = await BrowserProjectPreferenceStore.source(
+      root as unknown as FileSystemDirectoryHandle,
+    );
+
+    await store.save({ settings: { UseMouse: "NO" }, masterVolume: 0.25 });
+
+    const document = JSON.parse(await (await file.getFile()).text());
+    expect(document.profiles.tui).toEqual({
+      settings: { UseMouse: "YES" },
+      client: { imageScale: 2 },
+    });
+    expect(document.profiles.browser).toEqual({
+      settings: { UseMouse: "NO" },
+      client: { masterVolume: 0.25 },
+    });
+  });
+
+  it.each([
+    {
+      label: "future schema",
+      document: { schemaVersion: 2, profiles: {} },
+    },
+    {
+      label: "unknown active-profile field",
+      document: {
+        schemaVersion: 1,
+        profiles: { browser: { settings: {}, client: { futureControl: true } } },
+      },
+    },
+    {
+      label: "unknown active-profile top-level field",
+      document: {
+        schemaVersion: 1,
+        profiles: { browser: { settings: {}, client: {}, futureControl: true } },
+      },
+    },
+    {
+      label: "out-of-range client value",
+      document: {
+        schemaVersion: 1,
+        profiles: { browser: { settings: {}, client: { imageScale: 9 } } },
+      },
+    },
+  ])("keeps a $label project preference document read-only", async ({ document }) => {
+    const root = new MemoryDirectoryHandle("game");
+    const rustyera = await root.getDirectoryHandle(".rustyera", { create: true });
+    const file = await rustyera.getFileHandle("preferences-v1.json", { create: true });
+    const original = `${JSON.stringify(document)}\n`;
+    await (await file.createWritable()).write(original);
+
+    const store = await BrowserProjectPreferenceStore.source(
+      root as unknown as FileSystemDirectoryHandle,
+    );
+
+    expect(store.writable).toBe(false);
+    expect(store.error).toContain("无法读取项目偏好");
+    await expect(store.save({ settings: {} })).rejects.toThrow("无法读取项目偏好");
+    expect(await (await file.getFile()).text()).toBe(original);
+  });
+});
 
 class MemoryDirectoryHandle {
   readonly kind = "directory";

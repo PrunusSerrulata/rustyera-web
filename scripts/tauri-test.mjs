@@ -1,6 +1,16 @@
 #!/usr/bin/env node
 
-import { access, cp, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import {
+  access,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -110,6 +120,8 @@ if (specProfile?.copyProject) {
   const runDirectory = await mkdtemp(path.join(testRuns, "tauri-preferences-"));
   const projectCopy = path.join(runDirectory, path.basename(project));
   await cp(project, projectCopy, { recursive: true });
+  if (specName === "preferences.spec.mjs")
+    await rm(path.join(projectCopy, ".rustyera", "preferences-v1.json"), { force: true });
   if (specProfile.normalizeReraconfig) {
     const reraconfigPath = path.join(projectCopy, "reraconfig.toml");
     const source = await readFile(reraconfigPath, "utf8");

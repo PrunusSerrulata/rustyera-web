@@ -23,6 +23,8 @@ describe("project configuration protocol", () => {
         applicability: 12,
         default_value: "18",
         effective_value: "18",
+        preference_eligible: true,
+        client_effective_value: "20",
         application: "hot",
       },
       {
@@ -36,6 +38,8 @@ describe("project configuration protocol", () => {
         applicability: 8,
         default_value: "TRUE",
         effective_value: "TRUE",
+        preference_eligible: false,
+        client_effective_value: "TRUE",
         application: "hot",
       },
     ],
@@ -48,6 +52,10 @@ describe("project configuration protocol", () => {
 
     expect(clientConfigurationEntries(parsed, "browser")).toHaveLength(1);
     expect(clientConfigurationEntries(parsed, "tauri")).toHaveLength(2);
+    expect(parsed.entries[0]).toMatchObject({
+      preference_eligible: true,
+      client_effective_value: "20",
+    });
     expect(prepareConfigurationUpdate(parsed, [{ code: "フォントサイズ", value: "20" }])).toEqual({
       project_revision: 7,
       expected_source_digest: [...snapshot.source_digest],

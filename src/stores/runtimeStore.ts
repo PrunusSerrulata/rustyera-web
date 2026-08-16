@@ -36,8 +36,10 @@ import { formatRuntimeFault } from "@/core/runtimeFault";
 import { hasEnabledButton } from "@/core/presentation";
 import {
   defaultPreferences,
+  defaultProjectPreferences,
   type InteractionToken,
   type Preferences,
+  type ProjectPreferences,
   type ProjectConfigurationChange,
   type ProjectGameInformation,
   type ProjectFontLoadResult,
@@ -65,7 +67,8 @@ import { RuntimeDebugRequestState } from "@/stores/runtimeDebugRequests";
 import { RuntimeDebugState } from "@/stores/runtimeDebugState";
 import { RuntimeDiagnosisState } from "@/stores/runtimeDiagnosis";
 import { handleRuntimeService } from "@/stores/runtimeServices";
-import { RuntimeSettingsState } from "@/stores/runtimeSettings";
+import { RuntimeProjectSettingsState } from "@/stores/runtimeProjectSettings";
+import { RuntimeClientPreferencesState } from "@/stores/runtimeClientPreferences";
 import { RuntimeStatusState } from "@/stores/runtimeStatus";
 import { RuntimeStartupTelemetryState } from "@/stores/runtimeStartupTelemetry";
 import { RuntimeTestEnvironment } from "@/stores/runtimeTestEnvironment";
@@ -106,6 +109,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const presentation = presentationProjection.presentation;
   const presentationStaged = presentationProjection.staged;
   const preferences = ref<Preferences>(defaultPreferences());
+  const projectPreferences = ref<ProjectPreferences>(defaultProjectPreferences());
+  const projectPreferencesWritable = ref(false);
   const runtimeViewport = new RuntimeViewportState(send);
   const viewportMeasurement = runtimeViewport.measurement;
   const {
@@ -159,6 +164,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const runtimeLogs = new RuntimeLogState(MAXIMUM_LOG_ENTRIES);
   const testEnvironment = new RuntimeTestEnvironment();
   const logs = runtimeLogs.entries;
+  const projectSettingsOpen = ref(false);
   const preferencesOpen = ref(false);
   const logsOpen = ref(false);
   const runtimeDebug = new RuntimeDebugState();
@@ -208,19 +214,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
     refreshCompiledCache: refreshCompiledCacheAfterConfigurationUpdate,
   });
   const projectConfiguration = runtimeConfiguration.snapshot;
-  const runtimeSettings = new RuntimeSettingsState({
-    preferences,
-    preferencesOpen,
+  const runtimeProjectSettings = new RuntimeProjectSettingsState({
+    open: projectSettingsOpen,
     configuration: runtimeConfiguration,
     status: runtimeStatus,
-    savePreferences: (value) => bridge.savePreferences(value),
-    applyAudioPreferences: (value) => audio.setPreferences(value),
     restart,
     logError: (message) => log("error", message),
   });
-  const previewPreferences = runtimeSettings.preview;
-  const settingsBusy = runtimeSettings.busy;
-  const settingsError = runtimeSettings.error;
   bridge.setProjectProgressListener(handleProjectProgress);
   let exportState: ExportState | undefined;
   const compiledCacheExport = new RuntimeCompiledCacheExportState({
@@ -302,7 +302,39 @@ export const useRuntimeStore = defineStore("runtime", () => {
     },
   });
 
-  const effectivePreferences = computed(() => previewPreferences.value ?? preferences.value);
+  const effectivePreferences = computed(() => {
+    const global = preferences.value;
+    return {
+      ...global,
+      imageScale: projectPreferences.value.imageScale ?? global.imageScale,
+      masterVolume: projectPreferences.value.masterVolume ?? global.masterVolume,
+      trustProjectFileMetadata:
+        projectPreferences.value.trustProjectFileMetadata ?? global.trustProjectFileMetadata,
+    };
+  });
+  const runtimeClientPreferences = new RuntimeClientPreferencesState({
+    bridge,
+    global: preferences,
+    project: projectPreferences,
+    open: preferencesOpen,
+    snapshot: () => projectConfiguration.value ?? undefined,
+    entries: () => configurationEntries.value,
+    effective: () => effectivePreferences.value,
+    send,
+    updateConfiguration: (value) => runtimeConfiguration.update(value),
+    applyHostConfiguration: applyEffectiveClientConfiguration,
+    applyAudio: (value) => audio.setPreferences(value),
+    beginStatus: (message) => runtimeStatus.begin("settings", message),
+    appendElapsed: (token, seconds) => runtimeStatus.appendElapsed("settings", token, seconds),
+    finishStatus: (token, message) => runtimeStatus.finish("settings", token, message),
+    clearStatus: (token) => runtimeStatus.clear("settings", token),
+    logError: (message) => log("error", message),
+  });
+  const settingsBusy = computed(
+    () => runtimeProjectSettings.busy.value || runtimeClientPreferences.busy.value,
+  );
+  const projectSettingsError = runtimeProjectSettings.error;
+  const preferencesError = runtimeClientPreferences.error;
   const configurationEntries = runtimeConfiguration.entries;
   const configurationReadOnly = runtimeConfiguration.readOnly;
   const configurationSessionOnly = runtimeConfiguration.sessionOnly;
@@ -433,7 +465,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   function resetTransientStatuses(): void {
     runtimeStatus.reset();
-    runtimeSettings.resetStatus();
+    runtimeProjectSettings.resetStatus();
   }
 
   async function initialize(): Promise<void> {
@@ -504,8 +536,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
     void requestSystemFonts();
   }
 
+  function openProjectSettingsFromUser(): void {
+    projectSettingsOpen.value = true;
+    void requestSystemFonts();
+  }
+
   function openPreferencesFromRuntime(): void {
-    preferencesOpen.value = true;
+    projectSettingsOpen.value = true;
     if (bridge.kind === "tauri") void requestSystemFonts();
   }
 
@@ -754,33 +791,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
         runtimeConfiguration.update(value.configuration);
         await runtimeConfiguration.persistGenerated();
         if (value.success) {
-          if (runtimeAcceptedCompiledCache) {
-            showProjectLoadTransition("项目缓存命中，正在准备脚本热重载…");
-            await bridge.prepareProjectReloadBaseline();
-          }
-          if (projectConfiguration.value) {
-            try {
-              await bridge.applyProjectConfiguration(
-                configurationEntries.value,
-                runtimeViewport.chrome(currentGameViewportMeasurement()),
-              );
-            } catch (error) {
-              log("warning", `客户端项目配置应用失败：${String(error)}`);
-            }
-          }
-          await settleProjectViewport();
-          startupTelemetryState.completeFrontendReadiness();
-          baseStatus.value = PROJECT_STARTING_STATUS;
-          finishProjectLoad();
-          if (pendingStart.type === "new_game") {
-            await send({
-              type: "start",
-              value: { mode: { type: "new_game", seed: pendingStart.seed ?? null } },
+          projectPreferences.value =
+            bridge.currentProjectPreferences() ?? defaultProjectPreferences();
+          projectPreferencesWritable.value = bridge.projectPreferencesWritable();
+          void runtimeClientPreferences
+            .apply()
+            .then(() => continueLoadedProject(runtimeAcceptedCompiledCache))
+            .catch((error) => {
+              const message = `客户端偏好初始化失败：${String(error)}`;
+              startupTelemetryState.fail(message);
+              finishProjectLoad();
+              baseStatus.value = message;
+              log("error", message);
             });
-          } else {
-            await restoreState(pendingStart.type, pendingStart.bytes!);
-          }
-          if (!runtimeManifestSparse) scheduleCompiledCacheExport(1000);
         } else if (value.payload_required) {
           showProjectLoadTransition("项目缓存未命中，正在读取项目源码…");
           runtimeManifestSparse = false;
@@ -850,6 +873,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "configuration_update_committed":
         await runtimeConfiguration.handleCommitted(value, correlationId);
+        break;
+      case "client_preferences_applied":
+        if (!(await runtimeClientPreferences.handleApplied(value, correlationId)))
+          log("warning", "忽略了非预期的客户端偏好响应");
         break;
       case "wait_changed":
         if (value.type === "opened" || value.type === "updated") {
@@ -944,6 +971,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
           log(value.level ?? "info", value.message, true, suppressNotification ? "none" : "all");
         break;
       case "command_rejected": {
+        if (
+          runtimeClientPreferences.reject(
+            correlationId,
+            String(value.message ?? "Runtime 拒绝了客户端偏好"),
+          )
+        )
+          break;
         if (fullManifestImport?.commandMessageIds.has(String(correlationId))) {
           const active = exportState;
           await cleanupFullManifestImport(true);
@@ -1331,6 +1365,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     traditionalSaves.reset();
     runtimeImport.reset();
     runtimeConfiguration.reset();
+    runtimeClientPreferences.reset();
+    projectPreferences.value = defaultProjectPreferences();
+    projectPreferencesWritable.value = false;
     gameInformation.value = null;
     runtimeManifestSparse = false;
   }
@@ -2259,16 +2296,61 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
   }
 
-  async function savePreferences(
-    value: Preferences,
+  async function saveProjectSettings(
     changes: ProjectConfigurationChange[] = [],
     restartAfterApply = false,
   ): Promise<void> {
-    await runtimeSettings.save(value, changes, restartAfterApply);
+    await runtimeProjectSettings.save(changes, restartAfterApply);
   }
 
-  function preview(value: Preferences | null): void {
-    runtimeSettings.showPreview(value);
+  async function continueLoadedProject(runtimeAcceptedCompiledCache: boolean): Promise<void> {
+    if (runtimeAcceptedCompiledCache) {
+      showProjectLoadTransition("项目缓存命中，正在准备脚本热重载…");
+      await bridge.prepareProjectReloadBaseline();
+    }
+    await settleProjectViewport();
+    startupTelemetryState.completeFrontendReadiness();
+    if (["running", "waiting_input", "waiting_external"].includes(phase.value)) {
+      const telemetry = startupTelemetry.value;
+      if (telemetry?.outcome === "loading") {
+        telemetry.milestones.firstGamePhaseMs ??= startupTelemetryState.elapsedMs();
+        telemetry.outcome = "success";
+      }
+      finishProjectLoad();
+      baseStatus.value = GAME_RUNNING_STATUS;
+      if (!runtimeManifestSparse) scheduleCompiledCacheExport(1000);
+      return;
+    }
+    baseStatus.value = PROJECT_STARTING_STATUS;
+    finishProjectLoad();
+    if (pendingStart.type === "new_game") {
+      await send({
+        type: "start",
+        value: { mode: { type: "new_game", seed: pendingStart.seed ?? null } },
+      });
+    } else {
+      await restoreState(pendingStart.type, pendingStart.bytes!);
+    }
+    if (!runtimeManifestSparse) scheduleCompiledCacheExport(1000);
+  }
+
+  async function applyEffectiveClientConfiguration(): Promise<void> {
+    if (!projectConfiguration.value) return;
+    try {
+      await bridge.applyProjectConfiguration(
+        configurationEntries.value,
+        runtimeViewport.chrome(currentGameViewportMeasurement()),
+      );
+    } catch (error) {
+      log("warning", `客户端项目配置应用失败：${String(error)}`);
+    }
+  }
+
+  async function saveClientPreferences(
+    scope: "global" | "project",
+    value: ProjectPreferences,
+  ): Promise<void> {
+    await runtimeClientPreferences.save(scope, value);
   }
 
   async function projectViewport(measurement = currentGameViewportMeasurement()): Promise<void> {
@@ -2460,6 +2542,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     bridgeKind: bridge.kind,
     presentation,
     preferences,
+    projectPreferences,
     configurationEntries,
     projectSource,
     configurationReadOnly,
@@ -2500,9 +2583,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
     faultMessage,
     faultActionBusy,
     logs,
+    projectSettingsOpen,
     preferencesOpen,
+    projectPreferencesWritable,
     settingsBusy,
-    settingsError,
+    projectSettingsError,
+    preferencesError,
     logsOpen,
     debugConsoleOpen,
     variablesOpen,
@@ -2540,6 +2626,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     canInteract,
     promptPlaceholder,
     openPreferencesFromUser,
+    openProjectSettingsFromUser,
     requestSystemFonts,
     initialize,
     openProject,
@@ -2584,8 +2671,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     stepDebug,
     toggleSingleStep,
     continueDebug,
-    savePreferences,
-    preview,
+    saveProjectSettings,
+    saveClientPreferences,
     shutdown,
     projectViewport,
     configureTestRun,

@@ -18,6 +18,7 @@ import type {
   DebugMessage,
   FrontendBridge,
   Preferences,
+  ProjectPreferences,
   ProjectProgress,
   ProjectOpenMetrics,
   ProjectReloadScope,
@@ -30,6 +31,7 @@ import type {
   SessionOptions,
   SystemFontQueryResult,
 } from "@/core/types";
+import { defaultProjectPreferences } from "@/core/types";
 
 type HostProjectOpenMetrics = Omit<ProjectOpenMetrics, "submittedAtMs" | "projectFonts">;
 type HostProjectFontSource = { relativePath: string; contentHash: number[] };
@@ -38,6 +40,8 @@ export class TauriBridge implements FrontendBridge {
   readonly kind = "tauri" as const;
   private projectPath?: string;
   private projectIsFile = false;
+  private projectPreferences?: ProjectPreferences;
+  private projectPreferencesAreWritable = false;
   private projectProgressListener?: (progress: ProjectProgress) => void;
   private progressUnlisten?: Promise<UnlistenFn>;
   private projectFileExportPath?: string;
@@ -98,6 +102,7 @@ export class TauriBridge implements FrontendBridge {
       const metrics = await this.withProjectFonts(response);
       this.projectPath = testProject;
       this.projectIsFile = false;
+      await this.loadCurrentProjectPreferences();
       return { ...metrics, submittedAtMs };
     }
     const path = await open({ directory: true, multiple: false, title: "打开 Era 项目" });
@@ -115,6 +120,7 @@ export class TauriBridge implements FrontendBridge {
     const metrics = await this.withProjectFonts(response);
     this.projectPath = path;
     this.projectIsFile = false;
+    await this.loadCurrentProjectPreferences();
     return { ...metrics, submittedAtMs };
   }
 
@@ -134,6 +140,7 @@ export class TauriBridge implements FrontendBridge {
       const metrics = await this.withProjectFonts(response);
       this.projectPath = testProjectFile;
       this.projectIsFile = true;
+      await this.loadCurrentProjectPreferences();
       return { ...metrics, submittedAtMs };
     }
     const path = await open({
@@ -154,6 +161,7 @@ export class TauriBridge implements FrontendBridge {
     const metrics = await this.withProjectFonts(response);
     this.projectPath = path;
     this.projectIsFile = true;
+    await this.loadCurrentProjectPreferences();
     return { ...metrics, submittedAtMs };
   }
 
@@ -269,6 +277,25 @@ export class TauriBridge implements FrontendBridge {
     return invoke("save_preferences", { preferences });
   }
 
+  currentProjectPreferences(): ProjectPreferences | undefined {
+    return this.projectPreferences == null
+      ? undefined
+      : { ...this.projectPreferences, settings: { ...this.projectPreferences.settings } };
+  }
+
+  async saveProjectPreferences(preferences: ProjectPreferences): Promise<ProjectPreferences> {
+    if (!this.projectPath) throw new Error("没有打开的项目");
+    if (!this.projectPreferencesAreWritable) throw new Error("项目偏好为只读");
+    this.projectPreferences = await invoke<ProjectPreferences>("save_project_preferences", {
+      preferences,
+    });
+    return this.currentProjectPreferences()!;
+  }
+
+  projectPreferencesWritable(): boolean {
+    return this.projectPreferencesAreWritable;
+  }
+
   projectConfigurationWritable(): boolean {
     return Boolean(this.projectPath);
   }
@@ -287,7 +314,7 @@ export class TauriBridge implements FrontendBridge {
   ): Promise<void> {
     const relevant = new Set(["WindowMaximixed", "WindowX", "WindowY"]);
     if (changedCodes && !changedCodes.some((code) => relevant.has(code))) return;
-    const values = new Map(entries.map((entry) => [entry.code, entry.effective_value]));
+    const values = new Map(entries.map((entry) => [entry.code, entry.client_effective_value]));
     const integer = (code: string): number | undefined => {
       const value = values.get(code);
       if (value == null || !/^-?\d+$/.test(value)) return undefined;
@@ -317,6 +344,27 @@ export class TauriBridge implements FrontendBridge {
       .filter(Boolean)
       .at(-1)
       ?.replace(/\.reraproj$/i, "");
+  }
+
+  private async loadCurrentProjectPreferences(): Promise<void> {
+    if (!this.projectPath) return;
+    const loaded = await invoke<{
+      preferences: ProjectPreferences;
+      writable: boolean;
+      error?: string;
+    }>("load_project_preferences");
+    if (
+      loaded == null ||
+      typeof loaded !== "object" ||
+      loaded.preferences == null ||
+      typeof loaded.writable !== "boolean"
+    ) {
+      this.projectPreferences = defaultProjectPreferences();
+      this.projectPreferencesAreWritable = false;
+      return;
+    }
+    this.projectPreferences = loaded.preferences;
+    this.projectPreferencesAreWritable = loaded.writable;
   }
 
   async openUpload(): Promise<Uint8Array | undefined> {

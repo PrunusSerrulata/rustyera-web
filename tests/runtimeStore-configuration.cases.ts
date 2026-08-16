@@ -2,6 +2,7 @@ import { bridge } from "./runtimeStoreTestSupport";
 import { describe, expect, it, vi } from "vitest";
 import {
   installRuntimeStoreTestHarness,
+  advanceUntil,
   blake3,
   configurationEntry,
   decodeServicePayload,
@@ -95,6 +96,148 @@ describe("runtime store configuration", () => {
     expect(bridge.loadPreferences).not.toHaveBeenCalled();
   });
 
+  it("waits for the correlated client preference response before starting", async () => {
+    const configuration = {
+      project_revision: 4,
+      source_digest: new Uint8Array(32),
+      entries: [configurationEntry("UseMouse", "YES")],
+      restart_pending: false,
+      generated_source: null,
+    };
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", {
+          success: true,
+          diagnostics: [],
+          configuration,
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+    await Promise.resolve();
+    expect(bridge.submitRuntime.mock.calls.some(([message]) => message.type === "start")).toBe(
+      false,
+    );
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("client_preferences_applied", { configuration }, 1)],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+
+    expect(bridge.submitRuntime.mock.calls.some(([message]) => message.type === "start")).toBe(
+      true,
+    );
+  });
+
+  it("preserves an interleaved game wait until a saved preference is acknowledged", async () => {
+    const configuration = {
+      project_revision: 5,
+      source_digest: new Uint8Array(32),
+      entries: [configurationEntry("UseMouse", "YES")],
+      restart_pending: false,
+      generated_source: null,
+    };
+    let nextMessageId = 1;
+    let stage = 0;
+    let releaseSaveAcknowledgement = false;
+    const latestWait = {
+      kind: "integer_value",
+      wait_id: 13,
+      submission_token: { epoch: 3, id: 8 },
+    };
+    bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", { success: true, diagnostics: [], configuration }),
+      ],
+    });
+    bridge.pump.mockImplementation(async () => {
+      const commands = bridge.submitRuntime.mock.calls.map(
+        ([message]: unknown[]) => (message as { type?: string }).type,
+      );
+      const preferenceApplications = commands.filter(
+        (type: string | undefined) => type === "apply_client_preferences",
+      ).length;
+      if (stage === 0 && preferenceApplications === 1) {
+        stage = 1;
+        return {
+          ...emptyBatch(),
+          events: [runtimeEvent("client_preferences_applied", { configuration }, 1)],
+        };
+      }
+      if (stage === 1 && commands.includes("start")) {
+        stage = 2;
+        return {
+          ...emptyBatch(),
+          events: [runtimeEvent("state_changed", { phase: "running", epoch: 2 })],
+        };
+      }
+      if (stage === 2 && preferenceApplications === 2) {
+        stage = 3;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("state_changed", { phase: "waiting_input", epoch: 3 }),
+            runtimeEvent("presentation_snapshot", {
+              revision: 9,
+              title: "preference race",
+              history: { logical_lines: [] },
+              input_wait: latestWait,
+            }),
+            runtimeEvent("wait_changed", { type: "opened", value: latestWait }),
+            runtimeEvent("client_preferences_applied", { configuration }, 1),
+          ],
+        };
+      }
+      if (stage === 3 && releaseSaveAcknowledgement) {
+        stage = 4;
+        return {
+          ...emptyBatch(),
+          events: [runtimeEvent("client_preferences_applied", { configuration }, 3)],
+        };
+      }
+      return emptyBatch();
+    });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+
+    await store.enableDebug();
+    await advanceUntil(() => stage === 2 && store.phase === "running");
+    store.preferencesOpen = true;
+    const saving = store.saveClientPreferences("global", {
+      settings: { UseMouse: "NO" },
+    });
+    await advanceUntil(() => stage === 3);
+
+    expect(store.settingsBusy).toBe(true);
+    expect(store.preferencesOpen).toBe(true);
+    expect(store.phase).toBe("waiting_input");
+    expect(store.runtimeEpoch).toBe(3);
+    expect(store.presentation.inputWait).toEqual(latestWait);
+    expect(store.status).toContain("正在保存客户端偏好");
+
+    releaseSaveAcknowledgement = true;
+    await advanceUntil(() => stage === 4);
+    await saving;
+
+    expect(store.settingsBusy).toBe(false);
+    expect(store.preferencesOpen).toBe(false);
+    expect(store.phase).toBe("waiting_input");
+    expect(store.runtimeEpoch).toBe(3);
+    expect(store.presentation.inputWait).toEqual(latestWait);
+    expect(store.status).toBe("全局偏好已应用");
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "start",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("keeps one pending browser font request while the authorization dialog is open", async () => {
     bridge.kind = "browser";
     let resolveFonts!: (result: { kind: "ready"; fonts: string[] }) => void;
@@ -118,6 +261,50 @@ describe("runtime store configuration", () => {
     expect(bridge.listFonts).toHaveBeenCalledOnce();
     expect(store.systemFonts).toEqual(["Beta", "Alpha"]);
     expect(store.fontAccessStatus).toBe("ready");
+  });
+
+  it("submits sparse global and project preference layers before starting the project", async () => {
+    bridge.projectPreferencesWritable.mockReturnValue(false);
+    bridge.currentProjectPreferences.mockReturnValue({
+      settings: { FontSize: "24" },
+      masterVolume: 0.4,
+    });
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", {
+          success: true,
+          diagnostics: [],
+          configuration: {
+            project_revision: 7,
+            source_digest: new Uint8Array(32),
+            restart_pending: false,
+            generated_source: null,
+            entries: [configurationEntry("UseMouse", "YES"), configurationEntry("FontSize", "18")],
+          },
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+    expect(store.projectPreferencesWritable).toBe(false);
+    bridge.projectPreferencesWritable.mockReturnValue(true);
+    store.preferences.settings.UseMouse = "NO";
+
+    await store.enableDebug();
+
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      {
+        type: "apply_client_preferences",
+        value: {
+          project_revision: 7,
+          global: [{ code: "UseMouse", value: "NO" }],
+          project: [{ code: "FontSize", value: "24" }],
+        },
+      },
+      undefined,
+    );
+    expect(store.effectivePreferences.masterVolume).toBe(0.4);
+    expect(store.projectPreferencesWritable).toBe(true);
   });
 
   it("does not present generic runtime fallbacks as installed browser fonts", async () => {
@@ -552,74 +739,95 @@ describe("runtime store configuration", () => {
   });
 
   it("exposes applicable reraconfig entries and asks Runtime to validate changes", async () => {
+    const configuration = {
+      project_revision: 9,
+      source_digest: new Uint8Array(32).fill(4),
+      entries: [
+        {
+          code: "FontSize",
+          japanese: "フォントサイズ",
+          english: "Font size",
+          value: "12",
+          effective_value: "12",
+          preference_eligible: true,
+          client_effective_value: "12",
+          kind: "integer",
+          allowed: [],
+          fixed: false,
+          applicability: 8,
+        },
+        {
+          code: "TuiOnly",
+          japanese: "",
+          english: "TUI only",
+          value: "TRUE",
+          effective_value: "TRUE",
+          preference_eligible: false,
+          client_effective_value: "TRUE",
+          kind: "boolean",
+          allowed: [],
+          fixed: false,
+          applicability: 2,
+        },
+        {
+          code: "UseMenu",
+          japanese: "メニューを使用する",
+          english: "Show menu",
+          value: "NO",
+          effective_value: "NO",
+          preference_eligible: true,
+          client_effective_value: "NO",
+          kind: "boolean",
+          allowed: [],
+          fixed: false,
+          applicability: 12,
+        },
+        {
+          code: "UseMouse",
+          japanese: "マウスを使用する",
+          english: "Use mouse",
+          value: "NO",
+          effective_value: "NO",
+          preference_eligible: true,
+          client_effective_value: "NO",
+          kind: "boolean",
+          allowed: [],
+          fixed: false,
+          applicability: 12,
+        },
+        {
+          code: "ScrollHeight",
+          japanese: "スクロール行数",
+          english: "Lines per scroll",
+          value: "4",
+          effective_value: "4",
+          preference_eligible: true,
+          client_effective_value: "4",
+          kind: "integer",
+          allowed: [],
+          fixed: false,
+          applicability: 12,
+        },
+      ],
+    };
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
       events: [
         runtimeEvent("project_load_report", {
           success: true,
           diagnostics: [],
-          configuration: {
-            project_revision: 9,
-            source_digest: new Uint8Array(32).fill(4),
-            entries: [
-              {
-                code: "FontSize",
-                japanese: "フォントサイズ",
-                english: "Font size",
-                value: "12",
-                kind: "integer",
-                allowed: [],
-                fixed: false,
-                applicability: 8,
-              },
-              {
-                code: "TuiOnly",
-                japanese: "",
-                english: "TUI only",
-                value: "TRUE",
-                kind: "boolean",
-                allowed: [],
-                fixed: false,
-                applicability: 2,
-              },
-              {
-                code: "UseMenu",
-                japanese: "メニューを使用する",
-                english: "Show menu",
-                value: "NO",
-                kind: "boolean",
-                allowed: [],
-                fixed: false,
-                applicability: 12,
-              },
-              {
-                code: "UseMouse",
-                japanese: "マウスを使用する",
-                english: "Use mouse",
-                value: "NO",
-                kind: "boolean",
-                allowed: [],
-                fixed: false,
-                applicability: 12,
-              },
-              {
-                code: "ScrollHeight",
-                japanese: "スクロール行数",
-                english: "Lines per scroll",
-                value: "4",
-                kind: "integer",
-                allowed: [],
-                fixed: false,
-                applicability: 12,
-              },
-            ],
-          },
+          configuration,
         }),
       ],
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("client_preferences_applied", { configuration }, 1)],
     });
     const store = useRuntimeStore();
 
     await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(16);
     expect(store.configurationEntries.map((entry) => entry.code)).toEqual([
       "FontSize",
       "UseMenu",
@@ -639,7 +847,7 @@ describe("runtime store configuration", () => {
       { width: 0, height: 0 },
     );
 
-    void store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "18" }]);
+    void store.saveProjectSettings([{ code: "FontSize", value: "18" }]);
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(1_000);
     expect(store.status).toMatch(/ · 已等待 1 秒$/);
@@ -756,7 +964,7 @@ describe("runtime store configuration", () => {
     await vi.advanceTimersByTimeAsync(64);
     expect(store.configurationReadOnly).toBe(false);
 
-    const saving = store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "22" }]);
+    const saving = store.saveProjectSettings([{ code: "FontSize", value: "22" }]);
     await Promise.resolve();
     bridge.pump
       .mockResolvedValueOnce({

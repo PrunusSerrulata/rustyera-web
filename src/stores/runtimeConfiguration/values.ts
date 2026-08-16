@@ -4,7 +4,7 @@ export function configurationValue(
   snapshot: ProjectConfigurationSnapshot | null,
   code: string,
 ): string | undefined {
-  return snapshot?.entries.find((entry) => entry.code === code)?.effective_value;
+  return snapshot?.entries.find((entry) => entry.code === code)?.client_effective_value;
 }
 
 export function configurationBoolean(

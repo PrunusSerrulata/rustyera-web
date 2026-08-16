@@ -105,10 +105,11 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
         <hr />
         <button
           :disabled="store.configurationEntries.length === 0"
-          @click="action(store.openPreferencesFromUser)"
+          @click="action(store.openProjectSettingsFromUser)"
         >
-          设置…
+          项目设置…
         </button>
+        <button @click="action(store.openPreferencesFromUser)">偏好设置…</button>
         <hr />
         <button :disabled="store.gameInteractionsBlocked" @click="action(store.shutdown)">
           {{ store.bridgeKind === "browser" ? "关闭当前标签页" : "退出" }}

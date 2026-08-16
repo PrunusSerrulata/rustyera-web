@@ -3,6 +3,7 @@ import { vi } from "vitest";
 import {
   defaultPreferences,
   type ProjectProgress,
+  type ProjectPreferences,
   type RuntimeMessage,
   type SystemFontQueryResult,
 } from "@/core/types";
@@ -37,6 +38,9 @@ export const bridge = {
   listFonts: vi.fn(async (): Promise<SystemFontQueryResult> => ({ kind: "ready", fonts: [] })),
   loadPreferences: vi.fn(async () => defaultPreferences()),
   savePreferences: vi.fn(),
+  currentProjectPreferences: vi.fn<() => ProjectPreferences | undefined>(() => undefined),
+  saveProjectPreferences: vi.fn(),
+  projectPreferencesWritable: vi.fn(() => false),
   projectConfigurationWritable: vi.fn(() => true),
   writeProjectConfiguration: vi.fn(),
   applyProjectConfiguration: vi.fn(),

@@ -4,7 +4,12 @@ import { afterEach, beforeEach, expect, vi } from "vitest";
 
 import { plainLine } from "@/core/presentation";
 import { decodeServicePayload, encodeServicePayload } from "@/core/serviceCodec";
-import { defaultPreferences, type Preferences, type ProjectOpenMetrics } from "@/core/types";
+import {
+  defaultPreferences,
+  type Preferences,
+  type ProjectOpenMetrics,
+  type ProjectPreferences,
+} from "@/core/types";
 import { normalizePreferences } from "@/platform/database";
 import { bridge } from "./runtimeStoreBridgeMock";
 
@@ -95,6 +100,9 @@ export function installRuntimeStoreTestHarness(): void {
       scripts: ["ERB/events/day.erb"],
     });
     bridge.savePreferences.mockImplementation(async (value: Preferences) => value);
+    bridge.currentProjectPreferences.mockReturnValue(undefined);
+    bridge.saveProjectPreferences.mockImplementation(async (value: ProjectPreferences) => value);
+    bridge.projectPreferencesWritable.mockReturnValue(true);
     bridge.projectConfigurationWritable.mockReturnValue(true);
     bridge.writeProjectConfiguration.mockResolvedValue(undefined);
     bridge.applyProjectConfiguration.mockResolvedValue(undefined);
@@ -383,6 +391,8 @@ export function configurationEntry(code: string, value: string) {
     english: code === "FontSize" ? "Font size" : code,
     value,
     effective_value: value,
+    preference_eligible: true,
+    client_effective_value: value,
     default_value: code === "FontSize" ? "18" : value,
     application: "hot",
     kind: "integer",

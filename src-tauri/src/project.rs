@@ -303,10 +303,20 @@ impl ProjectHost {
         Self::scan_quick_with_progress(root, revision, None)
     }
 
+    #[cfg(test)]
     pub fn scan_quick_with_progress(
         root: &Path,
         revision: u64,
         progress: Option<&dyn Fn(usize, usize)>,
+    ) -> Result<Self, String> {
+        Self::scan_quick_with_progress_and_trust(root, revision, progress, true)
+    }
+
+    pub fn scan_quick_with_progress_and_trust(
+        root: &Path,
+        revision: u64,
+        progress: Option<&dyn Fn(usize, usize)>,
+        trust_source_index: bool,
     ) -> Result<Self, String> {
         if let Some(progress) = progress {
             progress(0, 0);
@@ -317,13 +327,16 @@ impl ProjectHost {
         if !root.is_dir() {
             return Err("selected project path is not a directory".into());
         }
-        retry_stable_scan(|| Self::scan_quick_once(root.clone(), revision, progress))
+        retry_stable_scan(|| {
+            Self::scan_quick_once(root.clone(), revision, progress, trust_source_index)
+        })
     }
 
     fn scan_quick_once(
         root: PathBuf,
         revision: u64,
         progress: Option<&dyn Fn(usize, usize)>,
+        trust_source_index: bool,
     ) -> Result<Self, String> {
         type IndexedScanResult = (IndexedFile, SourceIndexEntry);
 
@@ -332,7 +345,9 @@ impl ProjectHost {
             .ok()
             .and_then(|bytes| serde_json::from_slice::<SourceIndex>(&bytes).ok())
             .filter(|index| matches!(index.version, 1 | SOURCE_INDEX_VERSION));
-        let previous = stored_index
+        let previous = trust_source_index
+            .then_some(stored_index.as_ref())
+            .flatten()
             .as_ref()
             .map(|index| &index.files)
             .cloned()

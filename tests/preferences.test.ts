@@ -8,7 +8,7 @@ describe("preference normalization", () => {
     expect(defaultPreferences().fontSizeOverridePx).toBeNull();
     expect(
       normalizePreferences({ ...defaultPreferences(), fontSizeOverridePx: null }),
-    ).toMatchObject({ fontSizeOverridePx: null, schemaVersion: 4 });
+    ).toMatchObject({ fontSizeOverridePx: null, schemaVersion: 5, settings: {} });
   });
 
   it("clamps every user-controlled numeric projection", () => {
@@ -21,9 +21,10 @@ describe("preference normalization", () => {
         masterVolume: -1,
       }),
     ).toEqual({
-      schemaVersion: 4,
+      schemaVersion: 5,
+      settings: { FontSize: "72" },
       fontFamilyOverride: null,
-      fontSizeOverridePx: 72,
+      fontSizeOverridePx: null,
       imageScale: 4,
       masterVolume: 0,
       trustProjectFileMetadata: false,
@@ -43,7 +44,8 @@ describe("preference normalization", () => {
           masterVolume: 0.4,
         }),
       ).toEqual({
-        schemaVersion: 4,
+        schemaVersion: 5,
+        settings: {},
         fontFamilyOverride: null,
         fontSizeOverridePx: null,
         imageScale: 1.75,
@@ -53,7 +55,7 @@ describe("preference normalization", () => {
     },
   );
 
-  it("preserves explicit schema 3 accessibility overrides and clamps their size", () => {
+  it("migrates schema 3 accessibility overrides into sparse mapped settings", () => {
     expect(
       normalizePreferences({
         ...defaultPreferences(),
@@ -64,9 +66,10 @@ describe("preference normalization", () => {
         masterVolume: 0.5,
       }),
     ).toEqual({
-      schemaVersion: 4,
-      fontFamilyOverride: "Accessible Font",
-      fontSizeOverridePx: 72,
+      schemaVersion: 5,
+      settings: { FontName: "Accessible Font", FontSize: "72" },
+      fontFamilyOverride: null,
+      fontSizeOverridePx: null,
       imageScale: 2,
       masterVolume: 0.5,
       trustProjectFileMetadata: false,
@@ -76,13 +79,13 @@ describe("preference normalization", () => {
   it("enables metadata trust only for an explicit schema 4 preference", () => {
     expect(
       normalizePreferences({ ...defaultPreferences(), trustProjectFileMetadata: true }),
-    ).toMatchObject({ schemaVersion: 4, trustProjectFileMetadata: true });
+    ).toMatchObject({ schemaVersion: 5, trustProjectFileMetadata: true });
     expect(
       normalizePreferences({
         ...defaultPreferences(),
         schemaVersion: 3,
         trustProjectFileMetadata: true,
       }),
-    ).toMatchObject({ schemaVersion: 4, trustProjectFileMetadata: false });
+    ).toMatchObject({ schemaVersion: 5, trustProjectFileMetadata: false });
   });
 });

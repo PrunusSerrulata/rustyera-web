@@ -11,7 +11,8 @@ import GameProgressLossDialog from "@/components/GameProgressLossDialog.vue";
 import GameViewport from "@/components/GameViewport.vue";
 import LogDialog from "@/components/LogDialog.vue";
 import OpenProjectDialog from "@/components/OpenProjectDialog.vue";
-import PreferencesDialog from "@/components/PreferencesDialog.vue";
+import ProjectSettingsDialog from "@/components/ProjectSettingsDialog.vue";
+import ClientPreferencesDialog from "@/components/ClientPreferencesDialog.vue";
 import ProjectReloadDialog from "@/components/ProjectReloadDialog.vue";
 import TraditionalSaveDialog from "@/components/TraditionalSaveDialog.vue";
 import { useRuntimeStore } from "@/stores/runtime";
@@ -111,9 +112,8 @@ onMounted(() => void store.initialize());
       </form>
     </template>
 
-    <PreferencesDialog
-      :open="store.preferencesOpen"
-      :value="store.preferences"
+    <ProjectSettingsDialog
+      :open="store.projectSettingsOpen"
       :font-families="store.availableFontFamilies"
       :font-access-status="store.fontAccessStatus"
       :font-access-error="store.fontAccessError"
@@ -125,10 +125,21 @@ onMounted(() => void store.initialize());
       :configuration-session-only="store.configurationSessionOnly"
       :restart-pending="store.configurationRestartPending"
       :busy="store.settingsBusy"
-      :error="store.settingsError"
-      @close="store.preferencesOpen = false"
+      :error="store.projectSettingsError"
+      @close="store.projectSettingsOpen = false"
       @request-fonts="store.requestSystemFonts"
-      @save="store.savePreferences"
+      @save="store.saveProjectSettings"
+    />
+    <ClientPreferencesDialog
+      :open="store.preferencesOpen"
+      :global-value="store.preferences"
+      :project-value="store.projectPreferences"
+      :entries="store.configurationEntries"
+      :project-writable="store.projectPreferencesWritable"
+      :busy="store.settingsBusy"
+      :error="store.preferencesError"
+      @close="store.preferencesOpen = false"
+      @save="store.saveClientPreferences"
     />
     <OpenProjectDialog
       :open="store.openProjectConfirmationOpen"

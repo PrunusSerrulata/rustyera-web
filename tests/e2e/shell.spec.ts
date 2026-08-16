@@ -6,7 +6,7 @@ test("shared shell exposes menus and the unified settings dialog", async ({ page
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "RustyEra" })).toBeVisible();
   await page.getByRole("button", { name: "文件", exact: true }).click();
-  await expect(page.getByRole("button", { name: "设置…" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "项目设置…" })).toBeDisabled();
   await page.getByRole("button", { name: "文件", exact: true }).click();
 
   await page.getByRole("button", { name: "调试", exact: true }).click();

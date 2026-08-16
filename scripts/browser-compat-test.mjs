@@ -375,9 +375,9 @@ try {
       }
     }
     await clickButton("文件");
-    await clickButton("设置…");
+    await clickButton("项目设置…");
     compatibilityStage = "checking font settings";
-    const settingsDialog = await browser.$("section[aria-label='RustyEra Web · 设置']");
+    const settingsDialog = await browser.$("section[aria-label='RustyEra Web · 项目设置']");
     await settingsDialog.waitForDisplayed({ timeout: 30_000 });
     await clickButton("显示");
     const gameFont = await settingsDialog.$("#setting-FontName");
@@ -432,7 +432,8 @@ try {
       await settingsDialog.$("#setting-FontSize").setValue("19");
       await clickButton("应用");
       await browser.waitUntil(
-        () => browser.execute(() => window.__RUSTYERA_TEST__?.snapshot().status === "设置已应用"),
+        () =>
+          browser.execute(() => window.__RUSTYERA_TEST__?.snapshot().status === "项目设置已应用"),
         {
           timeout: 20_000,
           interval: 100,

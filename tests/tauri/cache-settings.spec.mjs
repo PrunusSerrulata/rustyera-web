@@ -31,8 +31,8 @@ cacheSettings("Tauri cache-hit project settings", () => {
     });
 
     await driver.$("button=文件").click();
-    await driver.$("button=设置…").click();
-    const dialog = await driver.$(".dialog-panel[aria-label='RustyEra Tauri · 设置']");
+    await driver.$("button=项目设置…").click();
+    const dialog = await driver.$(".dialog-panel[aria-label='RustyEra Tauri · 项目设置']");
     await dialog.waitForDisplayed();
     await dialog.$("button=显示").click();
     const fontSize = await dialog.$("#setting-FontSize");
@@ -42,7 +42,7 @@ cacheSettings("Tauri cache-hit project settings", () => {
     await dialog.$("button=应用").click();
 
     await driver.waitUntil(
-      async () => ["设置已应用", "游戏运行中"].includes((await snapshot())?.status),
+      async () => ["项目设置已应用", "游戏运行中"].includes((await snapshot())?.status),
       {
         timeout: 4_000,
         interval: 100,

@@ -30,8 +30,8 @@ projectConfiguration("Tauri project-file configuration", () => {
     await waitForInteractiveProject();
 
     await $("button=文件").click();
-    await $("button=设置…").click();
-    const dialog = await $(".dialog-panel[aria-label='RustyEra Tauri · 设置']");
+    await $("button=项目设置…").click();
+    const dialog = await $(".dialog-panel[aria-label='RustyEra Tauri · 项目设置']");
     await dialog.waitForDisplayed();
     assert.doesNotMatch(await dialog.getText(), /仅对当前会话有效.*退出游戏后将丢失/s);
     await dialog.$("button=交互与输出").click();
@@ -78,8 +78,8 @@ projectConfiguration("Tauri project-file configuration", () => {
     });
 
     await $("button=文件").click();
-    await $("button=设置…").click();
-    const reopened = await $(".dialog-panel[aria-label='RustyEra Tauri · 设置']");
+    await $("button=项目设置…").click();
+    const reopened = await $(".dialog-panel[aria-label='RustyEra Tauri · 项目设置']");
     await reopened.waitForDisplayed();
     await reopened.$("button=交互与输出").click();
     assert.equal(await reopened.$("#setting-AudioVolume").getValue(), "42");

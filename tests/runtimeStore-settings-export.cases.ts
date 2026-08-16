@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   installRuntimeStoreTestHarness,
   blake3,
-  defaultPreferences,
   emptyBatch,
   mockProjectSelection,
   normalizePreferences,
@@ -19,34 +18,43 @@ describe("runtime store settings-export", () => {
 
   it("continues loading when the host cannot apply a native window setting", async () => {
     bridge.applyProjectConfiguration.mockRejectedValueOnce(new Error("window unavailable"));
+    const configuration = {
+      project_revision: 1,
+      source_digest: new Uint8Array(32).fill(1),
+      entries: [
+        {
+          code: "SizableWindow",
+          japanese: "",
+          english: "Resizable window",
+          value: "YES",
+          effective_value: "YES",
+          preference_eligible: false,
+          client_effective_value: "YES",
+          kind: "boolean",
+          allowed: [],
+          fixed: false,
+          applicability: 8,
+        },
+      ],
+    };
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
       events: [
         runtimeEvent("project_load_report", {
           success: true,
           diagnostics: [],
-          configuration: {
-            project_revision: 1,
-            source_digest: new Uint8Array(32).fill(1),
-            entries: [
-              {
-                code: "SizableWindow",
-                japanese: "",
-                english: "Resizable window",
-                value: "YES",
-                kind: "boolean",
-                allowed: [],
-                fixed: false,
-                applicability: 8,
-              },
-            ],
-          },
+          configuration,
         }),
       ],
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("client_preferences_applied", { configuration }, 1)],
     });
     const store = useRuntimeStore();
 
     await expect(store.enableDebug()).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(16);
 
     expect(store.fault).toBeNull();
     expect(store.status).toBe("项目加载完成，正在启动游戏…");
@@ -60,18 +68,26 @@ describe("runtime store settings-export", () => {
         finishHostConfiguration = resolve;
       }),
     );
+    const report = projectConfigurationReport(2, 3, "18");
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
-      events: [runtimeEvent("project_load_report", projectConfigurationReport(2, 3, "18"))],
+      events: [runtimeEvent("project_load_report", report)],
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("client_preferences_applied", { configuration: report.configuration }, 1),
+      ],
     });
     const store = useRuntimeStore();
     store.projectLoading = true;
 
     const loading = store.enableDebug();
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(16);
     expect(store.projectLoading).toBe(true);
     finishHostConfiguration();
     await loading;
+    await vi.advanceTimersByTimeAsync(16);
 
     expect(store.projectLoading).toBe(false);
     expect(store.status).toBe("项目加载完成，正在启动游戏…");
@@ -97,35 +113,44 @@ describe("runtime store settings-export", () => {
   ])("$label", async ({ diagnostics, requestsCompiledCache }) => {
     let messageId = 20;
     bridge.submitRuntime.mockImplementation(async () => messageId++);
+    const configuration = {
+      project_revision: 3,
+      source_digest: new Uint8Array(32).fill(7),
+      entries: [
+        {
+          code: "FontSize",
+          japanese: "フォントサイズ",
+          english: "Font size",
+          value: "12",
+          effective_value: "12",
+          preference_eligible: true,
+          client_effective_value: "12",
+          kind: "integer",
+          allowed: [],
+          fixed: false,
+          applicability: 8,
+        },
+      ],
+    };
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
       events: [
         runtimeEvent("project_load_report", {
           success: true,
           diagnostics,
-          configuration: {
-            project_revision: 3,
-            source_digest: new Uint8Array(32).fill(7),
-            entries: [
-              {
-                code: "FontSize",
-                japanese: "フォントサイズ",
-                english: "Font size",
-                value: "12",
-                kind: "integer",
-                allowed: [],
-                fixed: false,
-                applicability: 8,
-              },
-            ],
-          },
+          configuration,
         }),
       ],
     });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("client_preferences_applied", { configuration }, 20)],
+    });
     const store = useRuntimeStore();
     await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(16);
     store.projectOpen = true;
-    const saving = store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "18" }]);
+    const saving = store.saveProjectSettings([{ code: "FontSize", value: "18" }]);
     await Promise.resolve();
     bridge.pump
       .mockResolvedValueOnce({
@@ -140,7 +165,7 @@ describe("runtime store settings-export", () => {
               restart_required: false,
               prepared_source_digest: blake3(new TextEncoder().encode("[text]\nfont_size = 18\n")),
             },
-            21,
+            22,
           ),
         ],
       })
@@ -172,7 +197,7 @@ describe("runtime store settings-export", () => {
                 ],
               },
             },
-            22,
+            23,
           ),
         ],
       });
@@ -188,7 +213,7 @@ describe("runtime store settings-export", () => {
     expect(bridge.submitRuntime).toHaveBeenCalledWith(
       {
         type: "finalize_configuration_update",
-        value: { preparation_message_id: 21, outcome: "commit" },
+        value: { preparation_message_id: 22, outcome: "commit" },
       },
       undefined,
     );
@@ -200,7 +225,7 @@ describe("runtime store settings-export", () => {
           (message as { value?: { kind?: string } }).value?.kind === "compiled_project_cache",
       ),
     ).toBe(requestsCompiledCache);
-    expect(store.status).toBe("设置已应用");
+    expect(store.status).toBe("项目设置已应用");
     expect(
       store.logs.some((entry) => entry.message.includes("runtime.compiled_cache_failed")),
     ).toBe(false);
@@ -248,9 +273,7 @@ describe("runtime store settings-export", () => {
       await vi.advanceTimersByTimeAsync(16);
 
       const secondContents = "[text]\nfont_size = 20\n";
-      const savingAgain = store.savePreferences(defaultPreferences(), [
-        { code: "FontSize", value: "20" },
-      ]);
+      const savingAgain = store.saveProjectSettings([{ code: "FontSize", value: "20" }]);
       await Promise.resolve();
       const secondPrepareMessageId = messageId - 1;
       bridge.pump.mockResolvedValueOnce({
@@ -376,7 +399,7 @@ describe("runtime store settings-export", () => {
       masterVolume: 0.75,
     });
     expect(migrated).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
       fontFamilyOverride: null,
       fontSizeOverridePx: null,
       imageScale: 1.5,
@@ -409,7 +432,7 @@ describe("runtime store settings-export", () => {
     let messageId = 70;
     bridge.submitRuntime.mockReset();
     bridge.submitRuntime.mockImplementation(async () => messageId++);
-    const saving = store.savePreferences(migrated, [
+    const saving = store.saveProjectSettings([
       { code: "FontName", value: "New Project Font" },
       { code: "FontSize", value: "20" },
     ]);
@@ -457,7 +480,6 @@ describe("runtime store settings-export", () => {
     await vi.advanceTimersByTimeAsync(64);
     await saving;
 
-    expect(bridge.savePreferences).toHaveBeenCalledWith(migrated);
     expect(bridge.applyProjectConfiguration).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({ code: "FontName", effective_value: "New Project Font" }),
@@ -498,7 +520,7 @@ describe("runtime store settings-export", () => {
     expect(store.configurationSessionOnly).toBe(true);
     expect(store.projectSource).toBe("file");
 
-    const saving = store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "18" }]);
+    const saving = store.saveProjectSettings([{ code: "FontSize", value: "18" }]);
     await Promise.resolve();
     const contents = "[text]\nfont_size = 18\n";
     bridge.pump
@@ -634,8 +656,8 @@ describe("runtime store settings-export", () => {
       { code: "FontSize", value: "18" },
       { code: "UnknownDisplaySetting", value: "1" },
     ]) {
-      await store.savePreferences(defaultPreferences(), [change]);
-      expect(store.settingsError).toContain("仅支持当前会话内即时生效的设置");
+      await store.saveProjectSettings([change]);
+      expect(store.projectSettingsError).toContain("仅支持当前会话内即时生效的设置");
     }
 
     expect(bridge.submitRuntime).not.toHaveBeenCalled();
@@ -653,7 +675,7 @@ describe("runtime store settings-export", () => {
     const store = useRuntimeStore();
     await store.enableDebug();
     bridge.applyProjectConfiguration.mockClear();
-    const saving = store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "18" }]);
+    const saving = store.saveProjectSettings([{ code: "FontSize", value: "18" }]);
     await Promise.resolve();
     const contents = "[text]\nfont_size = 18\n";
     bridge.pump
@@ -695,7 +717,7 @@ describe("runtime store settings-export", () => {
       undefined,
     );
     expect(bridge.applyProjectConfiguration).not.toHaveBeenCalled();
-    expect(store.settingsError).toContain("disk full");
+    expect(store.projectSettingsError).toContain("disk full");
   });
 
   it("clears a rejected finalization so a later save can start", async () => {
@@ -707,9 +729,7 @@ describe("runtime store settings-export", () => {
     });
     const store = useRuntimeStore();
     await store.enableDebug();
-    const firstSave = store.savePreferences(defaultPreferences(), [
-      { code: "FontSize", value: "18" },
-    ]);
+    const firstSave = store.saveProjectSettings([{ code: "FontSize", value: "18" }]);
     await Promise.resolve();
     const contents = "[text]\nfont_size = 18\n";
     bridge.pump
@@ -735,9 +755,9 @@ describe("runtime store settings-export", () => {
       });
     await vi.advanceTimersByTimeAsync(64);
     await firstSave;
-    expect(store.settingsError).toContain("finalize rejected");
+    expect(store.projectSettingsError).toContain("finalize rejected");
 
-    void store.savePreferences(defaultPreferences(), [{ code: "FontSize", value: "20" }]);
+    void store.saveProjectSettings([{ code: "FontSize", value: "20" }]);
     await Promise.resolve();
 
     const prepareCalls = bridge.submitRuntime.mock.calls.filter(

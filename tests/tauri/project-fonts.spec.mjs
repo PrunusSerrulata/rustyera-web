@@ -22,8 +22,8 @@ enabled("Tauri project fonts", () => {
     });
 
     await $("button=文件").click();
-    await $("button=设置…").click();
-    const dialog = await $(".dialog-panel[aria-label='RustyEra Tauri · 设置']");
+    await $("button=项目设置…").click();
+    const dialog = await $(".dialog-panel[aria-label='RustyEra Tauri · 项目设置']");
     await dialog.waitForDisplayed();
     await dialog.$("button=显示").click();
     const choices = await browser.execute(() =>

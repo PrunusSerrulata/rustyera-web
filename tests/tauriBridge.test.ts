@@ -369,6 +369,8 @@ describe("Tauri project restart", () => {
       applicability: 8,
       default_value: value,
       effective_value: value,
+      preference_eligible: true,
+      client_effective_value: value,
       application: "hot" as const,
     });
 
@@ -402,6 +404,8 @@ describe("Tauri project restart", () => {
       applicability: 8,
       default_value: value,
       effective_value: value,
+      preference_eligible: true,
+      client_effective_value: value,
       application: "hot" as const,
     });
 
@@ -435,6 +439,8 @@ describe("Tauri project restart", () => {
       applicability: 8,
       default_value: value,
       effective_value: value,
+      preference_eligible: true,
+      client_effective_value: value,
       application: "hot" as const,
     });
 
@@ -462,6 +468,8 @@ describe("Tauri project restart", () => {
           value: "900",
           default_value: "760",
           effective_value: "900",
+          preference_eligible: false,
+          client_effective_value: "900",
           application: "hot",
           kind: "integer",
           allowed: [],

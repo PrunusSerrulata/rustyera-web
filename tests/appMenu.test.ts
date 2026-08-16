@@ -32,7 +32,10 @@ const store = vi.hoisted(() => ({
   promptPlaceholder: "等待 Runtime…",
   inputUndo: null,
   preferencesOpen: false,
+  projectSettingsOpen: false,
   preferences: {},
+  projectPreferences: { settings: {} },
+  projectPreferencesWritable: false,
   configurationEntries: [] as unknown[],
   configurationReadOnly: false,
   useMenu: true,
@@ -84,9 +87,10 @@ const store = vi.hoisted(() => ({
   exportDiagnosis: vi.fn(),
   submitText: vi.fn(),
   undo: vi.fn(),
-  preview: vi.fn(),
-  savePreferences: vi.fn(),
+  saveProjectSettings: vi.fn(),
+  saveClientPreferences: vi.fn(),
   openPreferencesFromUser: vi.fn(),
+  openProjectSettingsFromUser: vi.fn(),
   requestSystemFonts: vi.fn(),
   cancelOpenProject: vi.fn(),
   confirmOpenProject: vi.fn(),
@@ -231,13 +235,13 @@ describe("application menus", () => {
   it("enables settings only when a project configuration is available", async () => {
     let wrapper = mountApp();
     let states = await menuStates(wrapper);
-    expect(states.get("设置…")).toBe(true);
+    expect(states.get("项目设置…")).toBe(true);
     wrapper.unmount();
 
     store.configurationEntries = [{}];
     wrapper = mountApp();
     states = await menuStates(wrapper);
-    expect(states.get("设置…")).toBe(false);
+    expect(states.get("项目设置…")).toBe(false);
     wrapper.unmount();
   });
 
@@ -246,10 +250,12 @@ describe("application menus", () => {
     const wrapper = mountApp();
 
     await wrapper.get("nav > .menu > button").trigger("click");
-    const settings = wrapper.findAll(".menu-popup button").find((item) => item.text() === "设置…");
+    const settings = wrapper
+      .findAll(".menu-popup button")
+      .find((item) => item.text() === "项目设置…");
     await settings!.trigger("click");
 
-    expect(store.openPreferencesFromUser).toHaveBeenCalledOnce();
+    expect(store.openProjectSettingsFromUser).toHaveBeenCalledOnce();
     wrapper.unmount();
   });
 
