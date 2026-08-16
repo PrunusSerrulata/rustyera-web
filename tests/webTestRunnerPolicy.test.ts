@@ -96,6 +96,19 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain(
       'assertSameFile(tuiIncrementalCache, webIncrementalCache, "incremental")',
     );
+    expect(runner).toContain("RUSTYERA_TEST_SOURCE_INDEX_INPUT");
+    expect(runner).toContain("RUSTYERA_TEST_SOURCE_INDEX_OUTPUT");
+    expect(runner).toContain('assertPortableSourceIndex(tuiIncrementalIndex, "TUI incremental")');
+    expect(runner).toContain(
+      'assertPortableSourceIndex(webIncrementalIndex, "Browser/WASM incremental")',
+    );
+    expect(runner).toContain('VITE_RUSTYERA_TEST_TRUST_METADATA: "1"');
+    expect(readFileSync(resolve("scripts/web-test.mjs"), "utf8")).toContain(
+      '"import.meta.env.VITE_RUSTYERA_TEST_TRUST_METADATA"',
+    );
+    const library = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    expect(library).toContain("stat.mtimeNs / 1_000_000n");
+    expect(library).not.toContain("lastModified: stat.mtimeMs");
   });
 
   it("provides a native-browser font hot-apply flow", () => {
@@ -182,10 +195,18 @@ describe("browser game runner progress policy", () => {
 
   it("runs the cache-hit settings regression through the native Tauri host", () => {
     const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
+    const progress = readFileSync(resolve("tests/tauri/runtime-progress.mjs"), "utf8");
     const spec = readFileSync(resolve("tests/tauri/cache-settings.spec.mjs"), "utf8");
 
     expect(runner).toContain('"cache-settings.spec.mjs"');
     expect(runner).toContain('environmentFlag: "VITE_RUSTYERA_TAURI_CACHE_SETTINGS"');
+    expect(runner).toContain("prewarmWithTui: true");
+    expect(runner).toContain("RUSTYERA_TEST_COMPILED_CACHE_OUTPUT: cacheOutput");
+    expect(runner).toContain("RUSTYERA_TEST_SOURCE_INDEX_OUTPUT: sourceIndexOutput");
+    expect(runner).toContain("RUSTYERA_TEST_PROJECT_OUTPUT: projectOutput");
+    expect(runner).toContain("__RUSTYERA_TAURI_MONITOR_OBSERVATION__");
+    expect(progress).toContain("monitoredRuntimeSnapshot(pollInterval)");
+    expect(progress).toContain("pause: monitoredSnapshot ? delay : undefined");
     expect(spec).toContain("startupTelemetry?.cacheHit === true");
     expect(spec).toContain('entry.message).includes("runtime.compiled_cache_failed")');
     expect(spec).toContain('state.status, "游戏运行中"');

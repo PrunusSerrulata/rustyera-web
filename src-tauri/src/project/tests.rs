@@ -2,6 +2,51 @@ use std::cell::RefCell;
 
 use super::*;
 
+#[test]
+#[ignore = "invoked by the cross-frontend cache handoff scenario"]
+fn cross_frontend_source_index_handoff_driver() {
+    let project = PathBuf::from(
+        std::env::var_os("RUSTYERA_TEST_TAURI_SOURCE_INDEX_PROJECT")
+            .expect("handoff project path is required"),
+    );
+    let output = PathBuf::from(
+        std::env::var_os("RUSTYERA_TEST_TAURI_SOURCE_INDEX_OUTPUT")
+            .expect("handoff source-index output path is required"),
+    );
+    let relative_path = std::env::var("RUSTYERA_TEST_TAURI_EDIT_PATH")
+        .expect("handoff source edit path is required");
+    let expected = std::env::var("RUSTYERA_TEST_TAURI_EDIT_EXPECTED")
+        .expect("handoff source edit expected text is required");
+    let replacement = std::env::var("RUSTYERA_TEST_TAURI_EDIT_REPLACEMENT")
+        .expect("handoff source edit replacement text is required");
+
+    let warm = ProjectHost::scan_quick(&project, 1).expect("Tauri accepts the producer index");
+    let (reused, hashed) = warm.source_index_stats();
+    assert!(
+        reused > 0,
+        "Tauri must reuse the cross-frontend source index"
+    );
+    assert_eq!(hashed, 0, "a matching producer index must avoid rehashing");
+
+    let source = project.join(relative_path);
+    let contents = fs::read_to_string(&source).expect("handoff edit source is readable");
+    assert_eq!(
+        contents.matches(&expected).count(),
+        1,
+        "handoff edit marker must occur exactly once"
+    );
+    fs::write(&source, contents.replacen(&expected, &replacement, 1))
+        .expect("handoff edit source is writable");
+
+    let updated = ProjectHost::scan_quick(&project, 2).expect("Tauri updates the source index");
+    assert_eq!(updated.source_index_stats(), (reused - 1, 1));
+    let repeated = ProjectHost::scan_quick(&project, 3).expect("Tauri reuses its updated index");
+    assert_eq!(repeated.source_index_stats(), (reused, 0));
+
+    fs::copy(project.join(".rustyera/cache/source-index-v1.json"), output)
+        .expect("Tauri source index is exported");
+}
+
 fn png_header(width: u32, height: u32) -> [u8; 24] {
     let mut bytes = [0_u8; 24];
     bytes[..16].copy_from_slice(&[
@@ -450,6 +495,41 @@ fn complete_index_reuses_all_files_and_partial_change_hashes_only_one() {
     fs::write(&second, "@B\nPRINTL CHANGED\nRETURN\n").unwrap();
     let partial = ProjectHost::scan_quick(directory.path(), 1).unwrap();
     assert_eq!(partial.source_index_stats(), (1, 1));
+}
+
+#[test]
+fn browser_index_migrates_to_portable_schema_and_keeps_incremental_reuse() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("main.erb");
+    fs::write(&source, "@MAIN\nRETURN\n").unwrap();
+    ProjectHost::scan_quick(directory.path(), 1).unwrap();
+    let index_path = directory
+        .path()
+        .join(".rustyera/cache/source-index-v1.json");
+    let mut browser_index: serde_json::Value =
+        serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
+    browser_index["version"] = 2.into();
+    browser_index["files"]["main.erb"]["category"] = "erb".into();
+    fs::write(&index_path, serde_json::to_vec(&browser_index).unwrap()).unwrap();
+
+    let migrated = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+
+    assert_eq!(migrated.source_index_stats(), (1, 0));
+    let canonical: serde_json::Value =
+        serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
+    assert_eq!(canonical["version"], SOURCE_INDEX_VERSION);
+    assert_eq!(
+        canonical["files"]["main.erb"]["category"],
+        serde_json::json!(FileCategory::Erb as u8)
+    );
+    assert!(canonical["files"]["main.erb"]["signature"].is_string());
+
+    fs::write(&source, "@MAIN\nPRINTL CHANGED\nRETURN\n").unwrap();
+    let updated = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+    let repeated = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+
+    assert_eq!(updated.source_index_stats(), (0, 1));
+    assert_eq!(repeated.source_index_stats(), (1, 0));
 }
 
 #[test]

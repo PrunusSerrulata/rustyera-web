@@ -1,4 +1,4 @@
-import { access, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { TextEncoder } from "node:util";
@@ -250,10 +250,30 @@ describe("web game test scenario", () => {
     const project = path.join(root, "project");
     await mkdir(project);
     await writeFile(path.join(project, "game.ERB"), "@SYSTEM_TITLE\nRETURN\n");
+    const source = await stat(path.join(project, "game.ERB"), { bigint: true });
+    const portableMtime = 1_700_000_000_123;
     const incoming = path.join(root, "tui.reracache");
+    const incomingIndex = path.join(root, "tui-source-index.json");
     await writeFile(incoming, "tui-cache");
+    await writeFile(
+      incomingIndex,
+      JSON.stringify({
+        version: 3,
+        files: {
+          "game.ERB": {
+            category: 2,
+            signature: `${source.size}:${portableMtime}`,
+            hash: "00".repeat(32),
+            size: Number(source.size),
+          },
+        },
+      }),
+    );
 
-    const isolated = await isolatedProject(project, { compiledCacheInput: incoming });
+    const isolated = await isolatedProject(project, {
+      compiledCacheInput: incoming,
+      sourceIndexInput: incomingIndex,
+    });
 
     await expect(
       readFile(
@@ -261,6 +281,11 @@ describe("web game test scenario", () => {
         "utf8",
       ),
     ).resolves.toBe("tui-cache");
+    await expect(
+      readFile(path.join(isolated.project, ".rustyera", "cache", "source-index-v1.json"), "utf8"),
+    ).resolves.toContain('"version":3');
+    const installedSource = await stat(path.join(isolated.project, "game.ERB"), { bigint: true });
+    expect(installedSource.mtimeNs / 1_000_000n).toBe(BigInt(portableMtime));
     await isolated.close();
   });
 
@@ -275,19 +300,26 @@ describe("web game test scenario", () => {
       path.join(isolated, ".rustyera", "cache", "compiled-project.reracache"),
       "cache",
     );
+    await writeFile(
+      path.join(isolated, ".rustyera", "cache", "source-index-v1.json"),
+      '{"version":3,"files":{}}',
+    );
     const cacheOutput = path.join(root, "cache.reracache");
+    const sourceIndexOutput = path.join(root, "source-index.json");
     const projectOutput = path.join(root, "project-output");
 
     await publishCrossHostArtifacts({
       source,
       isolated,
       cacheOutput,
+      sourceIndexOutput,
       projectOutput,
       succeeded: true,
       cacheSaved: true,
     });
 
     await expect(readFile(cacheOutput, "utf8")).resolves.toBe("cache");
+    await expect(readFile(sourceIndexOutput, "utf8")).resolves.toContain('"version":3');
     await expect(readFile(path.join(projectOutput, "main.erb"), "utf8")).resolves.toContain(
       "SYSTEM_TITLE",
     );

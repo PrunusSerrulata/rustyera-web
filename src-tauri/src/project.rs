@@ -18,7 +18,7 @@ use era_runtime_protocol::{
 };
 
 const PROJECT_CONFIGURATION_UPDATE_HEADROOM: usize = 1024 * 1024;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use unicode_normalization::UnicodeNormalization;
 use walkdir::{DirEntry, WalkDir};
 
@@ -28,7 +28,9 @@ const RESOURCE_SUFFIXES: &[&str] = &[
 const IMAGE_SUFFIXES: &[&str] = &["bmp", "gif", "jpeg", "jpg", "png", "webp"];
 const AUDIO_SUFFIXES: &[&str] = &["wav", "mp3", "ogg", "opus", "aac", "m4a", "flac"];
 const FONT_SUFFIXES: &[&str] = &["otf", "ttc", "ttf", "woff", "woff2"];
-const SOURCE_INDEX_VERSION: u32 = 2;
+const SOURCE_INDEX_VERSION: u32 = 3;
+// v3 uses the browser-common size/mtime-ms signature and is only trusted when the
+// caller's project-file-metadata policy permits stat-based source indexing.
 const COMPILED_CACHE_NAME: &str = "compiled-project.reracache";
 const STABLE_SCAN_ATTEMPTS: usize = 3;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(34);
@@ -58,12 +60,74 @@ struct SourceIndex {
 
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 struct SourceIndexEntry {
+    #[serde(deserialize_with = "deserialize_source_index_category")]
     category: u8,
-    signature: [u64; 5],
+    #[serde(deserialize_with = "deserialize_source_index_signature")]
+    signature: String,
     hash: String,
     size: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "imageMetadata",
+        skip_serializing_if = "Option::is_none"
+    )]
     image_metadata: Option<IndexedImageMetadata>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredSourceIndexCategory {
+    Code(u8),
+    Name(String),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredSourceIndexSignature {
+    Portable(String),
+    Native([u64; 5]),
+}
+
+fn deserialize_source_index_category<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let stored = StoredSourceIndexCategory::deserialize(deserializer)?;
+    match stored {
+        StoredSourceIndexCategory::Code(code) if code <= FileCategory::Configuration as u8 => {
+            Ok(code)
+        }
+        StoredSourceIndexCategory::Name(name) => match name.as_str() {
+            "csv" => Ok(FileCategory::Csv as u8),
+            "erh" => Ok(FileCategory::Erh as u8),
+            "erb" => Ok(FileCategory::Erb as u8),
+            "resource_manifest" => Ok(FileCategory::ResourceManifest as u8),
+            "resource" => Ok(FileCategory::Resource as u8),
+            "configuration" => Ok(FileCategory::Configuration as u8),
+            _ => Err(serde::de::Error::custom(
+                "unknown project source-index category",
+            )),
+        },
+        StoredSourceIndexCategory::Code(_) => Err(serde::de::Error::custom(
+            "invalid project source-index category",
+        )),
+    }
+}
+
+fn deserialize_source_index_signature<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(
+        match StoredSourceIndexSignature::deserialize(deserializer)? {
+            StoredSourceIndexSignature::Portable(signature) => signature,
+            StoredSourceIndexSignature::Native(signature) => portable_source_signature(signature),
+        },
+    )
+}
+
+fn portable_source_signature(signature: [u64; 5]) -> String {
+    format!("{}:{}", signature[0], signature[1] / 1_000_000)
 }
 
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -344,7 +408,10 @@ impl ProjectHost {
         let stored_index = fs::read(&index_path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<SourceIndex>(&bytes).ok())
-            .filter(|index| matches!(index.version, 1 | SOURCE_INDEX_VERSION));
+            .filter(|index| matches!(index.version, 1 | 2 | SOURCE_INDEX_VERSION));
+        let portable_index = stored_index
+            .as_ref()
+            .is_some_and(|index| index.version == SOURCE_INDEX_VERSION);
         let previous = trust_source_index
             .then_some(stored_index.as_ref())
             .flatten()
@@ -389,7 +456,7 @@ impl ProjectHost {
         {
             return Err("project changed while it was being scanned".into());
         }
-        if stored_index.is_none() || previous != next_index {
+        if !portable_index || previous != next_index {
             write_source_index(
                 &index_path,
                 &SourceIndex {

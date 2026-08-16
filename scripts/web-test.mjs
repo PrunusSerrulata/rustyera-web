@@ -139,6 +139,8 @@ async function execute(args) {
             isolated: webProject.project,
             cacheInput: process.env.RUSTYERA_TEST_COMPILED_CACHE_INPUT,
             cacheOutput: process.env.RUSTYERA_TEST_COMPILED_CACHE_OUTPUT,
+            sourceIndexInput: process.env.RUSTYERA_TEST_SOURCE_INDEX_INPUT,
+            sourceIndexOutput: process.env.RUSTYERA_TEST_SOURCE_INDEX_OUTPUT,
             projectOutput: process.env.RUSTYERA_TEST_PROJECT_OUTPUT,
             succeeded: completedOutcome?.exitCode === 0 && runError == null,
             cacheSaved: compiledCacheSaved,
@@ -159,7 +161,12 @@ async function execute(args) {
     server = await createLoopbackViteServer({
       root: repository,
       mode: "test",
-      define: { "import.meta.env.VITE_RUSTYERA_TEST": JSON.stringify("1") },
+      define: {
+        "import.meta.env.VITE_RUSTYERA_TEST": JSON.stringify("1"),
+        "import.meta.env.VITE_RUSTYERA_TEST_TRUST_METADATA": JSON.stringify(
+          process.env.VITE_RUSTYERA_TEST_TRUST_METADATA ?? "0",
+        ),
+      },
       plugins: [
         {
           name: "rustyera-test-wasm",
@@ -401,6 +408,15 @@ async function execute(args) {
     ) {
       throw new Error(
         `cross-host compiled cache was not accepted: ${JSON.stringify(current.rust.frontend.startupTelemetry)}`,
+      );
+    }
+    if (
+      process.env.RUSTYERA_TEST_SOURCE_INDEX_INPUT &&
+      ((current.rust.frontend.startupTelemetry?.sourceIndex?.reusedFiles ?? 0) < 1 ||
+        (current.rust.frontend.startupTelemetry?.sourceIndex?.hashedFiles ?? 0) !== 0)
+    ) {
+      throw new Error(
+        `cross-host project source index was not reused: ${JSON.stringify(current.rust.frontend.startupTelemetry)}`,
       );
     }
     if (current.rust.fault) return fail("runtime_fault", 1, { fault: current.rust.fault });

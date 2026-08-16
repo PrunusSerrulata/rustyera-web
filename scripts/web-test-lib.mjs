@@ -12,6 +12,7 @@ import {
   rename,
   rm,
   stat,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -174,6 +175,7 @@ export async function isolatedProject(source, options = {}) {
   const destination = path.join(root, "project");
   await cp(source, destination, {
     recursive: true,
+    preserveTimestamps: true,
     filter: (candidate) => {
       const relative = path.relative(source, candidate);
       if (options.cleanSaves && relative.split(path.sep)[0]?.toLocaleLowerCase() === "sav")
@@ -203,8 +205,25 @@ export async function isolatedProject(source, options = {}) {
       path.resolve(options.sourceIndexInput),
       path.join(cacheDirectory, "source-index-v1.json"),
     );
+    await alignProjectTimestampsWithSourceIndex(destination, options.sourceIndexInput);
   }
   return { root, project: destination, close: () => rm(root, { recursive: true, force: true }) };
+}
+
+async function alignProjectTimestampsWithSourceIndex(project, sourceIndex) {
+  const document = JSON.parse(await readFile(path.resolve(sourceIndex), "utf8"));
+  for (const [relativePath, entry] of Object.entries(document.files ?? {})) {
+    const target = path.resolve(project, ...relativePath.split("/"));
+    if (target === project || !target.startsWith(`${project}${path.sep}`))
+      throw new Error("source-index path must stay inside the isolated project");
+    const match = /^(\d+):(\d+)$/.exec(typeof entry.signature === "string" ? entry.signature : "");
+    const metadata = await stat(target, { bigint: true });
+    if (!match || metadata.size !== BigInt(match[1]))
+      throw new Error("source-index signature does not match the isolated project");
+    const modified = Number(match[2]);
+    if (!Number.isSafeInteger(modified)) throw new Error("source-index mtime is out of range");
+    await utimes(target, Number(metadata.atimeNs) / 1_000_000_000, (modified + 0.5) / 1_000);
+  }
 }
 
 export function crossHostArtifactPaths({
@@ -212,19 +231,28 @@ export function crossHostArtifactPaths({
   isolated,
   cacheInput,
   cacheOutput,
+  sourceIndexInput,
+  sourceIndexOutput,
   projectOutput,
 }) {
   const resolvedSource = path.resolve(source);
   const resolvedIsolated = path.resolve(isolated);
   const input = cacheInput ? path.resolve(cacheInput) : undefined;
   const cache = cacheOutput ? path.resolve(cacheOutput) : undefined;
+  const sourceIndexInputPath = sourceIndexInput ? path.resolve(sourceIndexInput) : undefined;
+  const sourceIndex = sourceIndexOutput ? path.resolve(sourceIndexOutput) : undefined;
   const project = projectOutput ? path.resolve(projectOutput) : undefined;
   if (input && cache && input === cache) throw new Error("cache input and output must differ");
-  for (const target of [cache, project].filter(Boolean)) {
+  if (sourceIndexInputPath && sourceIndex && sourceIndexInputPath === sourceIndex)
+    throw new Error("source-index input and output must differ");
+  const outputs = [cache, sourceIndex, project].filter(Boolean);
+  if (new Set(outputs).size !== outputs.length)
+    throw new Error("cross-host artifact outputs must differ");
+  for (const target of outputs) {
     if (pathsOverlap(target, resolvedSource) || pathsOverlap(target, resolvedIsolated))
       throw new Error(`cross-host artifact target overlaps project state: ${target}`);
   }
-  return { input, cache, project };
+  return { input, cache, sourceIndexInput: sourceIndexInputPath, sourceIndex, project };
 }
 
 export async function publishCrossHostArtifacts({
@@ -232,6 +260,8 @@ export async function publishCrossHostArtifacts({
   isolated,
   cacheInput,
   cacheOutput,
+  sourceIndexInput,
+  sourceIndexOutput,
   projectOutput,
   succeeded,
   cacheSaved,
@@ -244,17 +274,23 @@ export async function publishCrossHostArtifacts({
     isolated,
     cacheInput,
     cacheOutput,
+    sourceIndexInput,
+    sourceIndexOutput,
     projectOutput,
   });
-  if (!targets.cache && !targets.project) return;
+  if (!targets.cache && !targets.sourceIndex && !targets.project) return;
   if (targets.cache && !cacheSaved)
     throw new Error("compiled cache output requires an observed successful cache save");
   if (targets.cache && (await pathExists(targets.cache)))
     throw new Error(`cache output target must not exist: ${targets.cache}`);
+  if (targets.sourceIndex && (await pathExists(targets.sourceIndex)))
+    throw new Error(`source-index output target must not exist: ${targets.sourceIndex}`);
   if (targets.project && (await directoryNonempty(targets.project)))
     throw new Error(`project output target must be absent or empty: ${targets.project}`);
   const targetParents = [
-    ...new Set([targets.cache, targets.project].filter(Boolean).map(path.dirname)),
+    ...new Set(
+      [targets.cache, targets.sourceIndex, targets.project].filter(Boolean).map(path.dirname),
+    ),
   ];
   if (targetParents.length > 1)
     throw new Error("cross-host cache and project outputs must share a parent directory");
@@ -267,12 +303,18 @@ export async function publishCrossHostArtifacts({
       await copyFile(cache, temporary);
       await mkdir(path.dirname(targets.cache), { recursive: true });
     }
+    if (targets.sourceIndex) {
+      const sourceIndex = path.join(isolated, ".rustyera", "cache", "source-index-v1.json");
+      await copyFile(sourceIndex, path.join(temporaryRoot, "source-index-v1.json"));
+    }
     if (targets.project) {
       const temporary = path.join(temporaryRoot, "project");
       await copyProjectSources(isolated, temporary);
     }
     if (targets.cache)
       await rename(path.join(temporaryRoot, "compiled-project.reracache"), targets.cache);
+    if (targets.sourceIndex)
+      await rename(path.join(temporaryRoot, "source-index-v1.json"), targets.sourceIndex);
     if (targets.project) {
       await rm(targets.project, { recursive: true, force: true });
       await rename(path.join(temporaryRoot, "project"), targets.project);
@@ -316,8 +358,8 @@ async function copyProjectSources(source, destination) {
     if (entry.name === ".rustyera") continue;
     const from = path.join(source, entry.name);
     const to = path.join(destination, entry.name);
-    if (entry.isDirectory()) await cp(from, to, { recursive: true });
-    else if (entry.isFile()) await copyFile(from, to);
+    if (entry.isDirectory()) await cp(from, to, { recursive: true, preserveTimestamps: true });
+    else if (entry.isFile()) await cp(from, to, { preserveTimestamps: true });
   }
 }
 
@@ -358,8 +400,11 @@ export async function installRemoteFileSystem(page, root) {
       }));
     }
     if (request.op === "stat") {
-      const stat = await lstat(target);
-      return { size: stat.size, lastModified: stat.mtimeMs };
+      const stat = await lstat(target, { bigint: true });
+      return {
+        size: Number(stat.size),
+        lastModified: Number(stat.mtimeNs / 1_000_000n),
+      };
     }
     if (request.op === "mkdir") return mkdir(target, { recursive: true }).then(() => true);
     if (request.op === "write") {

@@ -546,6 +546,25 @@ pub(super) fn retry_stable_scan<T>(
     Err("project changed repeatedly while it was being scanned".into())
 }
 
+fn reused_source_index_entry(
+    previous: &BTreeMap<String, SourceIndexEntry>,
+    relative_path: &str,
+    category: FileCategory,
+    signature: [u64; 5],
+) -> Option<([u8; 32], u64, Option<IndexedImageMetadata>)> {
+    previous
+        .get(relative_path)
+        .filter(|prior| {
+            prior.signature == portable_source_signature(signature)
+                && prior.category == category as u8
+        })
+        .and_then(|prior| {
+            decode_hash(&prior.hash)
+                .ok()
+                .map(|hash| (hash, prior.size, prior.image_metadata.clone()))
+        })
+}
+
 pub(super) fn scan_indexed_entry(
     root: &Path,
     path: &Path,
@@ -556,14 +575,7 @@ pub(super) fn scan_indexed_entry(
     let metadata =
         fs::metadata(path).map_err(|error| format!("cannot stat {relative_path}: {error}"))?;
     let signature = metadata_signature(&metadata);
-    let prior = previous
-        .get(&relative_path)
-        .filter(|prior| prior.signature == signature && prior.category == category as u8)
-        .and_then(|prior| {
-            decode_hash(&prior.hash)
-                .ok()
-                .map(|hash| (hash, prior.size, prior.image_metadata.clone()))
-        });
+    let prior = reused_source_index_entry(previous, &relative_path, category, signature);
     let (content_hash, size, pending_file, signature, index_reused) =
         if let Some((hash, size, metadata)) = prior {
             let mut image_metadata = metadata.and_then(IndexedImageMetadata::into_protocol);
@@ -644,7 +656,7 @@ pub(super) fn scan_indexed_entry(
         },
         SourceIndexEntry {
             category: category as u8,
-            signature,
+            signature: portable_source_signature(signature),
             hash: encode_hash(&content_hash),
             size,
             image_metadata,

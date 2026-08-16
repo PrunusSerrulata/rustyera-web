@@ -22,6 +22,8 @@ const repository = fileURLToPath(new URL("..", import.meta.url));
 const taskDeadline = Date.now() + 60 * 60 * 1_000;
 let activeStage = "parsing arguments";
 let lastCompleteSnapshot;
+const monitorObservation = { sequence: 0, runtime: undefined };
+globalThis.__RUSTYERA_TAURI_MONITOR_OBSERVATION__ = monitorObservation;
 const arguments_ = process.argv.slice(2);
 const projectIndex = arguments_.indexOf("--project");
 const specIndex = arguments_.indexOf("--spec");
@@ -48,6 +50,7 @@ const specProfiles = {
   "cache-settings.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_CACHE_SETTINGS",
     copyProject: true,
+    prewarmWithTui: true,
   },
   "hot-reload.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_HOT_RELOAD",
@@ -134,6 +137,7 @@ if (specProfile?.copyProject) {
   }
   console.log(JSON.stringify({ type: "test-project-copy", source: project, project: projectCopy }));
   project = projectCopy;
+  if (specProfile.prewarmWithTui) project = await prewarmTuiCache(project, runDirectory);
 }
 
 const environment = {
@@ -222,6 +226,8 @@ try {
     output(message) {
       const report = JSON.parse(message);
       lastCompleteSnapshot = { document: report.document, runtime: report.runtime };
+      monitorObservation.sequence += 1;
+      monitorObservation.runtime = report.runtime;
       console.log(message);
     },
   });
@@ -272,14 +278,84 @@ try {
 }
 if (runError ?? finalizationError) throw runError ?? finalizationError;
 
-function run(command, args, env, deadline, describeDeadline) {
+async function prewarmTuiCache(sourceProject, runDirectory) {
+  const scenario = path.join(runDirectory, "tui-cache-prewarm.json");
+  const cacheOutput = path.join(runDirectory, "tui-cache-prewarm.reracache");
+  const sourceIndexOutput = path.join(runDirectory, "tui-source-index-prewarm.json");
+  const projectOutput = path.join(runDirectory, "tui-prewarmed-project");
+  const runtimeLibrary =
+    process.env.ERA_RUNTIME_LIBRARY ??
+    path.resolve(
+      repository,
+      "../target/release",
+      process.platform === "win32"
+        ? "era_runtime_capi.dll"
+        : process.platform === "darwin"
+          ? "libera_runtime_capi.dylib"
+          : "libera_runtime_capi.so",
+    );
+  await access(runtimeLibrary);
+  await writeFile(
+    scenario,
+    JSON.stringify({
+      schema_version: 1,
+      project: sourceProject,
+      mode: "fixed",
+      seed: 123_456,
+      limits: { max_steps: 10, timeout_seconds: 300 },
+    }),
+  );
+  activeStage = "prewarming a TUI cache for the Tauri cache-hit spec";
+  await run(
+    "uv",
+    [
+      "run",
+      "rustyera-test",
+      "serve",
+      "--scenario",
+      scenario,
+      "--project",
+      sourceProject,
+      "--runtime-library",
+      runtimeLibrary,
+    ],
+    {
+      ...process.env,
+      RUSTYERA_TEST_COMPILED_CACHE_OUTPUT: cacheOutput,
+      RUSTYERA_TEST_SOURCE_INDEX_OUTPUT: sourceIndexOutput,
+      RUSTYERA_TEST_PROJECT_OUTPUT: projectOutput,
+    },
+    taskDeadline,
+    () => deadlineDiagnostic(),
+    {
+      cwd: path.resolve(repository, "../rustyera-tui"),
+      input: `${JSON.stringify({ op: "wait_status", text: "项目缓存已保存。" })}\n${JSON.stringify({ op: "stop" })}\n`,
+    },
+  );
+  const cacheDirectory = path.join(projectOutput, ".rustyera", "cache");
+  await mkdir(cacheDirectory, { recursive: true });
+  await cp(cacheOutput, path.join(cacheDirectory, "compiled-project.reracache"));
+  await cp(sourceIndexOutput, path.join(cacheDirectory, "source-index-v1.json"));
+  console.log(
+    JSON.stringify({
+      type: "tauri-cache-prewarm",
+      source: sourceProject,
+      project: projectOutput,
+      runtimeLibrary,
+    }),
+  );
+  return projectOutput;
+}
+
+function run(command, args, env, deadline, describeDeadline, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
-      cwd: repository,
+      cwd: options.cwd ?? repository,
       env,
-      stdio: "inherit",
+      stdio: options.input == null ? "inherit" : ["pipe", "inherit", "inherit"],
       detached: process.platform !== "win32",
     });
+    if (options.input != null) child.stdin.end(options.input);
     const remaining = deadline - Date.now();
     let settled = false;
     const settle = (callback) => {

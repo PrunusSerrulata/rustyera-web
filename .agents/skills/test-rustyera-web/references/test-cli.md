@@ -140,8 +140,10 @@ An action has `type`:
 
 For cross-host cache handoff, set `RUSTYERA_TEST_COMPILED_CACHE_INPUT` and
 `RUSTYERA_TEST_COMPILED_CACHE_OUTPUT` to explicit opaque cache paths. The runner installs/exports
-only `.rustyera/cache/compiled-project.reracache`. `RUSTYERA_TEST_PROJECT_OUTPUT` may export the
-isolated source tree, excluding `.rustyera`, for a following TUI run.
+`.rustyera/cache/compiled-project.reracache`. Set `RUSTYERA_TEST_SOURCE_INDEX_INPUT` and
+`RUSTYERA_TEST_SOURCE_INDEX_OUTPUT` to transfer the matching portable source index and require the
+consumer to report actual file reuse. `RUSTYERA_TEST_PROJECT_OUTPUT` may export the isolated source
+tree, excluding `.rustyera`, for a following TUI run.
 
 Set `allow_fault: true` on an action only when the scenario intentionally enters or operates on
 the fatal-error UI. The runner otherwise stops at the first runtime fault.

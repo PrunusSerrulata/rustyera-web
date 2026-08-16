@@ -299,22 +299,25 @@ export class BrowserProject {
     candidates.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
     const enumerateMs = performance.now() - enumerateStarted;
     const files = new Array<ScannedFile>();
+    const snapshots = new Array<File>(candidates.length);
     const requests: Array<{ relativePath: string; file: File }> = [];
     const positions: number[] = [];
     const statStarted = performance.now();
-    for (const candidate of candidates) {
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index]!;
+      const file = await candidate.handle.getFile();
+      snapshots[index] = file;
+      if (candidate.category === "resource")
+        this.resourceSignatures.set(
+          candidate.relativePath.toLowerCase(),
+          `${file.size}:${file.lastModified}`,
+        );
       const prepared = preloaded?.get(candidate.relativePath);
       if (prepared) {
         files.push(prepared);
       } else {
         positions.push(files.length);
         files.push(undefined as unknown as ScannedFile);
-        const file = await candidate.handle.getFile();
-        if (candidate.category === "resource")
-          this.resourceSignatures.set(
-            candidate.relativePath.toLowerCase(),
-            `${file.size}:${file.lastModified}`,
-          );
         requests.push({ relativePath: candidate.relativePath, file });
       }
     }
@@ -329,10 +332,38 @@ export class BrowserProject {
     }
     progress?.(requests.length, requests.length);
     const sourceReadDecodeHashMs = performance.now() - readStarted;
+    const nextIndex = Object.fromEntries(
+      candidates.map((candidate, index) => {
+        const file = snapshots[index]!;
+        const scannedFile = files[index]!;
+        return [
+          candidate.relativePath,
+          {
+            category: candidate.category,
+            signature: `${file.size}:${file.lastModified}`,
+            hash: hex(scannedFile.content_hash),
+            size: file.size,
+            imageMetadata:
+              scannedFile.payload.type === "external"
+                ? scannedFile.payload.imageMetadata
+                : undefined,
+          } satisfies BrowserSourceIndexEntry,
+        ];
+      }),
+    );
+    const indexWriteStarted = performance.now();
+    try {
+      await writeBrowserSourceIndex(this.root, nextIndex);
+    } catch (error) {
+      await removeBrowserSourceIndex(this.root);
+      console.warn("Unable to refresh browser source index", error);
+    }
+    const indexWriteMs = performance.now() - indexWriteStarted;
     files.sort(compareScannedFiles);
     this.scanMetricsValue = {
       ...emptyScanMetrics(),
       enumerateMs,
+      indexWriteMs,
       statMs,
       sourceReadDecodeHashMs,
       sourceIndexHashedFiles: requests.length,
@@ -378,15 +409,33 @@ export class BrowserProject {
       const file = snapshots[index]!;
       const signature = signatures[index]!;
       const prior = previous[candidate.relativePath];
-      if (
+      const reusable =
         this.sourceIndexTrusted &&
         sourceIndex.valid &&
         isBrowserSourceIndexIdentity(prior) &&
         prior.category === candidate.category &&
         prior.signature === signature &&
         prior.size === file.size &&
-        /^[0-9a-f]{64}$/i.test(prior.hash)
+        /^[0-9a-f]{64}$/i.test(prior.hash);
+      if (
+        !reusable &&
+        import.meta.env.VITE_RUSTYERA_TEST === "1" &&
+        this.sourceIndexTrusted &&
+        sourceIndex.valid
       ) {
+        console.warn(
+          "Cross-frontend source-index entry was not reusable",
+          JSON.stringify({
+            path: candidate.relativePath,
+            candidateCategory: candidate.category,
+            fileSize: file.size,
+            signature,
+            prior: prior ?? null,
+            identityValid: isBrowserSourceIndexIdentity(prior),
+          }),
+        );
+      }
+      if (reusable) {
         reused[index] = true;
         let imageMetadata = validIndexedImageMetadata(prior.imageMetadata);
         if (
@@ -449,7 +498,7 @@ export class BrowserProject {
     progress?.(candidates.length, candidates.length);
     const next = Object.fromEntries(indexEntries);
     let indexWriteMs = 0;
-    if (!this.sourceIndexTrusted || !sourceIndexesEqual(previous, next)) {
+    if (!this.sourceIndexTrusted || !sourceIndex.portable || !sourceIndexesEqual(previous, next)) {
       const indexWriteStarted = performance.now();
       try {
         await writeBrowserSourceIndex(this.root, next);

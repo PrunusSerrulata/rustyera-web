@@ -13,15 +13,17 @@ export async function waitForRuntimeProgress({
   reportInterval = DEFAULT_REPORT_INTERVAL,
   pollInterval = DEFAULT_POLL_INTERVAL,
 }) {
+  const monitoredSnapshot = monitoredRuntimeSnapshot(pollInterval);
   return driveRuntimeUntil({
     browser,
-    snapshot,
+    snapshot: monitoredSnapshot ?? snapshot,
     label,
     accept,
     totalTimeout,
     stallTimeout,
     reportInterval,
     pollInterval,
+    pause: monitoredSnapshot ? delay : undefined,
   });
 }
 
@@ -35,6 +37,7 @@ export async function driveRuntimeUntil({
   stallTimeout = DEFAULT_STALL_TIMEOUT,
   reportInterval = DEFAULT_REPORT_INTERVAL,
   pollInterval = DEFAULT_POLL_INTERVAL,
+  pause = (duration) => browser.pause(duration),
 }) {
   const startedAt = Date.now();
   let lastProgressAt = startedAt;
@@ -90,8 +93,24 @@ export async function driveRuntimeUntil({
     }
 
     const advanced = (await advance?.(state)) ?? false;
-    if (!advanced) await browser.pause(pollInterval);
+    if (!advanced) await pause(pollInterval);
   }
+}
+
+function monitoredRuntimeSnapshot(pollInterval) {
+  const observation = globalThis.__RUSTYERA_TAURI_MONITOR_OBSERVATION__;
+  if (observation == null) return undefined;
+
+  let sequence = -1;
+  return async () => {
+    while (observation.sequence === sequence) await delay(pollInterval);
+    sequence = observation.sequence;
+    return observation.runtime;
+  };
+}
+
+function delay(duration) {
+  return new Promise((resolve) => setTimeout(resolve, duration));
 }
 
 function progressSignature(state) {

@@ -166,6 +166,45 @@ describe("browser project reads", () => {
     expect(warm.files[0].content_hash).toEqual(cold.files[0].content_hash);
   });
 
+  it("migrates a native source index and preserves incremental reuse", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const source = await root.getFileHandle("main.erb", { create: true });
+    await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
+    await new BrowserProject(root as any, 1, "game", true).scanQuick();
+    const privateDirectory = await root.getDirectoryHandle(".rustyera");
+    const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
+    const indexHandle = await cacheDirectory.getFileHandle("source-index-v1.json");
+    const index = JSON.parse(await (await indexHandle.getFile()).text());
+    const file = await source.getFile();
+    index.version = 2;
+    index.files["main.erb"].category = 2;
+    index.files["main.erb"].signature = [file.size, file.lastModified * 1_000_000, 0, 0, 0];
+    await (
+      await indexHandle.createWritable()
+    ).write(new TextEncoder().encode(JSON.stringify(index)));
+
+    const migrated = new BrowserProject(root as any, 1, "game", true);
+    await migrated.scanQuick();
+
+    expect(migrated.sourceIndexStats()).toMatchObject({ reusedFiles: 1, hashedFiles: 0 });
+    const canonical = JSON.parse(await (await indexHandle.getFile()).text());
+    expect(canonical).toMatchObject({
+      version: 3,
+      files: { "main.erb": { category: 2, signature: `${file.size}:${file.lastModified}` } },
+    });
+
+    await (
+      await source.createWritable()
+    ).write(new TextEncoder().encode("@MAIN\nPRINTL CHANGED\nRETURN\n"));
+    const updated = new BrowserProject(root as any, 1, "game", true);
+    await updated.scanQuick();
+    const repeated = new BrowserProject(root as any, 1, "game", true);
+    await repeated.scanQuick();
+
+    expect(updated.sourceIndexStats()).toMatchObject({ reusedFiles: 0, hashedFiles: 1 });
+    expect(repeated.sourceIndexStats()).toMatchObject({ reusedFiles: 1, hashedFiles: 0 });
+  });
+
   it("never trusts size and mtime identities from a user-controlled directory", async () => {
     const root = new SaveDirectoryHandle("game");
     const source = await root.getFileHandle("main.erb", { create: true });
@@ -307,6 +346,7 @@ describe("browser project reads", () => {
     const indexHandle = await cacheDirectory.getFileHandle("source-index-v1.json");
     const index = JSON.parse(await (await indexHandle.getFile()).text());
     index.version = version;
+    delete index.files["resources/image.png"].image_metadata;
     index.files["resources/image.png"].imageMetadata = metadata;
     await (
       await indexHandle.createWritable()
@@ -322,13 +362,14 @@ describe("browser project reads", () => {
       imageMetadata: { width: 2, height: 3, format: "png", animated: false },
     });
     const migrated = JSON.parse(await (await indexHandle.getFile()).text());
-    expect(migrated.version).toBe(2);
-    expect(migrated.files["resources/image.png"].imageMetadata).toEqual({
+    expect(migrated.version).toBe(3);
+    expect(migrated.files["resources/image.png"].image_metadata).toEqual({
       width: 2,
       height: 3,
       format: "png",
       animated: false,
     });
+    expect(migrated.files["resources/image.png"]).not.toHaveProperty("imageMetadata");
   });
 
   it("keeps startup functional when the disposable source index cannot be written", async () => {
@@ -488,6 +529,38 @@ describe("browser project reads", () => {
     expect(remainingReload.changes).toHaveLength(1);
     expect(remainingReload.changes[0].file.relative_path).toBe("ERB/other/command.erb");
     project.finalizeReload(true);
+  });
+
+  it("refreshes the portable source index after an incremental reload scan", async () => {
+    const root = new SaveDirectoryHandle("game");
+    await writeFixtureFile(root, "main.erb", "@MAIN\nPRINTL OLD\nRETURN\n");
+    const project = new BrowserProject(
+      root as unknown as FileSystemDirectoryHandle,
+      1,
+      "game",
+      true,
+    );
+    await project.scanQuick();
+    await writeFixtureFile(root, "main.erb", "@MAIN\nPRINTL UPDATED VALUE\nRETURN\n");
+
+    await project.reloadRequest({ type: "script", path: "main.erb" });
+
+    const cache = await (await root.getDirectoryHandle(".rustyera")).getDirectoryHandle("cache");
+    const index = JSON.parse(
+      await (await (await cache.getFileHandle("source-index-v1.json")).getFile()).text(),
+    );
+    const source = await (await root.getFileHandle("main.erb")).getFile();
+    expect(index.version).toBe(3);
+    expect(index.files["main.erb"].signature).toBe(`${source.size}:${source.lastModified}`);
+    expect(index.files["main.erb"].size).toBe(source.size);
+    const repeated = new BrowserProject(
+      root as unknown as FileSystemDirectoryHandle,
+      2,
+      "game",
+      true,
+    );
+    await repeated.scanQuick();
+    expect(repeated.sourceIndexStats()).toMatchObject({ reusedFiles: 1, hashedFiles: 0 });
   });
 
   it("discards a rejected scoped reload without changing the active manifest", async () => {
