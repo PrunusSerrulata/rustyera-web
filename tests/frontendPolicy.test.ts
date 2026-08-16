@@ -707,6 +707,9 @@ describe("frontend host and image-line policy", () => {
       /\.preference-image-scale-setting\s*\{[^}]*grid-template-columns:\s*max-content minmax\(0, 1fr\);/s,
     );
     expect(stylesheet).toMatch(
+      /\.preference-color-setting > \.preference-setting-label\s*\{[^}]*padding-top:\s*0;/s,
+    );
+    expect(stylesheet).toMatch(
       /\.preference-setting-label > span,[\s\S]*?\.preference-auxiliary-label > span\s*\{[^}]*white-space:\s*nowrap;/s,
     );
   });

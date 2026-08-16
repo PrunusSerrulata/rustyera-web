@@ -169,6 +169,67 @@ describe("client preferences dialog", () => {
     ]);
   });
 
+  it("offers the project-settings editable font list for client preferences", async () => {
+    const entry: ProjectConfigurationEntry = {
+      code: "FontName",
+      japanese: "フォント名",
+      english: "Font name",
+      value: "Alpha Sans",
+      kind: "string",
+      allowed: [],
+      fixed: false,
+      applicability: 12,
+      default_value: "Alpha Sans",
+      effective_value: "Alpha Sans",
+      application: "hot",
+      preference_eligible: true,
+      client_effective_value: "Alpha Sans",
+    };
+    const wrapper = mount(ClientPreferencesDialog, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        globalValue: defaultPreferences(),
+        projectValue: { settings: {} },
+        entries: [entry],
+        fontFamilies: ["Alpha Sans", "Beta Serif"],
+        fontAccessStatus: "denied",
+        projectWritable: true,
+      },
+    });
+
+    await setCheckbox("#preference-global-FontName-override", true);
+    const input = document.body.querySelector<HTMLInputElement>("#preference-global-FontName")!;
+    expect(input.type).toBe("text");
+    expect(input.getAttribute("list")).toBe("available-game-fonts");
+    expect(input.getAttribute("aria-describedby")).toBe(
+      "preference-global-FontName-font-access-status",
+    );
+    expect(
+      [...document.body.querySelectorAll("#available-game-fonts option")].map((option) =>
+        option.getAttribute("value"),
+      ),
+    ).toEqual(["Alpha Sans", "Beta Serif"]);
+
+    input.value = "Manually Entered Font";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    expect(input.value).toBe("Manually Entered Font");
+    const retry = [...document.body.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.trim() === "重试",
+    )!;
+    retry.click();
+    expect(wrapper.emitted("requestFonts")).toHaveLength(1);
+
+    document.body
+      .querySelector<HTMLFormElement>("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(wrapper.emitted("save")?.at(-1)).toEqual([
+      "global",
+      expect.objectContaining({ settings: { FontName: "Manually Entered Font" } }),
+    ]);
+  });
+
   it("falls back to global scope when project preferences are read-only", async () => {
     const wrapper = mount(ClientPreferencesDialog, {
       attachTo: document.body,

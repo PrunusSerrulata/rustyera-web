@@ -984,6 +984,7 @@ function assertLayout(actual, expected) {
       expected.no_overlap ||
       expected.inside ||
       expected.horizontal_centered_within != null ||
+      expected.vertical_centered_within != null ||
       expected.left_aligned_within != null ||
       expected.right_aligned_within != null ||
       expected.top_aligned_within != null ||
@@ -1025,6 +1026,13 @@ function assertLayout(actual, expected) {
       (first.left + first.right) / 2,
       (reference.left + reference.right) / 2,
       expected.horizontal_centered_within,
+    );
+  if (expected.vertical_centered_within != null)
+    assertDistance(
+      "vertical_center",
+      (first.top + first.bottom) / 2,
+      (reference.top + reference.bottom) / 2,
+      expected.vertical_centered_within,
     );
   if (expected.left_aligned_within != null)
     assertDistance("left_aligned", first.left, reference.left, expected.left_aligned_within);

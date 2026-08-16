@@ -138,11 +138,15 @@ onMounted(() => void store.initialize());
       :global-value="store.preferences"
       :project-value="store.projectPreferences"
       :entries="store.configurationEntries"
+      :font-families="store.availableFontFamilies"
+      :font-access-status="store.fontAccessStatus"
+      :font-access-error="store.fontAccessError"
       :host-kind="store.bridgeKind"
       :project-writable="store.projectPreferencesWritable"
       :busy="store.settingsBusy"
       :error="store.preferencesError"
       @close="store.preferencesOpen = false"
+      @request-fonts="store.requestSystemFonts"
       @save="store.saveClientPreferences"
     />
     <OpenProjectDialog

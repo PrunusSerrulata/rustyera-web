@@ -709,6 +709,39 @@ describe("web game test scenario", () => {
     );
   });
 
+  it("asserts vertical centering against a reference box", async () => {
+    const box = (top, height) => ({
+      getBoundingClientRect: () => ({
+        left: 0,
+        top,
+        right: 100,
+        bottom: top + height,
+        width: 100,
+        height,
+      }),
+    });
+    const subject = { evaluateAll: vi.fn((callback) => callback([box(9, 20)])) };
+    const reference = { evaluateAll: vi.fn((callback) => callback([box(0, 40)])) };
+    const page = {
+      locator: vi.fn((selector) => (selector === ".control" ? subject : reference)),
+    };
+    const action = {
+      type: "assert_layout",
+      locator: { css: ".control" },
+      relative_to: { css: ".label" },
+      expect: { vertical_centered_within: 1 },
+    };
+
+    await expect(runAction(page, action)).resolves.toEqual(
+      expect.objectContaining({ query: expect.any(Object) }),
+    );
+
+    subject.evaluateAll.mockImplementationOnce((callback) => callback([box(6, 20)]));
+    await expect(runAction(page, action)).rejects.toThrow(
+      "assertion failed at layout.vertical_center",
+    );
+  });
+
   it("can measure a text locator by its logical game-line box", async () => {
     const line = {
       getBoundingClientRect: () => ({

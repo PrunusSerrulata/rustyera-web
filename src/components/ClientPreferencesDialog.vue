@@ -3,8 +3,14 @@ import { computed, nextTick, reactive, ref, watch } from "vue";
 
 import ColorPickerDialog from "@/components/ColorPickerDialog.vue";
 import DraggableDialog from "@/components/DraggableDialog.vue";
+import GameFontInput from "@/components/GameFontInput.vue";
 import { projectSettingsTabs, type SettingsField } from "@/core/settings";
-import type { Preferences, ProjectConfigurationEntry, ProjectPreferences } from "@/core/types";
+import type {
+  FontAccessStatus,
+  Preferences,
+  ProjectConfigurationEntry,
+  ProjectPreferences,
+} from "@/core/types";
 
 const props = withDefaults(
   defineProps<{
@@ -12,15 +18,27 @@ const props = withDefaults(
     globalValue: Preferences;
     projectValue: ProjectPreferences;
     entries: ProjectConfigurationEntry[];
+    fontFamilies?: string[];
+    fontAccessStatus?: FontAccessStatus;
+    fontAccessError?: string;
     hostKind?: "browser" | "tauri";
     projectWritable?: boolean;
     busy?: boolean;
     error?: string;
   }>(),
-  { hostKind: "browser", projectWritable: false, busy: false, error: "" },
+  {
+    fontFamilies: () => [],
+    fontAccessStatus: "idle",
+    fontAccessError: "",
+    hostKind: "browser",
+    projectWritable: false,
+    busy: false,
+    error: "",
+  },
 );
 const emit = defineEmits<{
   close: [];
+  requestFonts: [];
   save: [scope: "global" | "project", value: ProjectPreferences];
 }>();
 
@@ -300,6 +318,17 @@ async function scopeKeydown(event: KeyboardEvent): Promise<void> {
                   />
                   <span class="color-setting-value">{{ draft.settings[field.code] }}</span>
                 </button>
+                <GameFontInput
+                  v-else-if="field.code === 'FontName'"
+                  :id="`preference-${scope}-${field.code}`"
+                  v-model="draft.settings[field.code]"
+                  :font-families="fontFamilies"
+                  :status="fontAccessStatus"
+                  :error="fontAccessError"
+                  :host-kind="hostKind"
+                  :disabled="busy || !overridden(field.code)"
+                  @request-fonts="emit('requestFonts')"
+                />
                 <div v-else-if="field.control === 'range'" class="range-setting-control">
                   <input
                     :id="`preference-${scope}-${field.code}`"
@@ -408,6 +437,9 @@ async function scopeKeydown(event: KeyboardEvent): Promise<void> {
             </div>
           </div>
         </fieldset>
+        <datalist id="available-game-fonts">
+          <option v-for="font in fontFamilies" :key="font" :value="font" />
+        </datalist>
       </div>
 
       <p v-if="error" class="settings-error" role="alert">{{ error }}</p>

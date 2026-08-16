@@ -31,6 +31,16 @@ preferences("Tauri client preferences", () => {
 
     const dialog = await $(".dialog-panel[aria-label='RustyEra Tauri · 偏好设置']");
     await dialog.waitForDisplayed();
+    await dialog.$("#preference-global-FontName-override").click();
+    const fontInput = await dialog.$("#preference-global-FontName");
+    assert.equal(await fontInput.getAttribute("type"), "text");
+    assert.equal(await fontInput.getAttribute("list"), "available-game-fonts");
+    assert.ok(await fontInput.isEnabled());
+    const fontOptions = await dialog.$$("#available-game-fonts option");
+    assert.ok(fontOptions.length > 0, "Tauri preferences must expose installed fonts");
+    await fontInput.setValue("RustyEra Preference Font");
+    assert.equal(await fontInput.getValue(), "RustyEra Preference Font");
+    await dialog.$("#preference-global-FontName-override").click();
     await dialog.$("#preference-global-AudioVolume-override").click();
     const globalLayout = await preferenceLayoutMetrics("global");
     console.log(JSON.stringify({ preferenceLayout: "global", ...globalLayout }));
@@ -57,6 +67,11 @@ preferences("Tauri client preferences", () => {
       "image scale input must respect the column edge",
     );
     assert.equal(globalLayout.imageScaleOverlapsLabel, false);
+    assertWithin(
+      globalLayout.colorCenterSpread,
+      1,
+      "color controls must be vertically centered with their names",
+    );
     assertWithin(globalLayout.colorLeftSpread, 1, "color controls must share a leading edge");
     assert.equal(globalLayout.colorsOverlapLabels, false);
     assertWithin(
@@ -299,6 +314,9 @@ async function preferenceLayoutMetrics(scope) {
     const colorControls = colorCodes.map((code) =>
       box(document.querySelector(`#preference-${activeScope}-${code}`)),
     );
+    const colorNames = colorCodes.map((code) =>
+      box(document.querySelector(`label[for='preference-${activeScope}-${code}-override'] > span`)),
+    );
     const colorLabels = colorCodes.map((code) =>
       box(document.querySelector(`label[for='preference-${activeScope}-${code}-override']`)),
     );
@@ -362,6 +380,18 @@ async function preferenceLayoutMetrics(scope) {
       colorLeftSpread: colorLefts.every((left) => left != null)
         ? Math.max(...colorLefts) - Math.min(...colorLefts)
         : null,
+      colorCenterSpread:
+        colorControls.every((control) => control != null) &&
+        colorNames.every((name) => name != null)
+          ? Math.max(
+              ...colorControls.map((control, index) =>
+                Math.abs(
+                  (control.top + control.bottom) / 2 -
+                    (colorNames[index].top + colorNames[index].bottom) / 2,
+                ),
+              ),
+            )
+          : null,
       colorsOverlapLabels,
       metadataTopDifference:
         metadataName && metadataControl ? Math.abs(metadataName.top - metadataControl.top) : null,

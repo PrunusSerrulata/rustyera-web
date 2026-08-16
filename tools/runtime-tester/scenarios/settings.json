@@ -178,6 +178,52 @@
       "fields": ["count"],
       "expect": { "count": 0 }
     },
+    { "type": "click", "locator": { "css": "#preference-global-FontName-override" } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": "#preference-global-FontName" },
+      "fields": ["count", "visible", "enabled", "attributes"],
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "enabled": true,
+        "attributes": {
+          "type": "text",
+          "list": "available-game-fonts",
+          "aria-describedby": "preference-global-FontName-font-access-status"
+        }
+      }
+    },
+    {
+      "type": "fill",
+      "locator": { "css": "#preference-global-FontName" },
+      "value": "RustyEra Preference Font"
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": "#preference-global-FontName" },
+      "fields": ["value"],
+      "expect": { "value": "RustyEra Preference Font" }
+    },
+    { "type": "click", "locator": { "css": "#preference-global-FontName-override" } },
+    {
+      "type": "assert_layout",
+      "locator": { "css": "#preference-global-ForeColor" },
+      "relative_to": { "css": "label[for='preference-global-ForeColor-override'] > span" },
+      "expect": { "count": 1, "visible": true, "vertical_centered_within": 1 }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": "#preference-global-BackColor" },
+      "relative_to": { "css": "label[for='preference-global-BackColor-override'] > span" },
+      "expect": { "count": 1, "visible": true, "vertical_centered_within": 1 }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": "#preference-global-FocusColor" },
+      "relative_to": { "css": "label[for='preference-global-FocusColor-override'] > span" },
+      "expect": { "count": 1, "visible": true, "vertical_centered_within": 1 }
+    },
     {
       "type": "assert_layout",
       "locator": { "css": ".preference-image-scale-setting > .preference-setting-control" },
@@ -310,7 +356,7 @@
     { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } }
   ],
   "limits": {
-    "max_steps": 70,
+    "max_steps": 85,
     "timeout_seconds": 120
   }
 }

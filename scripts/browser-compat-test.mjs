@@ -765,6 +765,25 @@ async function verifyGlobalPreferencesBeforeProject(activeBrowser) {
     throw new Error("global image scale was disabled without a project");
   const tooltip = await imageScaleLabel.getAttribute("title");
   if (!tooltip) throw new Error("global image scale did not expose its explanatory tooltip");
+  const fontOverride = await dialog.$("#preference-global-FontName-override");
+  await fontOverride.click();
+  const fontInput = await dialog.$("#preference-global-FontName");
+  await fontInput.waitForDisplayed({ timeout: 5_000 });
+  const fontInputDetails = {
+    type: await fontInput.getAttribute("type"),
+    list: await fontInput.getAttribute("list"),
+    describedBy: await fontInput.getAttribute("aria-describedby"),
+  };
+  if (fontInputDetails.type !== "text" || fontInputDetails.list !== "available-game-fonts") {
+    throw new Error(
+      `global game font did not use the editable project-settings list: ${JSON.stringify(fontInputDetails)}`,
+    );
+  }
+  await fontInput.setValue("RustyEra Compatibility Font");
+  const typedFont = await fontInput.getValue();
+  if (typedFont !== "RustyEra Compatibility Font")
+    throw new Error(`global game font was not editable: ${typedFont}`);
+  await fontOverride.click();
 
   compatibilityStage = "saving global preferences before project load";
   await imageScale.setValue("1.25");
@@ -787,7 +806,15 @@ async function verifyGlobalPreferencesBeforeProject(activeBrowser) {
   await (await dialog.$("#preference-global-imageScale")).setValue("1");
   await (await dialog.$("button=应用")).click();
   await dialog.waitForDisplayed({ reverse: true, timeout: 5_000 });
-  return { projectTabEnabled: false, imageScaleEditable: true, persisted, restored: "1", tooltip };
+  return {
+    projectTabEnabled: false,
+    imageScaleEditable: true,
+    fontInputDetails,
+    typedFont,
+    persisted,
+    restored: "1",
+    tooltip,
+  };
 }
 
 async function inspectOpfsProjectCache(activeBrowser, prefixBytes = undefined) {
