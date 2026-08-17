@@ -107,8 +107,12 @@ describe("interaction assist panel", () => {
     expect(action.attributes("title")).toBe("A very long interaction label");
     expect(action.attributes("style")).toContain("color: rgb(12, 34, 56)");
     expect(wrapper.find(".interaction-assist-header strong").exists()).toBe(false);
-    expect(wrapper.get(".interaction-assist-toggle").text()).toBe("⏬");
+    expect(wrapper.get(".interaction-assist-toggle").text()).toBe("");
     expect(wrapper.get(".interaction-assist-toggle").attributes("aria-label")).toBe("展开");
+    expect(wrapper.get(".interaction-assist-toggle-icon").classes()).not.toContain(
+      "direction-down",
+    );
+    expect(wrapper.find(".interaction-assist-toggle-icon path").exists()).toBe(true);
     await action.trigger("click");
     expect(activate).toHaveBeenCalledWith({ epoch: 1, id: 2 });
   });
@@ -123,8 +127,8 @@ describe("interaction assist panel", () => {
     await wrapper.get(".interaction-assist-toggle").trigger("click");
     expect(wrapper.get("section").classes()).toContain("expanded");
     expect(wrapper.get("section").attributes("style")).toContain("max-height: 180px");
-    expect(wrapper.get(".interaction-assist-toggle").text()).toBe("⏫");
     expect(wrapper.get(".interaction-assist-toggle").attributes("aria-label")).toBe("折叠");
+    expect(wrapper.get(".interaction-assist-toggle-icon").classes()).toContain("direction-down");
     expect(wrapper.get(".interaction-assist-row").attributes("data-row-key")).toBe("line:7");
   });
 

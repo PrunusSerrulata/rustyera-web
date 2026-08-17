@@ -722,40 +722,58 @@ describe("frontend host and image-line policy", () => {
 
   it("keeps interaction assistance compact and overlays expanded rows", () => {
     const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
-    expect(stylesheet).toMatch(
-      /\.game-area\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\) auto;/s,
+    const gameArea = stylesheet.match(/\.game-area\s*\{([^}]*)\}/s)?.[1];
+    const panel = stylesheet.match(/\.interaction-assist-panel\s*\{([^}]*)\}/s)?.[1];
+    const expandedPanel = stylesheet.match(
+      /\.interaction-assist-panel\.expanded\s*\{([^}]*)\}/s,
+    )?.[1];
+    const header = stylesheet.match(/\.interaction-assist-header\s*\{([^}]*)\}/s)?.[1];
+    const toggle = stylesheet.match(/\.interaction-assist-toggle\s*\{([^}]*)\}/s)?.[1];
+    const downIcon = stylesheet.match(
+      /\.interaction-assist-toggle-icon\.direction-down\s*\{([^}]*)\}/s,
+    )?.[1];
+    const actions = stylesheet.match(/\.interaction-assist-actions\s*\{([^}]*)\}/s)?.[1];
+    const expandedActions = stylesheet.match(
+      /\.interaction-assist-actions\.expanded\s*\{([^}]*)\}/s,
+    )?.[1];
+    const row = stylesheet.match(/\.interaction-assist-row\s*\{([^}]*)\}/s)?.[1];
+    const action = stylesheet.match(/\.interaction-assist-action\s*\{([^}]*)\}/s)?.[1];
+    const actionText = stylesheet.match(/\.interaction-assist-action > span\s*\{([^}]*)\}/s)?.[1];
+
+    expect(gameArea).toMatch(/grid-template-rows:\s*minmax\(0, 1fr\) auto;/);
+    expect(gameArea).toMatch(/background:\s*var\(--game-background\);/);
+    expect(panel).toMatch(/--interaction-assist-actions-border-width:\s*1px;/);
+    expect(panel).toMatch(/--interaction-assist-actions-padding-block:\s*6px;/);
+    expect(panel).toMatch(/--interaction-assist-row-gap:\s*6px;/);
+    expect(panel).toMatch(/background:\s*transparent;/);
+    expect(expandedPanel).toMatch(/position:\s*absolute;/);
+    expect(expandedPanel).toMatch(/bottom:\s*0;/);
+    expect(header).toMatch(/justify-content:\s*flex-end;/);
+    expect(header).toMatch(/background:\s*transparent;/);
+    expect(header).toMatch(/box-shadow:\s*none;/);
+    expect(toggle).toMatch(/border-bottom:\s*0;/);
+    expect(toggle).toMatch(/background:\s*#202329f5;/);
+    expect(downIcon).toMatch(/transform:\s*rotate\(180deg\);/);
+    expect(actions).toMatch(/overflow-x:\s*auto;/);
+    expect(actions).toMatch(/overflow-y:\s*hidden;/);
+    expect(actions).toMatch(/background:\s*#202329f5;/);
+    expect(actions).toMatch(/box-shadow:\s*none;/);
+    expect(actions).toMatch(
+      /border-top:\s*var\(--interaction-assist-actions-border-width\) solid #3a3f4b;/,
     );
-    expect(stylesheet).toMatch(
-      /\.interaction-assist-panel\.expanded\s*\{[^}]*position:\s*absolute;[^}]*bottom:\s*0;/s,
+    expect(actions).toMatch(/padding:\s*var\(--interaction-assist-actions-padding-block\) 7px;/);
+    expect(actions).toMatch(
+      /min-height:\s*calc\([\s\S]*var\(--interaction-assist-action-height\)[\s\S]*var\(--interaction-assist-actions-padding-block\)[\s\S]*var\(--interaction-assist-actions-padding-block\)[\s\S]*var\(--interaction-assist-actions-border-width\)[\s\S]*\);/,
     );
-    expect(stylesheet).toMatch(/\.interaction-assist-panel\s*\{[^}]*background:\s*transparent;/s);
-    expect(stylesheet).toMatch(
-      /\.interaction-assist-panel\s*\{[^}]*--interaction-assist-row-gap:\s*6px;/s,
-    );
-    expect(stylesheet).toMatch(
-      /\.interaction-assist-header\s*\{[^}]*justify-content:\s*flex-end;/s,
-    );
-    expect(stylesheet).toMatch(
-      /\.interaction-assist-toggle\s*\{[^}]*border-bottom:\s*0;[^}]*background:\s*#202329f5;/s,
-    );
-    expect(stylesheet).toMatch(
-      /\.interaction-assist-actions\s*\{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*hidden;/s,
-    );
-    expect(stylesheet).toMatch(
-      /\.interaction-assist-actions\s*\{[^}]*min-height:\s*calc\(var\(--interaction-assist-action-height\) \+ 12px\);[^}]*background:\s*#202329f5;/s,
-    );
-    expect(stylesheet).toMatch(
-      /\.interaction-assist-row\s*\{[^}]*min-height:\s*var\(--interaction-assist-action-height\);/s,
-    );
-    expect(stylesheet).toMatch(
-      /\.interaction-assist-actions\.expanded\s*\{[^}]*gap:\s*var\(--interaction-assist-row-gap\);/s,
-    );
-    expect(stylesheet).toMatch(
-      /\.interaction-assist-action\s*\{[^}]*width:\s*10rem;[^}]*min-width:\s*10rem;[^}]*max-width:\s*10rem;/s,
-    );
-    expect(stylesheet).toMatch(
-      /\.interaction-assist-action > span\s*\{[^}]*font-size:\s*1rem;[^}]*line-height:\s*1rem;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s,
-    );
+    expect(expandedActions).toMatch(/gap:\s*var\(--interaction-assist-row-gap\);/);
+    expect(row).toMatch(/min-height:\s*var\(--interaction-assist-action-height\);/);
+    expect(action).toMatch(/width:\s*10rem;/);
+    expect(action).toMatch(/min-width:\s*10rem;/);
+    expect(action).toMatch(/max-width:\s*10rem;/);
+    expect(actionText).toMatch(/font-size:\s*1rem;/);
+    expect(actionText).toMatch(/line-height:\s*1rem;/);
+    expect(actionText).toMatch(/text-overflow:\s*ellipsis;/);
+    expect(actionText).toMatch(/white-space:\s*nowrap;/);
   });
 
   it("keeps game output on physical lines and exposes horizontal overflow", () => {

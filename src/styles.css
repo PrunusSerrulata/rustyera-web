@@ -359,6 +359,7 @@ select {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   min-height: 0;
+  background: var(--game-background);
 }
 .interaction-assist-slot {
   min-width: 0;
@@ -373,6 +374,8 @@ select {
 }
 .interaction-assist-panel {
   --interaction-assist-action-height: calc(1rem + 0.84rem + 2px);
+  --interaction-assist-actions-border-width: 1px;
+  --interaction-assist-actions-padding-block: 6px;
   --interaction-assist-row-gap: 6px;
 
   display: grid;
@@ -393,6 +396,8 @@ select {
   align-items: center;
   justify-content: flex-end;
   padding: 0 7px;
+  background: transparent;
+  box-shadow: none;
   color: #cbd1dd;
   font-size: 0.78rem;
 }
@@ -408,15 +413,32 @@ select {
   font-size: 0.9rem;
   line-height: 1;
 }
+.interaction-assist-toggle-icon {
+  display: block;
+  width: 1rem;
+  height: 0.875rem;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+.interaction-assist-toggle-icon.direction-down {
+  transform: rotate(180deg);
+}
 .interaction-assist-actions {
   min-width: 0;
-  min-height: calc(var(--interaction-assist-action-height) + 12px);
-  border-top: 1px solid #3a3f4b;
-  padding: 4px 7px 7px;
+  min-height: calc(
+    var(--interaction-assist-action-height) + var(--interaction-assist-actions-padding-block) +
+      var(--interaction-assist-actions-padding-block) +
+      var(--interaction-assist-actions-border-width)
+  );
+  border-top: var(--interaction-assist-actions-border-width) solid #3a3f4b;
+  padding: var(--interaction-assist-actions-padding-block) 7px;
   overflow-x: auto;
   overflow-y: hidden;
   background: #202329f5;
-  box-shadow: 0 -4px 14px #0005;
+  box-shadow: none;
   scrollbar-width: thin;
 }
 .interaction-assist-actions.expanded {

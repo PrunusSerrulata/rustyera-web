@@ -154,7 +154,14 @@ onBeforeUnmount(() => {
           :disabled="!geometry.canExpand"
           @click="toggleExpanded"
         >
-          <span aria-hidden="true">{{ expanded ? "⏫" : "⏬" }}</span>
+          <svg
+            class="interaction-assist-toggle-icon"
+            :class="{ 'direction-down': expanded }"
+            viewBox="0 0 16 14"
+            aria-hidden="true"
+          >
+            <path d="M3 7 8 2l5 5M3 12l5-5 5 5" />
+          </svg>
         </button>
       </header>
       <div id="interaction-assist-actions" class="interaction-assist-actions" :class="{ expanded }">
