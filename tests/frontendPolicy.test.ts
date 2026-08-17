@@ -707,6 +707,12 @@ describe("frontend host and image-line policy", () => {
       /\.preference-image-scale-setting\s*\{[^}]*grid-template-columns:\s*max-content minmax\(0, 1fr\);/s,
     );
     expect(stylesheet).toMatch(
+      /\.preference-interaction-assist-setting\s*\{[^}]*grid-template-columns:\s*max-content minmax\(0, 1fr\);[^}]*align-items:\s*center;/s,
+    );
+    expect(stylesheet).toMatch(
+      /\.preference-interaction-assist-setting > label\s*\{[^}]*padding-top:\s*0;/s,
+    );
+    expect(stylesheet).toMatch(
       /\.preference-color-setting > \.preference-setting-label\s*\{[^}]*padding-top:\s*0;/s,
     );
     expect(stylesheet).toMatch(
@@ -722,8 +728,27 @@ describe("frontend host and image-line policy", () => {
     expect(stylesheet).toMatch(
       /\.interaction-assist-panel\.expanded\s*\{[^}]*position:\s*absolute;[^}]*bottom:\s*0;/s,
     );
+    expect(stylesheet).toMatch(/\.interaction-assist-panel\s*\{[^}]*background:\s*transparent;/s);
+    expect(stylesheet).toMatch(
+      /\.interaction-assist-panel\s*\{[^}]*--interaction-assist-row-gap:\s*6px;/s,
+    );
+    expect(stylesheet).toMatch(
+      /\.interaction-assist-header\s*\{[^}]*justify-content:\s*flex-end;/s,
+    );
+    expect(stylesheet).toMatch(
+      /\.interaction-assist-toggle\s*\{[^}]*border-bottom:\s*0;[^}]*background:\s*#202329f5;/s,
+    );
     expect(stylesheet).toMatch(
       /\.interaction-assist-actions\s*\{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*hidden;/s,
+    );
+    expect(stylesheet).toMatch(
+      /\.interaction-assist-actions\s*\{[^}]*min-height:\s*calc\(var\(--interaction-assist-action-height\) \+ 12px\);[^}]*background:\s*#202329f5;/s,
+    );
+    expect(stylesheet).toMatch(
+      /\.interaction-assist-row\s*\{[^}]*min-height:\s*var\(--interaction-assist-action-height\);/s,
+    );
+    expect(stylesheet).toMatch(
+      /\.interaction-assist-actions\.expanded\s*\{[^}]*gap:\s*var\(--interaction-assist-row-gap\);/s,
     );
     expect(stylesheet).toMatch(
       /\.interaction-assist-action\s*\{[^}]*width:\s*10rem;[^}]*min-width:\s*10rem;[^}]*max-width:\s*10rem;/s,

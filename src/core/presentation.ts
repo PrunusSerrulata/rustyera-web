@@ -24,7 +24,8 @@ export interface PresentationState {
   retiredButtonTokens: Set<string>;
 }
 
-export type PresentationInteractionSource = { kind: "run"; run: any } | { kind: "html"; node: any };
+export type PresentationInteractionSource =
+  { kind: "run"; run: any } | { kind: "html"; node: any; effectiveForeground?: unknown };
 
 export interface PresentationInteractionLocation {
   rowKey: string;
@@ -258,15 +259,20 @@ function visitHtmlNodes(
   nodes: any[],
   rowKey: string,
   visitInteraction: (location: PresentationInteractionLocation) => void,
+  inheritedForeground?: unknown,
 ): void {
   for (const node of nodes) {
+    const foreground =
+      node.semantic?.type === "font" && node.semantic.color != null
+        ? node.semantic.color
+        : inheritedForeground;
     if (node.interaction)
       visitInteraction({
         rowKey,
         interaction: node.interaction,
-        source: { kind: "html", node },
+        source: { kind: "html", node, effectiveForeground: foreground },
       });
-    visitHtmlNodes(node.children ?? [], rowKey, visitInteraction);
+    visitHtmlNodes(node.children ?? [], rowKey, visitInteraction, foreground);
   }
 }
 

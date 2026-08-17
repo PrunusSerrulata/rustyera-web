@@ -372,12 +372,13 @@ select {
   pointer-events: none;
 }
 .interaction-assist-panel {
+  --interaction-assist-action-height: calc(1rem + 0.84rem + 2px);
+  --interaction-assist-row-gap: 6px;
+
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
-  border-top: 1px solid #3a3f4b;
-  background: #202329f5;
-  box-shadow: 0 -4px 14px #0005;
+  background: transparent;
 }
 .interaction-assist-panel.expanded {
   position: absolute;
@@ -390,38 +391,44 @@ select {
   display: flex;
   min-width: 0;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 3px 7px;
+  justify-content: flex-end;
+  padding: 0 7px;
   color: #cbd1dd;
   font-size: 0.78rem;
 }
-.interaction-assist-header strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .interaction-assist-toggle {
+  position: relative;
+  z-index: 1;
   flex: 0 0 auto;
-  padding: 0.18rem 0.55rem;
-  font-size: 0.78rem;
+  margin-bottom: -1px;
+  border-bottom: 0;
+  border-radius: 5px 5px 0 0;
+  padding: 0.18rem 0.5rem;
+  background: #202329f5;
+  font-size: 0.9rem;
+  line-height: 1;
 }
 .interaction-assist-actions {
   min-width: 0;
+  min-height: calc(var(--interaction-assist-action-height) + 12px);
+  border-top: 1px solid #3a3f4b;
   padding: 4px 7px 7px;
   overflow-x: auto;
   overflow-y: hidden;
+  background: #202329f5;
+  box-shadow: 0 -4px 14px #0005;
   scrollbar-width: thin;
 }
 .interaction-assist-actions.expanded {
   display: grid;
   align-content: start;
-  gap: 6px;
+  gap: var(--interaction-assist-row-gap);
   overflow: auto;
 }
 .interaction-assist-row {
   display: flex;
   width: max-content;
+  min-height: var(--interaction-assist-action-height);
   min-width: 100%;
   gap: 6px;
 }
@@ -1030,6 +1037,17 @@ select {
 .preference-metadata-setting > label {
   min-height: var(--settings-control-height);
   padding-top: 0;
+}
+.preference-interaction-assist-setting {
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+}
+.preference-interaction-assist-setting > label {
+  min-height: var(--settings-control-height);
+  padding-top: 0;
+}
+.preference-interaction-assist-setting .preference-setting-control {
+  margin-left: 0;
 }
 .preference-boolean-control {
   display: flex;

@@ -7,10 +7,13 @@ import { useRuntimeStore } from "@/stores/runtime";
 const store = useRuntimeStore();
 const slot = ref<HTMLElement>();
 const panel = ref<HTMLElement>();
+const collapsedRow = ref<HTMLElement>();
 const expanded = ref(false);
 const mobileBrowser = ref(false);
 const gameAreaHeight = ref(0);
 const collapsedHeight = ref(0);
+const actionRowHeight = ref(0);
+const expandedRowGap = ref<number>();
 let areaObserver: ResizeObserver | undefined;
 let panelObserver: ResizeObserver | undefined;
 let mobileQuery: MediaQueryList | undefined;
@@ -28,9 +31,14 @@ const geometry = computed(() => {
   const collapsed = collapsedHeight.value;
   const projectedViewport = Math.max(0, gameAreaHeight.value - collapsed);
   const expandedMaximum = projectedViewport * 0.75;
+  const expandedMinimum =
+    expandedRowGap.value == null
+      ? Number.POSITIVE_INFINITY
+      : collapsed + actionRowHeight.value + expandedRowGap.value;
   return {
     projectedViewport,
     expandedMaximum,
+    canExpand: collapsed > 0 && actionRowHeight.value > 0 && expandedMaximum >= expandedMinimum,
     show:
       modeEligible.value &&
       collapsed > 0 &&
@@ -46,6 +54,12 @@ const panelStyle = computed(() => ({
 watch(visible, (shown) => {
   if (!shown) expanded.value = false;
 });
+watch(
+  () => geometry.value.canExpand,
+  (canExpand) => {
+    if (!canExpand) expanded.value = false;
+  },
+);
 watch(
   () => [rows.value.length, flatItems.value.length],
   async () => {
@@ -71,11 +85,22 @@ function updateMobileBrowser(): void {
 function measurePanel(): void {
   if (!panel.value || expanded.value) return;
   collapsedHeight.value = Math.ceil(panel.value.getBoundingClientRect().height);
+  const rowGap = Number.parseFloat(
+    getComputedStyle(panel.value).getPropertyValue("--interaction-assist-row-gap"),
+  );
+  expandedRowGap.value = Number.isFinite(rowGap) ? rowGap : undefined;
+  if (collapsedRow.value)
+    actionRowHeight.value = Math.ceil(collapsedRow.value.getBoundingClientRect().height);
 }
 
 function measureArea(): void {
   const area = slot.value?.closest<HTMLElement>(".game-area");
   if (area) gameAreaHeight.value = Math.floor(area.getBoundingClientRect().height);
+}
+
+function toggleExpanded(): void {
+  if (!expanded.value && !geometry.value.canExpand) return;
+  expanded.value = !expanded.value;
 }
 
 onMounted(() => {
@@ -120,15 +145,16 @@ onBeforeUnmount(() => {
       :inert="!visible"
     >
       <header class="interaction-assist-header">
-        <strong>交互辅助面板</strong>
         <button
           type="button"
           class="interaction-assist-toggle"
           aria-controls="interaction-assist-actions"
           :aria-expanded="expanded"
-          @click="expanded = !expanded"
+          :aria-label="expanded ? '折叠' : '展开'"
+          :disabled="!geometry.canExpand"
+          @click="toggleExpanded"
         >
-          {{ expanded ? "折叠" : "展开" }}
+          <span aria-hidden="true">{{ expanded ? "⏫" : "⏬" }}</span>
         </button>
       </header>
       <div id="interaction-assist-actions" class="interaction-assist-actions" :class="{ expanded }">
@@ -146,6 +172,7 @@ onBeforeUnmount(() => {
               class="interaction-assist-action"
               :title="item.label"
               :aria-label="item.label"
+              :style="item.color == null ? undefined : { color: item.color }"
               :disabled="!store.canInteract"
               @click="store.activate(item.token)"
             >
@@ -153,7 +180,7 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </template>
-        <div v-else class="interaction-assist-row interaction-assist-flat-row">
+        <div v-else ref="collapsedRow" class="interaction-assist-row interaction-assist-flat-row">
           <button
             v-for="item in flatItems"
             :key="item.key"
@@ -161,6 +188,7 @@ onBeforeUnmount(() => {
             class="interaction-assist-action"
             :title="item.label"
             :aria-label="item.label"
+            :style="item.color == null ? undefined : { color: item.color }"
             :disabled="!store.canInteract"
             @click="store.activate(item.token)"
           >

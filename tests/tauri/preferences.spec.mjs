@@ -260,7 +260,7 @@ async function interactionAssistMetrics() {
       firstLabel: actions[0]?.getAttribute("aria-label"),
     };
   });
-  await (await panel.$("button=展开")).click();
+  await (await panel.$("button[aria-label='展开']")).click();
   const expanded = await browser.execute(() => {
     const viewport = document.querySelector(".game-viewport");
     const panel = document.querySelector("section[aria-label='交互辅助面板']");
@@ -270,7 +270,7 @@ async function interactionAssistMetrics() {
       panelHeight: panel?.getBoundingClientRect().height,
     };
   });
-  await (await panel.$("button=折叠")).click();
+  await (await panel.$("button[aria-label='折叠']")).click();
   return {
     ...before,
     expandedViewportHeight: expanded.viewportHeight,

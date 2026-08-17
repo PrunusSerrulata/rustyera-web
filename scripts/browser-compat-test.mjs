@@ -768,7 +768,7 @@ async function inspectInteractionAssistPanel(activeBrowser) {
       scrollTop: viewport instanceof HTMLElement ? viewport.scrollTop : null,
     };
   });
-  await (await panel.$("button=展开")).click();
+  await (await panel.$("button[aria-label='展开']")).click();
   const expanded = await activeBrowser.execute(() => {
     const viewport = document.querySelector(".game-viewport");
     const panel = document.querySelector("section[aria-label='交互辅助面板']");
@@ -794,7 +794,7 @@ async function inspectInteractionAssistPanel(activeBrowser) {
       `interaction assistance panel geometry mismatch: ${JSON.stringify({ before, expanded })}`,
     );
   }
-  await (await panel.$("button=折叠")).click();
+  await (await panel.$("button[aria-label='折叠']")).click();
   return { before, expanded };
 }
 

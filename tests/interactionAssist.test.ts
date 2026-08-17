@@ -106,6 +106,105 @@ describe("interaction assistance projection", () => {
     expect(rows[0].items.map((item) => item.label)).toEqual(["button.png", "未命名交互项"]);
   });
 
+  it("projects non-default text colors from run and inherited HTML styles", () => {
+    const rows = assistedInteractionRows({
+      lines: [
+        {
+          line_id: 5,
+          runs: [
+            {
+              type: "button",
+              enabled: true,
+              token: { epoch: 3, id: 1 },
+              runs: [
+                {
+                  type: "text",
+                  text: "default ",
+                  style: { foreground: { red: 192, green: 192, blue: 192, alpha: 255 } },
+                },
+                {
+                  type: "text",
+                  text: "accent",
+                  style: { foreground: { red: 12, green: 34, blue: 56, alpha: 255 } },
+                },
+                {
+                  type: "text",
+                  text: " then another",
+                  style: { foreground: { red: 90, green: 80, blue: 70, alpha: 255 } },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      htmlIsland: [
+        {
+          nodes: [
+            {
+              type: "element",
+              kind: "font",
+              semantic: { type: "font", color: 0x654321 },
+              children: [
+                {
+                  type: "element",
+                  kind: "button",
+                  interaction: { epoch: 3, id: 2, enabled: true },
+                  semantic: { type: "button" },
+                  children: [{ type: "text", text: "inherited" }],
+                },
+                {
+                  type: "element",
+                  kind: "button",
+                  interaction: { epoch: 3, id: 3, enabled: true },
+                  semantic: { type: "button" },
+                  children: [
+                    {
+                      type: "element",
+                      kind: "font",
+                      semantic: { type: "font", color: 0x112233 },
+                      children: [{ type: "text", text: "overridden" }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    } as any);
+
+    expect(rows).toEqual([
+      {
+        rowKey: "line:5",
+        items: [
+          {
+            key: "3:1",
+            label: "default accent then another",
+            token: { epoch: 3, id: 1 },
+            color: "rgba(12, 34, 56, 1)",
+          },
+        ],
+      },
+      {
+        rowKey: "island:0",
+        items: [
+          {
+            key: "3:2",
+            label: "inherited",
+            token: { epoch: 3, id: 2 },
+            color: "rgb(101, 67, 33)",
+          },
+          {
+            key: "3:3",
+            label: "overridden",
+            token: { epoch: 3, id: 3 },
+            color: "rgb(17, 34, 51)",
+          },
+        ],
+      },
+    ]);
+  });
+
   it("resolves automatic visibility only for mobile browsers", () => {
     expect(interactionAssistModeVisible("off", "browser", true)).toBe(false);
     expect(interactionAssistModeVisible("on", "tauri", false)).toBe(true);

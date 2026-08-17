@@ -311,6 +311,19 @@
       "relative_to": { "css": ".preference-metadata-setting > .preference-auxiliary-label" },
       "expect": { "count": 1, "visible": true, "top_aligned_within": 1 }
     },
+    {
+      "type": "assert_layout",
+      "locator": { "css": "#preference-global-interactionAssistMode" },
+      "relative_to": {
+        "css": ".preference-interaction-assist-setting > .preference-auxiliary-label"
+      },
+      "expect": { "count": 1, "visible": true, "vertical_centered_within": 1 }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": "#preference-global-interactionAssistMode > label" },
+      "expect": { "count": 3, "visible": true, "same_top_within": 1 }
+    },
     { "type": "click", "locator": { "role": "tab", "name": "项目偏好", "exact": true } },
     { "type": "click", "locator": { "css": "#preference-project-FontSize-override" } },
     {
