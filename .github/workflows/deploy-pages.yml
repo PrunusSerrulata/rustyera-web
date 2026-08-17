@@ -1,12 +1,12 @@
 name: Build and deploy WebAssembly to GitHub Pages
 
-run-name: Deploy Pages (core ${{ inputs.core_commit || 'main' }})
+run-name: Deploy Pages (core ${{ inputs.core_commit || 'default branch' }})
 
 on:
   workflow_dispatch:
     inputs:
       core_commit:
-        description: Full rustyera-core commit SHA (leave empty for the main branch HEAD)
+        description: Full rustyera-core commit SHA (leave empty for the default branch HEAD)
         required: false
         default: ""
         type: string
@@ -45,7 +45,11 @@ jobs:
         run: |
           revision="$CORE_COMMIT"
           if [[ -z "$revision" ]]; then
-            revision="$(git ls-remote https://github.com/PrunusSerrulata/rustyera-core.git refs/heads/main | awk '$2 == "refs/heads/main" { print $1; exit }')"
+            revision="$(git ls-remote https://github.com/PrunusSerrulata/rustyera-core.git HEAD | awk '$2 == "HEAD" { print $1; exit }')"
+            if [[ -z "$revision" ]]; then
+              echo "failed to resolve rustyera-core default branch HEAD" >&2
+              exit 1
+            fi
           fi
           if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
             echo "core_commit must be a full 40-character lowercase commit SHA" >&2
