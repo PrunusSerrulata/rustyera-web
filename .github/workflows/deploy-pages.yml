@@ -1,0 +1,79 @@
+name: Build and deploy WebAssembly to GitHub Pages
+
+run-name: Deploy Pages (core ${{ inputs.core_commit || 'main' }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      core_commit:
+        description: Full rustyera-core commit SHA (leave empty for the main branch HEAD)
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure GitHub Pages
+        id: pages
+        uses: actions/configure-pages@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Resolve core revision
+        id: core
+        env:
+          CORE_COMMIT: ${{ inputs.core_commit }}
+        run: |
+          revision="$CORE_COMMIT"
+          if [[ -z "$revision" ]]; then
+            revision="$(git ls-remote https://github.com/PrunusSerrulata/rustyera-core.git refs/heads/main | awk '$2 == "refs/heads/main" { print $1; exit }')"
+          fi
+          if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "core_commit must be a full 40-character lowercase commit SHA" >&2
+            exit 1
+          fi
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - name: Pin core dependencies
+        run: node scripts/pin-core-dependencies.mjs '${{ steps.core.outputs.revision }}'
+      - name: Refresh lockfile for selected core
+        run: cargo update
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - run: npm ci
+      - run: npm run check:core-rev
+      - run: npm run build:wasm
+      - name: Build browser application
+        run: npm run build -- --base='${{ steps.pages.outputs.base_path }}/'
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
