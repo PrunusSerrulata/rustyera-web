@@ -84,6 +84,22 @@ try {
             "wdio:enforceWebDriverClassic": true,
           },
   });
+  if (browserName === "firefox") {
+    if (browser.isBidi !== true) {
+      throw new Error(
+        `native Firefox did not establish WebDriver BiDi: ${JSON.stringify(browser.capabilities)}`,
+      );
+    }
+    console.log(
+      JSON.stringify({
+        browser: browserName,
+        type: "webdriver-transport",
+        bidi: true,
+        capabilities: browser.capabilities,
+      }),
+    );
+  }
+  compatibilityStage = "navigating to compatibility client";
   await browser.url(`http://127.0.0.1:${port}`);
   snapshotMonitor = startCompleteSnapshotMonitor(browser, {
     eventType: "browser-compat-snapshot",

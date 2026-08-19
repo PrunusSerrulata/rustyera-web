@@ -852,6 +852,7 @@ describe("browser project reads", () => {
         },
       ],
     });
+    expect(resource.byteLength).toBe(0);
     resource[0] = 9;
 
     await expect(project.readResource("RESOURCES/A.PNG")).resolves.toEqual(Uint8Array.of(1, 2, 3));

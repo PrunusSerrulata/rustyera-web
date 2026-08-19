@@ -12,11 +12,11 @@ use era_runtime::{
     ProjectProgressReporter, RuntimeDriveBudget, RuntimeDriveState, RuntimeOptions, RuntimeSession,
 };
 use era_runtime_protocol::{
-    ClientCapabilities, ClientHello, ConfigurationClientProfile, FileCategory, FilePayload,
-    InputModality, ProjectIdentity, ProjectLoadRequest, ProjectManifest, RUNTIME_PROTOCOL_VERSION,
-    RuntimeFeature, RuntimeLimits, RuntimeMessage, SequenceAcknowledgement, ServerHello,
-    ServiceCapability, ServiceKind, ServiceRequest, ServiceResponse, StorageCapabilities,
-    StorageRequest, StorageResponse, SubmittedFile,
+    ClientCapabilities, ClientHello, ConfigurationClientProfile, ExternalResource, FileCategory,
+    FilePayload, InputModality, ProjectIdentity, ProjectLoadRequest, ProjectManifest,
+    RUNTIME_PROTOCOL_VERSION, RuntimeFeature, RuntimeLimits, RuntimeMessage,
+    SequenceAcknowledgement, ServerHello, ServiceCapability, ServiceKind, ServiceRequest,
+    ServiceResponse, StorageCapabilities, StorageRequest, StorageResponse, SubmittedFile,
 };
 use erabasic_vm::VmConfig;
 use serde::{Deserialize, Serialize};
@@ -276,24 +276,19 @@ impl WebSession {
             .map_err(|error| error.to_string())
     }
 
-    /// Decode a self-contained project file, release its container bytes, and submit its sources.
-    ///
-    /// This path avoids retaining the compiled-cache container while the runtime builds the
-    /// project, reducing peak memory for constrained browser processes.
+    /// Submit an already validated portable-project source manifest and return its browser
+    /// projection.
     ///
     /// # Errors
     ///
-    /// Returns an error when the project file is invalid or its source manifest cannot be queued.
-    pub fn load_project_file_from_sources(
+    /// Returns an error when the source manifest cannot be queued for the runtime.
+    pub fn load_decoded_project_file(
         &mut self,
-        bytes: Vec<u8>,
+        decoded: era_runtime::DecodedProjectFile,
     ) -> Result<ProjectManifest, String> {
-        let source_manifest = era_runtime::decode_project_file(&bytes, bytes.len())
-            .map_err(|error| error.to_string())?
-            .manifest;
-        drop(bytes);
-        let frontend_manifest = browser_project_manifest(&source_manifest);
-        self.load_project(source_manifest)?;
+        let (runtime_manifest, frontend_manifest) =
+            split_browser_project_manifest(decoded.manifest)?;
+        self.load_project(runtime_manifest)?;
         Ok(frontend_manifest)
     }
 
@@ -500,24 +495,57 @@ impl WebSession {
     }
 }
 
-fn browser_project_manifest(source: &ProjectManifest) -> ProjectManifest {
-    ProjectManifest {
-        project_revision: source.project_revision,
-        files: source
-            .files
-            .iter()
-            .map(|file| SubmittedFile {
-                relative_path: file.relative_path.clone(),
-                category: file.category,
-                payload: if file.category == FileCategory::Resource {
-                    file.payload.clone()
-                } else {
-                    empty_file_payload(&file.payload)
-                },
-                content_hash: file.content_hash.clone(),
-            })
-            .collect(),
+fn split_browser_project_manifest(
+    mut runtime: ProjectManifest,
+) -> Result<(ProjectManifest, ProjectManifest), String> {
+    for file in &mut runtime.files {
+        if file.content_hash.is_none() {
+            file.content_hash = match &file.payload {
+                FilePayload::Utf8(value) => Some(era_protocol::ProtocolBytes::new(
+                    blake3::hash(value.as_bytes()).as_bytes().to_vec(),
+                )),
+                FilePayload::Bytes(value) => Some(era_protocol::ProtocolBytes::new(
+                    blake3::hash(value.as_slice()).as_bytes().to_vec(),
+                )),
+                FilePayload::IoError(_) | FilePayload::ExternalResource(_) => None,
+            };
+        }
     }
+    let original_identity = project_identity(&runtime)?;
+    let mut frontend_files = Vec::with_capacity(runtime.files.len());
+    for file in &mut runtime.files {
+        let frontend_payload = if file.category == FileCategory::Resource {
+            match &file.payload {
+                FilePayload::Bytes(bytes) => {
+                    let descriptor = FilePayload::ExternalResource(ExternalResource {
+                        byte_length: u64::try_from(bytes.as_slice().len())
+                            .map_err(|_| "project resource is too large")?,
+                        image_metadata: None,
+                    });
+                    std::mem::replace(&mut file.payload, descriptor)
+                }
+                _ => file.payload.clone(),
+            }
+        } else {
+            empty_file_payload(&file.payload)
+        };
+        frontend_files.push(SubmittedFile {
+            relative_path: file.relative_path.clone(),
+            category: file.category,
+            payload: frontend_payload,
+            content_hash: file.content_hash.clone(),
+        });
+    }
+    let frontend = ProjectManifest {
+        project_revision: runtime.project_revision,
+        files: frontend_files,
+    };
+    if project_identity(&runtime)? != original_identity
+        || project_identity(&frontend)? != original_identity
+    {
+        return Err("browser project projection changed the project identity".into());
+    }
+    Ok((runtime, frontend))
 }
 
 fn empty_file_payload(payload: &FilePayload) -> FilePayload {

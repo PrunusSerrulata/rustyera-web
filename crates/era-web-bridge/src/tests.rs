@@ -338,27 +338,40 @@ fn browser_project_projection_keeps_resources_without_cloning_source_payloads() 
                 relative_path: "resources/title.png".into(),
                 category: FileCategory::Resource,
                 payload: FilePayload::Bytes(ProtocolBytes::new(vec![2, 3, 4])),
-                content_hash: Some(ProtocolBytes::new(vec![2; 32])),
+                content_hash: None,
             },
         ],
     };
 
-    let projected = browser_project_manifest(&source);
+    let (runtime, projected) = split_browser_project_manifest(source).unwrap();
+    let source_identity = project_identity(&runtime).unwrap();
 
-    assert_eq!(project_identity(&projected), project_identity(&source));
+    assert_eq!(project_identity(&projected).unwrap(), source_identity);
+    assert_eq!(project_identity(&runtime).unwrap(), source_identity);
     assert!(matches!(
         &projected.files[0].payload,
         FilePayload::Utf8(value) if value.is_empty()
     ));
-    assert_eq!(projected.files[1].payload, source.files[1].payload);
+    assert_eq!(
+        projected.files[1].payload,
+        FilePayload::Bytes(ProtocolBytes::new(vec![2, 3, 4]))
+    );
     assert!(matches!(
-        &source.files[0].payload,
+        &runtime.files[0].payload,
         FilePayload::Utf8(value) if value == "@SYSTEM_TITLE\nRETURN\n"
     ));
+    assert!(matches!(
+        &runtime.files[1].payload,
+        FilePayload::ExternalResource(resource) if resource.byte_length == 3
+    ));
+    assert_eq!(
+        projected.files[1].content_hash.as_ref().unwrap().as_slice(),
+        blake3::hash(&[2, 3, 4]).as_bytes()
+    );
 }
 
 #[test]
-fn low_memory_project_file_load_decodes_and_stages_a_valid_container() {
+fn decoded_project_file_load_projects_and_stages_a_valid_manifest() {
     let source = "@SYSTEM_TITLE\nRETURN\n";
     let resource = vec![2, 3, 4];
     let manifest = ProjectManifest {
@@ -383,10 +396,11 @@ fn low_memory_project_file_load_decodes_and_stages_a_valid_container() {
         ],
     };
     let project_file = export_project_file(&manifest);
+    let decoded = era_runtime::decode_project_file(&project_file, project_file.len()).unwrap();
     let mut target = negotiated_web_session();
 
     let frontend = target
-        .load_project_file_from_sources(project_file)
+        .load_decoded_project_file(decoded)
         .expect("valid project file should stage its sources");
 
     assert_eq!(frontend.project_revision, manifest.project_revision);

@@ -6,6 +6,7 @@
 /playwright-report
 /test-results
 /.rustyera/test-runs
+/.rustyera/webdriver
 /.rustyera/cargo-local
 /tests/fixtures/**/.rustyera
 /.playwright-browsers

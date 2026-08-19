@@ -35,6 +35,7 @@ import { dispatchBrowserStorage } from "@/platform/browserProjectStorage";
 import { isPackagedProjectFontPath, type ProjectFontSource } from "@/platform/projectFonts";
 import { scanBrowserProjectFilesOffThread } from "@/platform/browserProjectScanPool";
 import type { ScannedFile } from "@/platform/browserProjectScanner";
+import { takeProjectFileManifestOwnership } from "@/platform/projectFileManifestTransfer";
 
 export { scanBrowserProjectFile } from "@/platform/browserProjectScanner";
 export type { ScannedFile } from "@/platform/browserProjectScanner";
@@ -146,18 +147,16 @@ export class BrowserProject {
   }
 
   useEmbeddedManifest(manifest: BrowserManifest): void {
-    this.revision = manifest.project_revision;
+    const owned = takeProjectFileManifestOwnership(manifest);
+    this.revision = owned.project_revision;
     this.embeddedResources.clear();
     this.usesEmbeddedManifest = true;
-    for (const file of manifest.files) {
+    for (const file of owned.files) {
       if (file.category === "resource" && file.payload.type === "bytes") {
-        this.embeddedResources.set(
-          safePath(file.relative_path).toLowerCase(),
-          new Uint8Array(file.payload.value),
-        );
+        this.embeddedResources.set(safePath(file.relative_path).toLowerCase(), file.payload.value);
       }
     }
-    this.manifestValue = cacheIdentityManifest(manifest);
+    this.manifestValue = cacheIdentityManifest(owned);
   }
 
   usePackagedFile(

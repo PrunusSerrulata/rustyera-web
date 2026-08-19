@@ -731,12 +731,12 @@ async function streamProjectFile<T>(
   worker: WorkerClient,
   file: File,
   progress: (completed: number, total: number) => void,
-  lowMemory = false,
+  sourcesOnly = false,
 ): Promise<T> {
   if (!Number.isSafeInteger(file.size) || file.size > 0xffff_ffff) {
     throw new Error("项目文件大小超出浏览器可处理范围。");
   }
-  await worker.call("beginProjectFile", file.size);
+  await worker.call("beginProjectFile", file.size, sourcesOnly);
   try {
     for (let offset = 0; offset < file.size; offset += PROJECT_FILE_READ_CHUNK_BYTES) {
       const end = Math.min(file.size, offset + PROJECT_FILE_READ_CHUNK_BYTES);
@@ -750,7 +750,7 @@ async function streamProjectFile<T>(
       progress(end, file.size);
       await yieldToMainThread();
     }
-    return await worker.call<T>("finishProjectFile", lowMemory);
+    return await worker.call<T>("finishProjectFile");
   } catch (error) {
     await worker.call("cancelProjectFile").catch(() => undefined);
     throw error;

@@ -578,7 +578,8 @@ describe("browser startup bridge", () => {
       "loadProjectWithCompiledCache",
     ]);
     expect(requests[1].transfer).toHaveLength(1);
-    expect(requests[2].message.args).toEqual([false]);
+    expect(requests[0].message.args).toEqual([bytes.byteLength, false]);
+    expect(requests[2].message.args).toEqual([]);
     const projectRoot = await (
       await storage.getDirectoryHandle(".rustyera-project-files")
     ).getDirectoryHandle("legacy-key");
@@ -630,8 +631,10 @@ describe("browser startup bridge", () => {
       "appendProjectFile",
       "finishProjectFile",
     ]);
-    expect(requests[2].message.args).toEqual([true]);
-    expect(requests[5].message.args).toEqual([true]);
+    expect(requests[0].message.args).toEqual([file.size, true]);
+    expect(requests[2].message.args).toEqual([]);
+    expect(requests[3].message.args).toEqual([file.size, true]);
+    expect(requests[5].message.args).toEqual([]);
     expect(progress.mock.calls).toEqual([
       [{ stage: "scanning", completed: 0, total: file.size }],
       [{ stage: "scanning", completed: file.size, total: file.size }],
@@ -781,7 +784,7 @@ describe("browser startup bridge", () => {
       "appendProjectFile",
       "finishProjectFile",
     ]);
-    expect(requests[0].message.args).toEqual([bytes.byteLength]);
+    expect(requests[0].message.args).toEqual([bytes.byteLength, false]);
     const firstChunk = requests[1].message.args[0] as Uint8Array;
     const secondChunk = requests[2].message.args[0] as Uint8Array;
     expect(firstChunk).toHaveLength(4 * 1024 * 1024);

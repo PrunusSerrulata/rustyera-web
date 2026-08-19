@@ -1,7 +1,9 @@
 //! WebAssembly bindings for the shared `RustyEra` web session bridge.
 
 use era_debug_protocol::DebugMessage;
-use era_runtime::{ProjectProgressReporter, RuntimeDriveBudget};
+use era_runtime::{
+    DecodedProjectFileStream, ProjectFileStreamDecoder, ProjectProgressReporter, RuntimeDriveBudget,
+};
 use era_runtime_protocol::{
     ExternalResource, FileCategory, FilePayload, ImageMetadataResponse, ProjectManifest,
     ProtocolBytes, RuntimeMessage, SubmittedFile,
@@ -28,9 +30,22 @@ pub struct WasmRuntime {
     project_file_upload: ProjectFileUpload,
 }
 
+enum PendingProjectFileMode {
+    Complete(Vec<u8>),
+    Sources(Box<ProjectFileStreamDecoder>),
+}
+
 struct PendingProjectFile {
-    bytes: Vec<u8>,
+    mode: PendingProjectFileMode,
     expected_len: usize,
+    received_len: usize,
+    scratch: Vec<u8>,
+}
+
+#[derive(Debug)]
+enum CompletedProjectFile {
+    Complete(Vec<u8>),
+    Sources(DecodedProjectFileStream),
 }
 
 #[derive(Default)]
@@ -39,20 +54,35 @@ struct ProjectFileUpload {
 }
 
 impl ProjectFileUpload {
-    fn begin(&mut self, expected_len: usize, maximum_len: usize) -> Result<(), String> {
+    fn begin(
+        &mut self,
+        expected_len: usize,
+        maximum_len: usize,
+        sources_only: bool,
+    ) -> Result<(), String> {
         if self.pending.is_some() {
             return Err("a project file upload is already active".to_owned());
         }
         if expected_len > maximum_len {
             return Err("project file exceeds the negotiated transfer limit".to_owned());
         }
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(expected_len)
-            .map_err(|error| format!("failed to reserve project file buffer: {error}"))?;
+        let mode = if sources_only {
+            PendingProjectFileMode::Sources(Box::new(
+                ProjectFileStreamDecoder::new(expected_len, maximum_len)
+                    .map_err(|error| error.to_string())?,
+            ))
+        } else {
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(expected_len)
+                .map_err(|error| format!("failed to reserve project file buffer: {error}"))?;
+            PendingProjectFileMode::Complete(bytes)
+        };
         self.pending = Some(PendingProjectFile {
-            bytes,
+            mode,
             expected_len,
+            received_len: 0,
+            scratch: Vec::new(),
         });
         Ok(())
     }
@@ -62,33 +92,78 @@ impl ProjectFileUpload {
             .pending
             .as_mut()
             .ok_or_else(|| "no project file upload is active".to_owned())?;
-        let start = pending.bytes.len();
+        let start = pending.received_len;
         let end = start
             .checked_add(chunk_len)
             .ok_or_else(|| "project file size overflow".to_owned())?;
         if end > pending.expected_len {
             return Err("project file upload exceeds its declared size".to_owned());
         }
-        pending.bytes.resize(end, 0);
-        Ok(&mut pending.bytes[start..end])
+        match &mut pending.mode {
+            PendingProjectFileMode::Complete(bytes) => {
+                bytes.resize(end, 0);
+                Ok(&mut bytes[start..end])
+            }
+            PendingProjectFileMode::Sources(_) => {
+                pending.scratch.resize(chunk_len, 0);
+                Ok(&mut pending.scratch)
+            }
+        }
     }
 
-    fn finish(&mut self) -> Result<Vec<u8>, String> {
+    fn commit_append(&mut self) -> Result<(), String> {
+        let result = {
+            let pending = self
+                .pending
+                .as_mut()
+                .ok_or_else(|| "no project file upload is active".to_owned())?;
+            match &mut pending.mode {
+                PendingProjectFileMode::Complete(bytes) => {
+                    pending.received_len = bytes.len();
+                    Ok(())
+                }
+                PendingProjectFileMode::Sources(decoder) => {
+                    let result = decoder
+                        .append(&pending.scratch)
+                        .map_err(|error| error.to_string());
+                    if result.is_ok() {
+                        pending.received_len += pending.scratch.len();
+                        pending.scratch.clear();
+                    }
+                    result
+                }
+            }
+        };
+        if result.is_err() {
+            self.pending = None;
+        }
+        result
+    }
+
+    fn finish(&mut self) -> Result<CompletedProjectFile, String> {
         let pending = self
             .pending
             .as_ref()
             .ok_or_else(|| "no project file upload is active".to_owned())?;
-        if pending.bytes.len() != pending.expected_len {
+        if pending.received_len != pending.expected_len {
             return Err(format!(
                 "project file upload is incomplete: received {} of {} bytes",
-                pending.bytes.len(),
-                pending.expected_len
+                pending.received_len, pending.expected_len
             ));
         }
         self.pending
             .take()
-            .map(|completed| completed.bytes)
+            .map(|completed| match completed.mode {
+                PendingProjectFileMode::Complete(bytes) => {
+                    Ok(CompletedProjectFile::Complete(bytes))
+                }
+                PendingProjectFileMode::Sources(decoder) => (*decoder)
+                    .finish()
+                    .map(CompletedProjectFile::Sources)
+                    .map_err(|error| error.to_string()),
+            })
             .ok_or_else(|| "no project file upload is active".to_owned())
+            .and_then(std::convert::identity)
     }
 
     fn cancel(&mut self) {
@@ -222,20 +297,27 @@ impl WasmRuntime {
         )
     }
 
-    /// Reserve the WASM-owned buffer used to receive one project file in bounded chunks.
+    /// Begin receiving one project file in bounded chunks.
+    ///
+    /// Source-only mode hashes and skips compiled sections while retaining only the compressed
+    /// source manifest needed for a cold compile.
     ///
     /// # Errors
     ///
     /// Returns a JavaScript error when another upload is active, the file exceeds the negotiated
-    /// transfer limit, or memory for the declared file size cannot be reserved.
+    /// transfer limit, or memory for the required retained sections cannot be reserved.
     #[wasm_bindgen(js_name = beginProjectFile)]
-    pub fn begin_project_file(&mut self, total_bytes: u32) -> Result<(), JsValue> {
+    pub fn begin_project_file(
+        &mut self,
+        total_bytes: u32,
+        sources_only: bool,
+    ) -> Result<(), JsValue> {
         let expected_len = usize::try_from(total_bytes)
             .map_err(|_| js_error("project file size is unsupported on this platform"))?;
         let maximum_len =
             usize::try_from(self.inner.maximum_transfer_bytes()).unwrap_or(usize::MAX);
         self.project_file_upload
-            .begin(expected_len, maximum_len)
+            .begin(expected_len, maximum_len, sources_only)
             .map_err(js_error)
     }
 
@@ -253,7 +335,7 @@ impl WasmRuntime {
             .append_destination(chunk_len)
             .map_err(js_error)?;
         chunk.copy_to(destination);
-        Ok(())
+        self.project_file_upload.commit_append().map_err(js_error)
     }
 
     /// Decode and load the completed WASM-owned project-file buffer without another full copy.
@@ -263,25 +345,33 @@ impl WasmRuntime {
     /// Returns a JavaScript error when the upload is absent or incomplete, or the project file is
     /// corrupt, unsupported, or cannot be staged for the runtime.
     #[wasm_bindgen(js_name = finishProjectFile)]
-    pub fn finish_project_file(&mut self, low_memory: bool) -> Result<JsValue, JsValue> {
-        let bytes = self.project_file_upload.finish().map_err(js_error)?;
-        let storage_key = blake3::hash(&bytes).to_hex().to_string();
-        let manifest = if low_memory {
-            self.inner
-                .load_project_file_from_sources(bytes)
-                .map_err(js_error)?
-        } else {
-            let manifest = self.inner.project_file_manifest(&bytes).map_err(js_error)?;
-            let identity = project_identity(&manifest).map_err(js_error)?;
-            self.inner
-                .load_project_with_compiled_cache(identity, bytes)
-                .map_err(js_error)?;
-            manifest
+    pub fn finish_project_file(&mut self) -> Result<JsValue, JsValue> {
+        let completed = self.project_file_upload.finish().map_err(js_error)?;
+        let (manifest, storage_key, cache_imported) = match completed {
+            CompletedProjectFile::Complete(bytes) => {
+                let storage_key = blake3::hash(&bytes).to_hex().to_string();
+                let manifest = self.inner.project_file_manifest(&bytes).map_err(js_error)?;
+                let identity = project_identity(&manifest).map_err(js_error)?;
+                self.inner
+                    .load_project_with_compiled_cache(identity, bytes)
+                    .map_err(js_error)?;
+                (manifest, storage_key, true)
+            }
+            CompletedProjectFile::Sources(decoded) => {
+                let storage_key = blake3::Hash::from_bytes(decoded.file_digest)
+                    .to_hex()
+                    .to_string();
+                let manifest = self
+                    .inner
+                    .load_decoded_project_file(decoded.project)
+                    .map_err(js_error)?;
+                (manifest, storage_key, false)
+            }
         };
         to_js(LoadedProjectFile {
             manifest,
             storage_key,
-            cache_imported: !low_memory,
+            cache_imported,
         })
     }
 
@@ -578,7 +668,7 @@ impl<'a> BinaryReader<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProjectFileUpload, decode_browser_manifest};
+    use super::{CompletedProjectFile, ProjectFileUpload, decode_browser_manifest};
     use era_runtime_protocol::{FileCategory, FilePayload};
 
     #[test]
@@ -622,12 +712,18 @@ mod tests {
         let mut upload = ProjectFileUpload::default();
         assert!(upload.finish().unwrap_err().contains("no project file"));
 
-        upload.begin(3, 3).unwrap();
-        assert!(upload.begin(3, 3).unwrap_err().contains("already active"));
+        upload.begin(3, 3, false).unwrap();
+        assert!(
+            upload
+                .begin(3, 3, false)
+                .unwrap_err()
+                .contains("already active")
+        );
         upload
             .append_destination(2)
             .unwrap()
             .copy_from_slice(&[1, 2]);
+        upload.commit_append().unwrap();
         assert!(
             upload
                 .append_destination(2)
@@ -636,22 +732,65 @@ mod tests {
         );
         assert!(upload.finish().unwrap_err().contains("received 2 of 3"));
         upload.append_destination(1).unwrap().copy_from_slice(&[3]);
-        assert_eq!(upload.finish().unwrap(), [1, 2, 3]);
+        upload.commit_append().unwrap();
+        assert!(matches!(
+            upload.finish().unwrap(),
+            CompletedProjectFile::Complete(bytes) if bytes == [1, 2, 3]
+        ));
 
-        upload.begin(2, 3).unwrap();
+        upload.begin(2, 3, false).unwrap();
         upload.append_destination(1).unwrap()[0] = 9;
+        upload.commit_append().unwrap();
         upload.cancel();
-        upload.begin(1, 3).unwrap();
+        upload.begin(1, 3, false).unwrap();
         upload.append_destination(1).unwrap()[0] = 4;
-        assert_eq!(upload.finish().unwrap(), [4]);
+        upload.commit_append().unwrap();
+        assert!(matches!(
+            upload.finish().unwrap(),
+            CompletedProjectFile::Complete(bytes) if bytes == [4]
+        ));
     }
 
     #[test]
     fn project_file_upload_rejects_a_declared_size_above_the_limit() {
         let mut upload = ProjectFileUpload::default();
 
-        assert!(upload.begin(4, 3).unwrap_err().contains("transfer limit"));
-        upload.begin(3, 3).unwrap();
+        assert!(
+            upload
+                .begin(4, 3, false)
+                .unwrap_err()
+                .contains("transfer limit")
+        );
+        upload.begin(3, 3, false).unwrap();
+    }
+
+    #[test]
+    fn source_project_file_upload_discards_a_failed_decoder_and_can_restart() {
+        let mut upload = ProjectFileUpload::default();
+        upload.begin(265, 265, true).unwrap();
+        upload.append_destination(1).unwrap()[0] = b'R';
+        upload.commit_append().unwrap();
+        assert!(upload.finish().unwrap_err().contains("received 1 of 265"));
+        upload.append_destination(88).unwrap().fill(0);
+        assert!(
+            upload
+                .commit_append()
+                .unwrap_err()
+                .contains("invalid header")
+        );
+        assert!(upload.finish().unwrap_err().contains("no project file"));
+
+        upload.begin(1, 265, false).unwrap();
+        upload.append_destination(1).unwrap()[0] = 7;
+        upload.commit_append().unwrap();
+        assert!(matches!(
+            upload.finish().unwrap(),
+            CompletedProjectFile::Complete(bytes) if bytes == [7]
+        ));
+
+        upload.begin(265, 265, true).unwrap();
+        upload.cancel();
+        upload.begin(1, 265, false).unwrap();
     }
 
     fn append_file(

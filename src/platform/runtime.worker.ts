@@ -1,3 +1,5 @@
+import { runtimeWorkerResultTransfers } from "@/platform/projectFileManifestTransfer";
+
 type WasmModule = {
   default: () => Promise<void>;
   WasmRuntime: new (
@@ -9,9 +11,9 @@ type WasmModule = {
     loadProject(manifest: unknown): bigint;
     loadProjectBinary(manifest: Uint8Array): bigint;
     projectFileManifest(bytes: Uint8Array): unknown;
-    beginProjectFile(totalBytes: number): void;
+    beginProjectFile(totalBytes: number, sourcesOnly: boolean): void;
     appendProjectFile(bytes: Uint8Array): void;
-    finishProjectFile(lowMemory: boolean): unknown;
+    finishProjectFile(): unknown;
     cancelProjectFile(): void;
     prepareProjectConfigurationUpdate(
       projectFile: Uint8Array,
@@ -61,7 +63,7 @@ self.onmessage = async (event: MessageEvent) => {
           result = runtime.projectFileManifest(args[0] as Uint8Array);
           break;
         case "beginProjectFile":
-          result = runtime.beginProjectFile(args[0] as number);
+          result = runtime.beginProjectFile(args[0] as number, Boolean(args[1]));
           break;
         case "appendProjectFile":
           result = runtime.appendProjectFile(args[0] as Uint8Array);
@@ -74,7 +76,7 @@ self.onmessage = async (event: MessageEvent) => {
           );
           break;
         case "finishProjectFile": {
-          result = runtime.finishProjectFile(Boolean(args[0]));
+          result = runtime.finishProjectFile();
           break;
         }
         case "cancelProjectFile":
@@ -102,12 +104,7 @@ self.onmessage = async (event: MessageEvent) => {
           throw new Error(`未知 Worker 方法：${method}`);
       }
     }
-    const transfer =
-      method === "pump" || method === "create"
-        ? ((result as { events?: Array<{ dataBytes?: Uint8Array }> })?.events ?? [])
-            .map((item) => item.dataBytes?.buffer)
-            .filter((buffer): buffer is ArrayBuffer => buffer instanceof ArrayBuffer)
-        : [];
+    const transfer = runtimeWorkerResultTransfers(method, result);
     self.postMessage({ id, result }, { transfer });
   } catch (error) {
     self.postMessage({ id, error: error instanceof Error ? error.message : String(error) });

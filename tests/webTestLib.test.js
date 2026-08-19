@@ -51,13 +51,29 @@ describe("web game test scenario", () => {
   );
 
   it.each(["win32", "linux"])("lets WebDriver discover Firefox on %s", (platform) => {
-    expect(nativeFirefoxCapabilities(platform)["moz:firefoxOptions"]).toEqual({
+    const capabilities = nativeFirefoxCapabilities(platform);
+    expect(capabilities.webSocketUrl).toBe(true);
+    expect(capabilities.pageLoadStrategy).toBe("eager");
+    expect(capabilities["wdio:enforceWebDriverClassic"]).toBeUndefined();
+    expect(capabilities["wdio:geckodriverOptions"]).toEqual({
+      cacheDir: path.resolve(".rustyera", "webdriver"),
+      geckoDriverVersion: "0.37.1",
+    });
+    expect(capabilities["moz:firefoxOptions"]).toEqual({
       args: ["-headless"],
     });
   });
 
   it("uses the native Firefox application path on macOS", () => {
-    expect(nativeFirefoxCapabilities("darwin")["moz:firefoxOptions"]).toEqual({
+    const capabilities = nativeFirefoxCapabilities("darwin");
+    expect(capabilities.webSocketUrl).toBe(true);
+    expect(capabilities.pageLoadStrategy).toBe("eager");
+    expect(capabilities["wdio:enforceWebDriverClassic"]).toBeUndefined();
+    expect(capabilities["wdio:geckodriverOptions"]).toEqual({
+      cacheDir: path.resolve(".rustyera", "webdriver"),
+      geckoDriverVersion: "0.37.1",
+    });
+    expect(capabilities["moz:firefoxOptions"]).toEqual({
       args: ["-headless"],
       binary: "/Applications/Firefox.app/Contents/MacOS/firefox",
     });

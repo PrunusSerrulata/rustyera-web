@@ -59,6 +59,14 @@ describe("Tauri end-to-end test support", () => {
     );
   });
 
+  it("rejects a complete snapshot command that exceeds its hard deadline", async () => {
+    const browser = { execute: vi.fn(() => new Promise(() => {})) };
+
+    await expect(captureCompleteTauriSnapshot(browser, 1)).rejects.toThrow(
+      "complete snapshot capture exceeded 1 ms",
+    );
+  });
+
   it("rejects the second consecutive identical complete snapshot", () => {
     const snapshot = { document: [{ tag: "main" }], runtime: { phase: "waiting_input" } };
 

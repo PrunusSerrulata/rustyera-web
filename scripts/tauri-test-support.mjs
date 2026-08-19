@@ -10,41 +10,54 @@ export function resolveTauriBinary(repository, release, platform = process.platf
   return path.resolve(repository, "../target", profile, executable);
 }
 
-export async function captureCompleteTauriSnapshot(browser) {
-  return browser.execute(() => {
-    const elements = [...document.querySelectorAll("*")].map((element) => {
-      const style = getComputedStyle(element);
-      const bounds = element.getBoundingClientRect();
-      const candidateValue = "value" in element ? element.value : null;
-      const value = ["string", "number", "boolean"].includes(typeof candidateValue)
-        ? candidateValue
-        : null;
-      return {
-        tag: element.tagName.toLowerCase(),
-        attributes: Object.fromEntries(
-          [...element.attributes]
-            .map((attribute) => [attribute.name, attribute.value])
-            .sort(([left], [right]) => left.localeCompare(right)),
-        ),
-        text: element.textContent ?? "",
-        value,
-        visible: Boolean(
-          element.isConnected &&
-          !element.hidden &&
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          style.visibility !== "collapse" &&
-          style.opacity !== "0" &&
-          bounds.width > 0 &&
-          bounds.height > 0,
-        ),
-      };
-    });
-    return {
-      document: elements,
-      runtime: window.__RUSTYERA_TEST__?.snapshot() ?? null,
-    };
-  });
+export async function captureCompleteTauriSnapshot(browser, timeoutMs = SNAPSHOT_INTERVAL_MS) {
+  let timeout;
+  try {
+    return await Promise.race([
+      browser.execute(() => {
+        const elements = [...document.querySelectorAll("*")].map((element) => {
+          const style = getComputedStyle(element);
+          const bounds = element.getBoundingClientRect();
+          const candidateValue = "value" in element ? element.value : null;
+          const value = ["string", "number", "boolean"].includes(typeof candidateValue)
+            ? candidateValue
+            : null;
+          return {
+            tag: element.tagName.toLowerCase(),
+            attributes: Object.fromEntries(
+              [...element.attributes]
+                .map((attribute) => [attribute.name, attribute.value])
+                .sort(([left], [right]) => left.localeCompare(right)),
+            ),
+            text: element.textContent ?? "",
+            value,
+            visible: Boolean(
+              element.isConnected &&
+              !element.hidden &&
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              style.visibility !== "collapse" &&
+              style.opacity !== "0" &&
+              bounds.width > 0 &&
+              bounds.height > 0,
+            ),
+          };
+        });
+        return {
+          document: elements,
+          runtime: window.__RUSTYERA_TEST__?.snapshot() ?? null,
+        };
+      }),
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`complete snapshot capture exceeded ${timeoutMs} ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export function assertSnapshotProgress(previousSnapshot, currentSnapshot, label = "Tauri") {

@@ -396,7 +396,15 @@ export function nativeFirefoxCapabilities(platform = process.platform) {
   }
   return {
     browserName: "firefox",
-    "wdio:enforceWebDriverClassic": true,
+    // Firefox 154 can leave classic WebDriver commands queued behind a long-running page load,
+    // which prevents the compatibility runner from capturing its mandatory first snapshot.
+    // Request the native BiDi endpoint so document inspection and startup diagnostics remain live.
+    webSocketUrl: true,
+    pageLoadStrategy: "eager",
+    "wdio:geckodriverOptions": {
+      cacheDir: path.resolve(".rustyera", "webdriver"),
+      geckoDriverVersion: "0.37.1",
+    },
     "moz:firefoxOptions": options,
   };
 }

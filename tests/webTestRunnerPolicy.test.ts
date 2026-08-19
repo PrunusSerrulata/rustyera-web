@@ -45,6 +45,24 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain('telemetry.outcome !== "success"');
   });
 
+  it("requires Firefox BiDi before eager navigation and bounds complete snapshots", () => {
+    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+    const library = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const snapshots = readFileSync(resolve("scripts/tauri-test-support.mjs"), "utf8");
+
+    expect(library).toContain("webSocketUrl: true");
+    expect(library).toContain('pageLoadStrategy: "eager"');
+    expect(library).toContain('geckoDriverVersion: "0.37.1"');
+    expect(library).toContain('cacheDir: path.resolve(".rustyera", "webdriver")');
+    expect(library).not.toContain('"wdio:enforceWebDriverClassic": true');
+    expect(runner).toContain("browser.isBidi !== true");
+    expect(runner.indexOf("browser.isBidi !== true")).toBeLessThan(
+      runner.indexOf("await browser.url(`http://127.0.0.1:${port}`)"),
+    );
+    expect(snapshots).toContain("complete snapshot capture exceeded");
+    expect(snapshots).toContain("Promise.race");
+  });
+
   it("checks global preferences through the real UI before native-browser project load", () => {
     const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
 
