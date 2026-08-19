@@ -382,39 +382,6 @@ try {
       await button.waitForClickable({ timeout: 30_000 });
       await button.click();
     };
-    const clickFileMenuAction = async (label) => {
-      const menuButton = await browser.$("#menu-file");
-      for (let attempt = 1; attempt <= 2; attempt += 1) {
-        compatibilityStage = `opening 文件 menu for ${label} (attempt ${attempt})`;
-        await menuButton.waitForClickable({ timeout: 2_000 });
-        if ((await menuButton.getAttribute("aria-expanded")) !== "true") {
-          await menuButton.click();
-        }
-        const opened = await browser
-          .waitUntil(
-            () => menuButton.getAttribute("aria-expanded").then((value) => value === "true"),
-            {
-              timeout: 1_000,
-              interval: 50,
-            },
-          )
-          .then(() => true)
-          .catch(() => false);
-        if (!opened) continue;
-        compatibilityStage = `clicking ${label}`;
-        const action = await browser.$(
-          `//button[@id='menu-file']/following-sibling::*[contains(@class,'menu-popup')]//button[normalize-space(.)=${JSON.stringify(label)}]`,
-        );
-        const clickable = await action
-          .waitForClickable({ timeout: 1_000 })
-          .then(() => true)
-          .catch(() => false);
-        if (!clickable) continue;
-        await action.click();
-        return;
-      }
-      throw new Error(`文件 menu action did not become clickable: ${label}`);
-    };
     compatibilityStage = "checking automatic interaction assistance";
     const automaticInteractionAssist = await inspectAutomaticInteractionAssist(browser);
     compatibilityStage = "enabling interaction assistance";
@@ -429,7 +396,7 @@ try {
       { menuLabel: "返回标题", title: "返回标题" },
     ]) {
       const beforeConfirmation = await browser.execute(() => window.__RUSTYERA_TEST__?.snapshot());
-      await clickFileMenuAction(action.menuLabel);
+      await clickFileMenuAction(browser, action.menuLabel);
       compatibilityStage = `checking ${action.title} confirmation`;
       const confirmation = await browser.$(`section[aria-label='${action.title}']`);
       await confirmation.waitForDisplayed({ timeout: 30_000 });
@@ -456,7 +423,7 @@ try {
         throw new Error(`${action.title} cancellation changed the running game`);
       }
     }
-    await clickFileMenuAction("项目设置…");
+    await clickFileMenuAction(browser, "项目设置…");
     compatibilityStage = "checking font settings";
     const settingsDialog = await browser.$("section[aria-label='RustyEra Web · 项目设置']");
     await settingsDialog.waitForDisplayed({ timeout: 30_000 });
@@ -611,7 +578,7 @@ try {
         ),
       { timeout: 30_000, interval: 100, timeoutMsg: "in-game save did not complete" },
     );
-    await clickFileMenuAction("导出存档…");
+    await clickFileMenuAction(browser, "导出存档…");
     await (await browser.$("section[aria-label='导出存档']")).waitForDisplayed({ timeout: 30_000 });
     await clickButton("导出");
     compatibilityStage = "receiving exported save";
@@ -646,7 +613,7 @@ try {
         HTMLInputElement.prototype.click = nativeInputClick;
       };
     }, gameSave.download.bytes);
-    await clickFileMenuAction("导入存档…");
+    await clickFileMenuAction(browser, "导入存档…");
     await (await browser.$("section[aria-label='导入存档']")).waitForDisplayed({ timeout: 30_000 });
     await clickButton("选择 .sav 文件…");
     compatibilityStage = "waiting for imported save selection";
@@ -683,7 +650,7 @@ try {
       }));
       throw new Error(`traditional save was not imported: ${JSON.stringify(diagnosis)}`);
     }
-    await clickFileMenuAction("导出存档…");
+    await clickFileMenuAction(browser, "导出存档…");
     await (await browser.$("section[aria-label='导出存档']")).waitForDisplayed({ timeout: 30_000 });
     const exportSlot = await browser.$("section[aria-label='导出存档'] select");
     await exportSlot.selectByVisibleText("槽位 01（已有存档）");
@@ -879,13 +846,59 @@ async function inspectAutomaticInteractionAssist(activeBrowser) {
   return { desktop, mobile, mobileState };
 }
 
+async function clickFileMenuAction(activeBrowser, label) {
+  const menuButton = await activeBrowser.$("#menu-file");
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    compatibilityStage = `opening 文件 menu for ${label} (attempt ${attempt})`;
+    // Projects can hide the menu bar until hover. Safari may otherwise dispatch the click
+    // while the 120 ms reveal transform is still moving the button under the pointer.
+    await menuButton.moveTo();
+    await activeBrowser.pause(200);
+    await menuButton.waitForDisplayed({ timeout: 2_000 });
+    if ((await menuButton.getAttribute("aria-expanded")) !== "true") {
+      const dispatched = await activeBrowser.execute(() => {
+        const target = document.querySelector("#menu-file");
+        if (!(target instanceof HTMLElement) || target.matches(":disabled")) return false;
+        target.click();
+        return true;
+      });
+      if (!dispatched) continue;
+    }
+    const opened = await activeBrowser
+      .waitUntil(() => menuButton.getAttribute("aria-expanded").then((value) => value === "true"), {
+        timeout: 1_000,
+        interval: 50,
+      })
+      .then(() => true)
+      .catch(() => false);
+    if (!opened) continue;
+    compatibilityStage = `clicking ${label}`;
+    const action = await activeBrowser.$(
+      `//button[@id='menu-file']/following-sibling::*[contains(@class,'menu-popup')]//button[normalize-space(.)=${JSON.stringify(label)}]`,
+    );
+    const displayed = await action
+      .waitForDisplayed({ timeout: 1_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!displayed) continue;
+    // SafariDriver can report a successful element click without delivering it to the page.
+    // Dispatch through visible controls so the application receives the same DOM click.
+    const dispatched = await activeBrowser.execute((targetLabel) => {
+      const popup = document.querySelector("#menu-file")?.nextElementSibling;
+      const target = [...(popup?.querySelectorAll("button") ?? [])].find(
+        (candidate) => candidate.textContent?.trim() === targetLabel,
+      );
+      if (!(target instanceof HTMLElement) || target.matches(":disabled")) return false;
+      target.click();
+      return true;
+    }, label);
+    if (dispatched) return;
+  }
+  throw new Error(`文件 menu action did not become clickable: ${label}`);
+}
+
 async function enableGlobalInteractionAssist(activeBrowser) {
-  const fileMenu = await activeBrowser.$("//button[normalize-space(.)='文件']");
-  await fileMenu.waitForClickable({ timeout: 5_000 });
-  await fileMenu.click();
-  const preferences = await activeBrowser.$("//button[normalize-space(.)='偏好设置…']");
-  await preferences.waitForClickable({ timeout: 5_000 });
-  await preferences.click();
+  await clickFileMenuAction(activeBrowser, "偏好设置…");
   const dialog = await activeBrowser.$("section[aria-label='RustyEra Web · 偏好设置']");
   await dialog.waitForDisplayed({ timeout: 5_000 });
   await (await dialog.$("#preference-global-interactionAssistMode-on")).click();

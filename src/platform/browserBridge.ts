@@ -36,11 +36,14 @@ import { ProjectFontRegistry } from "@/platform/projectFonts";
 import { browserTraditionalSaves } from "@/platform/browserBridge/traditionalSaves";
 import { BrowserProjectPreferenceStore } from "@/platform/projectPreferences";
 import { needsLowMemoryProjectFileLoad } from "@/platform/browserProjectFilePolicy";
+import { normalizeProjectFileManifest } from "@/platform/projectFileManifestTransfer";
 
 const PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 
 export class BrowserBridge implements FrontendBridge {
   readonly kind = "browser" as const;
+  private readonly lowMemoryProjectFileLoad = needsLowMemoryProjectFileLoad();
+  readonly prewarmRuntimeOnInitialize = this.lowMemoryProjectFileLoad;
   private readonly worker = new WorkerClient();
   readonly traditionalSaves = browserTraditionalSaves({
     project: () => this.requireProject(),
@@ -185,20 +188,22 @@ export class BrowserBridge implements FrontendBridge {
     const picked = await pickBrowserProjectFile();
     if (!picked) return undefined;
     const { file } = picked;
-    const lowMemory = needsLowMemoryProjectFileLoad();
+    const lowMemory = this.lowMemoryProjectFileLoad;
     const submittedAtMs = performance.now();
     onSubmitted?.(submittedAtMs);
-    this.projectProgressListener?.({ stage: "scanning", completed: 0, total: file.size });
+    this.projectProgressListener?.({ stage: "preparing", completed: 0, total: 0 });
     await yieldToPaint();
     await prepareAfterSelection?.();
+    this.projectProgressListener?.({ stage: "scanning", completed: 0, total: file.size });
+    await yieldToPaint();
     const started = performance.now();
     const loaded = await this.worker.call<{
-      manifest: BrowserManifest;
+      manifest: unknown;
       storageKey: string;
       cacheImported: boolean;
-    }>("loadProjectFile", file);
+    }>("loadProjectFile", file, this.projectFileReadOptions());
     this.projectPreferenceStore = await BrowserProjectPreferenceStore.packaged(loaded.storageKey);
-    const manifest = loaded.manifest;
+    const manifest = normalizeProjectFileManifest(loaded.manifest);
     const storageRoot = await navigator.storage.getDirectory();
     const projects = await storageRoot.getDirectoryHandle(".rustyera-project-files", {
       create: true,
@@ -257,7 +262,11 @@ export class BrowserBridge implements FrontendBridge {
       this.projectProgressListener?.({ stage: "scanning", completed: 0, total: file.size });
       await yieldToPaint();
       const started = performance.now();
-      const loaded = await this.worker.call<{ cacheImported: boolean }>("loadProjectFile", file);
+      const loaded = await this.worker.call<{ cacheImported: boolean }>(
+        "loadProjectFile",
+        file,
+        this.projectFileReadOptions(),
+      );
       return {
         submittedAtMs,
         quickScanMs: 0,
@@ -692,6 +701,15 @@ export class BrowserBridge implements FrontendBridge {
     this.project?.finalizeReload(false);
     this.projectFontRegistry.clear();
     this.worker.close();
+  }
+
+  private projectFileReadOptions(): {
+    chunkBytes: number;
+    preferSynchronousReader: boolean;
+  } {
+    return this.lowMemoryProjectFileLoad
+      ? { chunkBytes: 1024 * 1024, preferSynchronousReader: true }
+      : { chunkBytes: PROJECT_FILE_READ_CHUNK_BYTES, preferSynchronousReader: false };
   }
 }
 

@@ -2,10 +2,112 @@ import { expect, it } from "vitest";
 
 import type { BrowserManifest } from "@/platform/browserProject";
 import {
+  normalizeProjectFileManifest,
   projectFileManifestTransfers,
   runtimeWorkerResultTransfers,
   takeProjectFileManifestOwnership,
 } from "@/platform/projectFileManifestTransfer";
+
+it("normalizes the WASM project-file projection into browser-owned resource descriptors", () => {
+  const manifest = normalizeProjectFileManifest({
+    project_revision: 7,
+    files: [
+      {
+        relative_path: "resources/1.webp",
+        category: "resource",
+        payload: {
+          type: "external_resource",
+          value: {
+            byte_length: 123,
+            image_metadata: { width: 10, height: 20, format: "webp", animated: false },
+          },
+        },
+        content_hash: Array.from({ length: 32 }, (_, index) => index),
+      },
+    ],
+  });
+
+  expect(manifest).toEqual({
+    project_revision: 7,
+    files: [
+      {
+        relative_path: "resources/1.webp",
+        category: "resource",
+        payload: {
+          type: "external",
+          byteLength: 123,
+          imageMetadata: { width: 10, height: 20, format: "webp", animated: false },
+        },
+        content_hash: Uint8Array.from({ length: 32 }, (_, index) => index),
+      },
+    ],
+  });
+});
+
+it.each([
+  [
+    "unknown payload",
+    { type: "mystery", value: "" },
+    new Uint8Array(32),
+    "resources/1.webp 的 payload 类型无效",
+  ],
+  ["missing descriptor", { type: "external_resource" }, new Uint8Array(32), "外部资源描述"],
+  [
+    "negative resource length",
+    { type: "external_resource", value: { byte_length: -1, image_metadata: null } },
+    new Uint8Array(32),
+    "资源长度 不是非负安全整数",
+  ],
+  [
+    "short hash",
+    { type: "bytes", value: Uint8Array.of(1) },
+    Uint8Array.of(1, 2, 3),
+    "内容哈希 长度必须为 32 字节",
+  ],
+  [
+    "unknown image format",
+    {
+      type: "external_resource",
+      value: {
+        byte_length: 1,
+        image_metadata: { width: 1, height: 1, format: "unknown", animated: false },
+      },
+    },
+    new Uint8Array(32),
+    "图片元数据无效",
+  ],
+])("rejects malformed WASM project-file manifests: %s", (_name, payload, hash, message) => {
+  expect(() =>
+    normalizeProjectFileManifest({
+      project_revision: 1,
+      files: [
+        {
+          relative_path: "resources/1.webp",
+          category: "resource",
+          payload,
+          content_hash: hash,
+        },
+      ],
+    }),
+  ).toThrow(message);
+});
+
+it("rejects missing file arrays and unknown project-file categories", () => {
+  expect(() => normalizeProjectFileManifest({ project_revision: 1 })).toThrow("files 不是数组");
+  expect(() =>
+    normalizeProjectFileManifest({
+      project_revision: 1,
+      files: [
+        {
+          relative_path: "resources/1.webp",
+          category: "unknown",
+          payload: { type: "bytes", value: Uint8Array.of(1) },
+          content_hash: new Uint8Array(32),
+        },
+      ],
+    }),
+  ).toThrow("resources/1.webp 的类别无效");
+});
 
 it("transfers each embedded resource buffer into one isolated manifest owner", () => {
   const first = Uint8Array.of(1, 2, 3);

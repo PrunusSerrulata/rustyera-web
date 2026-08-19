@@ -550,6 +550,163 @@ describe("runtime store startup-save", () => {
     },
   );
 
+  it("prewarms and reuses one Runtime session on constrained browser devices", async () => {
+    stubRunningAudioContext();
+    bridge.kind = "browser";
+    bridge.prewarmRuntimeOnInitialize = true;
+    const session = deferred<ReturnType<typeof emptyBatch>>();
+    bridge.createSession.mockReturnValue(session.promise);
+    mockProjectSelection(
+      {
+        submittedAtMs: performance.now(),
+        quickScanMs: 0,
+        cacheReadMs: 0,
+        sourceReadMs: 0,
+        submitMs: 1,
+        cacheImported: true,
+      },
+      "openProjectFile",
+    );
+    const store = useRuntimeStore();
+
+    await store.initialize();
+    const opening = store.openProjectFile();
+    await flushMicrotasks();
+
+    expect(bridge.createSession).toHaveBeenCalledOnce();
+    session.resolve(emptyBatch());
+    await opening;
+    expect(bridge.createSession).toHaveBeenCalledOnce();
+  });
+
+  it("retries session creation when constrained-browser prewarming fails", async () => {
+    stubRunningAudioContext();
+    bridge.kind = "browser";
+    bridge.prewarmRuntimeOnInitialize = true;
+    bridge.createSession.mockRejectedValueOnce(new Error("prewarm failed"));
+    mockProjectSelection(
+      {
+        submittedAtMs: performance.now(),
+        quickScanMs: 0,
+        cacheReadMs: 0,
+        sourceReadMs: 0,
+        submitMs: 1,
+        cacheImported: true,
+      },
+      "openProjectFile",
+    );
+    const store = useRuntimeStore();
+
+    await store.initialize();
+    await flushMicrotasks();
+    await store.openProjectFile();
+
+    expect(bridge.createSession).toHaveBeenCalledTimes(2);
+    expect(store.projectSource).toBe("file");
+  });
+
+  it("retries session creation when the prewarmed initial batch fails", async () => {
+    stubRunningAudioContext();
+    bridge.kind = "browser";
+    bridge.prewarmRuntimeOnInitialize = true;
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("service_request", {
+          request_id: 1,
+          kind: "unsupported",
+          operation: "unsupported",
+          payload: [],
+        }),
+      ],
+    });
+    bridge.submitRuntime.mockRejectedValueOnce(new Error("initial batch failed"));
+    mockProjectSelection(
+      {
+        submittedAtMs: performance.now(),
+        quickScanMs: 0,
+        cacheReadMs: 0,
+        sourceReadMs: 0,
+        submitMs: 1,
+        cacheImported: true,
+      },
+      "openProjectFile",
+    );
+    const store = useRuntimeStore();
+
+    await store.initialize();
+    await flushMicrotasks();
+    await store.openProjectFile();
+
+    expect(bridge.createSession).toHaveBeenCalledTimes(2);
+    expect(store.projectSource).toBe("file");
+  });
+
+  it("keeps the Runtime pump stopped until the selected project is installed by its host", async () => {
+    stubRunningAudioContext();
+    const selected = deferred<ProjectOpenMetrics | undefined>();
+    bridge.openProjectFile.mockImplementation(async (onSubmitted, prepareAfterSelection) => {
+      onSubmitted?.(performance.now());
+      await prepareAfterSelection?.();
+      return selected.promise;
+    });
+    const store = useRuntimeStore();
+
+    const opening = store.openProjectFile();
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(bridge.pump).not.toHaveBeenCalled();
+    selected.resolve({
+      submittedAtMs: performance.now(),
+      quickScanMs: 0,
+      cacheReadMs: 0,
+      sourceReadMs: 0,
+      submitMs: 1,
+      cacheImported: true,
+      projectFonts: { fonts: [], errors: [] },
+    });
+    await opening;
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(bridge.pump).toHaveBeenCalledOnce();
+  });
+
+  it("rebuilds the locked Runtime after host project installation fails", async () => {
+    stubRunningAudioContext();
+    let attempts = 0;
+    bridge.openProjectFile.mockImplementation(async (onSubmitted, prepareAfterSelection) => {
+      onSubmitted?.(performance.now());
+      await prepareAfterSelection?.();
+      if (attempts++ === 0) throw new Error("host project install failed");
+      return {
+        submittedAtMs: performance.now(),
+        quickScanMs: 0,
+        cacheReadMs: 0,
+        sourceReadMs: 0,
+        submitMs: 1,
+        cacheImported: true,
+      };
+    });
+    const store = useRuntimeStore();
+
+    await store.openProjectFile();
+
+    expect(store.status).toBe("Error: host project install failed");
+    expect(bridge.createSession).toHaveBeenCalledTimes(2);
+    expect(bridge.pump).not.toHaveBeenCalled();
+    expect(bridge.createSession.mock.invocationCallOrder[1]).toBeLessThan(
+      bridge.pump.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+
+    await store.openProjectFile();
+
+    expect(bridge.createSession).toHaveBeenCalledTimes(2);
+    expect(store.projectSource).toBe("file");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(bridge.pump).toHaveBeenCalled();
+  });
+
   it("keeps the current project when replacement selection is cancelled", async () => {
     stubRunningAudioContext();
     mockProjectSelection(undefined);
@@ -564,6 +721,7 @@ describe("runtime store startup-save", () => {
     expect(store.projectOpen).toBe(true);
     expect(store.projectSource).toBe("file");
     expect(store.status).toBe("已取消打开项目");
+    expect(store.canOpenProject).toBe(true);
   });
 
   it("does not overwrite the previous project telemetry when the picker fails", async () => {
@@ -636,7 +794,7 @@ describe("runtime store startup-save", () => {
     });
   });
 
-  it("does not reopen a cache-hit load after Runtime reaches the game first", async () => {
+  it("does not pump a cache-hit load before host project installation finishes", async () => {
     stubRunningAudioContext();
     const hostMetrics = deferred<ProjectOpenMetrics>();
     bridge.openProject.mockImplementation(async (onSubmitted, prepareAfterSelection) => {
@@ -662,13 +820,8 @@ describe("runtime store startup-save", () => {
     await vi.advanceTimersByTimeAsync(0);
     await flushMicrotasks();
 
-    expect(store.projectLoading).toBe(false);
-    expect(store.status).toBe("游戏运行中");
-    expect(store.startupTelemetry).toMatchObject({
-      scenario: "warm",
-      cacheHit: true,
-      outcome: "success",
-    });
+    expect(bridge.pump).not.toHaveBeenCalled();
+    expect(store.status).toBe("正在读取项目…");
 
     hostMetrics.resolve({
       submittedAtMs: 0,
@@ -680,6 +833,16 @@ describe("runtime store startup-save", () => {
       projectFonts: { fonts: [], errors: [] },
     });
     await opening;
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+
+    expect(store.projectLoading).toBe(false);
+    expect(store.status).toBe("游戏运行中");
+    expect(store.startupTelemetry).toMatchObject({
+      scenario: "warm",
+      cacheHit: true,
+      outcome: "success",
+    });
 
     expect(store.projectOpen).toBe(true);
     expect(store.projectLoading).toBe(false);

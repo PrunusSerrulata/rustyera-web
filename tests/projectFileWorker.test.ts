@@ -26,7 +26,7 @@ describe("packaged project worker reader", () => {
     const progress = vi.fn();
     const yieldTurn = vi.fn(async () => undefined);
 
-    await expect(loadProjectFileInWorker(runtime, file, progress, yieldTurn)).resolves.toEqual({
+    await expect(loadProjectFileInWorker(runtime, file, progress, {}, yieldTurn)).resolves.toEqual({
       cacheImported: true,
     });
 
@@ -62,6 +62,7 @@ describe("packaged project worker reader", () => {
         runtime,
         broken,
         () => undefined,
+        {},
         async () => undefined,
       ),
     ).rejects.toThrow("project blob read failed");
@@ -73,9 +74,44 @@ describe("packaged project worker reader", () => {
         runtime,
         retry,
         () => undefined,
+        {},
         async () => undefined,
       ),
     ).resolves.toEqual({ cacheImported: true });
     expect(runtime.beginProjectFile).toHaveBeenLastCalledWith(3);
+  });
+
+  it("uses the low-memory reader and smaller acknowledged chunks only when requested", async () => {
+    const bytes = new Uint8Array(3 * 1024 * 1024).fill(9);
+    const file = new File([bytes], "mobile.reraproj");
+    const asyncRead = vi.fn(async () => new ArrayBuffer(0));
+    Object.defineProperty(file, "slice", {
+      value: (start: number, end: number) =>
+        ({ size: end - start, arrayBuffer: asyncRead }) as unknown as Blob,
+    });
+    const syncRead = vi.fn((blob: Blob) => new ArrayBuffer(blob.size));
+    vi.stubGlobal(
+      "FileReaderSync",
+      class {
+        readAsArrayBuffer = syncRead;
+      },
+    );
+    const { chunks, runtime } = uploadRuntime();
+
+    await loadProjectFileInWorker(
+      runtime,
+      file,
+      () => undefined,
+      { chunkBytes: 1024 * 1024, preferSynchronousReader: true },
+      async () => undefined,
+    );
+
+    expect(chunks.map((chunk) => chunk.byteLength)).toEqual([
+      1024 * 1024,
+      1024 * 1024,
+      1024 * 1024,
+    ]);
+    expect(syncRead).toHaveBeenCalledTimes(3);
+    expect(asyncRead).not.toHaveBeenCalled();
   });
 });

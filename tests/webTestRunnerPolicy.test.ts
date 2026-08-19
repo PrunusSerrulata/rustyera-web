@@ -87,11 +87,17 @@ describe("browser game runner progress policy", () => {
   it("bounds native file-menu retries below the snapshot stall interval", () => {
     const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
 
-    expect(runner).toContain("const clickFileMenuAction = async (label)");
+    expect(runner).toContain("async function clickFileMenuAction(activeBrowser, label)");
     expect(runner).toContain("attempt <= 2");
+    expect(runner).toContain("await menuButton.moveTo()");
+    expect(runner).toContain("await activeBrowser.pause(200)");
+    expect(runner).toContain('document.querySelector("#menu-file")');
     expect(runner).toContain("timeout: 1_000");
-    expect(runner).toContain("await clickFileMenuAction(action.menuLabel)");
-    expect(runner).toContain('await clickFileMenuAction("项目设置…")');
+    expect(runner).toContain('document.querySelector("#menu-file")?.nextElementSibling');
+    expect(runner).toContain("target.click()");
+    expect(runner).toContain("await clickFileMenuAction(browser, action.menuLabel)");
+    expect(runner).toContain('await clickFileMenuAction(browser, "项目设置…")');
+    expect(runner).toContain('await clickFileMenuAction(activeBrowser, "偏好设置…")');
   });
 
   it("materializes portable browser files without joining large base64 payloads", () => {

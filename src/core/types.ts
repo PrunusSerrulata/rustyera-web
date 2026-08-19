@@ -182,6 +182,8 @@ export interface ProjectReloadSubmission extends ProjectFontLoadResult {
 
 export interface FrontendBridge {
   readonly kind: "tauri" | "browser";
+  /** Whether this host benefits from preparing its Runtime before the first project selection. */
+  readonly prewarmRuntimeOnInitialize?: boolean;
   readonly traditionalSaves?: TraditionalSaveAccess;
   createSession(options: SessionOptions): Promise<PumpBatch>;
   submitRuntime(message: RuntimeMessage, correlationId?: number | bigint): Promise<number | bigint>;

@@ -65,9 +65,14 @@ self.onmessage = async (event: MessageEvent) => {
           result = runtime.projectFileManifest(args[0] as Uint8Array);
           break;
         case "loadProjectFile":
-          result = await loadProjectFileInWorker(runtime, args[0] as File, (value) => {
-            self.postMessage({ type: "project_progress", value });
-          });
+          result = await loadProjectFileInWorker(
+            runtime,
+            args[0] as File,
+            (value) => {
+              self.postMessage({ type: "project_progress", value });
+            },
+            args[1] as import("@/platform/projectFileWorker").ProjectFileReadOptions | undefined,
+          );
           break;
         case "prepareProjectConfigurationUpdate":
           result = runtime.prepareProjectConfigurationUpdate(

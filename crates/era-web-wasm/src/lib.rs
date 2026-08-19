@@ -117,6 +117,10 @@ fn take_project_file_resources(manifest: &mut ProjectManifest) -> BTreeMap<Strin
         };
         let key = file.relative_path.replace('\\', "/").to_lowercase();
         let value = std::mem::take(bytes).into_inner();
+        file.payload = FilePayload::ExternalResource(ExternalResource {
+            byte_length: u64::try_from(value.len()).unwrap_or(u64::MAX),
+            image_metadata: None,
+        });
         let previous = resources.insert(key, value);
         debug_assert!(previous.is_none());
     }
@@ -158,11 +162,10 @@ impl ProjectFileResources {
     }
 
     fn get(&self, relative_path: &str) -> Option<&[u8]> {
-        self.candidate
-            .as_ref()
-            .and_then(|(_, resources)| resources.get(relative_path))
-            .or_else(|| self.active.get(relative_path))
-            .map(Vec::as_slice)
+        if let Some((_, resources)) = &self.candidate {
+            return resources.get(relative_path).map(Vec::as_slice);
+        }
+        self.active.get(relative_path).map(Vec::as_slice)
     }
 }
 
@@ -792,7 +795,8 @@ mod tests {
         assert_eq!(resources["resources/title.bin"], [1, 2, 3]);
         assert!(matches!(
             &manifest.files[0].payload,
-            FilePayload::Bytes(bytes) if bytes.as_slice().is_empty()
+            FilePayload::ExternalResource(resource)
+                if resource.byte_length == 3 && resource.image_metadata.is_none()
         ));
     }
 
@@ -808,6 +812,8 @@ mod tests {
             std::collections::BTreeMap::from([("resources/b.bin".into(), vec![4, 5, 6])]),
         );
         assert_eq!(resources.get("resources/b.bin"), Some([4, 5, 6].as_slice()));
+        assert!(resources.get("resources/a.bin").is_none());
+        assert!(resources.get("resources/missing.bin").is_none());
         resources.complete_replacement(6, false);
         assert_eq!(resources.get("resources/a.bin"), Some([1, 2, 3].as_slice()));
 

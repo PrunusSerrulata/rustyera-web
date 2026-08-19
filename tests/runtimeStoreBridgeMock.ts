@@ -10,6 +10,7 @@ import {
 
 export const bridge = {
   kind: "tauri" as "tauri" | "browser",
+  prewarmRuntimeOnInitialize: false,
   createSession: vi.fn(),
   submitRuntime: vi.fn(async (_message: RuntimeMessage, _correlationId?: number) => {
     void _message;

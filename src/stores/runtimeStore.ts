@@ -332,6 +332,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     clearStatus: (token) => runtimeStatus.clear("settings", token),
     logError: (message) => log("error", message),
   });
+  let sessionPreparation: Promise<void> | undefined;
   const settingsBusy = computed(
     () => runtimeProjectSettings.busy.value || runtimeClientPreferences.busy.value,
   );
@@ -493,6 +494,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
     window.addEventListener("focus", sendClientState);
     window.addEventListener("blur", sendClientState);
     window.addEventListener("resize", () => void projectViewport());
+    if (bridge.prewarmRuntimeOnInitialize) {
+      void ensureSession().catch((error) =>
+        log("warning", `Runtime 后台初始化失败，将在打开项目时重试：${String(error)}`),
+      );
+    }
   }
 
   function configureTestRun(configuration: RuntimeTestConfiguration): void {
@@ -526,11 +532,25 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function ensureSession(): Promise<void> {
     if (runtimePump.ready) return;
-    if (bridge.kind === "tauri") await requestSystemFonts();
-    const batch = await bridge.createSession(sessionOptions());
-    runtimePump.setReady(true);
-    await handleBatch(batch);
-    schedulePump(0);
+    if (sessionPreparation) return sessionPreparation;
+    const attempt = (async () => {
+      if (bridge.kind === "tauri") await requestSystemFonts();
+      const batch = await bridge.createSession(sessionOptions());
+      runtimePump.setReady(true);
+      try {
+        await handleBatch(batch);
+      } catch (error) {
+        runtimePump.setReady(false);
+        throw error;
+      }
+      schedulePump(0);
+    })();
+    sessionPreparation = attempt;
+    try {
+      await attempt;
+    } finally {
+      if (sessionPreparation === attempt) sessionPreparation = undefined;
+    }
   }
 
   function openPreferencesFromUser(): void {
@@ -607,12 +627,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
     unlockAudioFromUserGesture();
     let currentSessionReplaced = false;
     let selectionSubmitted = false;
+    let runtimeProjectSubmissionLocked = false;
     try {
       const prepareAfterSelection = async () => {
         if (replaceCurrent) {
           currentSessionReplaced = true;
           await recreateSessionForProjectSelection();
         } else await ensureSession();
+        runtimePump.setTransitioning(true);
+        runtimeProjectSubmissionLocked = true;
+        runtimePump.clearTimer();
+        await runtimePump.waitUntilIdle();
         baseStatus.value = "正在读取项目…";
       };
       const onSubmitted = (submittedAtMs: number) => {
@@ -642,6 +667,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
       continueProjectBuildProgress(metrics.cacheImported);
       schedulePump(0);
     } catch (error) {
+      if (runtimeProjectSubmissionLocked) {
+        try {
+          await recreateSessionForProjectSelection();
+        } catch (resetError) {
+          log("warning", `清理失败的项目提交时重建 Runtime 失败：${String(resetError)}`);
+        }
+      }
       if (selectionSubmitted) startupTelemetryState.fail(error);
       if (currentSessionReplaced) projectOpen.value = false;
       finishProjectLoad();
@@ -649,7 +681,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       log("error", baseStatus.value);
     } finally {
       projectSelecting.value = false;
-      if (currentSessionReplaced) {
+      if (runtimeProjectSubmissionLocked) {
         runtimePump.setTransitioning(false);
         schedulePump(0);
       }
