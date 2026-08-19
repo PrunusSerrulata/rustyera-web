@@ -705,11 +705,10 @@ export class BrowserBridge implements FrontendBridge {
 
   private projectFileReadOptions(): {
     chunkBytes: number;
-    preferSynchronousReader: boolean;
   } {
     return this.lowMemoryProjectFileLoad
-      ? { chunkBytes: 1024 * 1024, preferSynchronousReader: true }
-      : { chunkBytes: PROJECT_FILE_READ_CHUNK_BYTES, preferSynchronousReader: false };
+      ? { chunkBytes: 1024 * 1024 }
+      : { chunkBytes: PROJECT_FILE_READ_CHUNK_BYTES };
   }
 }
 

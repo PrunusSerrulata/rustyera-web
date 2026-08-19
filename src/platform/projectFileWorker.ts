@@ -15,7 +15,6 @@ const PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 
 export interface ProjectFileReadOptions {
   chunkBytes?: number;
-  preferSynchronousReader?: boolean;
 }
 
 export async function loadProjectFileInWorker(
@@ -36,9 +35,7 @@ export async function loadProjectFileInWorker(
   try {
     for (let offset = 0; offset < file.size; offset += chunkBytes) {
       const end = Math.min(file.size, offset + chunkBytes);
-      const bytes = new Uint8Array(
-        await readBlob(file.slice(offset, end), options.preferSynchronousReader ?? false),
-      );
+      const bytes = new Uint8Array(await readBlob(file.slice(offset, end)));
       runtime.appendProjectFile(bytes);
       report({ stage: "scanning", completed: end, total: file.size });
       await yieldTurn();
@@ -50,15 +47,15 @@ export async function loadProjectFileInWorker(
   }
 }
 
-function readBlob(blob: Blob, preferSynchronousReader: boolean): Promise<ArrayBuffer> {
+function readBlob(blob: Blob): Promise<ArrayBuffer> {
+  // Disk-backed files selected on iOS can be large. Keep this asynchronous so WebKit does not
+  // synchronously materialize a second buffer while the same Worker owns the Runtime/WASM heap.
+  if (typeof blob.arrayBuffer === "function") return blob.arrayBuffer();
   const SyncReader = (
     globalThis as typeof globalThis & {
       FileReaderSync?: new () => { readAsArrayBuffer(value: Blob): ArrayBuffer };
     }
   ).FileReaderSync;
-  if (preferSynchronousReader && SyncReader)
-    return Promise.resolve(new SyncReader().readAsArrayBuffer(blob));
-  if (typeof blob.arrayBuffer === "function") return blob.arrayBuffer();
   if (SyncReader) return Promise.resolve(new SyncReader().readAsArrayBuffer(blob));
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

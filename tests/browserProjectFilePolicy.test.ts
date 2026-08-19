@@ -44,7 +44,17 @@ describe("browser project-file policy", () => {
       platform: "MacIntel",
       maxTouchPoints: 0,
     },
-  ])("keeps compiled-cache loading for $browser", ({ userAgent, platform, maxTouchPoints }) => {
-    expect(needsLowMemoryProjectFileLoad({ userAgent, platform, maxTouchPoints })).toBe(false);
-  });
+    {
+      browser: "desktop Firefox with overridden touch points",
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:142.0) Gecko/20100101 Firefox/142.0",
+      platform: "MacIntel",
+      maxTouchPoints: 5,
+    },
+  ])(
+    "keeps the desktop project-file policy for $browser",
+    ({ userAgent, platform, maxTouchPoints }) => {
+      expect(needsLowMemoryProjectFileLoad({ userAgent, platform, maxTouchPoints })).toBe(false);
+    },
+  );
 });

@@ -585,10 +585,7 @@ describe("browser startup bridge", () => {
       "loadProjectFile",
     ]);
     expect(requests[0].transfer).toEqual([]);
-    expect(requests[0].message.args).toEqual([
-      file,
-      { chunkBytes: 4 * 1024 * 1024, preferSynchronousReader: false },
-    ]);
+    expect(requests[0].message.args).toEqual([file, { chunkBytes: 4 * 1024 * 1024 }]);
     const projectRoot = await (
       await storage.getDirectoryHandle(".rustyera-project-files")
     ).getDirectoryHandle("legacy-key");
@@ -652,15 +649,9 @@ describe("browser startup bridge", () => {
       "readProjectFileResource",
       "loadProjectFile",
     ]);
-    expect(requests[0].message.args).toEqual([
-      file,
-      { chunkBytes: 1024 * 1024, preferSynchronousReader: true },
-    ]);
+    expect(requests[0].message.args).toEqual([file, { chunkBytes: 1024 * 1024 }]);
     expect(requests[1].message.args).toEqual(["resources/a.bin", undefined]);
-    expect(requests[2].message.args).toEqual([
-      file,
-      { chunkBytes: 1024 * 1024, preferSynchronousReader: true },
-    ]);
+    expect(requests[2].message.args).toEqual([file, { chunkBytes: 1024 * 1024 }]);
     expect(requests.every((request) => request.transfer.length === 0)).toBe(true);
     expect(progress.mock.calls).toEqual([
       [{ stage: "preparing", completed: 0, total: 0 }],
@@ -774,7 +765,13 @@ describe("browser startup bridge", () => {
 
   it("hands a large packaged File to the worker without reading or transferring it", async () => {
     const storage = new MemoryDirectoryHandle("storage");
-    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    vi.stubGlobal("navigator", {
+      storage: { getDirectory: async () => storage },
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:142.0) Gecko/20100101 Firefox/142.0",
+      platform: "MacIntel",
+      maxTouchPoints: 5,
+    });
     const bytes = new Uint8Array(5 * 1024 * 1024).fill(7);
     const file = new File([bytes], "large.reraproj");
     const wholeFileRead = vi.fn(async () => bytes.buffer.slice(0));
@@ -793,6 +790,8 @@ describe("browser startup bridge", () => {
     const bridge = new BrowserBridge();
     bridge.setProjectProgressListener(progress);
 
+    expect(bridge.prewarmRuntimeOnInitialize).toBe(false);
+
     await bridge.openProjectFile();
 
     expect(progress.mock.calls).toEqual([
@@ -801,10 +800,7 @@ describe("browser startup bridge", () => {
       [{ stage: "scanning", completed: bytes.byteLength, total: bytes.byteLength }],
     ]);
     expect(requests.map((request) => request.message.method)).toEqual(["loadProjectFile"]);
-    expect(requests[0].message.args).toEqual([
-      file,
-      { chunkBytes: 4 * 1024 * 1024, preferSynchronousReader: false },
-    ]);
+    expect(requests[0].message.args).toEqual([file, { chunkBytes: 4 * 1024 * 1024 }]);
     expect(requests[0].transfer).toEqual([]);
     expect(wholeFileRead).not.toHaveBeenCalled();
   });

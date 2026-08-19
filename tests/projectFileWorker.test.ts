@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   loadProjectFileInWorker,
@@ -17,6 +17,8 @@ function uploadRuntime() {
 }
 
 describe("packaged project worker reader", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it("reads bounded slices inside the worker and reports acknowledged progress", async () => {
     const bytes = new Uint8Array(5 * 1024 * 1024).fill(7);
     const file = new File([bytes], "large.reraproj");
@@ -81,13 +83,16 @@ describe("packaged project worker reader", () => {
     expect(runtime.beginProjectFile).toHaveBeenLastCalledWith(3);
   });
 
-  it("uses the low-memory reader and smaller acknowledged chunks only when requested", async () => {
+  it("uses asynchronous reads and smaller acknowledged chunks for constrained devices", async () => {
     const bytes = new Uint8Array(3 * 1024 * 1024).fill(9);
     const file = new File([bytes], "mobile.reraproj");
-    const asyncRead = vi.fn(async () => new ArrayBuffer(0));
+    const asyncRead = vi.fn(async (size: number) => new ArrayBuffer(size));
     Object.defineProperty(file, "slice", {
       value: (start: number, end: number) =>
-        ({ size: end - start, arrayBuffer: asyncRead }) as unknown as Blob,
+        ({
+          size: end - start,
+          arrayBuffer: () => asyncRead(end - start),
+        }) as unknown as Blob,
     });
     const syncRead = vi.fn((blob: Blob) => new ArrayBuffer(blob.size));
     vi.stubGlobal(
@@ -102,7 +107,7 @@ describe("packaged project worker reader", () => {
       runtime,
       file,
       () => undefined,
-      { chunkBytes: 1024 * 1024, preferSynchronousReader: true },
+      { chunkBytes: 1024 * 1024 },
       async () => undefined,
     );
 
@@ -111,7 +116,7 @@ describe("packaged project worker reader", () => {
       1024 * 1024,
       1024 * 1024,
     ]);
-    expect(syncRead).toHaveBeenCalledTimes(3);
-    expect(asyncRead).not.toHaveBeenCalled();
+    expect(asyncRead).toHaveBeenCalledTimes(3);
+    expect(syncRead).not.toHaveBeenCalled();
   });
 });
