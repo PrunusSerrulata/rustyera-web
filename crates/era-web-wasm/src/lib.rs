@@ -101,6 +101,7 @@ impl ProjectFileUpload {
 struct LoadedProjectFile {
     manifest: ProjectManifest,
     storage_key: String,
+    cache_imported: bool,
 }
 
 #[wasm_bindgen]
@@ -262,17 +263,25 @@ impl WasmRuntime {
     /// Returns a JavaScript error when the upload is absent or incomplete, or the project file is
     /// corrupt, unsupported, or cannot be staged for the runtime.
     #[wasm_bindgen(js_name = finishProjectFile)]
-    pub fn finish_project_file(&mut self) -> Result<JsValue, JsValue> {
+    pub fn finish_project_file(&mut self, low_memory: bool) -> Result<JsValue, JsValue> {
         let bytes = self.project_file_upload.finish().map_err(js_error)?;
-        let manifest = self.inner.project_file_manifest(&bytes).map_err(js_error)?;
-        let identity = project_identity(&manifest).map_err(js_error)?;
         let storage_key = blake3::hash(&bytes).to_hex().to_string();
-        self.inner
-            .load_project_with_compiled_cache(identity, bytes)
-            .map_err(js_error)?;
+        let manifest = if low_memory {
+            self.inner
+                .load_project_file_from_sources(bytes)
+                .map_err(js_error)?
+        } else {
+            let manifest = self.inner.project_file_manifest(&bytes).map_err(js_error)?;
+            let identity = project_identity(&manifest).map_err(js_error)?;
+            self.inner
+                .load_project_with_compiled_cache(identity, bytes)
+                .map_err(js_error)?;
+            manifest
+        };
         to_js(LoadedProjectFile {
             manifest,
             storage_key,
+            cache_imported: !low_memory,
         })
     }
 

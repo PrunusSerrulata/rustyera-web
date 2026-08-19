@@ -35,6 +35,7 @@ import { WorkerClient } from "@/platform/workerClient";
 import { ProjectFontRegistry } from "@/platform/projectFonts";
 import { browserTraditionalSaves } from "@/platform/browserBridge/traditionalSaves";
 import { BrowserProjectPreferenceStore } from "@/platform/projectPreferences";
+import { needsLowMemoryProjectFileLoad } from "@/platform/browserProjectFilePolicy";
 
 const PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 
@@ -48,6 +49,7 @@ export class BrowserBridge implements FrontendBridge {
   });
   private readonly projectFontRegistry = new ProjectFontRegistry();
   private project?: BrowserProject;
+  private lowMemoryProjectFile = false;
   private cacheWriter?: FileSystemWritableFileStream;
   private discardCompiledCacheExport = false;
   private projectFileWriter?: FileSystemWritableFileStream;
@@ -151,6 +153,7 @@ export class BrowserBridge implements FrontendBridge {
     const quickScanMs = sourcesReady ? 0 : performance.now() - started;
     const loaded = await this.loadSourceProject(project, manifest, sourcesReady);
     this.project = project;
+    this.lowMemoryProjectFile = false;
     const projectFonts = await this.projectFontRegistry.replace(project.fontSources());
     const indexStats = project.sourceIndexStats();
     const scanMetrics = project.scanMetrics();
@@ -184,15 +187,22 @@ export class BrowserBridge implements FrontendBridge {
     const picked = await pickBrowserProjectFile();
     if (!picked) return undefined;
     const { file } = picked;
+    const lowMemory = needsLowMemoryProjectFileLoad();
     const submittedAtMs = performance.now();
     onSubmitted?.(submittedAtMs);
+    this.projectProgressListener?.({ stage: "scanning", completed: 0, total: file.size });
+    await yieldToMainThread();
     await prepareAfterSelection?.();
     const started = performance.now();
     const loaded = await streamProjectFile<{
       manifest: BrowserManifest;
       storageKey: string;
-    }>(this.worker, file, (completed, total) =>
-      this.projectProgressListener?.({ stage: "scanning", completed, total }),
+      cacheImported: boolean;
+    }>(
+      this.worker,
+      file,
+      (completed, total) => this.projectProgressListener?.({ stage: "scanning", completed, total }),
+      lowMemory,
     );
     this.projectPreferenceStore = await BrowserProjectPreferenceStore.packaged(loaded.storageKey);
     const manifest = loaded.manifest;
@@ -203,7 +213,9 @@ export class BrowserBridge implements FrontendBridge {
     const root = await projects.getDirectoryHandle(loaded.storageKey, { create: true });
     let writableFile = file;
     let writableHandle = picked.handle;
-    if (!writableHandle) {
+    // The input fallback has no writable handle. Keeping its File for this session avoids a
+    // second, unreported full-file read and OPFS write in constrained iOS browser processes.
+    if (!writableHandle && !lowMemory) {
       writableHandle = await root.getFileHandle("project.reraproj", { create: true });
       const writer = await writableHandle.createWritable({ keepExistingData: false });
       try {
@@ -226,6 +238,7 @@ export class BrowserBridge implements FrontendBridge {
       this.prepareProjectConfigurationUpdate,
     );
     this.project.useEmbeddedManifest(manifest);
+    this.lowMemoryProjectFile = lowMemory;
     const projectFonts = await this.projectFontRegistry.replace(this.project.fontSources());
     return {
       submittedAtMs,
@@ -233,7 +246,7 @@ export class BrowserBridge implements FrontendBridge {
       cacheReadMs: 0,
       sourceReadMs: 0,
       submitMs: performance.now() - started,
-      cacheImported: true,
+      cacheImported: loaded.cacheImported,
       wasmMode: "single",
       projectFonts,
     };
@@ -245,6 +258,30 @@ export class BrowserBridge implements FrontendBridge {
     onSubmitted?.(submittedAtMs);
     const embedded = this.project.embeddedManifest();
     if (embedded) {
+      if (this.lowMemoryProjectFile) {
+        const file = await this.project.packagedProjectFile();
+        if (!file) throw new Error("项目文件缓存缺失");
+        this.projectProgressListener?.({ stage: "scanning", completed: 0, total: file.size });
+        await yieldToMainThread();
+        const started = performance.now();
+        const loaded = await streamProjectFile<{ cacheImported: boolean }>(
+          this.worker,
+          file,
+          (completed, total) =>
+            this.projectProgressListener?.({ stage: "scanning", completed, total }),
+          true,
+        );
+        return {
+          submittedAtMs,
+          quickScanMs: 0,
+          cacheReadMs: 0,
+          sourceReadMs: 0,
+          submitMs: performance.now() - started,
+          cacheImported: loaded.cacheImported,
+          wasmMode: "single",
+          projectFonts: await this.projectFontRegistry.replace(this.project.fontSources()),
+        };
+      }
       const bytes = await this.project.readCompiledCache();
       if (!bytes) throw new Error("项目缓存缺失");
       const started = performance.now();
@@ -694,13 +731,13 @@ async function streamProjectFile<T>(
   worker: WorkerClient,
   file: File,
   progress: (completed: number, total: number) => void,
+  lowMemory = false,
 ): Promise<T> {
   if (!Number.isSafeInteger(file.size) || file.size > 0xffff_ffff) {
     throw new Error("项目文件大小超出浏览器可处理范围。");
   }
   await worker.call("beginProjectFile", file.size);
   try {
-    if (file.size > 0) progress(0, file.size);
     for (let offset = 0; offset < file.size; offset += PROJECT_FILE_READ_CHUNK_BYTES) {
       const end = Math.min(file.size, offset + PROJECT_FILE_READ_CHUNK_BYTES);
       const blob = file.slice(offset, end);
@@ -713,7 +750,7 @@ async function streamProjectFile<T>(
       progress(end, file.size);
       await yieldToMainThread();
     }
-    return await worker.call<T>("finishProjectFile");
+    return await worker.call<T>("finishProjectFile", lowMemory);
   } catch (error) {
     await worker.call("cancelProjectFile").catch(() => undefined);
     throw error;

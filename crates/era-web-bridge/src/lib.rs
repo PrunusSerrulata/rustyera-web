@@ -12,10 +12,11 @@ use era_runtime::{
     ProjectProgressReporter, RuntimeDriveBudget, RuntimeDriveState, RuntimeOptions, RuntimeSession,
 };
 use era_runtime_protocol::{
-    ClientCapabilities, ClientHello, ConfigurationClientProfile, InputModality, ProjectIdentity,
-    ProjectLoadRequest, ProjectManifest, RUNTIME_PROTOCOL_VERSION, RuntimeFeature, RuntimeLimits,
-    RuntimeMessage, SequenceAcknowledgement, ServerHello, ServiceCapability, ServiceKind,
-    ServiceRequest, ServiceResponse, StorageCapabilities, StorageRequest, StorageResponse,
+    ClientCapabilities, ClientHello, ConfigurationClientProfile, FileCategory, FilePayload,
+    InputModality, ProjectIdentity, ProjectLoadRequest, ProjectManifest, RUNTIME_PROTOCOL_VERSION,
+    RuntimeFeature, RuntimeLimits, RuntimeMessage, SequenceAcknowledgement, ServerHello,
+    ServiceCapability, ServiceKind, ServiceRequest, ServiceResponse, StorageCapabilities,
+    StorageRequest, StorageResponse, SubmittedFile,
 };
 use erabasic_vm::VmConfig;
 use serde::{Deserialize, Serialize};
@@ -275,6 +276,27 @@ impl WebSession {
             .map_err(|error| error.to_string())
     }
 
+    /// Decode a self-contained project file, release its container bytes, and submit its sources.
+    ///
+    /// This path avoids retaining the compiled-cache container while the runtime builds the
+    /// project, reducing peak memory for constrained browser processes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the project file is invalid or its source manifest cannot be queued.
+    pub fn load_project_file_from_sources(
+        &mut self,
+        bytes: Vec<u8>,
+    ) -> Result<ProjectManifest, String> {
+        let source_manifest = era_runtime::decode_project_file(&bytes, bytes.len())
+            .map_err(|error| error.to_string())?
+            .manifest;
+        drop(bytes);
+        let frontend_manifest = browser_project_manifest(&source_manifest);
+        self.load_project(source_manifest)?;
+        Ok(frontend_manifest)
+    }
+
     /// Return the active project's traditional-save slot count.
     ///
     /// # Errors
@@ -475,6 +497,39 @@ impl WebSession {
         let value = self.next_message_id;
         self.next_message_id = self.next_message_id.saturating_add(1);
         value
+    }
+}
+
+fn browser_project_manifest(source: &ProjectManifest) -> ProjectManifest {
+    ProjectManifest {
+        project_revision: source.project_revision,
+        files: source
+            .files
+            .iter()
+            .map(|file| SubmittedFile {
+                relative_path: file.relative_path.clone(),
+                category: file.category,
+                payload: if file.category == FileCategory::Resource {
+                    file.payload.clone()
+                } else {
+                    empty_file_payload(&file.payload)
+                },
+                content_hash: file.content_hash.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn empty_file_payload(payload: &FilePayload) -> FilePayload {
+    match payload {
+        FilePayload::Utf8(_) => FilePayload::Utf8(String::new()),
+        FilePayload::Bytes(_) => FilePayload::Bytes(era_protocol::ProtocolBytes::default()),
+        FilePayload::IoError(error) => {
+            let mut error = error.clone();
+            error.message.clear();
+            FilePayload::IoError(error)
+        }
+        FilePayload::ExternalResource(resource) => FilePayload::ExternalResource(resource.clone()),
     }
 }
 

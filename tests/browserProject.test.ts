@@ -840,17 +840,19 @@ describe("browser project reads", () => {
 
   it("serves resources embedded in a packaged project", async () => {
     const project = new BrowserProject(new SaveDirectoryHandle("storage") as any, 1, "game");
+    const resource = Uint8Array.of(1, 2, 3);
     project.useEmbeddedManifest({
       project_revision: 3,
       files: [
         {
           relative_path: "resources/a.png",
           category: "resource",
-          payload: { type: "bytes", value: Uint8Array.of(1, 2, 3) },
+          payload: { type: "bytes", value: resource },
           content_hash: new Uint8Array(32),
         },
       ],
     });
+    resource[0] = 9;
 
     await expect(project.readResource("RESOURCES/A.PNG")).resolves.toEqual(Uint8Array.of(1, 2, 3));
     await expect(project.readResourcePrefix("resources/a.png", 2)).resolves.toEqual(

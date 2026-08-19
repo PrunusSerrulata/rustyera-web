@@ -551,6 +551,7 @@ describe("browser startup bridge", () => {
         return {
           storageKey: "legacy-key",
           manifest: { project_revision: 3, files: [] },
+          cacheImported: true,
         };
       if (method === "prepareProjectConfigurationUpdate") {
         const result = new Uint8Array(8 + 7);
@@ -577,6 +578,7 @@ describe("browser startup bridge", () => {
       "loadProjectWithCompiledCache",
     ]);
     expect(requests[1].transfer).toHaveLength(1);
+    expect(requests[2].message.args).toEqual([false]);
     const projectRoot = await (
       await storage.getDirectoryHandle(".rustyera-project-files")
     ).getDirectoryHandle("legacy-key");
@@ -593,6 +595,61 @@ describe("browser startup bridge", () => {
     });
   });
 
+  it("uses the low-memory source path on iOS without silently copying the project", async () => {
+    const storage = new MemoryDirectoryHandle("storage");
+    vi.stubGlobal("navigator", {
+      storage: { getDirectory: async () => storage },
+      userAgent:
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1",
+      platform: "iPhone",
+      maxTouchPoints: 5,
+    });
+    const file = new File([Uint8Array.of(1, 2, 3, 4)], "game.reraproj");
+    pickBrowserFile.mockResolvedValue(file);
+    respond = (method) => {
+      if (method === "finishProjectFile")
+        return {
+          storageKey: "ios-key",
+          manifest: { project_revision: 3, files: [] },
+          cacheImported: false,
+        };
+      return 1n;
+    };
+    const bridge = new BrowserBridge();
+    const progress = vi.fn();
+    bridge.setProjectProgressListener(progress);
+
+    await expect(bridge.openProjectFile()).resolves.toMatchObject({ cacheImported: false });
+    await expect(bridge.restartProject()).resolves.toMatchObject({ cacheImported: false });
+
+    expect(requests.map((request) => request.message.method)).toEqual([
+      "beginProjectFile",
+      "appendProjectFile",
+      "finishProjectFile",
+      "beginProjectFile",
+      "appendProjectFile",
+      "finishProjectFile",
+    ]);
+    expect(requests[2].message.args).toEqual([true]);
+    expect(requests[5].message.args).toEqual([true]);
+    expect(progress.mock.calls).toEqual([
+      [{ stage: "scanning", completed: 0, total: file.size }],
+      [{ stage: "scanning", completed: file.size, total: file.size }],
+      [{ stage: "scanning", completed: 0, total: file.size }],
+      [{ stage: "scanning", completed: file.size, total: file.size }],
+    ]);
+    const projectRoot = await (
+      await storage.getDirectoryHandle(".rustyera-project-files")
+    ).getDirectoryHandle("ios-key");
+    await expect(projectRoot.getFileHandle("project.reraproj")).rejects.toMatchObject({
+      name: "NotFoundError",
+    });
+    await expect(
+      (await storage.getDirectoryHandle("project-preferences")).getDirectoryHandle("ios-key"),
+    ).resolves.toBeDefined();
+    expect(bridge.projectConfigurationWritable()).toBe(false);
+  });
+
   it("routes a writable packaged configuration through the WASM update planner", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
@@ -601,7 +658,11 @@ describe("browser startup bridge", () => {
     pickBrowserProjectFile.mockResolvedValue({ file, handle });
     respond = (method) => {
       if (method === "finishProjectFile")
-        return { storageKey: "writable-key", manifest: { project_revision: 1, files: [] } };
+        return {
+          storageKey: "writable-key",
+          manifest: { project_revision: 1, files: [] },
+          cacheImported: true,
+        };
       if (method === "prepareProjectConfigurationUpdate") {
         const result = new Uint8Array(8 + 7);
         new DataView(result.buffer).setBigUint64(0, 4n, true);
@@ -637,16 +698,29 @@ describe("browser startup bridge", () => {
     pickBrowserFile.mockResolvedValue(file);
     respond = (method) => {
       if (method === "finishProjectFile")
-        return { storageKey: "selected-key", manifest: { project_revision: 1, files: [] } };
+        return {
+          storageKey: "selected-key",
+          manifest: { project_revision: 1, files: [] },
+          cacheImported: true,
+        };
       return 1n;
     };
     const submitted = vi.fn();
+    const progress = vi.fn();
     const prepareAfterSelection = vi.fn(async () => {
       expect(submitted).toHaveBeenCalledOnce();
+      expect(progress).toHaveBeenCalledOnce();
+      expect(progress).toHaveBeenCalledWith({
+        stage: "scanning",
+        completed: 0,
+        total: file.size,
+      });
       expect(requests).toHaveLength(0);
     });
+    const bridge = new BrowserBridge();
+    bridge.setProjectProgressListener(progress);
 
-    await new BrowserBridge().openProjectFile(submitted, prepareAfterSelection);
+    await bridge.openProjectFile(submitted, prepareAfterSelection);
 
     expect(submitted.mock.invocationCallOrder[0]).toBeLessThan(
       prepareAfterSelection.mock.invocationCallOrder[0],
@@ -683,7 +757,11 @@ describe("browser startup bridge", () => {
     pickBrowserFile.mockResolvedValue(file);
     respond = (method) => {
       if (method === "finishProjectFile")
-        return { storageKey: "large-key", manifest: { project_revision: 1, files: [] } };
+        return {
+          storageKey: "large-key",
+          manifest: { project_revision: 1, files: [] },
+          cacheImported: true,
+        };
       return 1n;
     };
     const progress = vi.fn();
@@ -751,7 +829,11 @@ describe("browser startup bridge", () => {
         throw new Error("project chunk transfer failed");
       }
       if (method === "finishProjectFile") {
-        return { storageKey: "retry-key", manifest: { project_revision: 1, files: [] } };
+        return {
+          storageKey: "retry-key",
+          manifest: { project_revision: 1, files: [] },
+          cacheImported: true,
+        };
       }
       return undefined;
     };
@@ -787,7 +869,11 @@ describe("browser startup bridge", () => {
     respond = (method) => {
       if (method !== "finishProjectFile") return 1n;
       if (attempts++ > 0) throw new Error("invalid project file");
-      return { storageKey: "active-key", manifest: { project_revision: 1, files: [] } };
+      return {
+        storageKey: "active-key",
+        manifest: { project_revision: 1, files: [] },
+        cacheImported: true,
+      };
     };
     const bridge = new BrowserBridge();
 

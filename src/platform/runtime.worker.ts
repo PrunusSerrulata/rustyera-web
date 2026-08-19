@@ -11,7 +11,7 @@ type WasmModule = {
     projectFileManifest(bytes: Uint8Array): unknown;
     beginProjectFile(totalBytes: number): void;
     appendProjectFile(bytes: Uint8Array): void;
-    finishProjectFile(): unknown;
+    finishProjectFile(lowMemory: boolean): unknown;
     cancelProjectFile(): void;
     prepareProjectConfigurationUpdate(
       projectFile: Uint8Array,
@@ -74,7 +74,7 @@ self.onmessage = async (event: MessageEvent) => {
           );
           break;
         case "finishProjectFile": {
-          result = runtime.finishProjectFile();
+          result = runtime.finishProjectFile(Boolean(args[0]));
           break;
         }
         case "cancelProjectFile":

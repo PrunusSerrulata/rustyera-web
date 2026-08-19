@@ -153,7 +153,7 @@ export class BrowserProject {
       if (file.category === "resource" && file.payload.type === "bytes") {
         this.embeddedResources.set(
           safePath(file.relative_path).toLowerCase(),
-          new Uint8Array(file.payload.value as Uint8Array),
+          new Uint8Array(file.payload.value),
         );
       }
     }
@@ -168,6 +168,11 @@ export class BrowserProject {
     this.packagedFile = file;
     this.packagedHandle = handle;
     if (prepareConfigurationUpdate) this.prepareConfigurationUpdate = prepareConfigurationUpdate;
+  }
+
+  async packagedProjectFile(): Promise<File | undefined> {
+    if (this.packagedHandle) return this.packagedHandle.getFile();
+    return this.packagedFile;
   }
 
   useConfigurationUpdatePreparer(prepare: ProjectConfigurationUpdatePreparer): void {

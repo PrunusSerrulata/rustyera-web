@@ -1,6 +1,10 @@
 use super::*;
 use era_protocol::ProtocolBytes;
-use era_runtime_protocol::{FileCategory, FilePayload, StateExportChunk, SubmittedFile};
+use era_runtime_protocol::{
+    FileCategory, FilePayload, SnapshotExportPurpose, StateExportChunk, StateExportChunkRequest,
+    StateExportKind, StateExportRequest, StateExportResult, StateImportBegin, StateImportChunk,
+    StateImportCommit, StateTransferDescriptor, SubmittedFile,
+};
 use std::collections::VecDeque;
 
 #[test]
@@ -320,6 +324,84 @@ fn project_identity_matches_the_cross_host_fixed_vector() {
 }
 
 #[test]
+fn browser_project_projection_keeps_resources_without_cloning_source_payloads() {
+    let source = ProjectManifest {
+        project_revision: 7,
+        files: vec![
+            SubmittedFile {
+                relative_path: "ERB/main.erb".into(),
+                category: FileCategory::Erb,
+                payload: FilePayload::Utf8("@SYSTEM_TITLE\nRETURN\n".into()),
+                content_hash: Some(ProtocolBytes::new(vec![1; 32])),
+            },
+            SubmittedFile {
+                relative_path: "resources/title.png".into(),
+                category: FileCategory::Resource,
+                payload: FilePayload::Bytes(ProtocolBytes::new(vec![2, 3, 4])),
+                content_hash: Some(ProtocolBytes::new(vec![2; 32])),
+            },
+        ],
+    };
+
+    let projected = browser_project_manifest(&source);
+
+    assert_eq!(project_identity(&projected), project_identity(&source));
+    assert!(matches!(
+        &projected.files[0].payload,
+        FilePayload::Utf8(value) if value.is_empty()
+    ));
+    assert_eq!(projected.files[1].payload, source.files[1].payload);
+    assert!(matches!(
+        &source.files[0].payload,
+        FilePayload::Utf8(value) if value == "@SYSTEM_TITLE\nRETURN\n"
+    ));
+}
+
+#[test]
+fn low_memory_project_file_load_decodes_and_stages_a_valid_container() {
+    let source = "@SYSTEM_TITLE\nRETURN\n";
+    let resource = vec![2, 3, 4];
+    let manifest = ProjectManifest {
+        project_revision: 1,
+        files: vec![
+            SubmittedFile {
+                relative_path: "ERB/main.erb".into(),
+                category: FileCategory::Erb,
+                payload: FilePayload::Utf8(source.into()),
+                content_hash: Some(ProtocolBytes::new(
+                    blake3::hash(source.as_bytes()).as_bytes().to_vec(),
+                )),
+            },
+            SubmittedFile {
+                relative_path: "resources/title.bin".into(),
+                category: FileCategory::Resource,
+                payload: FilePayload::Bytes(ProtocolBytes::new(resource.clone())),
+                content_hash: Some(ProtocolBytes::new(
+                    blake3::hash(&resource).as_bytes().to_vec(),
+                )),
+            },
+        ],
+    };
+    let project_file = export_project_file(&manifest);
+    let mut target = negotiated_web_session();
+
+    let frontend = target
+        .load_project_file_from_sources(project_file)
+        .expect("valid project file should stage its sources");
+
+    assert_eq!(frontend.project_revision, manifest.project_revision);
+    assert!(matches!(
+        &frontend.files[0].payload,
+        FilePayload::Utf8(value) if value.is_empty()
+    ));
+    assert!(matches!(
+        &frontend.files[1].payload,
+        FilePayload::Bytes(value) if value.as_slice() == resource
+    ));
+    wait_for_project_load(&mut target);
+}
+
+#[test]
 fn owned_project_manifest_uses_a_lightweight_load_envelope() {
     let mut session = WebSession::new(WebSessionOptions {
         maximum_envelope_bytes: 1024 * 1024,
@@ -357,6 +439,183 @@ fn failed_lightweight_load_submission_rolls_back_the_owned_manifest() {
 
     session.wire_limits.maximum_envelope_bytes = original_maximum_envelope_bytes;
     assert!(session.load_project(manifest).is_ok());
+}
+
+fn negotiated_web_session() -> WebSession {
+    let mut session = WebSession::new(WebSessionOptions::default()).unwrap();
+    session.pump(RuntimeDriveBudget::default()).unwrap();
+    assert!(session.is_negotiated());
+    session
+}
+
+fn wait_for_project_load(session: &mut WebSession) {
+    wait_for_runtime_event(session, |message, _| match message {
+        RuntimeMessage::ProjectLoadReport(report) => {
+            assert!(report.success, "{:?}", report.diagnostics);
+            Some(())
+        }
+        _ => None,
+    });
+}
+
+fn export_project_file(manifest: &ProjectManifest) -> Vec<u8> {
+    let mut session = negotiated_web_session();
+    session.load_project(manifest.clone()).unwrap();
+    wait_for_project_load(&mut session);
+    stage_full_project_manifest(&mut session, manifest);
+    let descriptor = prepare_full_project_export(&mut session);
+    read_project_file(&mut session, &descriptor)
+}
+
+fn stage_full_project_manifest(session: &mut WebSession, manifest: &ProjectManifest) {
+    let encoded_manifest = era_protocol::encode_canonical(manifest).unwrap();
+    session
+        .submit_runtime(
+            &RuntimeMessage::StateImportBegin(StateImportBegin {
+                kind: StateExportKind::FullProjectManifest,
+                total_bytes: encoded_manifest.len() as u64,
+                digest: None,
+                artifact_id: None,
+            }),
+            None,
+        )
+        .unwrap();
+    let transfer_id = wait_for_runtime_event(session, |message, _| match message {
+        RuntimeMessage::StateImportAccepted(accepted) => Some(accepted.transfer_id),
+        RuntimeMessage::CommandRejected(rejection) => {
+            panic!(
+                "full project manifest import was rejected: {}",
+                rejection.message
+            )
+        }
+        _ => None,
+    });
+    session
+        .submit_runtime(
+            &RuntimeMessage::StateImportChunk(StateImportChunk {
+                transfer_id,
+                offset: 0,
+                data: ProtocolBytes::new(encoded_manifest.clone()),
+            }),
+            None,
+        )
+        .unwrap();
+    session
+        .submit_runtime(
+            &RuntimeMessage::StateImportCommit(StateImportCommit {
+                transfer_id,
+                digest: Some(ProtocolBytes::new(
+                    blake3::hash(&encoded_manifest).as_bytes().to_vec(),
+                )),
+            }),
+            None,
+        )
+        .unwrap();
+    wait_for_runtime_event(session, |message, _| match message {
+        RuntimeMessage::StateImportReady(ready) if ready.transfer_id == transfer_id => Some(()),
+        RuntimeMessage::CommandRejected(rejection) => {
+            panic!(
+                "full project manifest commit was rejected: {}",
+                rejection.message
+            )
+        }
+        _ => None,
+    });
+}
+
+fn prepare_full_project_export(session: &mut WebSession) -> StateTransferDescriptor {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        session
+            .submit_runtime(
+                &RuntimeMessage::StateExportRequest(StateExportRequest {
+                    kind: StateExportKind::FullProjectFile,
+                    snapshot_purpose: SnapshotExportPurpose::Normal,
+                }),
+                None,
+            )
+            .unwrap();
+        let response = wait_for_runtime_event(session, |message, _| match message {
+            RuntimeMessage::StateExportReady(ready) => match ready.result {
+                StateExportResult::Ready { transfer } => Some(Some(transfer)),
+                StateExportResult::Ineligible { reasons } => {
+                    panic!("full project export was ineligible: {reasons:?}")
+                }
+            },
+            RuntimeMessage::CommandRejected(_) => Some(None),
+            _ => None,
+        });
+        if let Some(descriptor) = response {
+            return descriptor;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "full project preparation did not finish"
+        );
+        std::thread::yield_now();
+    }
+}
+
+fn read_project_file(session: &mut WebSession, descriptor: &StateTransferDescriptor) -> Vec<u8> {
+    let total_bytes = usize::try_from(descriptor.total_bytes).unwrap();
+    let mut bytes = Vec::with_capacity(total_bytes);
+    while bytes.len() < total_bytes {
+        let offset = bytes.len() as u64;
+        let maximum_bytes =
+            u32::try_from((descriptor.total_bytes - offset).min(64 * 1024)).unwrap();
+        session
+            .submit_runtime(
+                &RuntimeMessage::StateExportChunkRequest(StateExportChunkRequest {
+                    transfer_id: descriptor.transfer_id,
+                    offset,
+                    maximum_bytes,
+                }),
+                None,
+            )
+            .unwrap();
+        let (chunk, complete) = wait_for_runtime_event(session, |message, data| match message {
+            RuntimeMessage::StateExportChunk(chunk) if chunk.offset == offset => Some((
+                data.expect("project file chunk should carry bulk bytes").0,
+                chunk.complete,
+            )),
+            RuntimeMessage::CommandRejected(rejection) => {
+                panic!("full project chunk was rejected: {}", rejection.message)
+            }
+            _ => None,
+        });
+        assert!(!chunk.is_empty());
+        bytes.extend(chunk);
+        assert_eq!(complete, bytes.len() == total_bytes);
+    }
+    assert_eq!(
+        blake3::hash(&bytes).as_bytes(),
+        descriptor.digest.as_slice()
+    );
+    bytes
+}
+
+fn wait_for_runtime_event<T>(
+    session: &mut WebSession,
+    mut select: impl FnMut(RuntimeMessage, Option<WebBytes>) -> Option<T>,
+) -> T {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let batch = session.pump(RuntimeDriveBudget::default()).unwrap();
+        for event in batch.events {
+            if event.channel != WebChannel::Runtime {
+                continue;
+            }
+            let message: RuntimeMessage = serde_json::from_value(event.message).unwrap();
+            if let Some(value) = select(message, event.data_bytes) {
+                return value;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for a runtime event"
+        );
+        std::thread::yield_now();
+    }
 }
 
 fn batch(
