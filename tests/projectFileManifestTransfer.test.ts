@@ -46,7 +46,7 @@ it("transfers each embedded resource buffer into one isolated manifest owner", (
   expect(secondPayload.value).toEqual(Uint8Array.of(4, 5));
 });
 
-it("transfers embedded resources on the finishProjectFile worker response", () => {
+it("does not transfer embedded resources on project-file worker responses", () => {
   const resource = Uint8Array.of(7, 8, 9);
   const result = {
     manifest: {
@@ -62,6 +62,6 @@ it("transfers embedded resources on the finishProjectFile worker response", () =
     } satisfies BrowserManifest,
   };
 
-  expect(runtimeWorkerResultTransfers("finishProjectFile", result)).toEqual([resource.buffer]);
+  expect(runtimeWorkerResultTransfers("finishProjectFile", result)).toEqual([]);
   expect(runtimeWorkerResultTransfers("appendProjectFile", result)).toEqual([]);
 });

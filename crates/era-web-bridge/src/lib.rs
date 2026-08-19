@@ -292,6 +292,27 @@ impl WebSession {
         Ok(frontend_manifest)
     }
 
+    /// Decode a portable project file, stage its embedded compiled artifact, and return the
+    /// compact frontend projection whose resource payloads remain externally owned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the project file is invalid or its load request cannot be queued.
+    pub fn load_project_file_cache(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<(u64, ProjectManifest), String> {
+        let decoded = self
+            .runtime
+            .stage_project_file_cache(bytes)
+            .map_err(|error| error.to_string())?;
+        let result = self.load_project_request(decoded.identity, None, None);
+        if result.is_err() {
+            self.runtime.clear_staged_project_file_cache();
+        }
+        result.map(|message_id| (message_id, decoded.manifest))
+    }
+
     /// Return the active project's traditional-save slot count.
     ///
     /// # Errors

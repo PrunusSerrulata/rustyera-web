@@ -1,4 +1,5 @@
 import { runtimeWorkerResultTransfers } from "@/platform/projectFileManifestTransfer";
+import { loadProjectFileInWorker } from "@/platform/projectFileWorker";
 
 type WasmModule = {
   default: () => Promise<void>;
@@ -11,10 +12,11 @@ type WasmModule = {
     loadProject(manifest: unknown): bigint;
     loadProjectBinary(manifest: Uint8Array): bigint;
     projectFileManifest(bytes: Uint8Array): unknown;
-    beginProjectFile(totalBytes: number, sourcesOnly: boolean): void;
+    beginProjectFile(totalBytes: number): void;
     appendProjectFile(bytes: Uint8Array): void;
     finishProjectFile(): unknown;
     cancelProjectFile(): void;
+    readProjectFileResource(relativePath: string, maximumBytes?: number): Uint8Array;
     prepareProjectConfigurationUpdate(
       projectFile: Uint8Array,
       expectedDigest: Uint8Array,
@@ -62,11 +64,10 @@ self.onmessage = async (event: MessageEvent) => {
         case "projectFileManifest":
           result = runtime.projectFileManifest(args[0] as Uint8Array);
           break;
-        case "beginProjectFile":
-          result = runtime.beginProjectFile(args[0] as number, Boolean(args[1]));
-          break;
-        case "appendProjectFile":
-          result = runtime.appendProjectFile(args[0] as Uint8Array);
+        case "loadProjectFile":
+          result = await loadProjectFileInWorker(runtime, args[0] as File, (value) => {
+            self.postMessage({ type: "project_progress", value });
+          });
           break;
         case "prepareProjectConfigurationUpdate":
           result = runtime.prepareProjectConfigurationUpdate(
@@ -81,6 +82,12 @@ self.onmessage = async (event: MessageEvent) => {
         }
         case "cancelProjectFile":
           result = runtime.cancelProjectFile();
+          break;
+        case "readProjectFileResource":
+          result = runtime.readProjectFileResource(
+            args[0] as string,
+            args[1] as number | undefined,
+          );
           break;
         case "loadProjectWithCompiledCache":
           result = runtime.loadProjectWithCompiledCache(args[0], args[1] as Uint8Array);

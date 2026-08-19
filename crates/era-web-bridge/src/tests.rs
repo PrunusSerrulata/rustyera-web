@@ -416,6 +416,59 @@ fn decoded_project_file_load_projects_and_stages_a_valid_manifest() {
 }
 
 #[test]
+fn project_file_cache_load_reuses_bytecode_and_externalizes_frontend_resources() {
+    let source = "@SYSTEM_TITLE\nRETURN\n";
+    let resource = vec![7, 8, 9];
+    let manifest = ProjectManifest {
+        project_revision: 1,
+        files: vec![
+            SubmittedFile {
+                relative_path: "ERB/main.erb".into(),
+                category: FileCategory::Erb,
+                payload: FilePayload::Utf8(source.into()),
+                content_hash: Some(ProtocolBytes::new(
+                    blake3::hash(source.as_bytes()).as_bytes().to_vec(),
+                )),
+            },
+            SubmittedFile {
+                relative_path: "resources/title.bin".into(),
+                category: FileCategory::Resource,
+                payload: FilePayload::Bytes(ProtocolBytes::new(resource.clone())),
+                content_hash: Some(ProtocolBytes::new(
+                    blake3::hash(&resource).as_bytes().to_vec(),
+                )),
+            },
+        ],
+    };
+    let project_file = export_project_file(&manifest);
+    let mut target = negotiated_web_session();
+
+    let (_, frontend) = target
+        .load_project_file_cache(&project_file)
+        .expect("valid project file should stage its compiled artifact");
+
+    assert!(matches!(
+        &frontend.files[0].payload,
+        FilePayload::Utf8(value) if value.is_empty()
+    ));
+    assert!(matches!(
+        &frontend.files[1].payload,
+        FilePayload::Bytes(value) if value.as_slice() == resource
+    ));
+    let report = wait_for_runtime_event(&mut target, |message, _| match message {
+        RuntimeMessage::ProjectLoadReport(report) => Some(report),
+        _ => None,
+    });
+    assert!(report.success, "{:?}", report.diagnostics);
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "runtime.compiled_cache_hit")
+    );
+}
+
+#[test]
 fn owned_project_manifest_uses_a_lightweight_load_envelope() {
     let mut session = WebSession::new(WebSessionOptions {
         maximum_envelope_bytes: 1024 * 1024,

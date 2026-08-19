@@ -71,6 +71,10 @@ export type ProjectConfigurationUpdatePreparer = (
   expectedDigest: Uint8Array,
   contents: string,
 ) => Promise<Uint8Array>;
+export type PackagedResourceReader = (
+  relativePath: string,
+  maximumBytes?: number,
+) => Promise<Uint8Array>;
 
 interface PendingBrowserFile {
   relativePath: string;
@@ -106,6 +110,7 @@ export interface BrowserProjectScanMetrics {
 export class BrowserProject {
   private readonly files = new Map<string, FileSystemFileHandle>();
   private readonly embeddedResources = new Map<string, Uint8Array>();
+  private packagedResourceReader?: PackagedResourceReader;
   private readonly canonicalPaths = new Map<string, string>();
   private readonly resourceSignatures = new Map<string, string>();
   private usesEmbeddedManifest = false;
@@ -147,13 +152,25 @@ export class BrowserProject {
   }
 
   useEmbeddedManifest(manifest: BrowserManifest): void {
-    const owned = takeProjectFileManifestOwnership(manifest);
+    this.useOwnedEmbeddedManifest(takeProjectFileManifestOwnership(manifest));
+  }
+
+  useOwnedEmbeddedManifest(owned: BrowserManifest, resourceReader?: PackagedResourceReader): void {
     this.revision = owned.project_revision;
     this.embeddedResources.clear();
+    this.packagedResourceReader = resourceReader;
     this.usesEmbeddedManifest = true;
     for (const file of owned.files) {
       if (file.category === "resource" && file.payload.type === "bytes") {
-        this.embeddedResources.set(safePath(file.relative_path).toLowerCase(), file.payload.value);
+        if (!(file.payload.value instanceof Uint8Array)) {
+          throw new Error(`项目资源不是二进制数据：${file.relative_path}`);
+        }
+        if (!resourceReader) {
+          this.embeddedResources.set(
+            safePath(file.relative_path).toLowerCase(),
+            file.payload.value,
+          );
+        }
       }
     }
     this.manifestValue = cacheIdentityManifest(owned);
@@ -883,6 +900,9 @@ export class BrowserProject {
     const key = normalized.toLowerCase();
     const embedded = this.embeddedResources.get(key);
     if (embedded) return new Uint8Array(embedded);
+    if (this.usesEmbeddedManifest && this.packagedResourceReader) {
+      return this.packagedResourceReader(normalized);
+    }
     const handle =
       this.files.get(key) ??
       (await optionalFileHandle(
@@ -911,6 +931,9 @@ export class BrowserProject {
     const key = normalized.toLowerCase();
     const embedded = this.embeddedResources.get(key);
     if (embedded) return embedded.slice(0, maximumBytes);
+    if (this.usesEmbeddedManifest && this.packagedResourceReader) {
+      return this.packagedResourceReader(normalized, maximumBytes);
+    }
     const handle =
       this.files.get(key) ??
       (await optionalFileHandle(

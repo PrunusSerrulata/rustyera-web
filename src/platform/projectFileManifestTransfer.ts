@@ -26,6 +26,5 @@ export function runtimeWorkerResultTransfers(method: string, result: unknown): A
       .map((item) => item.dataBytes?.buffer)
       .filter((buffer): buffer is ArrayBuffer => buffer instanceof ArrayBuffer);
   }
-  if (method !== "finishProjectFile") return [];
-  return projectFileManifestTransfers((result as { manifest: BrowserManifest }).manifest);
+  return [];
 }

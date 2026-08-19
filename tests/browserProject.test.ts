@@ -861,6 +861,33 @@ describe("browser project reads", () => {
     );
   });
 
+  it("reads worker-owned packaged resources on demand without retaining their payload", async () => {
+    const project = new BrowserProject(new SaveDirectoryHandle("storage") as any, 1, "game");
+    const read = vi.fn(async (_path: string, maximum?: number) =>
+      Uint8Array.of(4, 5, 6).slice(0, maximum),
+    );
+    project.useOwnedEmbeddedManifest(
+      {
+        project_revision: 3,
+        files: [
+          {
+            relative_path: "resources/a.png",
+            category: "resource",
+            payload: { type: "bytes", value: new Uint8Array() },
+            content_hash: new Uint8Array(32),
+          },
+        ],
+      },
+      read,
+    );
+
+    await expect(project.readResourcePrefix("RESOURCES/A.PNG", 2)).resolves.toEqual(
+      Uint8Array.of(4, 5),
+    );
+    await expect(project.readResource("resources/a.png")).resolves.toEqual(Uint8Array.of(4, 5, 6));
+    expect(read.mock.calls).toEqual([["RESOURCES/A.PNG", 2], ["resources/a.png"]]);
+  });
+
   it("resolves imported resources lazily without rescanning their payloads", async () => {
     const root = new SaveDirectoryHandle("storage");
     const resources = await root.getDirectoryHandle("resources", { create: true });

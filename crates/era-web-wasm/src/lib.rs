@@ -1,9 +1,7 @@
 //! WebAssembly bindings for the shared `RustyEra` web session bridge.
 
 use era_debug_protocol::DebugMessage;
-use era_runtime::{
-    DecodedProjectFileStream, ProjectFileStreamDecoder, ProjectProgressReporter, RuntimeDriveBudget,
-};
+use era_runtime::{ProjectProgressReporter, RuntimeDriveBudget};
 use era_runtime_protocol::{
     ExternalResource, FileCategory, FilePayload, ImageMetadataResponse, ProjectManifest,
     ProtocolBytes, RuntimeMessage, SubmittedFile,
@@ -12,6 +10,7 @@ use era_web_bridge::{
     FRONTEND_PUMP_MAXIMUM_QUIET_SLICES, WebSession, WebSessionOptions, project_identity,
 };
 use serde::de::DeserializeOwned;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
 
@@ -28,24 +27,12 @@ struct WasmProjectProgress {
 pub struct WasmRuntime {
     inner: WebSession,
     project_file_upload: ProjectFileUpload,
-}
-
-enum PendingProjectFileMode {
-    Complete(Vec<u8>),
-    Sources(Box<ProjectFileStreamDecoder>),
+    project_file_resources: ProjectFileResources,
 }
 
 struct PendingProjectFile {
-    mode: PendingProjectFileMode,
+    bytes: Vec<u8>,
     expected_len: usize,
-    received_len: usize,
-    scratch: Vec<u8>,
-}
-
-#[derive(Debug)]
-enum CompletedProjectFile {
-    Complete(Vec<u8>),
-    Sources(DecodedProjectFileStream),
 }
 
 #[derive(Default)]
@@ -54,35 +41,20 @@ struct ProjectFileUpload {
 }
 
 impl ProjectFileUpload {
-    fn begin(
-        &mut self,
-        expected_len: usize,
-        maximum_len: usize,
-        sources_only: bool,
-    ) -> Result<(), String> {
+    fn begin(&mut self, expected_len: usize, maximum_len: usize) -> Result<(), String> {
         if self.pending.is_some() {
             return Err("a project file upload is already active".to_owned());
         }
         if expected_len > maximum_len {
             return Err("project file exceeds the negotiated transfer limit".to_owned());
         }
-        let mode = if sources_only {
-            PendingProjectFileMode::Sources(Box::new(
-                ProjectFileStreamDecoder::new(expected_len, maximum_len)
-                    .map_err(|error| error.to_string())?,
-            ))
-        } else {
-            let mut bytes = Vec::new();
-            bytes
-                .try_reserve_exact(expected_len)
-                .map_err(|error| format!("failed to reserve project file buffer: {error}"))?;
-            PendingProjectFileMode::Complete(bytes)
-        };
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(expected_len)
+            .map_err(|error| format!("failed to reserve project file buffer: {error}"))?;
         self.pending = Some(PendingProjectFile {
-            mode,
+            bytes,
             expected_len,
-            received_len: 0,
-            scratch: Vec::new(),
         });
         Ok(())
     }
@@ -92,78 +64,33 @@ impl ProjectFileUpload {
             .pending
             .as_mut()
             .ok_or_else(|| "no project file upload is active".to_owned())?;
-        let start = pending.received_len;
+        let start = pending.bytes.len();
         let end = start
             .checked_add(chunk_len)
             .ok_or_else(|| "project file size overflow".to_owned())?;
         if end > pending.expected_len {
             return Err("project file upload exceeds its declared size".to_owned());
         }
-        match &mut pending.mode {
-            PendingProjectFileMode::Complete(bytes) => {
-                bytes.resize(end, 0);
-                Ok(&mut bytes[start..end])
-            }
-            PendingProjectFileMode::Sources(_) => {
-                pending.scratch.resize(chunk_len, 0);
-                Ok(&mut pending.scratch)
-            }
-        }
+        pending.bytes.resize(end, 0);
+        Ok(&mut pending.bytes[start..end])
     }
 
-    fn commit_append(&mut self) -> Result<(), String> {
-        let result = {
-            let pending = self
-                .pending
-                .as_mut()
-                .ok_or_else(|| "no project file upload is active".to_owned())?;
-            match &mut pending.mode {
-                PendingProjectFileMode::Complete(bytes) => {
-                    pending.received_len = bytes.len();
-                    Ok(())
-                }
-                PendingProjectFileMode::Sources(decoder) => {
-                    let result = decoder
-                        .append(&pending.scratch)
-                        .map_err(|error| error.to_string());
-                    if result.is_ok() {
-                        pending.received_len += pending.scratch.len();
-                        pending.scratch.clear();
-                    }
-                    result
-                }
-            }
-        };
-        if result.is_err() {
-            self.pending = None;
-        }
-        result
-    }
-
-    fn finish(&mut self) -> Result<CompletedProjectFile, String> {
+    fn finish(&mut self) -> Result<Vec<u8>, String> {
         let pending = self
             .pending
             .as_ref()
             .ok_or_else(|| "no project file upload is active".to_owned())?;
-        if pending.received_len != pending.expected_len {
+        if pending.bytes.len() != pending.expected_len {
             return Err(format!(
                 "project file upload is incomplete: received {} of {} bytes",
-                pending.received_len, pending.expected_len
+                pending.bytes.len(),
+                pending.expected_len
             ));
         }
         self.pending
             .take()
-            .map(|completed| match completed.mode {
-                PendingProjectFileMode::Complete(bytes) => {
-                    Ok(CompletedProjectFile::Complete(bytes))
-                }
-                PendingProjectFileMode::Sources(decoder) => (*decoder)
-                    .finish()
-                    .map(CompletedProjectFile::Sources)
-                    .map_err(|error| error.to_string()),
-            })
+            .map(|completed| completed.bytes)
             .ok_or_else(|| "no project file upload is active".to_owned())
-            .and_then(std::convert::identity)
     }
 
     fn cancel(&mut self) {
@@ -177,6 +104,66 @@ struct LoadedProjectFile {
     manifest: ProjectManifest,
     storage_key: String,
     cache_imported: bool,
+}
+
+fn take_project_file_resources(manifest: &mut ProjectManifest) -> BTreeMap<String, Vec<u8>> {
+    let mut resources = BTreeMap::new();
+    for file in &mut manifest.files {
+        if file.category != FileCategory::Resource {
+            continue;
+        }
+        let FilePayload::Bytes(bytes) = &mut file.payload else {
+            continue;
+        };
+        let key = file.relative_path.replace('\\', "/").to_lowercase();
+        let value = std::mem::take(bytes).into_inner();
+        let previous = resources.insert(key, value);
+        debug_assert!(previous.is_none());
+    }
+    resources
+}
+
+#[derive(Default)]
+struct ProjectFileResources {
+    active: BTreeMap<String, Vec<u8>>,
+    candidate: Option<(u64, BTreeMap<String, Vec<u8>>)>,
+    pending_replacements: BTreeSet<u64>,
+}
+
+impl ProjectFileResources {
+    fn stage_packaged(&mut self, message_id: u64, resources: BTreeMap<String, Vec<u8>>) {
+        self.candidate = Some((message_id, resources));
+    }
+
+    fn track_replacement(&mut self, message_id: u64) {
+        self.pending_replacements.insert(message_id);
+    }
+
+    fn complete_replacement(&mut self, message_id: u64, success: bool) {
+        if self
+            .candidate
+            .as_ref()
+            .is_some_and(|(candidate_id, _)| *candidate_id == message_id)
+        {
+            let (_, candidate) = self.candidate.take().expect("matching candidate exists");
+            if success {
+                self.active = candidate;
+                self.pending_replacements.clear();
+            }
+            return;
+        }
+        if self.pending_replacements.remove(&message_id) && success {
+            self.active.clear();
+        }
+    }
+
+    fn get(&self, relative_path: &str) -> Option<&[u8]> {
+        self.candidate
+            .as_ref()
+            .and_then(|(_, resources)| resources.get(relative_path))
+            .or_else(|| self.active.get(relative_path))
+            .map(Vec::as_slice)
+    }
 }
 
 #[wasm_bindgen]
@@ -220,6 +207,7 @@ impl WasmRuntime {
         Ok(Self {
             inner,
             project_file_upload: ProjectFileUpload::default(),
+            project_file_resources: ProjectFileResources::default(),
         })
     }
 
@@ -269,7 +257,9 @@ impl WasmRuntime {
     #[wasm_bindgen(js_name = loadProject)]
     pub fn load_project(&mut self, manifest: JsValue) -> Result<JsValue, JsValue> {
         let manifest: ProjectManifest = from_js(manifest)?;
-        to_js(self.inner.load_project(manifest).map_err(js_error)?)
+        let message_id = self.inner.load_project(manifest).map_err(js_error)?;
+        self.project_file_resources.track_replacement(message_id);
+        to_js(message_id)
     }
 
     /// Decode and submit the browser's compact binary manifest transport.
@@ -280,7 +270,9 @@ impl WasmRuntime {
     #[wasm_bindgen(js_name = loadProjectBinary)]
     pub fn load_project_binary(&mut self, bytes: &js_sys::Uint8Array) -> Result<JsValue, JsValue> {
         let manifest = decode_browser_manifest(&bytes.to_vec()).map_err(js_error)?;
-        to_js(self.inner.load_project(manifest).map_err(js_error)?)
+        let message_id = self.inner.load_project(manifest).map_err(js_error)?;
+        self.project_file_resources.track_replacement(message_id);
+        to_js(message_id)
     }
 
     /// Decode the manifest embedded in a self-contained `RustyEra` project file.
@@ -299,25 +291,18 @@ impl WasmRuntime {
 
     /// Begin receiving one project file in bounded chunks.
     ///
-    /// Source-only mode hashes and skips compiled sections while retaining only the compressed
-    /// source manifest needed for a cold compile.
-    ///
     /// # Errors
     ///
     /// Returns a JavaScript error when another upload is active, the file exceeds the negotiated
     /// transfer limit, or memory for the required retained sections cannot be reserved.
     #[wasm_bindgen(js_name = beginProjectFile)]
-    pub fn begin_project_file(
-        &mut self,
-        total_bytes: u32,
-        sources_only: bool,
-    ) -> Result<(), JsValue> {
+    pub fn begin_project_file(&mut self, total_bytes: u32) -> Result<(), JsValue> {
         let expected_len = usize::try_from(total_bytes)
             .map_err(|_| js_error("project file size is unsupported on this platform"))?;
         let maximum_len =
             usize::try_from(self.inner.maximum_transfer_bytes()).unwrap_or(usize::MAX);
         self.project_file_upload
-            .begin(expected_len, maximum_len, sources_only)
+            .begin(expected_len, maximum_len)
             .map_err(js_error)
     }
 
@@ -335,7 +320,7 @@ impl WasmRuntime {
             .append_destination(chunk_len)
             .map_err(js_error)?;
         chunk.copy_to(destination);
-        self.project_file_upload.commit_append().map_err(js_error)
+        Ok(())
     }
 
     /// Decode and load the completed WASM-owned project-file buffer without another full copy.
@@ -346,33 +331,43 @@ impl WasmRuntime {
     /// corrupt, unsupported, or cannot be staged for the runtime.
     #[wasm_bindgen(js_name = finishProjectFile)]
     pub fn finish_project_file(&mut self) -> Result<JsValue, JsValue> {
-        let completed = self.project_file_upload.finish().map_err(js_error)?;
-        let (manifest, storage_key, cache_imported) = match completed {
-            CompletedProjectFile::Complete(bytes) => {
-                let storage_key = blake3::hash(&bytes).to_hex().to_string();
-                let manifest = self.inner.project_file_manifest(&bytes).map_err(js_error)?;
-                let identity = project_identity(&manifest).map_err(js_error)?;
-                self.inner
-                    .load_project_with_compiled_cache(identity, bytes)
-                    .map_err(js_error)?;
-                (manifest, storage_key, true)
-            }
-            CompletedProjectFile::Sources(decoded) => {
-                let storage_key = blake3::Hash::from_bytes(decoded.file_digest)
-                    .to_hex()
-                    .to_string();
-                let manifest = self
-                    .inner
-                    .load_decoded_project_file(decoded.project)
-                    .map_err(js_error)?;
-                (manifest, storage_key, false)
-            }
-        };
+        let bytes = self.project_file_upload.finish().map_err(js_error)?;
+        let storage_key = blake3::hash(&bytes).to_hex().to_string();
+        let (message_id, mut manifest) = self
+            .inner
+            .load_project_file_cache(&bytes)
+            .map_err(js_error)?;
+        let resources = take_project_file_resources(&mut manifest);
+        self.project_file_resources
+            .stage_packaged(message_id, resources);
         to_js(LoadedProjectFile {
             manifest,
             storage_key,
-            cache_imported,
+            cache_imported: true,
         })
+    }
+
+    /// Copy one embedded project resource (or a bounded prefix) to JavaScript on demand.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error when the resource is unknown.
+    #[wasm_bindgen(js_name = readProjectFileResource)]
+    pub fn read_project_file_resource(
+        &self,
+        relative_path: &str,
+        maximum_bytes: Option<u32>,
+    ) -> Result<js_sys::Uint8Array, JsValue> {
+        let key = relative_path.replace('\\', "/").to_lowercase();
+        let bytes = self.project_file_resources.get(&key).ok_or_else(|| {
+            js_error(format!(
+                "unknown packaged project resource: {relative_path}"
+            ))
+        })?;
+        let length = maximum_bytes
+            .and_then(|value| usize::try_from(value).ok())
+            .map_or(bytes.len(), |value| value.min(bytes.len()));
+        Ok(js_sys::Uint8Array::from(&bytes[..length]))
     }
 
     /// Discard an incomplete project-file upload after a browser read or transfer failure.
@@ -447,11 +442,12 @@ impl WasmRuntime {
     ) -> Result<JsValue, JsValue> {
         let manifest: ProjectManifest = from_js(manifest)?;
         let identity = project_identity(&manifest).map_err(js_error)?;
-        to_js(
-            self.inner
-                .load_project_with_compiled_cache(identity, cache.to_vec())
-                .map_err(js_error)?,
-        )
+        let message_id = self
+            .inner
+            .load_project_with_compiled_cache(identity, cache.to_vec())
+            .map_err(js_error)?;
+        self.project_file_resources.track_replacement(message_id);
+        to_js(message_id)
     }
 
     /// Import a compiled cache using the browser's binary identity manifest.
@@ -467,11 +463,12 @@ impl WasmRuntime {
     ) -> Result<JsValue, JsValue> {
         let manifest = decode_browser_manifest(&manifest.to_vec()).map_err(js_error)?;
         let identity = project_identity(&manifest).map_err(js_error)?;
-        to_js(
-            self.inner
-                .load_project_with_compiled_cache(identity, cache.to_vec())
-                .map_err(js_error)?,
-        )
+        let message_id = self
+            .inner
+            .load_project_with_compiled_cache(identity, cache.to_vec())
+            .map_err(js_error)?;
+        self.project_file_resources.track_replacement(message_id);
+        to_js(message_id)
     }
 
     /// Drive one bounded worker slice and return all typed events.
@@ -494,6 +491,24 @@ impl WasmRuntime {
                 FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
             )
             .map_err(js_error)?;
+        for event in &batch.events {
+            if event
+                .message
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                != Some("project_load_report")
+            {
+                continue;
+            }
+            let success = event
+                .message
+                .get("value")
+                .and_then(|value| value.get("success"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            self.project_file_resources
+                .complete_replacement(event.message_id, success);
+        }
         to_js(batch)
     }
 }
@@ -668,8 +683,13 @@ impl<'a> BinaryReader<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CompletedProjectFile, ProjectFileUpload, decode_browser_manifest};
-    use era_runtime_protocol::{FileCategory, FilePayload};
+    use super::{
+        ProjectFileResources, ProjectFileUpload, decode_browser_manifest,
+        take_project_file_resources,
+    };
+    use era_runtime_protocol::{
+        FileCategory, FilePayload, ProjectManifest, ProtocolBytes, SubmittedFile,
+    };
 
     #[test]
     fn browser_manifest_binary_decodes_text_and_resource_payloads() {
@@ -712,18 +732,12 @@ mod tests {
         let mut upload = ProjectFileUpload::default();
         assert!(upload.finish().unwrap_err().contains("no project file"));
 
-        upload.begin(3, 3, false).unwrap();
-        assert!(
-            upload
-                .begin(3, 3, false)
-                .unwrap_err()
-                .contains("already active")
-        );
+        upload.begin(3, 3).unwrap();
+        assert!(upload.begin(3, 3).unwrap_err().contains("already active"));
         upload
             .append_destination(2)
             .unwrap()
             .copy_from_slice(&[1, 2]);
-        upload.commit_append().unwrap();
         assert!(
             upload
                 .append_destination(2)
@@ -732,65 +746,86 @@ mod tests {
         );
         assert!(upload.finish().unwrap_err().contains("received 2 of 3"));
         upload.append_destination(1).unwrap().copy_from_slice(&[3]);
-        upload.commit_append().unwrap();
-        assert!(matches!(
-            upload.finish().unwrap(),
-            CompletedProjectFile::Complete(bytes) if bytes == [1, 2, 3]
-        ));
+        assert_eq!(upload.finish().unwrap(), [1, 2, 3]);
 
-        upload.begin(2, 3, false).unwrap();
+        upload.begin(2, 3).unwrap();
         upload.append_destination(1).unwrap()[0] = 9;
-        upload.commit_append().unwrap();
         upload.cancel();
-        upload.begin(1, 3, false).unwrap();
+        upload.begin(1, 3).unwrap();
         upload.append_destination(1).unwrap()[0] = 4;
-        upload.commit_append().unwrap();
-        assert!(matches!(
-            upload.finish().unwrap(),
-            CompletedProjectFile::Complete(bytes) if bytes == [4]
-        ));
+        assert_eq!(upload.finish().unwrap(), [4]);
     }
 
     #[test]
     fn project_file_upload_rejects_a_declared_size_above_the_limit() {
         let mut upload = ProjectFileUpload::default();
 
-        assert!(
-            upload
-                .begin(4, 3, false)
-                .unwrap_err()
-                .contains("transfer limit")
-        );
-        upload.begin(3, 3, false).unwrap();
+        assert!(upload.begin(4, 3).unwrap_err().contains("transfer limit"));
+        upload.begin(3, 3).unwrap();
     }
 
     #[test]
-    fn source_project_file_upload_discards_a_failed_decoder_and_can_restart() {
+    fn cancelled_project_file_upload_can_restart() {
         let mut upload = ProjectFileUpload::default();
-        upload.begin(265, 265, true).unwrap();
-        upload.append_destination(1).unwrap()[0] = b'R';
-        upload.commit_append().unwrap();
-        assert!(upload.finish().unwrap_err().contains("received 1 of 265"));
-        upload.append_destination(88).unwrap().fill(0);
-        assert!(
-            upload
-                .commit_append()
-                .unwrap_err()
-                .contains("invalid header")
-        );
-        assert!(upload.finish().unwrap_err().contains("no project file"));
-
-        upload.begin(1, 265, false).unwrap();
+        upload.begin(2, 265).unwrap();
         upload.append_destination(1).unwrap()[0] = 7;
-        upload.commit_append().unwrap();
-        assert!(matches!(
-            upload.finish().unwrap(),
-            CompletedProjectFile::Complete(bytes) if bytes == [7]
-        ));
-
-        upload.begin(265, 265, true).unwrap();
         upload.cancel();
-        upload.begin(1, 265, false).unwrap();
+        upload.begin(1, 265).unwrap();
+        upload.append_destination(1).unwrap()[0] = 9;
+        assert_eq!(upload.finish().unwrap(), [9]);
+    }
+
+    #[test]
+    fn packaged_resources_move_out_of_the_frontend_manifest() {
+        let mut manifest = ProjectManifest {
+            project_revision: 1,
+            files: vec![SubmittedFile {
+                relative_path: "Resources/Title.bin".into(),
+                category: FileCategory::Resource,
+                payload: FilePayload::Bytes(ProtocolBytes::new(vec![1, 2, 3])),
+                content_hash: Some(ProtocolBytes::new(vec![4; 32])),
+            }],
+        };
+
+        let resources = take_project_file_resources(&mut manifest);
+
+        assert_eq!(resources["resources/title.bin"], [1, 2, 3]);
+        assert!(matches!(
+            &manifest.files[0].payload,
+            FilePayload::Bytes(bytes) if bytes.as_slice().is_empty()
+        ));
+    }
+
+    #[test]
+    fn project_resource_replacement_commits_only_after_a_successful_load() {
+        let mut resources = ProjectFileResources {
+            active: std::collections::BTreeMap::from([("resources/a.bin".into(), vec![1, 2, 3])]),
+            ..ProjectFileResources::default()
+        };
+
+        resources.stage_packaged(
+            6,
+            std::collections::BTreeMap::from([("resources/b.bin".into(), vec![4, 5, 6])]),
+        );
+        assert_eq!(resources.get("resources/b.bin"), Some([4, 5, 6].as_slice()));
+        resources.complete_replacement(6, false);
+        assert_eq!(resources.get("resources/a.bin"), Some([1, 2, 3].as_slice()));
+
+        resources.stage_packaged(
+            7,
+            std::collections::BTreeMap::from([("resources/b.bin".into(), vec![4, 5, 6])]),
+        );
+        resources.complete_replacement(7, true);
+        assert!(resources.get("resources/a.bin").is_none());
+        assert_eq!(resources.get("resources/b.bin"), Some([4, 5, 6].as_slice()));
+
+        resources.track_replacement(8);
+        resources.complete_replacement(8, false);
+        assert_eq!(resources.get("resources/b.bin"), Some([4, 5, 6].as_slice()));
+
+        resources.track_replacement(9);
+        resources.complete_replacement(9, true);
+        assert!(resources.get("resources/b.bin").is_none());
     }
 
     fn append_file(

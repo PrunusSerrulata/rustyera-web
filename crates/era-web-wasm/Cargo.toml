@@ -15,6 +15,7 @@ era-runtime-protocol.workspace = true
 era-web-bridge = { path = "../era-web-bridge" }
 js-sys = "0.3.81"
 serde.workspace = true
+serde_json.workspace = true
 serde-wasm-bindgen = "0.6.5"
 wasm-bindgen = "0.2.104"
 

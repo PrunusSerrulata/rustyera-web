@@ -1,4 +1,4 @@
-/* global window, HTMLImageElement */
+/* global document, window, HTMLImageElement */
 
 import { createWriteStream } from "node:fs";
 import {
@@ -396,17 +396,69 @@ export function nativeFirefoxCapabilities(platform = process.platform) {
   }
   return {
     browserName: "firefox",
-    // Firefox 154 can leave classic WebDriver commands queued behind a long-running page load,
-    // which prevents the compatibility runner from capturing its mandatory first snapshot.
-    // Request the native BiDi endpoint so document inspection and startup diagnostics remain live.
-    webSocketUrl: true,
-    pageLoadStrategy: "eager",
+    // Returning before the load event keeps classic Marionette commands available while the
+    // compatibility client performs long-running WASM startup work. BiDi session negotiation has
+    // proven less reliable than Firefox's stable WebDriver HTTP endpoint on release builds.
+    pageLoadStrategy: "none",
+    "wdio:enforceWebDriverClassic": true,
     "wdio:geckodriverOptions": {
       cacheDir: path.resolve(".rustyera", "webdriver"),
       geckoDriverVersion: "0.37.1",
     },
     "moz:firefoxOptions": options,
   };
+}
+
+export async function waitForWebDriverDocument(
+  browser,
+  expectedUrl,
+  { timeoutMs = 5_000, stage = "waiting for target document" } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+  let last = { url: null, readyState: null };
+  let lastError;
+  while (Date.now() < deadline) {
+    const remaining = Math.max(1, deadline - Date.now());
+    try {
+      last = await deadlineRace(
+        browser.execute(() => ({
+          url: window.location.href,
+          readyState: document.readyState,
+        })),
+        remaining,
+        "document readiness probe",
+      );
+      if (last.url?.startsWith(expectedUrl) && last.readyState !== "loading") return last;
+    } catch (error) {
+      lastError = error;
+    }
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(50, remaining)));
+  }
+  throw new Error(
+    `WebDriver target document did not become ready during ${stage}: ${JSON.stringify({
+      expectedUrl,
+      ...last,
+      error: lastError?.message ?? null,
+    })}`,
+  );
+}
+
+async function deadlineRace(promise, timeoutMs, label) {
+  let timeout;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`${label} exceeded ${timeoutMs} ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function installRemoteFileSystem(page, root) {

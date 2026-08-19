@@ -19,6 +19,7 @@ import {
   runtimeProgressSignature,
   runAction,
   terminalRuntimeRejection,
+  waitForWebDriverDocument,
 } from "../scripts/web-test-lib.mjs";
 
 describe("web game test scenario", () => {
@@ -52,9 +53,9 @@ describe("web game test scenario", () => {
 
   it.each(["win32", "linux"])("lets WebDriver discover Firefox on %s", (platform) => {
     const capabilities = nativeFirefoxCapabilities(platform);
-    expect(capabilities.webSocketUrl).toBe(true);
-    expect(capabilities.pageLoadStrategy).toBe("eager");
-    expect(capabilities["wdio:enforceWebDriverClassic"]).toBeUndefined();
+    expect(capabilities.webSocketUrl).toBeUndefined();
+    expect(capabilities.pageLoadStrategy).toBe("none");
+    expect(capabilities["wdio:enforceWebDriverClassic"]).toBe(true);
     expect(capabilities["wdio:geckodriverOptions"]).toEqual({
       cacheDir: path.resolve(".rustyera", "webdriver"),
       geckoDriverVersion: "0.37.1",
@@ -66,9 +67,9 @@ describe("web game test scenario", () => {
 
   it("uses the native Firefox application path on macOS", () => {
     const capabilities = nativeFirefoxCapabilities("darwin");
-    expect(capabilities.webSocketUrl).toBe(true);
-    expect(capabilities.pageLoadStrategy).toBe("eager");
-    expect(capabilities["wdio:enforceWebDriverClassic"]).toBeUndefined();
+    expect(capabilities.webSocketUrl).toBeUndefined();
+    expect(capabilities.pageLoadStrategy).toBe("none");
+    expect(capabilities["wdio:enforceWebDriverClassic"]).toBe(true);
     expect(capabilities["wdio:geckodriverOptions"]).toEqual({
       cacheDir: path.resolve(".rustyera", "webdriver"),
       geckoDriverVersion: "0.37.1",
@@ -77,6 +78,24 @@ describe("web game test scenario", () => {
       args: ["-headless"],
       binary: "/Applications/Firefox.app/Contents/MacOS/firefox",
     });
+  });
+
+  it("waits for the target WebDriver document instead of accepting about:blank", async () => {
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ url: "about:blank", readyState: "complete" })
+      .mockResolvedValueOnce({ url: "http://127.0.0.1:4173/", readyState: "interactive" });
+
+    await expect(
+      waitForWebDriverDocument({ execute }, "http://127.0.0.1:4173", {
+        timeoutMs: 1_000,
+        stage: "test navigation",
+      }),
+    ).resolves.toEqual({
+      url: "http://127.0.0.1:4173/",
+      readyState: "interactive",
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 
   it("resizes the real Chromium layout viewport through a declared action", async () => {

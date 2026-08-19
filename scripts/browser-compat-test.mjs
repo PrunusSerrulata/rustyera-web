@@ -19,6 +19,7 @@ import {
   runtimeProgressDiagnostic,
   runtimeProgressSignature,
   terminalRuntimeRejection,
+  waitForWebDriverDocument,
 } from "./web-test-lib.mjs";
 
 const repository = fileURLToPath(new URL("..", import.meta.url));
@@ -76,6 +77,8 @@ try {
   const port = viteServerPort(server);
   browser = await remote({
     logLevel: "warn",
+    connectionRetryTimeout: 20_000,
+    connectionRetryCount: 1,
     capabilities:
       browserName === "firefox"
         ? nativeFirefoxCapabilities()
@@ -85,22 +88,24 @@ try {
           },
   });
   if (browserName === "firefox") {
-    if (browser.isBidi !== true) {
-      throw new Error(
-        `native Firefox did not establish WebDriver BiDi: ${JSON.stringify(browser.capabilities)}`,
-      );
-    }
     console.log(
       JSON.stringify({
         browser: browserName,
         type: "webdriver-transport",
-        bidi: true,
+        bidi: false,
         capabilities: browser.capabilities,
       }),
     );
   }
   compatibilityStage = "navigating to compatibility client";
-  await browser.url(`http://127.0.0.1:${port}`);
+  const targetUrl = `http://127.0.0.1:${port}`;
+  await browser.url(targetUrl);
+  compatibilityStage = "waiting for compatibility document";
+  const documentReady = await waitForWebDriverDocument(browser, targetUrl, {
+    timeoutMs: 5_000,
+    stage: compatibilityStage,
+  });
+  console.log(JSON.stringify({ browser: browserName, type: "document-ready", ...documentReady }));
   snapshotMonitor = startCompleteSnapshotMonitor(browser, {
     eventType: "browser-compat-snapshot",
     label: `${browserName} compatibility`,
@@ -127,6 +132,15 @@ try {
     snapshotMonitorError = error;
     await browser?.deleteSession().catch(() => undefined);
   });
+  compatibilityStage = "waiting for frontend test control";
+  await browser.waitUntil(
+    () => browser.execute(() => typeof window.__RUSTYERA_TEST__?.snapshot === "function"),
+    {
+      timeout: 5_000,
+      interval: 50,
+      timeoutMsg: "frontend test control was not installed after document readiness",
+    },
+  );
   compatibilityStage = "clearing OPFS for cold startup";
   const opfsReset = await browser.executeAsync(async (done) => {
     try {
@@ -368,6 +382,39 @@ try {
       await button.waitForClickable({ timeout: 30_000 });
       await button.click();
     };
+    const clickFileMenuAction = async (label) => {
+      const menuButton = await browser.$("#menu-file");
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        compatibilityStage = `opening 文件 menu for ${label} (attempt ${attempt})`;
+        await menuButton.waitForClickable({ timeout: 2_000 });
+        if ((await menuButton.getAttribute("aria-expanded")) !== "true") {
+          await menuButton.click();
+        }
+        const opened = await browser
+          .waitUntil(
+            () => menuButton.getAttribute("aria-expanded").then((value) => value === "true"),
+            {
+              timeout: 1_000,
+              interval: 50,
+            },
+          )
+          .then(() => true)
+          .catch(() => false);
+        if (!opened) continue;
+        compatibilityStage = `clicking ${label}`;
+        const action = await browser.$(
+          `//button[@id='menu-file']/following-sibling::*[contains(@class,'menu-popup')]//button[normalize-space(.)=${JSON.stringify(label)}]`,
+        );
+        const clickable = await action
+          .waitForClickable({ timeout: 1_000 })
+          .then(() => true)
+          .catch(() => false);
+        if (!clickable) continue;
+        await action.click();
+        return;
+      }
+      throw new Error(`文件 menu action did not become clickable: ${label}`);
+    };
     compatibilityStage = "checking automatic interaction assistance";
     const automaticInteractionAssist = await inspectAutomaticInteractionAssist(browser);
     compatibilityStage = "enabling interaction assistance";
@@ -382,8 +429,7 @@ try {
       { menuLabel: "返回标题", title: "返回标题" },
     ]) {
       const beforeConfirmation = await browser.execute(() => window.__RUSTYERA_TEST__?.snapshot());
-      await clickButton("文件");
-      await clickButton(action.menuLabel);
+      await clickFileMenuAction(action.menuLabel);
       compatibilityStage = `checking ${action.title} confirmation`;
       const confirmation = await browser.$(`section[aria-label='${action.title}']`);
       await confirmation.waitForDisplayed({ timeout: 30_000 });
@@ -410,8 +456,7 @@ try {
         throw new Error(`${action.title} cancellation changed the running game`);
       }
     }
-    await clickButton("文件");
-    await clickButton("项目设置…");
+    await clickFileMenuAction("项目设置…");
     compatibilityStage = "checking font settings";
     const settingsDialog = await browser.$("section[aria-label='RustyEra Web · 项目设置']");
     await settingsDialog.waitForDisplayed({ timeout: 30_000 });
@@ -566,8 +611,7 @@ try {
         ),
       { timeout: 30_000, interval: 100, timeoutMsg: "in-game save did not complete" },
     );
-    await clickButton("文件");
-    await clickButton("导出存档…");
+    await clickFileMenuAction("导出存档…");
     await (await browser.$("section[aria-label='导出存档']")).waitForDisplayed({ timeout: 30_000 });
     await clickButton("导出");
     compatibilityStage = "receiving exported save";
@@ -602,8 +646,7 @@ try {
         HTMLInputElement.prototype.click = nativeInputClick;
       };
     }, gameSave.download.bytes);
-    await clickButton("文件");
-    await clickButton("导入存档…");
+    await clickFileMenuAction("导入存档…");
     await (await browser.$("section[aria-label='导入存档']")).waitForDisplayed({ timeout: 30_000 });
     await clickButton("选择 .sav 文件…");
     compatibilityStage = "waiting for imported save selection";
@@ -640,8 +683,7 @@ try {
       }));
       throw new Error(`traditional save was not imported: ${JSON.stringify(diagnosis)}`);
     }
-    await clickButton("文件");
-    await clickButton("导出存档…");
+    await clickFileMenuAction("导出存档…");
     await (await browser.$("section[aria-label='导出存档']")).waitForDisplayed({ timeout: 30_000 });
     const exportSlot = await browser.$("section[aria-label='导出存档'] select");
     await exportSlot.selectByVisibleText("槽位 01（已有存档）");

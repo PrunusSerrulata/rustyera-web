@@ -45,20 +45,26 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain('telemetry.outcome !== "success"');
   });
 
-  it("requires Firefox BiDi before eager navigation and bounds complete snapshots", () => {
+  it("uses non-blocking Firefox navigation and bounds complete snapshots", () => {
     const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
     const library = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
     const snapshots = readFileSync(resolve("scripts/tauri-test-support.mjs"), "utf8");
 
-    expect(library).toContain("webSocketUrl: true");
-    expect(library).toContain('pageLoadStrategy: "eager"');
+    expect(library).not.toContain("webSocketUrl: true");
+    expect(library).toContain('pageLoadStrategy: "none"');
     expect(library).toContain('geckoDriverVersion: "0.37.1"');
     expect(library).toContain('cacheDir: path.resolve(".rustyera", "webdriver")');
-    expect(library).not.toContain('"wdio:enforceWebDriverClassic": true');
-    expect(runner).toContain("browser.isBidi !== true");
-    expect(runner.indexOf("browser.isBidi !== true")).toBeLessThan(
-      runner.indexOf("await browser.url(`http://127.0.0.1:${port}`)"),
-    );
+    expect(library).toContain('"wdio:enforceWebDriverClassic": true');
+    expect(runner).toContain("connectionRetryTimeout: 20_000");
+    expect(runner).not.toContain("browser.isBidi !== true");
+    const navigation = runner.indexOf("await browser.url(targetUrl)");
+    const readiness = runner.indexOf("await waitForWebDriverDocument(browser, targetUrl");
+    const monitor = runner.indexOf("snapshotMonitor = startCompleteSnapshotMonitor");
+    const firstAsyncScript = runner.indexOf("await browser.executeAsync");
+    expect(navigation).toBeGreaterThan(-1);
+    expect(readiness).toBeGreaterThan(navigation);
+    expect(monitor).toBeGreaterThan(readiness);
+    expect(firstAsyncScript).toBeGreaterThan(monitor);
     expect(snapshots).toContain("complete snapshot capture exceeded");
     expect(snapshots).toContain("Promise.race");
   });
@@ -66,12 +72,26 @@ describe("browser game runner progress policy", () => {
   it("checks global preferences through the real UI before native-browser project load", () => {
     const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
 
+    expect(runner.indexOf('compatibilityStage = "waiting for frontend test control"')).toBeLessThan(
+      runner.indexOf("verifyGlobalPreferencesBeforeProject(browser)"),
+    );
+    expect(runner).toContain('typeof window.__RUSTYERA_TEST__?.snapshot === "function"');
     expect(runner).toContain("verifyGlobalPreferencesBeforeProject(browser)");
     expect(runner).toContain('activeBrowser.$("#welcome-preferences")');
     expect(runner).toContain("project preferences were enabled without a project");
     expect(runner).toContain('imageScale.setValue("1.25")');
     expect(runner).toContain('snapshot().status === "全局偏好已应用"');
     expect(runner).toContain('setValue("1")');
+  });
+
+  it("bounds native file-menu retries below the snapshot stall interval", () => {
+    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+
+    expect(runner).toContain("const clickFileMenuAction = async (label)");
+    expect(runner).toContain("attempt <= 2");
+    expect(runner).toContain("timeout: 1_000");
+    expect(runner).toContain("await clickFileMenuAction(action.menuLabel)");
+    expect(runner).toContain('await clickFileMenuAction("项目设置…")');
   });
 
   it("materializes portable browser files without joining large base64 payloads", () => {

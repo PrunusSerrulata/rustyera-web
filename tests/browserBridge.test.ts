@@ -245,6 +245,15 @@ class MemoryWorker {
     requests.push({ message, transfer });
     queueMicrotask(() => {
       try {
+        if (message.method === "loadProjectFile") {
+          const file = message.args[0] as File;
+          this.onmessage?.({
+            data: {
+              type: "project_progress",
+              value: { stage: "scanning", completed: file.size, total: file.size },
+            },
+          } as MessageEvent);
+        }
         this.onmessage?.({
           data: { id: message.id, result: respond(message.method, message.args) },
         } as MessageEvent);
@@ -547,7 +556,7 @@ describe("browser startup bridge", () => {
     const file = new File([bytes], "game.reraproj");
     pickBrowserFile.mockResolvedValue(file);
     respond = (method) => {
-      if (method === "finishProjectFile")
+      if (method === "loadProjectFile")
         return {
           storageKey: "legacy-key",
           manifest: { project_revision: 3, files: [] },
@@ -571,15 +580,12 @@ describe("browser startup bridge", () => {
     await bridge.restartProject();
 
     expect(requests.map((request) => request.message.method)).toEqual([
-      "beginProjectFile",
-      "appendProjectFile",
-      "finishProjectFile",
+      "loadProjectFile",
       "prepareProjectConfigurationUpdate",
-      "loadProjectWithCompiledCache",
+      "loadProjectFile",
     ]);
-    expect(requests[1].transfer).toHaveLength(1);
-    expect(requests[0].message.args).toEqual([bytes.byteLength, false]);
-    expect(requests[2].message.args).toEqual([]);
+    expect(requests[0].transfer).toEqual([]);
+    expect(requests[0].message.args).toEqual([file]);
     const projectRoot = await (
       await storage.getDirectoryHandle(".rustyera-project-files")
     ).getDirectoryHandle("legacy-key");
@@ -596,7 +602,7 @@ describe("browser startup bridge", () => {
     });
   });
 
-  it("uses the low-memory source path on iOS without silently copying the project", async () => {
+  it("loads the packaged cache on iOS without silently copying the project", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", {
       storage: { getDirectory: async () => storage },
@@ -608,11 +614,22 @@ describe("browser startup bridge", () => {
     const file = new File([Uint8Array.of(1, 2, 3, 4)], "game.reraproj");
     pickBrowserFile.mockResolvedValue(file);
     respond = (method) => {
-      if (method === "finishProjectFile")
+      if (method === "readProjectFileResource") return Uint8Array.of(4, 5, 6);
+      if (method === "loadProjectFile")
         return {
           storageKey: "ios-key",
-          manifest: { project_revision: 3, files: [] },
-          cacheImported: false,
+          manifest: {
+            project_revision: 3,
+            files: [
+              {
+                relative_path: "resources/a.bin",
+                category: "resource",
+                payload: { type: "bytes", value: new Uint8Array() },
+                content_hash: new Uint8Array(32),
+              },
+            ],
+          },
+          cacheImported: true,
         };
       return 1n;
     };
@@ -620,21 +637,19 @@ describe("browser startup bridge", () => {
     const progress = vi.fn();
     bridge.setProjectProgressListener(progress);
 
-    await expect(bridge.openProjectFile()).resolves.toMatchObject({ cacheImported: false });
-    await expect(bridge.restartProject()).resolves.toMatchObject({ cacheImported: false });
+    await expect(bridge.openProjectFile()).resolves.toMatchObject({ cacheImported: true });
+    await expect(bridge.readResource("resources/a.bin")).resolves.toEqual(Uint8Array.of(4, 5, 6));
+    await expect(bridge.restartProject()).resolves.toMatchObject({ cacheImported: true });
 
     expect(requests.map((request) => request.message.method)).toEqual([
-      "beginProjectFile",
-      "appendProjectFile",
-      "finishProjectFile",
-      "beginProjectFile",
-      "appendProjectFile",
-      "finishProjectFile",
+      "loadProjectFile",
+      "readProjectFileResource",
+      "loadProjectFile",
     ]);
-    expect(requests[0].message.args).toEqual([file.size, true]);
-    expect(requests[2].message.args).toEqual([]);
-    expect(requests[3].message.args).toEqual([file.size, true]);
-    expect(requests[5].message.args).toEqual([]);
+    expect(requests[0].message.args).toEqual([file]);
+    expect(requests[1].message.args).toEqual(["resources/a.bin", undefined]);
+    expect(requests[2].message.args).toEqual([file]);
+    expect(requests.every((request) => request.transfer.length === 0)).toBe(true);
     expect(progress.mock.calls).toEqual([
       [{ stage: "scanning", completed: 0, total: file.size }],
       [{ stage: "scanning", completed: file.size, total: file.size }],
@@ -660,7 +675,7 @@ describe("browser startup bridge", () => {
     const file = await handle.getFile();
     pickBrowserProjectFile.mockResolvedValue({ file, handle });
     respond = (method) => {
-      if (method === "finishProjectFile")
+      if (method === "loadProjectFile")
         return {
           storageKey: "writable-key",
           manifest: { project_revision: 1, files: [] },
@@ -684,9 +699,7 @@ describe("browser startup bridge", () => {
 
     expect(bridge.projectConfigurationWritable()).toBe(true);
     expect(requests.map((request) => request.message.method)).toEqual([
-      "beginProjectFile",
-      "appendProjectFile",
-      "finishProjectFile",
+      "loadProjectFile",
       "prepareProjectConfigurationUpdate",
     ]);
     expect(new TextDecoder().decode(await (await handle.getFile()).arrayBuffer())).toBe(
@@ -700,7 +713,7 @@ describe("browser startup bridge", () => {
     const file = new File([Uint8Array.of(1, 2, 3)], "game.reraproj");
     pickBrowserFile.mockResolvedValue(file);
     respond = (method) => {
-      if (method === "finishProjectFile")
+      if (method === "loadProjectFile")
         return {
           storageKey: "selected-key",
           manifest: { project_revision: 1, files: [] },
@@ -728,11 +741,7 @@ describe("browser startup bridge", () => {
     expect(submitted.mock.invocationCallOrder[0]).toBeLessThan(
       prepareAfterSelection.mock.invocationCallOrder[0],
     );
-    expect(requests.map((request) => request.message.method)).toEqual([
-      "beginProjectFile",
-      "appendProjectFile",
-      "finishProjectFile",
-    ]);
+    expect(requests.map((request) => request.message.method)).toEqual(["loadProjectFile"]);
   });
 
   it("does not read a selected project file when session preparation fails", async () => {
@@ -750,7 +759,7 @@ describe("browser startup bridge", () => {
     expect(requests).toHaveLength(0);
   });
 
-  it("reads large packaged projects in visible chunks before transferring them", async () => {
+  it("hands a large packaged File to the worker without reading or transferring it", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
     const bytes = new Uint8Array(5 * 1024 * 1024).fill(7);
@@ -759,7 +768,7 @@ describe("browser startup bridge", () => {
     Object.defineProperty(file, "arrayBuffer", { value: wholeFileRead });
     pickBrowserFile.mockResolvedValue(file);
     respond = (method) => {
-      if (method === "finishProjectFile")
+      if (method === "loadProjectFile")
         return {
           storageKey: "large-key",
           manifest: { project_revision: 1, files: [] },
@@ -775,63 +784,38 @@ describe("browser startup bridge", () => {
 
     expect(progress.mock.calls).toEqual([
       [{ stage: "scanning", completed: 0, total: bytes.byteLength }],
-      [{ stage: "scanning", completed: 4 * 1024 * 1024, total: bytes.byteLength }],
       [{ stage: "scanning", completed: bytes.byteLength, total: bytes.byteLength }],
     ]);
-    expect(requests.map((request) => request.message.method)).toEqual([
-      "beginProjectFile",
-      "appendProjectFile",
-      "appendProjectFile",
-      "finishProjectFile",
-    ]);
-    expect(requests[0].message.args).toEqual([bytes.byteLength, false]);
-    const firstChunk = requests[1].message.args[0] as Uint8Array;
-    const secondChunk = requests[2].message.args[0] as Uint8Array;
-    expect(firstChunk).toHaveLength(4 * 1024 * 1024);
-    expect(secondChunk).toHaveLength(1024 * 1024);
-    expect(firstChunk[0]).toBe(7);
-    expect(secondChunk[secondChunk.byteLength - 1]).toBe(7);
-    expect(requests[1].transfer).toEqual([firstChunk.buffer]);
-    expect(requests[2].transfer).toEqual([secondChunk.buffer]);
+    expect(requests.map((request) => request.message.method)).toEqual(["loadProjectFile"]);
+    expect(requests[0].message.args).toEqual([file]);
+    expect(requests[0].transfer).toEqual([]);
     expect(wholeFileRead).not.toHaveBeenCalled();
   });
 
-  it("cancels a partial upload when reading a later file chunk fails", async () => {
-    const file = new File([], "broken.reraproj");
-    Object.defineProperty(file, "size", { value: 5 * 1024 * 1024 });
-    let sliceCalls = 0;
-    Object.defineProperty(file, "slice", {
-      value: (start: number, end: number) => ({
-        arrayBuffer: async () => {
-          sliceCalls += 1;
-          if (sliceCalls === 2) throw new Error("project blob read failed");
-          return new ArrayBuffer(end - start);
-        },
-      }),
-    });
+  it("preserves a worker-side project read error", async () => {
+    const file = new File([Uint8Array.of(1)], "broken.reraproj");
     pickBrowserFile.mockResolvedValue(file);
+    respond = (method) => {
+      if (method === "loadProjectFile") throw new Error("project blob read failed");
+      return undefined;
+    };
 
     await expect(new BrowserBridge().openProjectFile()).rejects.toThrow("project blob read failed");
 
-    expect(requests.map((request) => request.message.method)).toEqual([
-      "beginProjectFile",
-      "appendProjectFile",
-      "cancelProjectFile",
-    ]);
+    expect(requests.map((request) => request.message.method)).toEqual(["loadProjectFile"]);
   });
 
-  it("preserves an append error, cancels the upload, and allows the next upload", async () => {
+  it("preserves a worker load error and allows the next upload", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
     const failed = new File([new Uint8Array(5 * 1024 * 1024)], "failed.reraproj");
     const retry = new File([Uint8Array.of(1, 2, 3)], "retry.reraproj");
     pickBrowserFile.mockResolvedValueOnce(failed).mockResolvedValueOnce(retry);
-    let appendCalls = 0;
+    let loadCalls = 0;
     respond = (method) => {
-      if (method === "appendProjectFile" && appendCalls++ === 1) {
-        throw new Error("project chunk transfer failed");
-      }
-      if (method === "finishProjectFile") {
+      if (method === "loadProjectFile" && loadCalls++ === 0)
+        throw new Error("project chunk read failed");
+      if (method === "loadProjectFile") {
         return {
           storageKey: "retry-key",
           manifest: { project_revision: 1, files: [] },
@@ -842,17 +826,12 @@ describe("browser startup bridge", () => {
     };
     const bridge = new BrowserBridge();
 
-    await expect(bridge.openProjectFile()).rejects.toThrow("project chunk transfer failed");
+    await expect(bridge.openProjectFile()).rejects.toThrow("project chunk read failed");
     await expect(bridge.openProjectFile()).resolves.toMatchObject({ cacheImported: true });
 
     expect(requests.map((request) => request.message.method)).toEqual([
-      "beginProjectFile",
-      "appendProjectFile",
-      "appendProjectFile",
-      "cancelProjectFile",
-      "beginProjectFile",
-      "appendProjectFile",
-      "finishProjectFile",
+      "loadProjectFile",
+      "loadProjectFile",
     ]);
   });
 
@@ -870,7 +849,7 @@ describe("browser startup bridge", () => {
     pickBrowserFile.mockResolvedValueOnce(active).mockResolvedValueOnce(broken);
     let attempts = 0;
     respond = (method) => {
-      if (method !== "finishProjectFile") return 1n;
+      if (method !== "loadProjectFile") return 1n;
       if (attempts++ > 0) throw new Error("invalid project file");
       return {
         storageKey: "active-key",
@@ -884,7 +863,7 @@ describe("browser startup bridge", () => {
     await expect(bridge.openProjectFile()).rejects.toThrow("invalid project file");
 
     expect(bridge.projectName()).toBe("active");
-    expect(requests.at(-1)?.message.method).toBe("cancelProjectFile");
+    expect(requests.at(-1)?.message.method).toBe("loadProjectFile");
   });
 
   it("keeps the active portable project when a replacement fails submission", async () => {
