@@ -294,7 +294,12 @@ describe("browser startup bridge", () => {
     vi.stubGlobal("Worker", MemoryWorker);
   });
 
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    window.__RUSTYERA_TEST_DOWNLOADS__ = undefined;
+  });
 
   it("uses explicit schema 4 metadata trust and reports actual source-index reuse", async () => {
     const root = new MemoryDirectoryHandle("game");
@@ -549,7 +554,7 @@ describe("browser startup bridge", () => {
     );
   });
 
-  it("imports a fallback packaged file into OPFS for incremental updates and restart", async () => {
+  it("defers the fallback project-file OPFS copy until configuration is edited", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
     const bytes = Uint8Array.of(1, 2, 3, 4);
@@ -573,6 +578,14 @@ describe("browser startup bridge", () => {
     const bridge = new BrowserBridge();
 
     await bridge.openProjectFile();
+    const projectRoot = await (
+      await storage.getDirectoryHandle(".rustyera-project-files")
+    ).getDirectoryHandle("legacy-key");
+    await expect(projectRoot.getFileHandle("project.reraproj")).rejects.toMatchObject({
+      name: "NotFoundError",
+    });
+    expect(bridge.projectConfigurationWritable()).toBe(true);
+
     await bridge.writeProjectConfiguration(
       new Uint8Array(),
       "[text]\nreplace_full_width_spaces = true\n",
@@ -586,9 +599,6 @@ describe("browser startup bridge", () => {
     ]);
     expect(requests[0].transfer).toEqual([]);
     expect(requests[0].message.args).toEqual([file, { chunkBytes: 4 * 1024 * 1024 }]);
-    const projectRoot = await (
-      await storage.getDirectoryHandle(".rustyera-project-files")
-    ).getDirectoryHandle("legacy-key");
     await expect(
       (await storage.getDirectoryHandle("project-preferences")).getDirectoryHandle("legacy-key"),
     ).resolves.toBeDefined();
@@ -671,6 +681,112 @@ describe("browser startup bridge", () => {
     ).resolves.toBeDefined();
     expect(bridge.projectConfigurationWritable()).toBe(false);
   });
+
+  it.each(["missing", "rejected"] as const)(
+    "opens an iOS packaged project when OPFS is $case and keeps volatile storage functional",
+    async (storageCase) => {
+      const getDirectory = vi
+        .fn()
+        .mockRejectedValue(new DOMException("OPFS unavailable", "UnknownError"));
+      vi.stubGlobal("navigator", {
+        ...(storageCase === "rejected" ? { storage: { getDirectory } } : {}),
+        userAgent:
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1",
+        platform: "iPhone",
+        maxTouchPoints: 5,
+      });
+      const file = new File([Uint8Array.of(1, 2, 3, 4)], "game.reraproj");
+      pickBrowserFile.mockResolvedValue(file);
+      respond = (method) => {
+        if (method === "traditionalSaveSlotCount") return 2;
+        if (method === "loadProjectFile")
+          return {
+            storageKey: "session-key",
+            manifest: { project_revision: 3, files: [] },
+            cacheImported: true,
+          };
+        return 1n;
+      };
+      const bridge = new BrowserBridge();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await expect(bridge.openProjectFile()).resolves.toMatchObject({ cacheImported: true });
+      await expect(
+        bridge.writeCompiledCacheChunk(Uint8Array.of(1, 2, 3), true, false),
+      ).resolves.toBe(undefined);
+      await expect(bridge.writeCompiledCacheChunk(Uint8Array.of(4, 5), false, true)).resolves.toBe(
+        undefined,
+      );
+      await expect(bridge.restartProject()).resolves.toMatchObject({ cacheImported: true });
+
+      const written = await bridge.handleStorage({
+        request_id: 1n,
+        namespace: "data",
+        relative_path: "session.bin",
+        operation: {
+          type: "write",
+          data: [7, 8, 9],
+          atomic_replace: true,
+          precondition: { type: "missing" },
+        },
+      });
+      expect(written.result.type).toBe("written");
+      await expect(
+        bridge.handleStorage({
+          request_id: 2n,
+          namespace: "data",
+          relative_path: "session.bin",
+          operation: { type: "read" },
+        }),
+      ).resolves.toMatchObject({ result: { type: "read", data: [7, 8, 9] } });
+      await expect(
+        bridge.handleStorage({
+          request_id: 3n,
+          namespace: "data",
+          operation: { type: "list", pattern: null, recursive: false },
+        }),
+      ).resolves.toMatchObject({
+        result: { type: "listed", entries: [{ relative_path: "session.bin", byte_length: 3 }] },
+      });
+      await expect(
+        bridge.handleStorage({
+          request_id: 4n,
+          namespace: "data",
+          relative_path: "session.bin",
+          operation: { type: "delete", precondition: { type: "any" } },
+        }),
+      ).resolves.toMatchObject({ result: { type: "deleted" } });
+      await expect(
+        bridge.handleStorage({
+          request_id: 5n,
+          namespace: "data",
+          relative_path: "session.bin",
+          operation: { type: "read" },
+        }),
+      ).resolves.toMatchObject({ result: { type: "error", error: { kind: "not_found" } } });
+
+      vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+      window.__RUSTYERA_TEST_DOWNLOADS__ = [];
+      await bridge.traditionalSaves.writeSlot(1, Uint8Array.of(4, 5, 6));
+      await expect(bridge.traditionalSaves.listSlots()).resolves.toEqual([
+        { slot: 0, occupied: false },
+        { slot: 1, occupied: true },
+      ]);
+      await bridge.traditionalSaves.exportSlot(1);
+
+      expect(bridge.projectPreferencesWritable()).toBe(false);
+      expect(bridge.projectConfigurationWritable()).toBe(false);
+      expect(window.__RUSTYERA_TEST_DOWNLOADS__).toEqual([
+        { name: "save01.sav", bytes: Uint8Array.of(4, 5, 6) },
+      ]);
+      expect(requests.map((request) => request.message.method)).toEqual([
+        "loadProjectFile",
+        "loadProjectFile",
+        "traditionalSaveSlotCount",
+      ]);
+      if (storageCase === "rejected") expect(getDirectory).toHaveBeenCalledOnce();
+    },
+  );
 
   it("routes a writable packaged configuration through the WASM update planner", async () => {
     const storage = new MemoryDirectoryHandle("storage");
@@ -763,47 +879,68 @@ describe("browser startup bridge", () => {
     expect(requests).toHaveLength(0);
   });
 
-  it("hands a large packaged File to the worker without reading or transferring it", async () => {
-    const storage = new MemoryDirectoryHandle("storage");
-    vi.stubGlobal("navigator", {
-      storage: { getDirectory: async () => storage },
+  it.each([
+    {
+      browser: "macOS Firefox with overridden touch points",
       userAgent:
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:142.0) Gecko/20100101 Firefox/142.0",
-      platform: "MacIntel",
       maxTouchPoints: 5,
-    });
-    const bytes = new Uint8Array(5 * 1024 * 1024).fill(7);
-    const file = new File([bytes], "large.reraproj");
-    const wholeFileRead = vi.fn(async () => bytes.buffer.slice(0));
-    Object.defineProperty(file, "arrayBuffer", { value: wholeFileRead });
-    pickBrowserFile.mockResolvedValue(file);
-    respond = (method) => {
-      if (method === "loadProjectFile")
-        return {
-          storageKey: "large-key",
-          manifest: { project_revision: 1, files: [] },
-          cacheImported: true,
-        };
-      return 1n;
-    };
-    const progress = vi.fn();
-    const bridge = new BrowserBridge();
-    bridge.setProjectProgressListener(progress);
+    },
+    {
+      browser: "macOS Safari",
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.6 Safari/605.1.15",
+      maxTouchPoints: 0,
+    },
+  ])(
+    "keeps $browser on the desktop read path without an OPFS project-file copy",
+    async ({ userAgent, maxTouchPoints }) => {
+      const storage = new MemoryDirectoryHandle("storage");
+      vi.stubGlobal("navigator", {
+        storage: { getDirectory: async () => storage },
+        userAgent,
+        platform: "MacIntel",
+        maxTouchPoints,
+      });
+      const bytes = new Uint8Array(5 * 1024 * 1024).fill(7);
+      const file = new File([bytes], "large.reraproj");
+      const wholeFileRead = vi.fn(async () => bytes.buffer.slice(0));
+      Object.defineProperty(file, "arrayBuffer", { value: wholeFileRead });
+      pickBrowserFile.mockResolvedValue(file);
+      respond = (method) => {
+        if (method === "loadProjectFile")
+          return {
+            storageKey: "large-key",
+            manifest: { project_revision: 1, files: [] },
+            cacheImported: true,
+          };
+        return 1n;
+      };
+      const progress = vi.fn();
+      const bridge = new BrowserBridge();
+      bridge.setProjectProgressListener(progress);
 
-    expect(bridge.prewarmRuntimeOnInitialize).toBe(false);
+      expect(bridge.prewarmRuntimeOnInitialize).toBe(false);
 
-    await bridge.openProjectFile();
+      await bridge.openProjectFile();
 
-    expect(progress.mock.calls).toEqual([
-      [{ stage: "preparing", completed: 0, total: 0 }],
-      [{ stage: "scanning", completed: 0, total: bytes.byteLength }],
-      [{ stage: "scanning", completed: bytes.byteLength, total: bytes.byteLength }],
-    ]);
-    expect(requests.map((request) => request.message.method)).toEqual(["loadProjectFile"]);
-    expect(requests[0].message.args).toEqual([file, { chunkBytes: 4 * 1024 * 1024 }]);
-    expect(requests[0].transfer).toEqual([]);
-    expect(wholeFileRead).not.toHaveBeenCalled();
-  });
+      expect(progress.mock.calls).toEqual([
+        [{ stage: "preparing", completed: 0, total: 0 }],
+        [{ stage: "scanning", completed: 0, total: bytes.byteLength }],
+        [{ stage: "scanning", completed: bytes.byteLength, total: bytes.byteLength }],
+      ]);
+      expect(requests.map((request) => request.message.method)).toEqual(["loadProjectFile"]);
+      expect(requests[0].message.args).toEqual([file, { chunkBytes: 4 * 1024 * 1024 }]);
+      expect(requests[0].transfer).toEqual([]);
+      expect(wholeFileRead).not.toHaveBeenCalled();
+      const projectRoot = await (
+        await storage.getDirectoryHandle(".rustyera-project-files")
+      ).getDirectoryHandle("large-key");
+      await expect(projectRoot.getFileHandle("project.reraproj")).rejects.toMatchObject({
+        name: "NotFoundError",
+      });
+    },
+  );
 
   it("preserves a worker-side project read error", async () => {
     const file = new File([Uint8Array.of(1)], "broken.reraproj");

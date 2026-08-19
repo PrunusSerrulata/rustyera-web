@@ -71,6 +71,7 @@ export type ProjectConfigurationUpdatePreparer = (
   expectedDigest: Uint8Array,
   contents: string,
 ) => Promise<Uint8Array>;
+export type PackagedFileMaterializer = () => Promise<FileSystemFileHandle>;
 export type PackagedResourceReader = (
   relativePath: string,
   maximumBytes?: number,
@@ -118,6 +119,7 @@ export class BrowserProject {
   private pendingSnapshot?: PendingBrowserSnapshot;
   private packagedFile?: File;
   private packagedHandle?: FileSystemFileHandle;
+  private materializePackagedHandle?: PackagedFileMaterializer;
   private prepareConfigurationUpdate?: ProjectConfigurationUpdatePreparer;
   private importedSnapshot = false;
   private runtimeManifestSparse = false;
@@ -180,10 +182,12 @@ export class BrowserProject {
     file: File,
     handle?: FileSystemFileHandle,
     prepareConfigurationUpdate?: ProjectConfigurationUpdatePreparer,
+    materializeHandle?: PackagedFileMaterializer,
   ): void {
     this.packagedFile = file;
     this.packagedHandle = handle;
     if (prepareConfigurationUpdate) this.prepareConfigurationUpdate = prepareConfigurationUpdate;
+    this.materializePackagedHandle = materializeHandle;
   }
 
   async packagedProjectFile(): Promise<File | undefined> {
@@ -218,7 +222,10 @@ export class BrowserProject {
 
   configurationWritable(): boolean {
     return (
-      !this.usesEmbeddedManifest || Boolean(this.packagedHandle && this.prepareConfigurationUpdate)
+      !this.usesEmbeddedManifest ||
+      Boolean(
+        (this.packagedHandle || this.materializePackagedHandle) && this.prepareConfigurationUpdate,
+      )
     );
   }
 
@@ -261,8 +268,13 @@ export class BrowserProject {
     expectedDigest: Uint8Array,
     contents: string,
   ): Promise<void> {
-    const handle = this.packagedHandle;
+    let handle = this.packagedHandle;
     const prepare = this.prepareConfigurationUpdate;
+    if (!handle && this.materializePackagedHandle) {
+      handle = await this.materializePackagedHandle();
+      this.packagedHandle = handle;
+      this.packagedFile = await handle.getFile();
+    }
     if (!handle || !prepare) throw new Error("当前浏览器无法直接修改项目文件");
     const current = await handle.getFile();
     const projectBytes = new Uint8Array(await current.arrayBuffer());

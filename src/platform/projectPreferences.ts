@@ -37,8 +37,10 @@ export class BrowserProjectPreferenceStore {
     }
   }
 
-  static async packaged(storageKey: string): Promise<BrowserProjectPreferenceStore> {
-    const storage = await navigator.storage.getDirectory();
+  static async packaged(
+    storage: FileSystemDirectoryHandle,
+    storageKey: string,
+  ): Promise<BrowserProjectPreferenceStore> {
     const projects = await storage.getDirectoryHandle("project-preferences", { create: true });
     const directory = await projects.getDirectoryHandle(storageKey, { create: true });
     try {
@@ -57,6 +59,10 @@ export class BrowserProjectPreferenceStore {
         `无法读取项目偏好：${String(error)}`,
       );
     }
+  }
+
+  static unavailable(error = "此浏览器不支持持久项目偏好"): BrowserProjectPreferenceStore {
+    return new BrowserProjectPreferenceStore(undefined, undefined, emptyDocument(), false, error);
   }
 
   values(): ProjectPreferences {

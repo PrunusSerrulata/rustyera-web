@@ -37,6 +37,7 @@ import { browserTraditionalSaves } from "@/platform/browserBridge/traditionalSav
 import { BrowserProjectPreferenceStore } from "@/platform/projectPreferences";
 import { needsLowMemoryProjectFileLoad } from "@/platform/browserProjectFilePolicy";
 import { normalizeProjectFileManifest } from "@/platform/projectFileManifestTransfer";
+import { createBrowserSessionDirectory } from "@/platform/browserSessionFilesystem";
 
 const PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 
@@ -68,6 +69,7 @@ export class BrowserBridge implements FrontendBridge {
   private projectProgressListener?: (progress: ProjectProgress) => void;
   private preferences = defaultPreferences();
   private projectPreferenceStore?: BrowserProjectPreferenceStore;
+  private projectStoragePersistent = true;
   private readonly prepareProjectConfigurationUpdate = (
     projectFile: Uint8Array,
     expectedDigest: Uint8Array,
@@ -132,6 +134,7 @@ export class BrowserBridge implements FrontendBridge {
     // structured-cloned into IndexedDB. Production handles continue to be persisted normally.
     if (picked.persistHandle && import.meta.env.VITE_RUSTYERA_TEST !== "1")
       await database.handles.put({ key: "last-project", handle });
+    this.projectStoragePersistent = true;
     this.projectPreferenceStore = await BrowserProjectPreferenceStore.source(handle);
     const projectPreferences = this.projectPreferenceStore.values();
     const project = new BrowserProject(
@@ -188,7 +191,6 @@ export class BrowserBridge implements FrontendBridge {
     const picked = await pickBrowserProjectFile();
     if (!picked) return undefined;
     const { file } = picked;
-    const lowMemory = this.lowMemoryProjectFileLoad;
     const submittedAtMs = performance.now();
     onSubmitted?.(submittedAtMs);
     this.projectProgressListener?.({ stage: "preparing", completed: 0, total: 0 });
@@ -202,38 +204,23 @@ export class BrowserBridge implements FrontendBridge {
       storageKey: string;
       cacheImported: boolean;
     }>("loadProjectFile", file, this.projectFileReadOptions());
-    this.projectPreferenceStore = await BrowserProjectPreferenceStore.packaged(loaded.storageKey);
     const manifest = normalizeProjectFileManifest(loaded.manifest);
-    const storageRoot = await navigator.storage.getDirectory();
-    const projects = await storageRoot.getDirectoryHandle(".rustyera-project-files", {
-      create: true,
-    });
-    const root = await projects.getDirectoryHandle(loaded.storageKey, { create: true });
-    let writableFile = file;
-    let writableHandle = picked.handle;
-    // The input fallback has no writable handle. Keeping its File for this session avoids a
-    // second, unreported full-file read and OPFS write in constrained iOS browser processes.
-    if (!writableHandle && !lowMemory) {
-      writableHandle = await root.getFileHandle("project.reraproj", { create: true });
-      const writer = await writableHandle.createWritable({ keepExistingData: false });
-      try {
-        await copyFileToWritable(file, writer);
-        await writer.close();
-      } catch (error) {
-        await writer.abort().catch(() => undefined);
-        throw error;
-      }
-      writableFile = await writableHandle.getFile();
-    }
+    const storage = await openPackagedProjectStorage(loaded.storageKey);
+    this.projectPreferenceStore = storage.preferences;
+    this.projectStoragePersistent = storage.persistent;
+    const root = storage.projectRoot;
     this.project = new BrowserProject(
       root,
       manifest.project_revision,
       file.name.replace(/\.reraproj$/i, ""),
     );
     this.project.usePackagedFile(
-      writableFile,
-      writableHandle,
+      file,
+      picked.handle,
       this.prepareProjectConfigurationUpdate,
+      !picked.handle && !this.lowMemoryProjectFileLoad && storage.persistent
+        ? () => materializePackagedProjectFile(root, file)
+        : undefined,
     );
     this.project.useOwnedEmbeddedManifest(manifest, (relativePath, maximumBytes) =>
       this.worker.call("readProjectFileResource", relativePath, maximumBytes),
@@ -665,15 +652,19 @@ export class BrowserBridge implements FrontendBridge {
   ): Promise<void> {
     if (!this.project) throw new Error("没有打开的项目");
     if (reset) {
-      this.discardCompiledCacheExport = false;
-      const privateDirectory = await this.project.root.getDirectoryHandle(".rustyera", {
-        create: true,
-      });
-      const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
-      const handle = await cacheDirectory.getFileHandle("compiled-project.reracache", {
-        create: true,
-      });
-      this.cacheWriter = await handle.createWritable({ keepExistingData: false });
+      this.discardCompiledCacheExport = !this.projectStoragePersistent;
+      if (this.discardCompiledCacheExport) {
+        this.cacheWriter = undefined;
+      } else {
+        const privateDirectory = await this.project.root.getDirectoryHandle(".rustyera", {
+          create: true,
+        });
+        const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
+        const handle = await cacheDirectory.getFileHandle("compiled-project.reracache", {
+          create: true,
+        });
+        this.cacheWriter = await handle.createWritable({ keepExistingData: false });
+      }
     }
     if (this.discardCompiledCacheExport) {
       if (complete) this.discardCompiledCacheExport = false;
@@ -712,25 +703,67 @@ export class BrowserBridge implements FrontendBridge {
   }
 }
 
-async function copyFileToWritable(file: File, writer: FileSystemWritableFileStream): Promise<void> {
-  if (file.size === 0) {
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    if (bytes.byteLength) await writer.write(bytes as FileSystemWriteChunkType);
-    return;
-  }
-  for (let offset = 0; offset < file.size; offset += PROJECT_FILE_READ_CHUNK_BYTES) {
-    const end = Math.min(file.size, offset + PROJECT_FILE_READ_CHUNK_BYTES);
-    const blob = file.slice(offset, end);
-    const buffer =
-      typeof blob.arrayBuffer === "function"
-        ? await blob.arrayBuffer()
-        : await readBlobWithFileReader(blob);
-    await writer.write(new Uint8Array(buffer) as FileSystemWriteChunkType);
-    await yieldToMainThread();
+interface PackagedProjectStorage {
+  projectRoot: FileSystemDirectoryHandle;
+  preferences: BrowserProjectPreferenceStore;
+  persistent: boolean;
+}
+
+async function openPackagedProjectStorage(storageKey: string): Promise<PackagedProjectStorage> {
+  const getDirectory = navigator.storage?.getDirectory;
+  if (typeof getDirectory !== "function") return sessionPackagedProjectStorage(storageKey);
+  try {
+    const storageRoot = await getDirectory.call(navigator.storage);
+    const preferences = await BrowserProjectPreferenceStore.packaged(storageRoot, storageKey);
+    const projects = await storageRoot.getDirectoryHandle(".rustyera-project-files", {
+      create: true,
+    });
+    const projectRoot = await projects.getDirectoryHandle(storageKey, { create: true });
+    return { projectRoot, preferences, persistent: true };
+  } catch (error) {
+    console.warn("Persistent packaged-project storage is unavailable", error);
+    return sessionPackagedProjectStorage(storageKey);
   }
 }
 
-function readBlobWithFileReader(blob: Blob): Promise<ArrayBuffer> {
+function sessionPackagedProjectStorage(storageKey: string): PackagedProjectStorage {
+  return {
+    projectRoot: createBrowserSessionDirectory(storageKey),
+    preferences: BrowserProjectPreferenceStore.unavailable(),
+    persistent: false,
+  };
+}
+
+async function materializePackagedProjectFile(
+  root: FileSystemDirectoryHandle,
+  file: File,
+): Promise<FileSystemFileHandle> {
+  const handle = await root.getFileHandle("project.reraproj", { create: true });
+  const writer = await handle.createWritable({ keepExistingData: false });
+  try {
+    if (file.size === 0) {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (bytes.byteLength) await writer.write(bytes as FileSystemWriteChunkType);
+    } else {
+      for (let offset = 0; offset < file.size; offset += PROJECT_FILE_READ_CHUNK_BYTES) {
+        const bytes = new Uint8Array(
+          await readBlobAsArrayBuffer(file.slice(offset, offset + PROJECT_FILE_READ_CHUNK_BYTES)),
+        );
+        await writer.write(bytes as FileSystemWriteChunkType);
+        await yieldToMainThread();
+      }
+    }
+    await writer.close();
+    return handle;
+  } catch (error) {
+    await writer.abort().catch(() => undefined);
+    await root.removeEntry("project.reraproj").catch(() => undefined);
+    throw error;
+  }
+}
+
+function readBlobAsArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
+  if (typeof blob.arrayBuffer === "function") return blob.arrayBuffer();
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(reader.error ?? new Error("项目文件读取失败"));
