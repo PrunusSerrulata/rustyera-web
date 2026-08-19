@@ -11,7 +11,6 @@ import {
   saveSlotName,
   scanBrowserProjectFile,
 } from "../src/platform/browserProject";
-import { loadBrowserProjectFile } from "../src/platform/browserProjectFile";
 import {
   FailingIndexDirectoryHandle,
   SaveDirectoryHandle,
@@ -837,44 +836,6 @@ describe("browser project reads", () => {
     const progress = vi.fn();
     await expect(project.readCompiledCache(progress)).resolves.toEqual(bytes);
     expect(progress.mock.calls.at(-1)).toEqual([bytes.byteLength, bytes.byteLength]);
-  });
-
-  it("loads a packaged cache before returning its compact frontend manifest", () => {
-    const sourcePayload = { type: "utf8" as const, value: "" };
-    const resourcePayload = { type: "bytes" as const, value: Uint8Array.of(4, 5, 6) };
-    const manifest = {
-      project_revision: 2,
-      files: [
-        {
-          relative_path: "main.erb",
-          category: "erb",
-          payload: sourcePayload,
-          content_hash: new Uint8Array(32),
-        },
-        {
-          relative_path: "resources/a.png",
-          category: "resource",
-          payload: resourcePayload,
-          content_hash: new Uint8Array(32),
-        },
-      ],
-    };
-    const loadProjectWithCompiledCache = vi.fn(() => {
-      expect(manifest.files[0].payload).toBe(sourcePayload);
-    });
-    const bytes = Uint8Array.of(1, 2, 3);
-
-    const loaded = loadBrowserProjectFile(
-      { projectFileManifest: () => manifest, loadProjectWithCompiledCache },
-      bytes,
-    );
-
-    expect(loadProjectWithCompiledCache).toHaveBeenCalledWith(manifest, bytes);
-    expect(loaded.manifest.files[0].payload).toBe(sourcePayload);
-    expect(loaded.manifest.files[1].payload).toBe(resourcePayload);
-    expect(loaded.storageKey).toBe(
-      [...blake3(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
-    );
   });
 
   it("serves resources embedded in a packaged project", async () => {

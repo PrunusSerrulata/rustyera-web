@@ -1,5 +1,3 @@
-import { blake3 } from "@noble/hashes/blake3.js";
-
 import type { ProjectPreferences } from "@/core/types";
 
 const FILE_NAME = "preferences-v1.json";
@@ -39,11 +37,10 @@ export class BrowserProjectPreferenceStore {
     }
   }
 
-  static async packaged(bytes: Uint8Array): Promise<BrowserProjectPreferenceStore> {
-    const hash = [...blake3(bytes)].map((value) => value.toString(16).padStart(2, "0")).join("");
+  static async packaged(storageKey: string): Promise<BrowserProjectPreferenceStore> {
     const storage = await navigator.storage.getDirectory();
     const projects = await storage.getDirectoryHandle("project-preferences", { create: true });
-    const directory = await projects.getDirectoryHandle(hash, { create: true });
+    const directory = await projects.getDirectoryHandle(storageKey, { create: true });
     try {
       return new BrowserProjectPreferenceStore(
         undefined,

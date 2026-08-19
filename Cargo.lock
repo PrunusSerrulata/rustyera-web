@@ -988,6 +988,7 @@ dependencies = [
 name = "era-web-wasm"
 version = "0.6.0-wasm"
 dependencies = [
+ "blake3",
  "era-debug-protocol",
  "era-runtime",
  "era-runtime-protocol",

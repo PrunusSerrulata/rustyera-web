@@ -8,6 +8,7 @@ license = "GPL-3.0-only"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+blake3.workspace = true
 era-debug-protocol.workspace = true
 era-runtime.workspace = true
 era-runtime-protocol.workspace = true

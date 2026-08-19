@@ -25,6 +25,82 @@ struct WasmProjectProgress {
 #[wasm_bindgen]
 pub struct WasmRuntime {
     inner: WebSession,
+    project_file_upload: ProjectFileUpload,
+}
+
+struct PendingProjectFile {
+    bytes: Vec<u8>,
+    expected_len: usize,
+}
+
+#[derive(Default)]
+struct ProjectFileUpload {
+    pending: Option<PendingProjectFile>,
+}
+
+impl ProjectFileUpload {
+    fn begin(&mut self, expected_len: usize, maximum_len: usize) -> Result<(), String> {
+        if self.pending.is_some() {
+            return Err("a project file upload is already active".to_owned());
+        }
+        if expected_len > maximum_len {
+            return Err("project file exceeds the negotiated transfer limit".to_owned());
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(expected_len)
+            .map_err(|error| format!("failed to reserve project file buffer: {error}"))?;
+        self.pending = Some(PendingProjectFile {
+            bytes,
+            expected_len,
+        });
+        Ok(())
+    }
+
+    fn append_destination(&mut self, chunk_len: usize) -> Result<&mut [u8], String> {
+        let pending = self
+            .pending
+            .as_mut()
+            .ok_or_else(|| "no project file upload is active".to_owned())?;
+        let start = pending.bytes.len();
+        let end = start
+            .checked_add(chunk_len)
+            .ok_or_else(|| "project file size overflow".to_owned())?;
+        if end > pending.expected_len {
+            return Err("project file upload exceeds its declared size".to_owned());
+        }
+        pending.bytes.resize(end, 0);
+        Ok(&mut pending.bytes[start..end])
+    }
+
+    fn finish(&mut self) -> Result<Vec<u8>, String> {
+        let pending = self
+            .pending
+            .as_ref()
+            .ok_or_else(|| "no project file upload is active".to_owned())?;
+        if pending.bytes.len() != pending.expected_len {
+            return Err(format!(
+                "project file upload is incomplete: received {} of {} bytes",
+                pending.bytes.len(),
+                pending.expected_len
+            ));
+        }
+        self.pending
+            .take()
+            .map(|completed| completed.bytes)
+            .ok_or_else(|| "no project file upload is active".to_owned())
+    }
+
+    fn cancel(&mut self) {
+        self.pending = None;
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LoadedProjectFile {
+    manifest: ProjectManifest,
+    storage_key: String,
 }
 
 #[wasm_bindgen]
@@ -65,7 +141,10 @@ impl WasmRuntime {
                 },
             )));
         }
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            project_file_upload: ProjectFileUpload::default(),
+        })
     }
 
     /// Submit one serde-projected runtime message.
@@ -140,6 +219,67 @@ impl WasmRuntime {
                 .project_file_manifest(&bytes.to_vec())
                 .map_err(js_error)?,
         )
+    }
+
+    /// Reserve the WASM-owned buffer used to receive one project file in bounded chunks.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error when another upload is active, the file exceeds the negotiated
+    /// transfer limit, or memory for the declared file size cannot be reserved.
+    #[wasm_bindgen(js_name = beginProjectFile)]
+    pub fn begin_project_file(&mut self, total_bytes: u32) -> Result<(), JsValue> {
+        let expected_len = usize::try_from(total_bytes)
+            .map_err(|_| js_error("project file size is unsupported on this platform"))?;
+        let maximum_len =
+            usize::try_from(self.inner.maximum_transfer_bytes()).unwrap_or(usize::MAX);
+        self.project_file_upload
+            .begin(expected_len, maximum_len)
+            .map_err(js_error)
+    }
+
+    /// Copy one bounded JavaScript chunk into the active WASM-owned project-file buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error when no upload is active or the chunk exceeds the declared size.
+    #[wasm_bindgen(js_name = appendProjectFile)]
+    pub fn append_project_file(&mut self, chunk: &js_sys::Uint8Array) -> Result<(), JsValue> {
+        let chunk_len = usize::try_from(chunk.length())
+            .map_err(|_| js_error("project file chunk size is unsupported"))?;
+        let destination = self
+            .project_file_upload
+            .append_destination(chunk_len)
+            .map_err(js_error)?;
+        chunk.copy_to(destination);
+        Ok(())
+    }
+
+    /// Decode and load the completed WASM-owned project-file buffer without another full copy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error when the upload is absent or incomplete, or the project file is
+    /// corrupt, unsupported, or cannot be staged for the runtime.
+    #[wasm_bindgen(js_name = finishProjectFile)]
+    pub fn finish_project_file(&mut self) -> Result<JsValue, JsValue> {
+        let bytes = self.project_file_upload.finish().map_err(js_error)?;
+        let manifest = self.inner.project_file_manifest(&bytes).map_err(js_error)?;
+        let identity = project_identity(&manifest).map_err(js_error)?;
+        let storage_key = blake3::hash(&bytes).to_hex().to_string();
+        self.inner
+            .load_project_with_compiled_cache(identity, bytes)
+            .map_err(js_error)?;
+        to_js(LoadedProjectFile {
+            manifest,
+            storage_key,
+        })
+    }
+
+    /// Discard an incomplete project-file upload after a browser read or transfer failure.
+    #[wasm_bindgen(js_name = cancelProjectFile)]
+    pub fn cancel_project_file(&mut self) {
+        self.project_file_upload.cancel();
     }
 
     /// Prepare a compact append-only update for a project file's embedded configuration.
@@ -429,7 +569,7 @@ impl<'a> BinaryReader<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::decode_browser_manifest;
+    use super::{ProjectFileUpload, decode_browser_manifest};
     use era_runtime_protocol::{FileCategory, FilePayload};
 
     #[test]
@@ -466,6 +606,43 @@ mod tests {
                 if resource.byte_length == 1234
                     && resource.image_metadata.as_ref().is_some_and(|value| value.width == 640)
         ));
+    }
+
+    #[test]
+    fn project_file_upload_enforces_bounds_completion_and_reuse() {
+        let mut upload = ProjectFileUpload::default();
+        assert!(upload.finish().unwrap_err().contains("no project file"));
+
+        upload.begin(3, 3).unwrap();
+        assert!(upload.begin(3, 3).unwrap_err().contains("already active"));
+        upload
+            .append_destination(2)
+            .unwrap()
+            .copy_from_slice(&[1, 2]);
+        assert!(
+            upload
+                .append_destination(2)
+                .unwrap_err()
+                .contains("declared size")
+        );
+        assert!(upload.finish().unwrap_err().contains("received 2 of 3"));
+        upload.append_destination(1).unwrap().copy_from_slice(&[3]);
+        assert_eq!(upload.finish().unwrap(), [1, 2, 3]);
+
+        upload.begin(2, 3).unwrap();
+        upload.append_destination(1).unwrap()[0] = 9;
+        upload.cancel();
+        upload.begin(1, 3).unwrap();
+        upload.append_destination(1).unwrap()[0] = 4;
+        assert_eq!(upload.finish().unwrap(), [4]);
+    }
+
+    #[test]
+    fn project_file_upload_rejects_a_declared_size_above_the_limit() {
+        let mut upload = ProjectFileUpload::default();
+
+        assert!(upload.begin(4, 3).unwrap_err().contains("transfer limit"));
+        upload.begin(3, 3).unwrap();
     }
 
     fn append_file(

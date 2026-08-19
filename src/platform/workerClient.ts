@@ -10,6 +10,7 @@ export class WorkerClient {
     { resolve: (value: any) => void; reject: (reason: Error) => void }
   >();
   private projectProgressListener?: (progress: ProjectProgress) => void;
+  private terminalError?: Error;
 
   constructor() {
     this.worker.onmessage = (event) => {
@@ -25,8 +26,7 @@ export class WorkerClient {
       else pending.resolve(result);
     };
     this.worker.onerror = (event) => {
-      for (const pending of this.pending.values()) pending.reject(new Error(event.message));
-      this.pending.clear();
+      this.fail(new Error(event.message || "Worker 运行失败"));
     };
   }
 
@@ -43,6 +43,7 @@ export class WorkerClient {
   }
 
   private request<T>(method: string, args: unknown[], transfer: Transferable[]): Promise<T> {
+    if (this.terminalError) return Promise.reject(this.terminalError);
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
@@ -57,7 +58,13 @@ export class WorkerClient {
 
   close(): void {
     this.worker.terminate();
-    for (const pending of this.pending.values()) pending.reject(new Error("Worker 已关闭"));
+    this.fail(new Error("Worker 已关闭"));
+  }
+
+  private fail(error: Error): void {
+    if (this.terminalError) return;
+    this.terminalError = error;
+    for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
   }
 }

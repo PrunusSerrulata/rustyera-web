@@ -188,14 +188,13 @@ export class BrowserBridge implements FrontendBridge {
     onSubmitted?.(submittedAtMs);
     await prepareAfterSelection?.();
     const started = performance.now();
-    const bytes = await readProjectFile(file, (completed, total) =>
-      this.projectProgressListener?.({ stage: "scanning", completed, total }),
-    );
-    this.projectPreferenceStore = await BrowserProjectPreferenceStore.packaged(bytes);
-    const loaded = await this.worker.callWithTransfer<{
+    const loaded = await streamProjectFile<{
       manifest: BrowserManifest;
       storageKey: string;
-    }>("loadProjectFile", [bytes], [bytes.buffer]);
+    }>(this.worker, file, (completed, total) =>
+      this.projectProgressListener?.({ stage: "scanning", completed, total }),
+    );
+    this.projectPreferenceStore = await BrowserProjectPreferenceStore.packaged(loaded.storageKey);
     const manifest = loaded.manifest;
     const storageRoot = await navigator.storage.getDirectory();
     const projects = await storageRoot.getDirectoryHandle(".rustyera-project-files", {
@@ -691,26 +690,34 @@ export class BrowserBridge implements FrontendBridge {
   }
 }
 
-async function readProjectFile(
+async function streamProjectFile<T>(
+  worker: WorkerClient,
   file: File,
   progress: (completed: number, total: number) => void,
-): Promise<Uint8Array> {
-  if (file.size === 0) return new Uint8Array(await file.arrayBuffer());
-  const output = new Uint8Array(file.size);
-  progress(0, file.size);
-  for (let offset = 0; offset < file.size; offset += PROJECT_FILE_READ_CHUNK_BYTES) {
-    const end = Math.min(file.size, offset + PROJECT_FILE_READ_CHUNK_BYTES);
-    const blob = file.slice(offset, end);
-    const buffer =
-      typeof blob.arrayBuffer === "function"
-        ? await blob.arrayBuffer()
-        : await readBlobWithFileReader(blob);
-    const chunk = new Uint8Array(buffer);
-    output.set(chunk, offset);
-    progress(end, file.size);
-    await yieldToMainThread();
+): Promise<T> {
+  if (!Number.isSafeInteger(file.size) || file.size > 0xffff_ffff) {
+    throw new Error("项目文件大小超出浏览器可处理范围。");
   }
-  return output;
+  await worker.call("beginProjectFile", file.size);
+  try {
+    if (file.size > 0) progress(0, file.size);
+    for (let offset = 0; offset < file.size; offset += PROJECT_FILE_READ_CHUNK_BYTES) {
+      const end = Math.min(file.size, offset + PROJECT_FILE_READ_CHUNK_BYTES);
+      const blob = file.slice(offset, end);
+      const buffer =
+        typeof blob.arrayBuffer === "function"
+          ? await blob.arrayBuffer()
+          : await readBlobWithFileReader(blob);
+      const chunk = new Uint8Array(buffer);
+      await worker.callWithTransfer("appendProjectFile", [chunk], [chunk.buffer]);
+      progress(end, file.size);
+      await yieldToMainThread();
+    }
+    return await worker.call<T>("finishProjectFile");
+  } catch (error) {
+    await worker.call("cancelProjectFile").catch(() => undefined);
+    throw error;
+  }
 }
 
 async function copyFileToWritable(file: File, writer: FileSystemWritableFileStream): Promise<void> {

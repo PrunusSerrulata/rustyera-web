@@ -1,5 +1,3 @@
-import { loadBrowserProjectFile } from "@/platform/browserProjectFile";
-
 type WasmModule = {
   default: () => Promise<void>;
   WasmRuntime: new (
@@ -11,6 +9,10 @@ type WasmModule = {
     loadProject(manifest: unknown): bigint;
     loadProjectBinary(manifest: Uint8Array): bigint;
     projectFileManifest(bytes: Uint8Array): unknown;
+    beginProjectFile(totalBytes: number): void;
+    appendProjectFile(bytes: Uint8Array): void;
+    finishProjectFile(): unknown;
+    cancelProjectFile(): void;
     prepareProjectConfigurationUpdate(
       projectFile: Uint8Array,
       expectedDigest: Uint8Array,
@@ -58,6 +60,12 @@ self.onmessage = async (event: MessageEvent) => {
         case "projectFileManifest":
           result = runtime.projectFileManifest(args[0] as Uint8Array);
           break;
+        case "beginProjectFile":
+          result = runtime.beginProjectFile(args[0] as number);
+          break;
+        case "appendProjectFile":
+          result = runtime.appendProjectFile(args[0] as Uint8Array);
+          break;
         case "prepareProjectConfigurationUpdate":
           result = runtime.prepareProjectConfigurationUpdate(
             args[0] as Uint8Array,
@@ -65,11 +73,13 @@ self.onmessage = async (event: MessageEvent) => {
             args[2] as string,
           );
           break;
-        case "loadProjectFile": {
-          const bytes = args[0] as Uint8Array;
-          result = loadBrowserProjectFile(runtime, bytes);
+        case "finishProjectFile": {
+          result = runtime.finishProjectFile();
           break;
         }
+        case "cancelProjectFile":
+          result = runtime.cancelProjectFile();
+          break;
         case "loadProjectWithCompiledCache":
           result = runtime.loadProjectWithCompiledCache(args[0], args[1] as Uint8Array);
           break;
