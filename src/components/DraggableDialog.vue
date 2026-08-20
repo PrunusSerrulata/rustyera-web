@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { nextTick, ref, watch } from "vue";
 
 const props = defineProps<{
   open: boolean;
@@ -33,9 +33,14 @@ watch(
 function center(): void {
   const rect = panel.value?.getBoundingClientRect();
   if (!rect) return;
+  const viewport = window.visualViewport;
+  const width = viewport?.width ?? window.innerWidth;
+  const height = viewport?.height ?? window.innerHeight;
+  const left = viewport?.offsetLeft ?? 0;
+  const top = viewport?.offsetTop ?? 0;
   position.value = {
-    x: Math.max(8, (window.innerWidth - rect.width) / 2),
-    y: Math.max(8, (window.innerHeight - rect.height) / 3),
+    x: left + Math.max(8, (width - rect.width) / 2),
+    y: top + Math.max(8, (height - rect.height) / 3),
   };
 }
 
@@ -56,14 +61,10 @@ function begin(event: PointerEvent): void {
 }
 
 function move(event: PointerEvent): void {
-  if (!drag || drag.pointerId !== event.pointerId || !panel.value) return;
-  const rect = panel.value.getBoundingClientRect();
+  if (!drag || drag.pointerId !== event.pointerId) return;
   position.value = {
-    x: Math.min(Math.max(0, event.clientX - drag.dx), Math.max(0, window.innerWidth - rect.width)),
-    y: Math.min(
-      Math.max(0, event.clientY - drag.dy),
-      Math.max(0, window.innerHeight - rect.height),
-    ),
+    x: event.clientX - drag.dx,
+    y: event.clientY - drag.dy,
   };
 }
 
@@ -105,18 +106,6 @@ function keydown(event: KeyboardEvent): void {
   }
   event.stopPropagation();
 }
-
-function clamp(): void {
-  if (!panel.value) return;
-  const rect = panel.value.getBoundingClientRect();
-  position.value = {
-    x: Math.min(position.value.x, Math.max(0, innerWidth - rect.width)),
-    y: Math.min(position.value.y, Math.max(0, innerHeight - rect.height)),
-  };
-}
-
-onMounted(() => window.addEventListener("resize", clamp));
-onUnmounted(() => window.removeEventListener("resize", clamp));
 </script>
 
 <template>
@@ -153,7 +142,7 @@ onUnmounted(() => window.removeEventListener("resize", clamp));
             ×
           </button>
         </header>
-        <div class="dialog-content"><slot /></div>
+        <div class="dialog-content" tabindex="0"><slot /></div>
       </section>
     </div>
   </Teleport>

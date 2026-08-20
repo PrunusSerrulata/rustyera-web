@@ -672,6 +672,49 @@ describe("runtime store startup-save", () => {
     expect(bridge.pump).toHaveBeenCalledOnce();
   });
 
+  it("publishes writable packaged-project preferences before Runtime loading finishes", async () => {
+    stubRunningAudioContext();
+    bridge.currentProjectPreferences.mockReturnValue({
+      settings: { UseMouse: "NO" },
+      imageScale: 1.5,
+    });
+    bridge.projectPreferencesWritable.mockReturnValue(true);
+    bridge.saveProjectPreferences.mockImplementation(async (value) => value);
+    bridge.openProjectFile.mockImplementation(async (onSubmitted, prepareAfterSelection) => {
+      onSubmitted?.(performance.now());
+      await prepareAfterSelection?.();
+      return {
+        submittedAtMs: performance.now(),
+        quickScanMs: 0,
+        cacheReadMs: 0,
+        sourceReadMs: 0,
+        submitMs: 1,
+        cacheImported: true,
+        projectFonts: { fonts: [], errors: [] },
+      };
+    });
+    const store = useRuntimeStore();
+
+    await store.openProjectFile();
+
+    expect(store.projectLoading).toBe(true);
+    expect(store.projectPreferencesWritable).toBe(true);
+    expect(store.projectPreferences).toEqual({
+      settings: { UseMouse: "NO" },
+      imageScale: 1.5,
+    });
+    store.openPreferencesFromUser();
+    await store.saveClientPreferences("project", {
+      settings: { UseMouse: "YES" },
+      imageScale: 1.25,
+    });
+    expect(bridge.saveProjectPreferences).toHaveBeenCalledWith({
+      settings: { UseMouse: "YES" },
+      imageScale: 1.25,
+    });
+    expect(store.preferencesOpen).toBe(false);
+  });
+
   it("rebuilds the locked Runtime after host project installation fails", async () => {
     stubRunningAudioContext();
     let attempts = 0;

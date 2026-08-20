@@ -10,13 +10,14 @@ function fixture(withProject = true) {
   const open = ref(true);
   const send = vi.fn(async () => 7);
   const savePreferences = vi.fn(async (value) => value);
+  const saveProjectPreferences = vi.fn(async (value) => value);
   const applyHostConfiguration = vi.fn(async () => undefined);
   const applyAudio = vi.fn();
   const finishStatus = vi.fn();
   const state = new RuntimeClientPreferencesState({
     bridge: {
       savePreferences,
-      saveProjectPreferences: vi.fn(async (value) => value),
+      saveProjectPreferences,
     } as any,
     global,
     project,
@@ -55,6 +56,7 @@ function fixture(withProject = true) {
     open,
     send,
     savePreferences,
+    saveProjectPreferences,
     applyHostConfiguration,
     applyAudio,
     finishStatus,
@@ -102,18 +104,50 @@ describe("runtime client preference transactions", () => {
     expect(finishStatus).toHaveBeenCalledWith(1, "全局偏好已应用");
   });
 
+  it("serializes a user save behind startup preference initialization", async () => {
+    const { state, open, send, saveProjectPreferences } = fixture();
+    const startupApplication = state.apply();
+    await flushMicrotasks();
+
+    const saving = state.save("project", { settings: { UseMouse: "NO" } });
+    await flushMicrotasks();
+    expect(send).toHaveBeenCalledOnce();
+    expect(saveProjectPreferences).toHaveBeenCalledWith({ settings: { UseMouse: "NO" } });
+
+    expect(await state.handleApplied({ configuration: {} }, 7)).toBe(true);
+    await startupApplication;
+    await flushMicrotasks();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(await state.handleApplied({ configuration: {} }, 7)).toBe(true);
+    await saving;
+
+    expect(open.value).toBe(false);
+  });
+
+  it("keeps project preferences writable and applicable after the game has loaded", async () => {
+    const { state, open, saveProjectPreferences } = fixture();
+    const saving = state.save("project", { settings: { UseMouse: "NO" }, imageScale: 1.25 });
+    await flushMicrotasks();
+
+    expect(saveProjectPreferences).toHaveBeenCalledWith({
+      settings: { UseMouse: "NO" },
+      imageScale: 1.25,
+    });
+    expect(await state.handleApplied({ configuration: {} }, 7)).toBe(true);
+    await saving;
+    expect(open.value).toBe(false);
+  });
+
   it("rejects matching commands and clears pending work on reset", async () => {
     const first = fixture();
     const rejected = first.state.apply();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
     expect(first.state.reject(7, "denied")).toBe(true);
     await expect(rejected).rejects.toThrow("denied");
 
     const second = fixture();
     const reset = second.state.apply();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
     second.state.reset();
     await expect(reset).rejects.toThrow("已取消");
     expect(await second.state.handleApplied({ configuration: {} }, 7)).toBe(false);

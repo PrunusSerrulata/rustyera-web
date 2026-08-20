@@ -232,6 +232,14 @@ async function execute(args) {
       consoleMessages.push({ type: message.type(), text: message.text() }),
     );
     await installRemoteFileSystem(page, webProject.project);
+    if (scenario.project_file) {
+      await page.addInitScript(() => {
+        Object.defineProperty(window, "showOpenFilePicker", {
+          configurable: true,
+          value: undefined,
+        });
+      });
+    }
     await page.goto(`http://127.0.0.1:${port}`);
     await page.waitForFunction(() => window.__RUSTYERA_TEST__ != null);
     snapshotMonitor = startCompleteSnapshotMonitor(
@@ -272,7 +280,13 @@ async function execute(args) {
       },
     );
     for (const action of scenario.before_open_actions ?? []) await runAction(page, action);
-    await page.getByRole("button", { name: "打开 Era 项目…", exact: true }).click();
+    if (scenario.project_file) {
+      const chooser = page.waitForEvent("filechooser");
+      await page.getByRole("button", { name: "从项目文件启动…", exact: true }).click();
+      await (await chooser).setFiles(scenario.project_file);
+    } else {
+      await page.getByRole("button", { name: "打开 Era 项目…", exact: true }).click();
+    }
 
     if (scenario.comparison.reference && scenario.start.type !== "vm_snapshot") {
       const command = shellWords(args.reference_command ?? scenario.comparison.reference_command);
@@ -400,6 +414,7 @@ async function execute(args) {
       type: "start",
       scenario: scenario.path,
       project: scenario.project,
+      projectFile: scenario.project_file,
       mode: scenario.mode,
       start: scenario.start.type,
       seed: scenario.seed,
@@ -407,6 +422,11 @@ async function execute(args) {
       trace: tracePath,
     });
     let current = await observe();
+    if (scenario.project_file && current.rust.frontend.startupTelemetry?.cacheHit !== true) {
+      throw new Error(
+        `packaged project did not use its compiled cache: ${JSON.stringify(current.rust.frontend.startupTelemetry)}`,
+      );
+    }
     if (
       process.env.RUSTYERA_TEST_COMPILED_CACHE_INPUT &&
       current.rust.frontend.startupTelemetry?.cacheHit !== true

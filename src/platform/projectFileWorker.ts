@@ -11,7 +11,8 @@ export interface ProjectFileReadProgress {
   total: number;
 }
 
-const PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
+const WORKER_PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
+const MAXIMUM_BROWSER_PROJECT_FILE_BYTES = 0xffff_ffff;
 
 export interface ProjectFileReadOptions {
   chunkBytes?: number;
@@ -24,10 +25,8 @@ export async function loadProjectFileInWorker(
   options: ProjectFileReadOptions = {},
   yieldTurn: () => Promise<void> = yieldWorkerTurn,
 ): Promise<unknown> {
-  if (!Number.isSafeInteger(file.size) || file.size > 0xffff_ffff) {
-    throw new Error("项目文件大小超出浏览器可处理范围。");
-  }
-  const chunkBytes = options.chunkBytes ?? PROJECT_FILE_READ_CHUNK_BYTES;
+  validateBrowserProjectFileSize(file.size);
+  const chunkBytes = options.chunkBytes ?? WORKER_PROJECT_FILE_READ_CHUNK_BYTES;
   if (!Number.isSafeInteger(chunkBytes) || chunkBytes <= 0) {
     throw new Error("项目文件分块大小无效。");
   }
@@ -44,6 +43,12 @@ export async function loadProjectFileInWorker(
   } catch (error) {
     runtime.cancelProjectFile();
     throw error;
+  }
+}
+
+export function validateBrowserProjectFileSize(size: number): void {
+  if (!Number.isSafeInteger(size) || size < 0 || size > MAXIMUM_BROWSER_PROJECT_FILE_BYTES) {
+    throw new Error("项目文件大小超出浏览器可处理范围。");
   }
 }
 

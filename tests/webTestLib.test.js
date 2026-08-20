@@ -693,6 +693,48 @@ describe("web game test scenario", () => {
     );
   });
 
+  it("asserts the live checked state of form controls", async () => {
+    const locator = {
+      count: vi.fn(async () => 1),
+      first: vi.fn(() => locator),
+      isChecked: vi.fn(async () => true),
+    };
+    const page = { locator: vi.fn(() => locator) };
+
+    await expect(
+      runAction(page, {
+        type: "assert_dom",
+        locator: { css: "input[type=checkbox]" },
+        fields: ["count", "checked"],
+        expect: { count: 1, checked: true },
+      }),
+    ).resolves.toMatchObject({ query: { count: 1, checked: true } });
+  });
+
+  it("reports whether vertical overflow is actually scrollable", async () => {
+    const element = globalThis.document.createElement("div");
+    element.style.overflowY = "auto";
+    Object.defineProperties(element, {
+      clientHeight: { value: 100 },
+      scrollHeight: { value: 240 },
+    });
+    const locator = {
+      count: vi.fn(async () => 1),
+      first: vi.fn(() => locator),
+      evaluate: vi.fn(async (callback) => callback(element)),
+    };
+    const page = { locator: vi.fn(() => locator) };
+
+    await expect(
+      runAction(page, {
+        type: "assert_dom",
+        locator: { css: ".scrollable" },
+        fields: ["count", "scrollable_y"],
+        expect: { count: 1, scrollable_y: true },
+      }),
+    ).resolves.toMatchObject({ query: { count: 1, scrollable_y: true } });
+  });
+
   it("asserts reference-relative layout without hard-coding viewport coordinates", async () => {
     const box = (left, top, width, height) => ({
       getBoundingClientRect: () => ({

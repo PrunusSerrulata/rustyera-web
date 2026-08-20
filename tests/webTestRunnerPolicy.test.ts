@@ -91,10 +91,9 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain("attempt <= 2");
     expect(runner).toContain("await menuButton.moveTo()");
     expect(runner).toContain("await activeBrowser.pause(200)");
-    expect(runner).toContain('document.querySelector("#menu-file")');
+    expect(runner).toContain("await menuButton.click()");
     expect(runner).toContain("timeout: 1_000");
-    expect(runner).toContain('document.querySelector("#menu-file")?.nextElementSibling');
-    expect(runner).toContain("target.click()");
+    expect(runner).toContain("await action.click()");
     expect(runner).toContain("await clickFileMenuAction(browser, action.menuLabel)");
     expect(runner).toContain('await clickFileMenuAction(browser, "项目设置…")');
     expect(runner).toContain('await clickFileMenuAction(activeBrowser, "偏好设置…")');
@@ -106,6 +105,25 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain("chunks.push(Uint8Array.from(raw");
     expect(runner).toContain("new File(chunks");
     expect(runner).not.toContain('atob(chunks.join(""))');
+  });
+
+  it("drives native Firefox and Safari through a real packaged-project picker", () => {
+    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+
+    expect(runner).toContain('process.argv.indexOf("--project-file")');
+    expect(runner).toContain('element.accept.includes(".reraproj")');
+    expect(runner).toContain('input[type="file"][accept*=".reraproj"]');
+    expect(runner).toContain("await input.addValue(projectFile)");
+    expect(runner).toContain("safariProjectFilePlugin(projectFile)");
+    expect(runner).toContain('browserName === "safari" ? "/__rustyera_compat_project_file"');
+    expect(runner).toContain("picker?.injected === true");
+    expect(runner).toContain("packagedProjectProgressErrors(projectProgress)");
+    expect(runner).toContain("assertPackagedStartup(observed.startupTelemetry)");
+    expect(runner).toContain("source preparation slow path");
+    expect(runner).toContain("projectPreferencesDuringLoad");
+    expect(runner).toContain("project preferences during loading");
+    expect(runner).toContain("verifyProjectPreferencesAfterLoad(browser)");
+    expect(runner).toContain("project preferences after loading");
   });
 
   it("provides a native-browser game-log input smoke flow", () => {
@@ -180,6 +198,28 @@ describe("browser game runner progress policy", () => {
     expect(scenario).toContain('"export": null');
     expect(scenario).toContain('"status": "项目设置已应用"');
     expect(scenario).toContain('"status": "游戏运行中"');
+  });
+
+  it("loads a real packaged project through Chromium and checks responsive overlays", () => {
+    const runner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
+    const runnerLibrary = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const scenario = readFileSync(
+      resolve("tools/runtime-tester/scenarios/packaged-project-responsive.json"),
+      "utf8",
+    );
+
+    expect(runner).toContain('page.waitForEvent("filechooser")');
+    expect(runner).toContain('name: "从项目文件启动…"');
+    expect(runner).toContain("packaged project did not use its compiled cache");
+    expect(runnerLibrary).toContain('fields.includes("scrollable_y")');
+    expect(scenario).toContain('"project_file": "../../../../games/eraTW/eraThe World.reraproj"');
+    expect(scenario).toContain('"viewport": { "width": 568, "height": 320 }');
+    expect(scenario).toContain('"css": ".menu-popup"');
+    expect(scenario).toContain('"css": "#preference-tab-project"');
+    expect(scenario).toContain('"css": "#preference-project-UseMouse-override"');
+    expect(scenario).toContain('"css": ".dialog-content"');
+    expect(scenario).toContain('"scrollable_y": true');
+    expect(scenario).toContain('"at_scroll_bottom": true');
   });
 
   it("covers erarorona cache-hit settings without rebuilding a sparse cache", () => {

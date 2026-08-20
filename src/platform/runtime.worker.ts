@@ -15,6 +15,7 @@ type WasmModule = {
     beginProjectFile(totalBytes: number): void;
     appendProjectFile(bytes: Uint8Array): void;
     finishProjectFile(): unknown;
+    loadProjectFileBytes(bytes: Uint8Array): unknown;
     cancelProjectFile(): void;
     readProjectFileResource(relativePath: string, maximumBytes?: number): Uint8Array;
     prepareProjectConfigurationUpdate(
@@ -73,6 +74,9 @@ self.onmessage = async (event: MessageEvent) => {
             },
             args[1] as import("@/platform/projectFileWorker").ProjectFileReadOptions | undefined,
           );
+          break;
+        case "loadProjectFileBytes":
+          result = runtime.loadProjectFileBytes(args[0] as Uint8Array);
           break;
         case "prepareProjectConfigurationUpdate":
           result = runtime.prepareProjectConfigurationUpdate(

@@ -806,6 +806,24 @@ describe("frontend host and image-line policy", () => {
     expect(separatorRule).not.toMatch(/background:/);
   });
 
+  it("bounds menus and dialog shells to small dynamic viewports with scrollable content", () => {
+    const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
+    const menu = stylesheet.match(/\.menu-popup\s*\{([^}]*)\}/s)?.[1];
+    const panel = stylesheet.match(/\.dialog-panel\s*\{([^}]*)\}/s)?.[1];
+    const content = stylesheet.match(/\.dialog-content\s*\{([^}]*)\}/s)?.[1];
+    const settings = stylesheet.match(/\.settings-dialog\s*\{([^}]*)\}/s)?.[1];
+    const settingsScroll = stylesheet.match(/\.settings-scroll\s*\{([^}]*)\}/s)?.[1];
+
+    expect(menu).toMatch(/max-height:\s*calc\(100dvh/);
+    expect(menu).toMatch(/overflow-y:\s*auto;/);
+    expect(panel).toMatch(/max-width:\s*calc\(100vw - 16px\);/);
+    expect(panel).toMatch(/max-height:\s*calc\(100dvh - 16px\);/);
+    expect(content).toMatch(/overflow:\s*auto;/);
+    expect(content).toMatch(/overscroll-behavior:\s*contain;/);
+    expect(settings).not.toMatch(/max-height:/);
+    expect(settingsScroll).not.toMatch(/max-height:|overflow:/);
+  });
+
   it("uses the embedded Tauri driver without an unsupported external driver", () => {
     const testRunner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
     const tauriTestConfiguration = JSON.parse(

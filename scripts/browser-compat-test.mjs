@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* global document, getComputedStyle, HTMLInputElement, HTMLElement, MutationObserver, navigator, window */
 
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, createReadStream, mkdirSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +37,12 @@ const project = path.resolve(
     ? process.argv[projectIndex + 1]
     : "../emuera.em/emuera-reference-cli/tests/fixture",
 );
+const projectFileIndex = process.argv.indexOf("--project-file");
+if (projectFileIndex >= 0 && !process.argv[projectFileIndex + 1]) {
+  throw new Error("--project-file requires a path");
+}
+const projectFile =
+  projectFileIndex >= 0 ? path.resolve(repository, process.argv[projectFileIndex + 1]) : undefined;
 const checkTooltip = process.argv.includes("--check-tooltip");
 const startupOnly = process.argv.includes("--startup-only");
 const cacheInputSmoke = process.argv.includes("--cache-input-smoke");
@@ -73,6 +79,8 @@ try {
     root: repository,
     mode: "test",
     define: { "import.meta.env.VITE_RUSTYERA_TEST": JSON.stringify("1") },
+    plugins:
+      browserName === "safari" && projectFile ? [safariProjectFilePlugin(projectFile)] : undefined,
   });
   const port = viteServerPort(server);
   browser = await remote({
@@ -178,107 +186,16 @@ try {
     }),
   );
   let minimized = false;
-  compatibilityStage = "installing portable project picker";
-  await browser.execute(() => {
-    window.__RUSTYERA_COMPAT_SELECTED__ = [];
-    window.__RUSTYERA_COMPAT_PAYLOADS__ = new Map();
-    window.__RUSTYERA_COMPAT_BATCH__ = 0;
-  });
-  const projectName = path.basename(project);
-  for (const batch of portableFileBatches(files)) {
-    await browser.execute(
-      (entries, selectedProjectName) => {
-        const selected = window.__RUSTYERA_COMPAT_SELECTED__;
-        const payloads = window.__RUSTYERA_COMPAT_PAYLOADS__;
-        for (const entry of entries) {
-          const chunks = payloads.get(entry.path) ?? [];
-          const raw = atob(entry.base64);
-          chunks.push(Uint8Array.from(raw, (character) => character.charCodeAt(0)));
-          if (!entry.final) {
-            payloads.set(entry.path, chunks);
-            continue;
-          }
-          payloads.delete(entry.path);
-          const file = new File(chunks, entry.path.split("/").at(-1));
-          Object.defineProperty(file, "webkitRelativePath", {
-            value: `${selectedProjectName}/${entry.path}`,
-          });
-          selected.push(file);
-        }
-        window.__RUSTYERA_COMPAT_BATCH__ += 1;
-        document.documentElement.dataset.rustyeraTestFileBatch = `${window.__RUSTYERA_COMPAT_BATCH__}:${selected.length}:${payloads.size}`;
-      },
-      batch,
-      projectName,
-    );
-  }
-  const setup = await browser.executeAsync(async (projectName, done) => {
-    try {
-      const selected = window.__RUSTYERA_COMPAT_SELECTED__;
-      const nativeCreateElement = document.createElement;
-      const picker = {
-        fallback: false,
-        focusBeforeChange: false,
-        confirmationDelayMs: 50,
-        attempts: [],
-      };
-      Object.defineProperty(window, "showDirectoryPicker", {
-        configurable: true,
-        value: undefined,
-      });
-      document.createElement = function (tagName, options) {
-        const element = nativeCreateElement.call(this, tagName, options);
-        if (!(element instanceof HTMLInputElement)) return element;
-
-        const nativeClick = element.click.bind(element);
-        Object.defineProperty(element, "click", {
-          configurable: true,
-          value() {
-            // Safari does not consistently expose the directory flag through the same DOM
-            // property path as Firefox. The project fallback is uniquely a multi-file picker
-            // without an accept filter; traditional save pickers are single-file and filtered.
-            const isDirectoryPicker =
-              element.type === "file" && element.multiple && !element.accept;
-            picker.attempts.push({
-              accept: element.accept,
-              directoryAttribute: element.hasAttribute("webkitdirectory"),
-              directoryProperty: Boolean(element.webkitdirectory),
-              isDirectoryPicker,
-              multiple: element.multiple,
-              type: element.type,
-            });
-            if (!isDirectoryPicker) {
-              nativeClick();
-              return;
-            }
-            picker.fallback = true;
-            window.dispatchEvent(new Event("focus"));
-            picker.focusBeforeChange = true;
-            window.setTimeout(() => {
-              Object.defineProperty(element, "files", {
-                configurable: true,
-                value: selected,
-              });
-              element.dispatchEvent(new Event("change", { bubbles: true }));
-              document.createElement = nativeCreateElement;
-            }, picker.confirmationDelayMs);
-          },
-        });
-        return element;
-      };
-      window.__RUSTYERA_COMPAT_PICKER__ = picker;
-      delete document.documentElement.dataset.rustyeraTestFileBatch;
-      delete window.__RUSTYERA_COMPAT_BATCH__;
-      delete window.__RUSTYERA_COMPAT_PAYLOADS__;
-      done({
-        ok: true,
-        projectName,
-        opfs: typeof navigator.storage.getDirectory === "function",
-      });
-    } catch (error) {
-      done({ ok: false, error: `${error?.name ?? "Error"}: ${error?.message ?? String(error)}` });
-    }
-  }, projectName);
+  compatibilityStage = projectFile
+    ? "installing packaged project picker"
+    : "installing portable project picker";
+  const setup = projectFile
+    ? await installPackagedProjectPicker(
+        browser,
+        projectFile,
+        browserName === "safari" ? "/__rustyera_compat_project_file" : undefined,
+      )
+    : await installPortableProjectPicker(browser, project, files);
   if (!setup.ok) throw new Error(`browser project import failed: ${setup.error}`);
 
   await browser.execute(() => {
@@ -311,16 +228,49 @@ try {
     capture();
   });
 
-  compatibilityStage = "opening fixture project";
-  const open = await browser.$("button.primary.large");
+  compatibilityStage = projectFile ? "opening packaged project" : "opening fixture project";
+  const open = await browser.$(
+    projectFile ? "//button[normalize-space(.)='从项目文件启动…']" : "button.primary.large",
+  );
   await open.waitForClickable({ timeout: 30_000 });
   await open.click();
+  let projectPreferencesDuringLoad;
+  let projectPreferencesAfterLoad;
+  if (projectFile) {
+    compatibilityStage = "uploading packaged project";
+    const input = await browser.$('input[type="file"][accept*=".reraproj"]');
+    await input.waitForExist({ timeout: 5_000 });
+    if (browserName === "safari") {
+      await browser.waitUntil(
+        () =>
+          browser.execute(() => {
+            const picker = window.__RUSTYERA_COMPAT_PICKER__;
+            if (picker?.error) throw new Error(picker.error);
+            return picker?.injected === true;
+          }),
+        {
+          timeout: 30_000,
+          interval: 50,
+          timeoutMsg: "Safari project file injection did not complete",
+        },
+      );
+    } else {
+      // setValue clears first, which GeckoDriver rejects for the intentionally hidden fallback
+      // input. addValue sends the local file path through the native file-upload command directly.
+      await input.addValue(projectFile);
+    }
+    projectPreferencesDuringLoad = await exerciseProjectPreferencesDuringLoad(browser);
+  }
   try {
     await waitForCompatibilityRuntime(browser, browserName);
   } catch (error) {
     const diagnosis = await browser.execute(() => ({
       openButton: document.querySelector("button.primary.large")?.textContent?.trim(),
-      fileInput: Boolean(document.querySelector('input[type="file"][webkitdirectory]')),
+      fileInputs: [...document.querySelectorAll('input[type="file"]')].map((input) => ({
+        accept: input.getAttribute("accept"),
+        directory: input.hasAttribute("webkitdirectory"),
+        multiple: input.hasAttribute("multiple"),
+      })),
       picker: window.__RUSTYERA_COMPAT_PICKER__,
       progress: window.__RUSTYERA_COMPAT_PROGRESS__?.progress,
       state: window.__RUSTYERA_TEST__?.snapshot(),
@@ -329,6 +279,7 @@ try {
     }));
     throw new Error(`${error.message}; diagnosis=${JSON.stringify(diagnosis)}`);
   }
+  if (projectFile) projectPreferencesAfterLoad = await verifyProjectPreferencesAfterLoad(browser);
   compatibilityStage = "validating project progress";
   const projectProgress = await browser.execute(() => {
     const observed = window.__RUSTYERA_COMPAT_PROGRESS__;
@@ -349,7 +300,11 @@ try {
       startupTelemetry: state?.startupTelemetry,
     };
   });
-  const projectProgressErrors = browserProjectProgressErrors(projectProgress);
+  projectProgress.projectPreferencesDuringLoad = projectPreferencesDuringLoad;
+  projectProgress.projectPreferencesAfterLoad = projectPreferencesAfterLoad;
+  const projectProgressErrors = projectFile
+    ? packagedProjectProgressErrors(projectProgress)
+    : browserProjectProgressErrors(projectProgress);
   if (projectProgressErrors.length > 0) {
     throw new Error(
       `project progress was incomplete (${projectProgressErrors.join(", ")}): ${JSON.stringify(projectProgress)}`,
@@ -361,13 +316,15 @@ try {
   } else if (startupOnly) {
     compatibilityStage = "collecting cold-start report";
     const observed = await collectCompatibilityReport(browser);
-    assertColdStartup(observed.startupTelemetry);
+    if (projectFile) assertPackagedStartup(observed.startupTelemetry);
+    else assertColdStartup(observed.startupTelemetry);
     console.log(
       JSON.stringify({
         browser: browserName,
         browserVersion: browser.capabilities.browserVersion,
         minimized,
         projectName: setup.projectName,
+        projectFile,
         opfs: setup.opfs,
         opfsReset,
         projectProgress,
@@ -763,6 +720,12 @@ try {
   );
   runError = error;
 } finally {
+  await browser
+    ?.execute(() => {
+      window.__RUSTYERA_COMPAT_PICKER_CLEANUP__?.();
+      window.__RUSTYERA_COMPAT_PROGRESS__?.observer.disconnect();
+    })
+    .catch(() => {});
   try {
     await snapshotMonitor?.stop();
   } catch (error) {
@@ -779,6 +742,278 @@ try {
   }
   await browser?.deleteSession().catch(() => {});
   await server?.close().catch(() => {});
+}
+
+function safariProjectFilePlugin(selectedProjectFile) {
+  return {
+    name: "rustyera-safari-project-file",
+    configureServer(viteServer) {
+      viteServer.middlewares.use("/__rustyera_compat_project_file", (request, response, next) => {
+        if (request.method !== "GET") {
+          next();
+          return;
+        }
+        response.statusCode = 200;
+        response.setHeader("Content-Type", "application/octet-stream");
+        createReadStream(selectedProjectFile)
+          .on("error", (error) => response.destroy(error))
+          .pipe(response);
+      });
+    },
+  };
+}
+
+async function installPackagedProjectPicker(activeBrowser, selectedProjectFile, browserFetchUrl) {
+  return activeBrowser.executeAsync(
+    async (projectName, projectUrl, done) => {
+      try {
+        const nativeCreateElement = document.createElement;
+        const pickerDescriptor = Object.getOwnPropertyDescriptor(window, "showOpenFilePicker");
+        const fetchController = new AbortController();
+        const picker = {
+          fallback: true,
+          focusBeforeChange: false,
+          attempts: [],
+          browserFetch: Boolean(projectUrl),
+          injected: false,
+          error: null,
+        };
+        const restoreCreateElement = () => {
+          document.createElement = nativeCreateElement;
+        };
+        window.__RUSTYERA_COMPAT_PICKER_CLEANUP__ = () => {
+          fetchController.abort();
+          restoreCreateElement();
+          if (pickerDescriptor)
+            Object.defineProperty(window, "showOpenFilePicker", pickerDescriptor);
+          else delete window.showOpenFilePicker;
+        };
+        Object.defineProperty(window, "showOpenFilePicker", {
+          configurable: true,
+          value: undefined,
+        });
+        document.createElement = function (tagName, options) {
+          const element = nativeCreateElement.call(this, tagName, options);
+          if (!(element instanceof HTMLInputElement)) return element;
+          const nativeClick = element.click.bind(element);
+          Object.defineProperty(element, "click", {
+            configurable: true,
+            value() {
+              const isProjectFilePicker =
+                element.type === "file" &&
+                !element.multiple &&
+                element.accept.includes(".reraproj");
+              picker.attempts.push({
+                accept: element.accept,
+                isProjectFilePicker,
+                multiple: element.multiple,
+                type: element.type,
+              });
+              if (!isProjectFilePicker) {
+                nativeClick();
+                return;
+              }
+              picker.focusBeforeChange = true;
+              window.dispatchEvent(new Event("focus"));
+              if (projectUrl) {
+                void fetch(projectUrl, { signal: fetchController.signal })
+                  .then((response) => {
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    return response.arrayBuffer();
+                  })
+                  .then((bytes) => {
+                    const file = new File([bytes], projectName, {
+                      type: "application/octet-stream",
+                    });
+                    Object.defineProperty(element, "files", { configurable: true, value: [file] });
+                    element.dispatchEvent(new Event("change", { bubbles: true }));
+                    picker.injected = true;
+                    restoreCreateElement();
+                  })
+                  .catch((error) => {
+                    if (error?.name !== "AbortError") picker.error = String(error);
+                  });
+                return;
+              }
+              element.addEventListener("change", restoreCreateElement, { once: true });
+            },
+          });
+          return element;
+        };
+        window.__RUSTYERA_COMPAT_PICKER__ = picker;
+        done({
+          ok: true,
+          projectName,
+          opfs: typeof navigator.storage.getDirectory === "function",
+        });
+      } catch (error) {
+        done({ ok: false, error: `${error?.name ?? "Error"}: ${error?.message ?? String(error)}` });
+      }
+    },
+    path.basename(selectedProjectFile),
+    browserFetchUrl,
+  );
+}
+
+async function installPortableProjectPicker(activeBrowser, selectedProject, files) {
+  await activeBrowser.execute(() => {
+    window.__RUSTYERA_COMPAT_SELECTED__ = [];
+    window.__RUSTYERA_COMPAT_PAYLOADS__ = new Map();
+    window.__RUSTYERA_COMPAT_BATCH__ = 0;
+  });
+  const projectName = path.basename(selectedProject);
+  for (const batch of portableFileBatches(files)) {
+    await activeBrowser.execute(
+      (entries, selectedProjectName) => {
+        const selected = window.__RUSTYERA_COMPAT_SELECTED__;
+        const payloads = window.__RUSTYERA_COMPAT_PAYLOADS__;
+        for (const entry of entries) {
+          const chunks = payloads.get(entry.path) ?? [];
+          const raw = atob(entry.base64);
+          chunks.push(Uint8Array.from(raw, (character) => character.charCodeAt(0)));
+          if (!entry.final) {
+            payloads.set(entry.path, chunks);
+            continue;
+          }
+          payloads.delete(entry.path);
+          const file = new File(chunks, entry.path.split("/").at(-1));
+          Object.defineProperty(file, "webkitRelativePath", {
+            value: `${selectedProjectName}/${entry.path}`,
+          });
+          selected.push(file);
+        }
+        window.__RUSTYERA_COMPAT_BATCH__ += 1;
+        document.documentElement.dataset.rustyeraTestFileBatch = `${window.__RUSTYERA_COMPAT_BATCH__}:${selected.length}:${payloads.size}`;
+      },
+      batch,
+      projectName,
+    );
+  }
+  return activeBrowser.executeAsync(async (selectedProjectName, done) => {
+    try {
+      const selected = window.__RUSTYERA_COMPAT_SELECTED__;
+      const nativeCreateElement = document.createElement;
+      const pickerDescriptor = Object.getOwnPropertyDescriptor(window, "showDirectoryPicker");
+      const picker = {
+        fallback: false,
+        focusBeforeChange: false,
+        confirmationDelayMs: 50,
+        attempts: [],
+      };
+      const restoreCreateElement = () => {
+        document.createElement = nativeCreateElement;
+      };
+      window.__RUSTYERA_COMPAT_PICKER_CLEANUP__ = () => {
+        restoreCreateElement();
+        if (pickerDescriptor)
+          Object.defineProperty(window, "showDirectoryPicker", pickerDescriptor);
+        else delete window.showDirectoryPicker;
+      };
+      Object.defineProperty(window, "showDirectoryPicker", {
+        configurable: true,
+        value: undefined,
+      });
+      document.createElement = function (tagName, options) {
+        const element = nativeCreateElement.call(this, tagName, options);
+        if (!(element instanceof HTMLInputElement)) return element;
+        const nativeClick = element.click.bind(element);
+        Object.defineProperty(element, "click", {
+          configurable: true,
+          value() {
+            const isDirectoryPicker =
+              element.type === "file" && element.multiple && !element.accept;
+            picker.attempts.push({
+              accept: element.accept,
+              directoryAttribute: element.hasAttribute("webkitdirectory"),
+              directoryProperty: Boolean(element.webkitdirectory),
+              isDirectoryPicker,
+              multiple: element.multiple,
+              type: element.type,
+            });
+            if (!isDirectoryPicker) {
+              nativeClick();
+              return;
+            }
+            picker.fallback = true;
+            window.dispatchEvent(new Event("focus"));
+            picker.focusBeforeChange = true;
+            window.setTimeout(() => {
+              Object.defineProperty(element, "files", { configurable: true, value: selected });
+              element.dispatchEvent(new Event("change", { bubbles: true }));
+              restoreCreateElement();
+            }, picker.confirmationDelayMs);
+          },
+        });
+        return element;
+      };
+      window.__RUSTYERA_COMPAT_PICKER__ = picker;
+      delete document.documentElement.dataset.rustyeraTestFileBatch;
+      delete window.__RUSTYERA_COMPAT_BATCH__;
+      delete window.__RUSTYERA_COMPAT_PAYLOADS__;
+      done({
+        ok: true,
+        projectName: selectedProjectName,
+        opfs: typeof navigator.storage.getDirectory === "function",
+      });
+    } catch (error) {
+      done({ ok: false, error: `${error?.name ?? "Error"}: ${error?.message ?? String(error)}` });
+    }
+  }, projectName);
+}
+
+async function exerciseProjectPreferencesDuringLoad(activeBrowser) {
+  compatibilityStage = "waiting for packaged project preference availability";
+  await activeBrowser.waitUntil(
+    () =>
+      activeBrowser.execute(() => {
+        const state = window.__RUSTYERA_TEST__?.snapshot();
+        return state?.projectOpen === true && state?.projectLoading === true;
+      }),
+    {
+      timeout: 30_000,
+      interval: 25,
+      timeoutMsg: "project preferences did not become available during project loading",
+    },
+  );
+  await clickFileMenuAction(activeBrowser, "偏好设置…");
+  const dialog = await activeBrowser.$("section[aria-label='RustyEra Web · 偏好设置']");
+  await dialog.waitForDisplayed({ timeout: 5_000 });
+  const projectTab = await dialog.$("#preference-tab-project");
+  const projectTabEnabled = await projectTab.isEnabled();
+  if (!projectTabEnabled) throw new Error("project preference tab was disabled during loading");
+  await projectTab.click();
+  const field = await dialog.$("#preference-project-UseMouse-override");
+  await field.waitForEnabled({ timeout: 5_000 });
+  const projectFieldEditable = await field.isEnabled();
+  if (!(await field.isSelected())) await field.click();
+  await (await dialog.$("button=应用")).click();
+  await dialog.waitForDisplayed({ reverse: true, timeout: 30_000 });
+  return {
+    observedLoading: true,
+    dialogOpened: true,
+    projectTabEnabled,
+    projectFieldEditable,
+    saveSubmitted: true,
+    saveCompleted: true,
+  };
+}
+
+async function verifyProjectPreferencesAfterLoad(activeBrowser) {
+  compatibilityStage = "verifying packaged project preferences after load";
+  await clickFileMenuAction(activeBrowser, "偏好设置…");
+  const dialog = await activeBrowser.$("section[aria-label='RustyEra Web · 偏好设置']");
+  await dialog.waitForDisplayed({ timeout: 5_000 });
+  const projectTab = await dialog.$("#preference-tab-project");
+  const projectTabEnabled = await projectTab.isEnabled();
+  if (!projectTabEnabled) throw new Error("project preference tab was disabled after game load");
+  await projectTab.click();
+  const field = await dialog.$("#preference-project-UseMouse-override");
+  await field.waitForEnabled({ timeout: 5_000 });
+  const projectFieldEditable = await field.isEnabled();
+  const savedOverrideSelected = await field.isSelected();
+  await (await dialog.$("button=取消")).click();
+  await dialog.waitForDisplayed({ reverse: true, timeout: 5_000 });
+  return { projectTabEnabled, projectFieldEditable, savedOverrideSelected };
 }
 
 async function inspectInteractionAssistPanel(activeBrowser) {
@@ -855,15 +1090,7 @@ async function clickFileMenuAction(activeBrowser, label) {
     await menuButton.moveTo();
     await activeBrowser.pause(200);
     await menuButton.waitForDisplayed({ timeout: 2_000 });
-    if ((await menuButton.getAttribute("aria-expanded")) !== "true") {
-      const dispatched = await activeBrowser.execute(() => {
-        const target = document.querySelector("#menu-file");
-        if (!(target instanceof HTMLElement) || target.matches(":disabled")) return false;
-        target.click();
-        return true;
-      });
-      if (!dispatched) continue;
-    }
+    if ((await menuButton.getAttribute("aria-expanded")) !== "true") await menuButton.click();
     const opened = await activeBrowser
       .waitUntil(() => menuButton.getAttribute("aria-expanded").then((value) => value === "true"), {
         timeout: 1_000,
@@ -881,18 +1108,8 @@ async function clickFileMenuAction(activeBrowser, label) {
       .then(() => true)
       .catch(() => false);
     if (!displayed) continue;
-    // SafariDriver can report a successful element click without delivering it to the page.
-    // Dispatch through visible controls so the application receives the same DOM click.
-    const dispatched = await activeBrowser.execute((targetLabel) => {
-      const popup = document.querySelector("#menu-file")?.nextElementSibling;
-      const target = [...(popup?.querySelectorAll("button") ?? [])].find(
-        (candidate) => candidate.textContent?.trim() === targetLabel,
-      );
-      if (!(target instanceof HTMLElement) || target.matches(":disabled")) return false;
-      target.click();
-      return true;
-    }, label);
-    if (dispatched) return;
+    await action.click();
+    return;
   }
   throw new Error(`文件 menu action did not become clickable: ${label}`);
 }
@@ -1282,6 +1499,57 @@ function assertColdStartup(telemetry) {
   ) {
     throw new Error(`startup was not a successful cold load: ${JSON.stringify(telemetry)}`);
   }
+}
+
+function assertPackagedStartup(telemetry) {
+  if (
+    telemetry?.scenario !== "project_file" ||
+    telemetry.cacheHit !== true ||
+    telemetry.outcome !== "success"
+  ) {
+    throw new Error(
+      `startup was not a successful packaged cache hit: ${JSON.stringify(telemetry)}`,
+    );
+  }
+}
+
+function packagedProjectProgressErrors(progress) {
+  const errors = [];
+  const labels = progress.labels ?? [];
+  if (!progress.cacheHit) errors.push("compiled cache hit");
+  if (!labels.some((label) => label.startsWith("正在读取项目文件："))) errors.push("file read");
+  if (!labels.some((label) => label.startsWith("项目缓存命中，正在准备脚本热重载…")))
+    errors.push("cache handoff");
+  if (
+    labels.some(
+      (label) =>
+        label.startsWith("正在准备 Runtime 资源：") &&
+        !/^正在准备 Runtime 资源：[01]\/1（(?:0|100)%）/.test(label),
+    )
+  ) {
+    errors.push("source preparation slow path");
+  }
+  if (progress.active || !progress.completed) {
+    errors.push("continuous completed progress");
+  }
+  if (
+    !progress.projectPreferencesDuringLoad?.observedLoading ||
+    !progress.projectPreferencesDuringLoad.dialogOpened ||
+    !progress.projectPreferencesDuringLoad.projectTabEnabled ||
+    !progress.projectPreferencesDuringLoad.projectFieldEditable ||
+    !progress.projectPreferencesDuringLoad.saveSubmitted ||
+    !progress.projectPreferencesDuringLoad.saveCompleted
+  ) {
+    errors.push("project preferences during loading");
+  }
+  if (
+    !progress.projectPreferencesAfterLoad?.projectTabEnabled ||
+    !progress.projectPreferencesAfterLoad.projectFieldEditable ||
+    !progress.projectPreferencesAfterLoad.savedOverrideSelected
+  ) {
+    errors.push("project preferences after loading");
+  }
+  return errors;
 }
 
 function byteSignature(bytes) {

@@ -13,6 +13,9 @@ npm run test:browser-compat -- --browser firefox
 npm run test:browser-compat -- --browser safari
 ```
 
+Pass `--project-file PATH --startup-only` to either native-browser command when validating a real
+packaged-project cache path rather than the default portable directory fixture.
+
 When the host OS is not macOS, do not launch or require Safari; report Safari as not applicable
 rather than skipped, passed, or failed. Do not use WebKit as a substitute.
 
@@ -48,6 +51,8 @@ output, or browser crash is an infrastructure failure, not a skip.
 Use JSON `schema_version: 1`. The format is a compatible superset of the TUI scenario format.
 
 - `project`: Absolute path or path relative to the scenario. `--project` overrides it.
+- `project_file`: Optional `.reraproj` path relative to the scenario. Chromium opens it through the
+  visible project-file picker while `project` remains the isolated support tree for test services.
 - `mode`: `fixed` or `autonomous`.
 - `start.type`: `new_game`, `traditional_save`, or `vm_snapshot`; restores require `path` or CLI
   `--state`.

@@ -36,15 +36,17 @@ import { ProjectFontRegistry } from "@/platform/projectFonts";
 import { browserTraditionalSaves } from "@/platform/browserBridge/traditionalSaves";
 import { BrowserProjectPreferenceStore } from "@/platform/projectPreferences";
 import { needsLowMemoryProjectFileLoad } from "@/platform/browserProjectFilePolicy";
+import { validateBrowserProjectFileSize } from "@/platform/projectFileWorker";
 import { normalizeProjectFileManifest } from "@/platform/projectFileManifestTransfer";
 import { createBrowserSessionDirectory } from "@/platform/browserSessionFilesystem";
 
-const PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
+const DESKTOP_PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
+const LOW_MEMORY_PROJECT_FILE_READ_CHUNK_BYTES = 1024 * 1024;
 
 export class BrowserBridge implements FrontendBridge {
   readonly kind = "browser" as const;
   private readonly lowMemoryProjectFileLoad = needsLowMemoryProjectFileLoad();
-  readonly prewarmRuntimeOnInitialize = this.lowMemoryProjectFileLoad;
+  readonly prewarmRuntimeOnInitialize = true;
   private readonly worker = new WorkerClient();
   readonly traditionalSaves = browserTraditionalSaves({
     project: () => this.requireProject(),
@@ -199,11 +201,11 @@ export class BrowserBridge implements FrontendBridge {
     this.projectProgressListener?.({ stage: "scanning", completed: 0, total: file.size });
     await yieldToPaint();
     const started = performance.now();
-    const loaded = await this.worker.call<{
+    const loaded = await this.loadSelectedProjectFile<{
       manifest: unknown;
       storageKey: string;
       cacheImported: boolean;
-    }>("loadProjectFile", file, this.projectFileReadOptions());
+    }>(file);
     const manifest = normalizeProjectFileManifest(loaded.manifest);
     const storage = await openPackagedProjectStorage(loaded.storageKey);
     this.projectPreferenceStore = storage.preferences;
@@ -249,11 +251,7 @@ export class BrowserBridge implements FrontendBridge {
       this.projectProgressListener?.({ stage: "scanning", completed: 0, total: file.size });
       await yieldToPaint();
       const started = performance.now();
-      const loaded = await this.worker.call<{ cacheImported: boolean }>(
-        "loadProjectFile",
-        file,
-        this.projectFileReadOptions(),
-      );
+      const loaded = await this.loadSelectedProjectFile<{ cacheImported: boolean }>(file);
       return {
         submittedAtMs,
         quickScanMs: 0,
@@ -694,12 +692,16 @@ export class BrowserBridge implements FrontendBridge {
     this.worker.close();
   }
 
-  private projectFileReadOptions(): {
-    chunkBytes: number;
-  } {
-    return this.lowMemoryProjectFileLoad
-      ? { chunkBytes: 1024 * 1024 }
-      : { chunkBytes: PROJECT_FILE_READ_CHUNK_BYTES };
+  private async loadSelectedProjectFile<T>(file: File): Promise<T> {
+    if (this.lowMemoryProjectFileLoad) {
+      return this.worker.call<T>("loadProjectFile", file, {
+        chunkBytes: LOW_MEMORY_PROJECT_FILE_READ_CHUNK_BYTES,
+      });
+    }
+    const bytes = await readProjectFile(file, (completed, total) =>
+      this.projectProgressListener?.({ stage: "scanning", completed, total }),
+    );
+    return this.worker.callWithTransfer<T>("loadProjectFileBytes", [bytes], [bytes.buffer]);
   }
 }
 
@@ -729,9 +731,25 @@ async function openPackagedProjectStorage(storageKey: string): Promise<PackagedP
 function sessionPackagedProjectStorage(storageKey: string): PackagedProjectStorage {
   return {
     projectRoot: createBrowserSessionDirectory(storageKey),
-    preferences: BrowserProjectPreferenceStore.unavailable(),
+    preferences: BrowserProjectPreferenceStore.session(),
     persistent: false,
   };
+}
+
+async function readProjectFile(
+  file: File,
+  progress: (completed: number, total: number) => void,
+): Promise<Uint8Array> {
+  validateBrowserProjectFileSize(file.size);
+  if (file.size === 0) return new Uint8Array(await readBlobAsArrayBuffer(file));
+  const output = new Uint8Array(file.size);
+  for (let offset = 0; offset < file.size; offset += DESKTOP_PROJECT_FILE_READ_CHUNK_BYTES) {
+    const end = Math.min(file.size, offset + DESKTOP_PROJECT_FILE_READ_CHUNK_BYTES);
+    output.set(new Uint8Array(await readBlobAsArrayBuffer(file.slice(offset, end))), offset);
+    progress(end, file.size);
+    await yieldToMainThread();
+  }
+  return output;
 }
 
 async function materializePackagedProjectFile(
@@ -745,9 +763,11 @@ async function materializePackagedProjectFile(
       const bytes = new Uint8Array(await file.arrayBuffer());
       if (bytes.byteLength) await writer.write(bytes as FileSystemWriteChunkType);
     } else {
-      for (let offset = 0; offset < file.size; offset += PROJECT_FILE_READ_CHUNK_BYTES) {
+      for (let offset = 0; offset < file.size; offset += DESKTOP_PROJECT_FILE_READ_CHUNK_BYTES) {
         const bytes = new Uint8Array(
-          await readBlobAsArrayBuffer(file.slice(offset, offset + PROJECT_FILE_READ_CHUNK_BYTES)),
+          await readBlobAsArrayBuffer(
+            file.slice(offset, offset + DESKTOP_PROJECT_FILE_READ_CHUNK_BYTES),
+          ),
         );
         await writer.write(bytes as FileSystemWriteChunkType);
         await yieldToMainThread();

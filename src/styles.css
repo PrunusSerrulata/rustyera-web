@@ -166,11 +166,19 @@ select {
   top: calc(100% + 2px);
   left: 0;
   min-width: 220px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 44px);
+  max-height: calc(100dvh - 44px - env(safe-area-inset-bottom, 0px));
   padding: 5px;
   border: 1px solid #424650;
   border-radius: 6px;
   background: #202329;
   box-shadow: 0 10px 30px #0009;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
   z-index: 100;
 }
 .menu-popup button {
@@ -767,6 +775,7 @@ select {
   position: fixed;
   inset: 0;
   background: #05060999;
+  overflow: hidden;
   z-index: 1000;
 }
 .dialog-panel {
@@ -774,7 +783,10 @@ select {
   display: flex;
   flex-direction: column;
   width: min(520px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px);
+  max-height: calc(100dvh - 16px);
+  min-width: 0;
   border: 1px solid #515662;
   border-radius: 8px;
   background: #202329;
@@ -807,12 +819,17 @@ select {
   cursor: pointer;
 }
 .dialog-content {
+  width: 100%;
   min-height: 0;
+  min-width: 0;
   padding: 14px;
   overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 .dialog-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 7px;
   margin-top: 16px;
@@ -894,7 +911,7 @@ select {
 
   display: grid;
   grid-template-rows: auto auto auto auto;
-  max-height: calc(100vh - 76px);
+  min-width: 0;
   text-align: left;
 }
 .settings-dialog button,
@@ -922,9 +939,7 @@ select {
 }
 .settings-scroll {
   min-height: 0;
-  max-height: min(540px, calc(100vh - 190px));
   padding: 12px 3px 6px;
-  overflow: auto;
   text-align: left;
 }
 .settings-warning,
@@ -1368,6 +1383,18 @@ select {
   }
 }
 @media (max-width: 520px) {
+  .preference-color-setting,
+  .preference-image-scale-setting,
+  .preference-interaction-assist-setting,
+  .preference-metadata-setting {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .preference-color-setting .preference-setting-control,
+  .preference-image-scale-setting .preference-setting-control,
+  .preference-interaction-assist-setting .preference-setting-control,
+  .preference-metadata-setting .preference-setting-control {
+    margin-left: 0;
+  }
   .setting-item.long-label-setting {
     grid-template-columns: minmax(0, 1fr);
   }

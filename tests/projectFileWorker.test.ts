@@ -44,6 +44,17 @@ describe("packaged project worker reader", () => {
     expect(wholeRead).not.toHaveBeenCalled();
   });
 
+  it("rejects an oversized file before allocating or starting an upload", async () => {
+    const file = new File([], "oversized.reraproj");
+    Object.defineProperty(file, "size", { value: 0x1_0000_0000 });
+    const { runtime } = uploadRuntime();
+
+    await expect(loadProjectFileInWorker(runtime, file, () => undefined)).rejects.toThrow(
+      "项目文件大小超出浏览器可处理范围。",
+    );
+    expect(runtime.beginProjectFile).not.toHaveBeenCalled();
+  });
+
   it("cancels after a Blob read failure, preserves it, and permits a retry", async () => {
     const broken = new File([], "broken.reraproj");
     Object.defineProperty(broken, "size", { value: 5 * 1024 * 1024 });

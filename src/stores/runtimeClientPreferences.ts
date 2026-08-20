@@ -46,11 +46,36 @@ export class RuntimeClientPreferencesState {
   private startedAt: number | undefined;
   private elapsedTimer: number | undefined;
   private persistenceTail: Promise<void> = Promise.resolve();
+  private applicationTail?: Promise<void>;
 
   constructor(private readonly context: RuntimeClientPreferencesContext) {}
 
   apply(): Promise<void> {
-    if (this.pending || this.submitting) return Promise.reject(new Error("客户端偏好操作仍在进行"));
+    if (!this.applicationTail) {
+      const application = this.applyNow();
+      this.trackApplication(application);
+      return application;
+    }
+    const generation = this.generation;
+    const application = this.applicationTail
+      .catch(() => undefined)
+      .then(() => {
+        if (generation !== this.generation) throw new Error("客户端偏好操作已取消");
+        return this.applyNow();
+      });
+    this.trackApplication(application);
+    return application;
+  }
+
+  private trackApplication(application: Promise<void>): void {
+    const tail = application.catch(() => undefined);
+    this.applicationTail = tail;
+    void tail.then(() => {
+      if (this.applicationTail === tail) this.applicationTail = undefined;
+    });
+  }
+
+  private applyNow(): Promise<void> {
     const snapshot = this.context.snapshot();
     if (!snapshot) return Promise.resolve();
     const eligible = new Set(

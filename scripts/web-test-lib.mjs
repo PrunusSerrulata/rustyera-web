@@ -125,6 +125,7 @@ export async function loadScenario(file, projectOverride, stateOverride) {
     path: scenarioPath,
     mode: raw.mode ?? "fixed",
     project: path.resolve(projectOverride ?? resolveFromScenario(raw.project)),
+    project_file: raw.project_file ? resolveFromScenario(raw.project_file) : undefined,
     start: {
       ...start,
       path: stateOverride
@@ -1178,6 +1179,7 @@ async function queryLocator(locator, fields = ["count", "text", "visible", "enab
     if (fields.includes("value")) result.value = await first.inputValue();
     if (fields.includes("visible")) result.visible = await first.isVisible();
     if (fields.includes("enabled")) result.enabled = await first.isEnabled();
+    if (fields.includes("checked")) result.checked = await first.isChecked();
     if (fields.includes("attributes"))
       result.attributes = await first.evaluate((element) =>
         Object.fromEntries([...element.attributes].map((item) => [item.name, item.value])),
@@ -1193,6 +1195,13 @@ async function queryLocator(locator, fields = ["count", "text", "visible", "enab
       result.scroll_height = await first.evaluate((element) => element.scrollHeight);
     if (fields.includes("client_height"))
       result.client_height = await first.evaluate((element) => element.clientHeight);
+    if (fields.includes("scrollable_y"))
+      result.scrollable_y = await first.evaluate((element) => {
+        const overflowY = window.getComputedStyle(element).overflowY;
+        return (
+          ["auto", "scroll"].includes(overflowY) && element.scrollHeight > element.clientHeight
+        );
+      });
     if (fields.includes("at_scroll_bottom"))
       result.at_scroll_bottom = await first.evaluate(
         (element) => element.scrollHeight - element.scrollTop - element.clientHeight <= 1,

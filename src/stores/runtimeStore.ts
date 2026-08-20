@@ -652,6 +652,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         baseStatus.value = "已取消打开项目";
         return;
       }
+      refreshProjectPreferences();
       runtimeConfiguration.refreshWritable();
       await runtimeConfiguration.persistGenerated();
       refreshProjectFontFamilies(metrics.projectFonts);
@@ -825,9 +826,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         runtimeConfiguration.update(value.configuration);
         await runtimeConfiguration.persistGenerated();
         if (value.success) {
-          projectPreferences.value =
-            bridge.currentProjectPreferences() ?? defaultProjectPreferences();
-          projectPreferencesWritable.value = bridge.projectPreferencesWritable();
+          refreshProjectPreferences();
           void runtimeClientPreferences
             .apply()
             .then(() => continueLoadedProject(runtimeAcceptedCompiledCache))
@@ -2366,6 +2365,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
       await restoreState(pendingStart.type, pendingStart.bytes!);
     }
     if (!runtimeManifestSparse) scheduleCompiledCacheExport(1000);
+  }
+
+  function refreshProjectPreferences(): void {
+    projectPreferences.value = bridge.currentProjectPreferences() ?? defaultProjectPreferences();
+    projectPreferencesWritable.value = bridge.projectPreferencesWritable();
   }
 
   async function applyEffectiveClientConfiguration(): Promise<void> {

@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "project": "../../../../emuera.em/emuera-reference-cli/tests/fixture",
+  "project_file": "../../../../games/eraTW/eraThe World.reraproj",
+  "mode": "fixed",
+  "viewport": { "width": 568, "height": 320 },
+  "seed": 123456,
+  "before_open_actions": [
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".menu-popup" },
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".menu-popup" },
+      "fields": ["count", "visible", "scroll_height", "client_height", "scrollable_y"],
+      "expect": { "count": 1, "visible": true, "scrollable_y": true }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".menu-popup" },
+      "relative_to": { "css": ".app-shell" },
+      "expect": { "count": 1, "visible": true, "inside": { "tolerance": 1 } }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } }
+  ],
+  "actions": [
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "偏好设置…", "exact": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": "#preference-tab-project" },
+      "expect": { "count": 1, "visible": true, "enabled": true }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".dialog-panel[aria-label='RustyEra Web · 偏好设置']" },
+      "relative_to": { "css": ".app-shell" },
+      "expect": { "count": 1, "visible": true, "inside": { "tolerance": 1 } }
+    },
+    { "type": "click", "locator": { "css": "#preference-tab-project" } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": "#preference-project-UseMouse-override" },
+      "expect": { "count": 1, "visible": true, "enabled": true }
+    },
+    { "type": "click", "locator": { "css": "#preference-project-UseMouse-override" } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".dialog-content" },
+      "fields": ["count", "visible", "scroll_height", "client_height", "scrollable_y"],
+      "expect": { "count": 1, "visible": true, "scrollable_y": true }
+    },
+    {
+      "type": "scroll_key",
+      "locator": { "css": ".dialog-content" },
+      "key": "End",
+      "settle_ms": 100
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".dialog-content" },
+      "fields": ["count", "at_scroll_bottom"],
+      "expect": { "count": 1, "at_scroll_bottom": true }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "应用", "exact": true },
+      "settle_ms": 2000
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".dialog-panel[aria-label='RustyEra Web · 偏好设置']" },
+      "expect": { "count": 0 }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "偏好设置…", "exact": true }
+    },
+    { "type": "click", "locator": { "css": "#preference-tab-project" } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": "#preference-project-UseMouse-override" },
+      "fields": ["count", "visible", "enabled", "checked"],
+      "expect": { "count": 1, "visible": true, "enabled": true, "checked": true }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } }
+  ],
+  "goal": { "termination": "waitingInput" },
+  "limits": { "max_steps": 20, "timeout_seconds": 900 }
+}

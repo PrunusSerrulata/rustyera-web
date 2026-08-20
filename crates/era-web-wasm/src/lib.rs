@@ -127,6 +127,23 @@ fn take_project_file_resources(manifest: &mut ProjectManifest) -> BTreeMap<Strin
     resources
 }
 
+fn stage_project_file_bytes(runtime: &mut WasmRuntime, bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let storage_key = blake3::hash(bytes).to_hex().to_string();
+    let (message_id, mut manifest) = runtime
+        .inner
+        .load_project_file_cache(bytes)
+        .map_err(js_error)?;
+    let resources = take_project_file_resources(&mut manifest);
+    runtime
+        .project_file_resources
+        .stage_packaged(message_id, resources);
+    to_js(LoadedProjectFile {
+        manifest,
+        storage_key,
+        cache_imported: true,
+    })
+}
+
 #[derive(Default)]
 struct ProjectFileResources {
     active: BTreeMap<String, Vec<u8>>,
@@ -335,19 +352,25 @@ impl WasmRuntime {
     #[wasm_bindgen(js_name = finishProjectFile)]
     pub fn finish_project_file(&mut self) -> Result<JsValue, JsValue> {
         let bytes = self.project_file_upload.finish().map_err(js_error)?;
-        let storage_key = blake3::hash(&bytes).to_hex().to_string();
-        let (message_id, mut manifest) = self
-            .inner
-            .load_project_file_cache(&bytes)
-            .map_err(js_error)?;
-        let resources = take_project_file_resources(&mut manifest);
-        self.project_file_resources
-            .stage_packaged(message_id, resources);
-        to_js(LoadedProjectFile {
-            manifest,
-            storage_key,
-            cache_imported: true,
-        })
+        stage_project_file_bytes(self, &bytes)
+    }
+
+    /// Load one complete transferred project-file buffer on desktop browsers.
+    ///
+    /// Desktop engines can read the selected file efficiently on the main thread and transfer the
+    /// JavaScript buffer to the Worker. Constrained iOS devices retain the acknowledged upload API
+    /// above so they never hold the complete file in both JavaScript and WebAssembly while reading.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error when the project file is corrupt, unsupported, or cannot be
+    /// staged for the runtime.
+    #[wasm_bindgen(js_name = loadProjectFileBytes)]
+    pub fn load_project_file_bytes(
+        &mut self,
+        bytes: &js_sys::Uint8Array,
+    ) -> Result<JsValue, JsValue> {
+        stage_project_file_bytes(self, &bytes.to_vec())
     }
 
     /// Copy one embedded project resource (or a bounded prefix) to JavaScript on demand.

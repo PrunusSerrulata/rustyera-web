@@ -51,6 +51,9 @@ export class BrowserProjectPreferenceStore {
         true,
       );
     } catch (error) {
+      if (isNotFound(error)) {
+        return new BrowserProjectPreferenceStore(undefined, directory, emptyDocument(), true);
+      }
       return new BrowserProjectPreferenceStore(
         undefined,
         directory,
@@ -61,8 +64,8 @@ export class BrowserProjectPreferenceStore {
     }
   }
 
-  static unavailable(error = "此浏览器不支持持久项目偏好"): BrowserProjectPreferenceStore {
-    return new BrowserProjectPreferenceStore(undefined, undefined, emptyDocument(), false, error);
+  static session(): BrowserProjectPreferenceStore {
+    return new BrowserProjectPreferenceStore(undefined, undefined, emptyDocument(), true);
   }
 
   values(): ProjectPreferences {
@@ -85,26 +88,17 @@ export class BrowserProjectPreferenceStore {
     let directory = this.privateRoot;
     if (!directory && this.projectRoot)
       directory = await this.projectRoot.getDirectoryHandle(".rustyera", { create: true });
-    if (!directory) throw new Error("项目偏好目录不可用");
+    if (!directory) {
+      this.document.profiles[PROFILE] = preferenceProfile(value);
+      return this.values();
+    }
     try {
       this.document = await readDocument(directory);
     } catch (error) {
       if (!isNotFound(error)) throw error;
       this.document = emptyDocument();
     }
-    this.document.profiles[PROFILE] = {
-      settings: { ...value.settings },
-      client: {
-        ...(value.imageScale == null ? {} : { imageScale: value.imageScale }),
-        ...(value.masterVolume == null ? {} : { masterVolume: value.masterVolume }),
-        ...(value.trustProjectFileMetadata == null
-          ? {}
-          : { trustProjectFileMetadata: value.trustProjectFileMetadata }),
-        ...(value.interactionAssistMode == null
-          ? {}
-          : { interactionAssistMode: value.interactionAssistMode }),
-      },
-    };
+    this.document.profiles[PROFILE] = preferenceProfile(value);
     const handle = await directory.getFileHandle(FILE_NAME, { create: true });
     const writer = await handle.createWritable({ keepExistingData: false });
     try {
@@ -116,6 +110,22 @@ export class BrowserProjectPreferenceStore {
     }
     return this.values();
   }
+}
+
+function preferenceProfile(value: ProjectPreferences): PreferenceDocument["profiles"][string] {
+  return {
+    settings: { ...value.settings },
+    client: {
+      ...(value.imageScale == null ? {} : { imageScale: value.imageScale }),
+      ...(value.masterVolume == null ? {} : { masterVolume: value.masterVolume }),
+      ...(value.trustProjectFileMetadata == null
+        ? {}
+        : { trustProjectFileMetadata: value.trustProjectFileMetadata }),
+      ...(value.interactionAssistMode == null
+        ? {}
+        : { interactionAssistMode: value.interactionAssistMode }),
+    },
+  };
 }
 
 async function readDocument(directory: FileSystemDirectoryHandle): Promise<PreferenceDocument> {

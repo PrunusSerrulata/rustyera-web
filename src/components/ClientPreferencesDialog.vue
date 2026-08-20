@@ -60,7 +60,7 @@ const browserPreferenceDefaults: Record<string, string> = {
   ReplaceFullWidthSpaces: "NO",
 };
 const preProjectDefaults = computed<Record<string, string>>(() => {
-  if (props.projectWritable || props.entries.length > 0) return {};
+  if (props.entries.length > 0) return {};
   if (props.hostKind === "browser") return browserPreferenceDefaults;
   return {
     ...browserPreferenceDefaults,

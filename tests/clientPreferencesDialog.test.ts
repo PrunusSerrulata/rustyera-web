@@ -337,6 +337,38 @@ describe("client preferences dialog", () => {
     ]);
   });
 
+  it("keeps common project preference fields editable while configuration is still loading", async () => {
+    const wrapper = mount(ClientPreferencesDialog, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        globalValue: defaultPreferences(),
+        projectValue: { settings: {} },
+        entries: [],
+        projectWritable: true,
+      },
+    });
+
+    const projectTab = document.body.querySelector<HTMLButtonElement>("#preference-tab-project")!;
+    expect(projectTab.disabled).toBe(false);
+    projectTab.click();
+    await wrapper.vm.$nextTick();
+
+    const useMouse = document.body.querySelector<HTMLInputElement>(
+      "#preference-project-UseMouse-override",
+    )!;
+    expect(useMouse).not.toBeNull();
+    expect(useMouse.disabled).toBe(false);
+    await setCheckbox("#preference-project-UseMouse-override", true);
+    document.body
+      .querySelector<HTMLFormElement>("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(wrapper.emitted("save")?.at(-1)).toEqual([
+      "project",
+      expect.objectContaining({ settings: { UseMouse: "YES" } }),
+    ]);
+  });
+
   it("lays out override controls without overlap and removes the master volume item", async () => {
     const entries = Object.entries({
       WindowMaximixed: "NO",
