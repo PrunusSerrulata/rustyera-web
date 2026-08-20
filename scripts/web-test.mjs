@@ -422,10 +422,15 @@ async function execute(args) {
       trace: tracePath,
     });
     let current = await observe();
-    if (scenario.project_file && current.rust.frontend.startupTelemetry?.cacheHit !== true) {
-      throw new Error(
-        `packaged project did not use its compiled cache: ${JSON.stringify(current.rust.frontend.startupTelemetry)}`,
+    if (scenario.project_file) {
+      const exactCacheHit = current.rust.frontend.logs.some((entry) =>
+        String(entry.message).includes("runtime.compiled_cache_hit"),
       );
+      if (current.rust.frontend.startupTelemetry?.cacheHit !== true || !exactCacheHit) {
+        throw new Error(
+          `packaged project did not use its exact compiled cache: ${JSON.stringify({ startupTelemetry: current.rust.frontend.startupTelemetry, exactCacheHit })}`,
+        );
+      }
     }
     if (
       process.env.RUSTYERA_TEST_COMPILED_CACHE_INPUT &&

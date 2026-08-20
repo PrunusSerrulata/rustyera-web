@@ -1,8 +1,9 @@
 import { runtimeWorkerResultTransfers } from "@/platform/projectFileManifestTransfer";
 import { loadProjectFileInWorker } from "@/platform/projectFileWorker";
+import { runtimeWasmAssetUrls } from "@/platform/runtimeWasmAssets";
 
 type WasmModule = {
-  default: () => Promise<void>;
+  default: (input?: { module_or_path: string }) => Promise<unknown>;
   WasmRuntime: new (
     options: unknown,
     progress?: (value: unknown) => void,
@@ -38,11 +39,13 @@ self.onmessage = async (event: MessageEvent) => {
   try {
     let result: unknown;
     if (method === "create") {
-      const wasmModuleUrl = import.meta.env.DEV
-        ? "/__rustyera_wasm/era_web_wasm.js"
-        : `${import.meta.env.BASE_URL}wasm/era_web_wasm.js`;
-      const module = (await import(/* @vite-ignore */ wasmModuleUrl)) as WasmModule;
-      await module.default();
+      const wasmUrls = runtimeWasmAssetUrls(
+        import.meta.env.DEV,
+        import.meta.env.BASE_URL,
+        import.meta.env.VITE_RUSTYERA_WASM_REVISION,
+      );
+      const module = (await import(/* @vite-ignore */ wasmUrls.module)) as WasmModule;
+      await module.default({ module_or_path: wasmUrls.binary });
       runtime = new module.WasmRuntime(args[0], (value) => {
         self.postMessage({ type: "project_progress", value });
       });

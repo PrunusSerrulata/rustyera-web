@@ -210,7 +210,8 @@ describe("browser game runner progress policy", () => {
 
     expect(runner).toContain('page.waitForEvent("filechooser")');
     expect(runner).toContain('name: "从项目文件启动…"');
-    expect(runner).toContain("packaged project did not use its compiled cache");
+    expect(runner).toContain('includes("runtime.compiled_cache_hit")');
+    expect(runner).toContain("packaged project did not use its exact compiled cache");
     expect(runnerLibrary).toContain('fields.includes("scrollable_y")');
     expect(scenario).toContain('"project_file": "../../../../games/eraTW/eraThe World.reraproj"');
     expect(scenario).toContain('"viewport": { "width": 568, "height": 320 }');
