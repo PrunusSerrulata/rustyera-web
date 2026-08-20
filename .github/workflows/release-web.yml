@@ -67,7 +67,7 @@ jobs:
         shell: pwsh
         run: node scripts/pin-core-dependencies.mjs '${{ needs.resolve-core.outputs.revision }}'
       - name: Refresh lockfile for selected core
-        run: cargo update
+        run: cargo fetch
       - uses: jetli/wasm-pack-action@v0.4.0
       - run: npm ci
       - run: npm run check:core-rev
@@ -116,7 +116,7 @@ jobs:
         shell: pwsh
         run: node scripts/pin-core-dependencies.mjs '${{ needs.resolve-core.outputs.revision }}'
       - name: Refresh lockfile for selected core
-        run: cargo update
+        run: cargo fetch
       - run: npm ci
       - run: npm run check:core-rev
       - run: cargo check --workspace --all-targets --locked
