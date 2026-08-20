@@ -4,7 +4,7 @@ import vue from "@vitejs/plugin-vue";
 import { configDefaults, defineConfig } from "vitest/config";
 
 import { wasmAssetRevision } from "./scripts/wasm-assets";
-import { rustyeraWasmDevServer } from "./scripts/vite-wasm-plugin";
+import { rustyeraWasmBuildPreload, rustyeraWasmDevServer } from "./scripts/vite-wasm-plugin";
 
 const packageJson = JSON.parse(
   readFileSync(fileURLToPath(new URL("./package.json", import.meta.url)), "utf8"),
@@ -17,9 +17,17 @@ const coreLock = readFileSync(fileURLToPath(new URL("./Cargo.lock", import.meta.
 const coreVersion = coreLock.match(/name = "era-runtime"\nversion = "([^"]+)"/)?.[1] ?? "unknown";
 const wasmDirectory = fileURLToPath(new URL("./public/wasm", import.meta.url));
 const wasmRevision = wasmAssetRevision(wasmDirectory, `core-${coreRevision}`);
+const wasmBuildPreload = process.env.TAURI_ENV_PLATFORM
+  ? undefined
+  : rustyeraWasmBuildPreload(wasmRevision);
 
 export default defineConfig({
-  plugins: [vue(), rustyeraWasmDevServer(wasmDirectory)],
+  plugins: [
+    vue(),
+    rustyeraWasmDevServer(wasmDirectory),
+    ...(wasmBuildPreload ? [wasmBuildPreload.app] : []),
+  ],
+  worker: wasmBuildPreload ? { plugins: () => [wasmBuildPreload.worker] } : undefined,
   define: {
     "import.meta.env.VITE_RUSTYERA_FRONTEND_VERSION": JSON.stringify(packageJson.version),
     "import.meta.env.VITE_RUSTYERA_CORE_VERSION": JSON.stringify(

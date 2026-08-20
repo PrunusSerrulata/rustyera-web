@@ -259,7 +259,8 @@ try {
       // input. addValue sends the local file path through the native file-upload command directly.
       await input.addValue(projectFile);
     }
-    projectPreferencesDuringLoad = await exerciseProjectPreferencesDuringLoad(browser);
+    if (!startupOnly)
+      projectPreferencesDuringLoad = await exerciseProjectPreferencesDuringLoad(browser);
   }
   try {
     await waitForCompatibilityRuntime(browser, browserName);
@@ -279,7 +280,8 @@ try {
     }));
     throw new Error(`${error.message}; diagnosis=${JSON.stringify(diagnosis)}`);
   }
-  if (projectFile) projectPreferencesAfterLoad = await verifyProjectPreferencesAfterLoad(browser);
+  if (projectFile && !startupOnly)
+    projectPreferencesAfterLoad = await verifyProjectPreferencesAfterLoad(browser);
   compatibilityStage = "validating project progress";
   const projectProgress = await browser.execute(() => {
     const observed = window.__RUSTYERA_COMPAT_PROGRESS__;
@@ -303,7 +305,7 @@ try {
   projectProgress.projectPreferencesDuringLoad = projectPreferencesDuringLoad;
   projectProgress.projectPreferencesAfterLoad = projectPreferencesAfterLoad;
   const projectProgressErrors = projectFile
-    ? packagedProjectProgressErrors(projectProgress)
+    ? packagedProjectProgressErrors(projectProgress, !startupOnly)
     : browserProjectProgressErrors(projectProgress);
   if (projectProgressErrors.length > 0) {
     throw new Error(
@@ -1513,7 +1515,7 @@ function assertPackagedStartup(telemetry) {
   }
 }
 
-function packagedProjectProgressErrors(progress) {
+function packagedProjectProgressErrors(progress, requirePreferences = true) {
   const errors = [];
   const labels = progress.labels ?? [];
   if (!progress.cacheHit) errors.push("compiled cache hit");
@@ -1532,22 +1534,24 @@ function packagedProjectProgressErrors(progress) {
   if (progress.active || !progress.completed) {
     errors.push("continuous completed progress");
   }
-  if (
-    !progress.projectPreferencesDuringLoad?.observedLoading ||
-    !progress.projectPreferencesDuringLoad.dialogOpened ||
-    !progress.projectPreferencesDuringLoad.projectTabEnabled ||
-    !progress.projectPreferencesDuringLoad.projectFieldEditable ||
-    !progress.projectPreferencesDuringLoad.saveSubmitted ||
-    !progress.projectPreferencesDuringLoad.saveCompleted
-  ) {
-    errors.push("project preferences during loading");
-  }
-  if (
-    !progress.projectPreferencesAfterLoad?.projectTabEnabled ||
-    !progress.projectPreferencesAfterLoad.projectFieldEditable ||
-    !progress.projectPreferencesAfterLoad.savedOverrideSelected
-  ) {
-    errors.push("project preferences after loading");
+  if (requirePreferences) {
+    if (
+      !progress.projectPreferencesDuringLoad?.observedLoading ||
+      !progress.projectPreferencesDuringLoad.dialogOpened ||
+      !progress.projectPreferencesDuringLoad.projectTabEnabled ||
+      !progress.projectPreferencesDuringLoad.projectFieldEditable ||
+      !progress.projectPreferencesDuringLoad.saveSubmitted ||
+      !progress.projectPreferencesDuringLoad.saveCompleted
+    ) {
+      errors.push("project preferences during loading");
+    }
+    if (
+      !progress.projectPreferencesAfterLoad?.projectTabEnabled ||
+      !progress.projectPreferencesAfterLoad.projectFieldEditable ||
+      !progress.projectPreferencesAfterLoad.savedOverrideSelected
+    ) {
+      errors.push("project preferences after loading");
+    }
   }
   return errors;
 }

@@ -690,7 +690,6 @@ describe("browser startup bridge", () => {
     expect(requests[2].message.args).toEqual([file, { chunkBytes: 1024 * 1024 }]);
     expect(requests.every((request) => request.transfer.length === 0)).toBe(true);
     expect(progress.mock.calls).toEqual([
-      [{ stage: "preparing", completed: 0, total: 0 }],
       [{ stage: "scanning", completed: 0, total: file.size }],
       [{ stage: "scanning", completed: file.size, total: file.size }],
       [{ stage: "scanning", completed: 0, total: file.size }],
@@ -860,7 +859,7 @@ describe("browser startup bridge", () => {
     );
   });
 
-  it("submits and prepares a selected project file before reading it", async () => {
+  it("submits and prepares a selected project file before reporting read progress", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
     const file = new File([Uint8Array.of(1, 2, 3)], "game.reraproj");
@@ -878,12 +877,7 @@ describe("browser startup bridge", () => {
     const progress = vi.fn();
     const prepareAfterSelection = vi.fn(async () => {
       expect(submitted).toHaveBeenCalledOnce();
-      expect(progress).toHaveBeenCalledOnce();
-      expect(progress).toHaveBeenCalledWith({
-        stage: "preparing",
-        completed: 0,
-        total: 0,
-      });
+      expect(progress).not.toHaveBeenCalled();
       expect(requests).toHaveLength(0);
     });
     const bridge = new BrowserBridge();
@@ -894,6 +888,11 @@ describe("browser startup bridge", () => {
     expect(submitted.mock.invocationCallOrder[0]).toBeLessThan(
       prepareAfterSelection.mock.invocationCallOrder[0],
     );
+    expect(progress).toHaveBeenNthCalledWith(1, {
+      stage: "scanning",
+      completed: 0,
+      total: file.size,
+    });
     expect(requests.map((request) => request.message.method)).toEqual(["loadProjectFileBytes"]);
   });
 
@@ -969,7 +968,6 @@ describe("browser startup bridge", () => {
       await bridge.openProjectFile();
 
       expect(progress.mock.calls).toEqual([
-        [{ stage: "preparing", completed: 0, total: 0 }],
         [{ stage: "scanning", completed: 0, total: bytes.byteLength }],
         [{ stage: "scanning", completed: 4 * 1024 * 1024, total: bytes.byteLength }],
         [{ stage: "scanning", completed: bytes.byteLength, total: bytes.byteLength }],

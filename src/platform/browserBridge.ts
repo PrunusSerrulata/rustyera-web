@@ -195,7 +195,6 @@ export class BrowserBridge implements FrontendBridge {
     const { file } = picked;
     const submittedAtMs = performance.now();
     onSubmitted?.(submittedAtMs);
-    this.projectProgressListener?.({ stage: "preparing", completed: 0, total: 0 });
     await yieldToPaint();
     await prepareAfterSelection?.();
     this.projectProgressListener?.({ stage: "scanning", completed: 0, total: file.size });

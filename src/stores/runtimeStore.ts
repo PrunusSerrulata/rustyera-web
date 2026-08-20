@@ -633,7 +633,18 @@ export const useRuntimeStore = defineStore("runtime", () => {
         if (replaceCurrent) {
           currentSessionReplaced = true;
           await recreateSessionForProjectSelection();
-        } else await ensureSession();
+        } else {
+          const waitingForRuntime = !runtimePump.ready;
+          if (waitingForRuntime) beginProjectLoad("正在初始化 Runtime…");
+          try {
+            await ensureSession();
+          } finally {
+            if (waitingForRuntime) {
+              finishProjectLoad();
+              projectLoad.acceptProgress();
+            }
+          }
+        }
         runtimePump.setTransitioning(true);
         runtimeProjectSubmissionLocked = true;
         runtimePump.clearTimer();

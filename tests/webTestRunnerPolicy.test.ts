@@ -113,11 +113,12 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain('process.argv.indexOf("--project-file")');
     expect(runner).toContain('element.accept.includes(".reraproj")');
     expect(runner).toContain('input[type="file"][accept*=".reraproj"]');
+    expect(runner).toContain("packagedProjectProgressErrors(projectProgress, !startupOnly)");
+    expect(runner).toContain("if (projectFile && !startupOnly)");
     expect(runner).toContain("await input.addValue(projectFile)");
     expect(runner).toContain("safariProjectFilePlugin(projectFile)");
     expect(runner).toContain('browserName === "safari" ? "/__rustyera_compat_project_file"');
     expect(runner).toContain("picker?.injected === true");
-    expect(runner).toContain("packagedProjectProgressErrors(projectProgress)");
     expect(runner).toContain("assertPackagedStartup(observed.startupTelemetry)");
     expect(runner).toContain("source preparation slow path");
     expect(runner).toContain("projectPreferencesDuringLoad");

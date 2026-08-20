@@ -574,6 +574,8 @@ describe("runtime store startup-save", () => {
     await flushMicrotasks();
 
     expect(bridge.createSession).toHaveBeenCalledOnce();
+    expect(store.projectLoading).toBe(true);
+    expect(store.projectLoadProgressLabel).toBe("正在初始化 Runtime…");
     session.resolve(emptyBatch());
     await opening;
     expect(bridge.createSession).toHaveBeenCalledOnce();
