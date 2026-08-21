@@ -4,6 +4,10 @@ import { describe, expect, it } from "vitest";
 
 const workflowPath = path.resolve(import.meta.dirname, "../.github/workflows/deploy-pages.yml");
 const workflow = await readFile(workflowPath, "utf8");
+const wasmManifest = await readFile(
+  path.resolve(import.meta.dirname, "../crates/era-web-wasm/Cargo.toml"),
+  "utf8",
+);
 const coreInput = workflow.slice(
   workflow.indexOf("      core_commit:\n"),
   workflow.indexOf("\n\npermissions:"),
@@ -49,6 +53,11 @@ describe("GitHub Pages deployment workflow", () => {
     expect(artifactUpload).toBeGreaterThan(frontendBuild);
     expect(workflow).toContain("pages: write");
     expect(workflow).toContain("id-token: write");
+  });
+
+  it("does not pass multi-table wasm-bindgen output through wasm-pack's MVP wasm-opt", () => {
+    expect(wasmManifest).toContain("[package.metadata.wasm-pack.profile.release]");
+    expect(wasmManifest).toMatch(/\nwasm-opt = false\n/);
   });
 
   it("deploys the uploaded artifact after the build job", () => {

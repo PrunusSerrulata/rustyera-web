@@ -21,3 +21,8 @@ wasm-bindgen = "0.2.104"
 
 [lints]
 workspace = true
+
+[package.metadata.wasm-pack.profile.release]
+# wasm-bindgen emits multiple tables for the current runtime. wasm-pack's bundled wasm-opt invokes
+# Binaryen with the MVP feature set and cannot parse that valid output in GitHub Actions.
+wasm-opt = false
