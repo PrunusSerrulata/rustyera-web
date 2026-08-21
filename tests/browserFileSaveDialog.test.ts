@@ -6,8 +6,8 @@ import BrowserFileSaveDialog from "@/components/BrowserFileSaveDialog.vue";
 import DraggableDialog from "@/components/DraggableDialog.vue";
 import { BROWSER_FILE_SAVE_EVENT } from "@/platform/browserDownload";
 
-function enqueue(file: File): void {
-  window.dispatchEvent(new CustomEvent(BROWSER_FILE_SAVE_EVENT, { detail: { file } }));
+function enqueue(file: File, release?: () => void): void {
+  window.dispatchEvent(new CustomEvent(BROWSER_FILE_SAVE_EVENT, { detail: { file, release } }));
 }
 
 function button(label: string): HTMLButtonElement {
@@ -27,12 +27,14 @@ describe("BrowserFileSaveDialog", () => {
     vi.stubGlobal("navigator", { share });
     const wrapper = mount(BrowserFileSaveDialog, { attachTo: document.body });
     const file = new File([Uint8Array.of(1, 2, 3)], "runtime.snapshot");
-    enqueue(file);
+    const release = vi.fn();
+    enqueue(file, release);
     await nextTick();
 
     button("打开系统分享菜单").click();
     expect(share).toHaveBeenCalledWith({ files: [file], title: file.name });
     await vi.waitFor(() => expect(document.body.textContent).not.toContain(file.name));
+    expect(release).toHaveBeenCalledOnce();
     wrapper.unmount();
   });
 
@@ -76,7 +78,8 @@ describe("BrowserFileSaveDialog", () => {
     vi.stubGlobal("navigator", { share });
     const wrapper = mount(BrowserFileSaveDialog, { attachTo: document.body });
     const file = new File([], "runtime.snapshot");
-    enqueue(file);
+    const release = vi.fn();
+    enqueue(file, release);
     await nextTick();
 
     button("打开系统分享菜单").click();
@@ -98,7 +101,9 @@ describe("BrowserFileSaveDialog", () => {
 
     expect(share).toHaveBeenCalledOnce();
     expect(document.body.textContent).toContain(file.name);
+    expect(release).not.toHaveBeenCalled();
     wrapper.unmount();
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it("retains a failed share and exposes its error", async () => {
@@ -119,11 +124,36 @@ describe("BrowserFileSaveDialog", () => {
     wrapper.unmount();
   });
 
+  it("keeps an active backing file through unmount until sharing settles", async () => {
+    let finishShare!: () => void;
+    const share = vi.fn(() => new Promise<void>((resolve) => (finishShare = resolve)));
+    vi.stubGlobal("navigator", { share });
+    const wrapper = mount(BrowserFileSaveDialog, { attachTo: document.body });
+    const activeRelease = vi.fn();
+    const queuedRelease = vi.fn();
+    enqueue(new File([], "active.reraproj"), activeRelease);
+    enqueue(new File([], "queued.tar.zst"), queuedRelease);
+    await nextTick();
+
+    button("打开系统分享菜单").click();
+    wrapper.unmount();
+
+    expect(activeRelease).not.toHaveBeenCalled();
+    expect(queuedRelease).toHaveBeenCalledOnce();
+    finishShare();
+    await vi.waitFor(() => expect(activeRelease).toHaveBeenCalledOnce());
+  });
+
   it("ignores malformed global save events", async () => {
     vi.stubGlobal("navigator", { share: vi.fn() });
     const wrapper = mount(BrowserFileSaveDialog, { attachTo: document.body });
     window.dispatchEvent(new CustomEvent(BROWSER_FILE_SAVE_EVENT, { detail: {} }));
     window.dispatchEvent(new CustomEvent(BROWSER_FILE_SAVE_EVENT));
+    window.dispatchEvent(
+      new CustomEvent(BROWSER_FILE_SAVE_EVENT, {
+        detail: { file: new File([], "invalid.snapshot"), release: "invalid" },
+      }),
+    );
     await nextTick();
     expect(document.querySelector("[aria-label='保存导出文件']")).toBeNull();
     wrapper.unmount();

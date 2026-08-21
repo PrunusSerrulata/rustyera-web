@@ -24,6 +24,7 @@ import { loadBrowserPreferences, saveBrowserPreferences } from "@/platform/datab
 import { overlayBrowserDirectory } from "@/platform/browserDirectoryOverlay";
 import { BrowserProject } from "@/platform/browserProject";
 import { BrowserProjectPreferenceStore } from "@/platform/projectPreferences";
+import { BROWSER_FILE_SAVE_EVENT, type BrowserFileSaveRequest } from "@/platform/browserDownload";
 
 class MemoryFileHandle {
   readonly kind = "file";
@@ -248,6 +249,12 @@ class MemoryDirectoryHandle {
   async *entries() {
     yield* this.children.entries();
   }
+}
+
+async function directoryEntryNames(directory: MemoryDirectoryHandle): Promise<string[]> {
+  const names: string[] = [];
+  for await (const [name] of directory.entries()) names.push(name);
+  return names;
 }
 
 interface WorkerRequest {
@@ -523,6 +530,36 @@ describe("browser startup bridge", () => {
       click.mockRestore();
       vi.stubGlobal("navigator", originalNavigator);
       vi.stubGlobal("URL", originalUrl);
+    }
+  });
+
+  it("retains an OPFS project export until the iOS Firefox share request releases it", async () => {
+    const storage = new MemoryDirectoryHandle("storage");
+    vi.stubGlobal("navigator", {
+      userAgent: "Mozilla/5.0 (iPhone) FxiOS/151.0 Mobile/15E148 Safari/605.1.15",
+      storage: { getDirectory: async () => storage },
+      canShare: vi.fn(() => true),
+      share: vi.fn(),
+    });
+    const secureContext = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    let request: BrowserFileSaveRequest | undefined;
+    const receive = (event: Event) => {
+      request = (event as CustomEvent<BrowserFileSaveRequest>).detail;
+    };
+    window.addEventListener(BROWSER_FILE_SAVE_EVENT, receive, { once: true });
+    try {
+      const bridge = new BrowserBridge();
+      await bridge.beginProjectFileExport("game.reraproj");
+      await bridge.writeProjectFileChunk(Uint8Array.of(1, 2, 3), true, true);
+
+      expect(request?.file.name).toBe("game.reraproj");
+      await expect(directoryEntryNames(storage)).resolves.toHaveLength(1);
+      request?.release?.();
+      await expect(directoryEntryNames(storage)).resolves.toHaveLength(0);
+    } finally {
+      if (secureContext) Object.defineProperty(window, "isSecureContext", secureContext);
+      else Reflect.deleteProperty(window, "isSecureContext");
     }
   });
 

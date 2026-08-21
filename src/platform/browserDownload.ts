@@ -3,20 +3,32 @@ export const BROWSER_FILE_SAVE_EVENT = "rustyera-browser-file-save";
 
 export interface BrowserFileSaveRequest {
   file: File;
+  release?: () => void;
 }
 
-export function downloadBrowserBlob(name: string, blob: Blob): void {
+export function downloadBrowserBlob(name: string, blob: Blob, release?: () => void): void {
+  const releaseOnce = once(release);
   const sharedFile = fileShareCandidate(name, blob);
   if (sharedFile) {
     window.dispatchEvent(
       new CustomEvent<BrowserFileSaveRequest>(BROWSER_FILE_SAVE_EVENT, {
-        detail: { file: sharedFile },
+        detail: { file: sharedFile, release: releaseOnce },
       }),
     );
     return;
   }
 
-  downloadObjectUrl(name, blob);
+  downloadObjectUrl(name, blob, releaseOnce);
+}
+
+function once(action?: () => void): (() => void) | undefined {
+  if (!action) return undefined;
+  let called = false;
+  return () => {
+    if (called) return;
+    called = true;
+    action();
+  };
 }
 
 function fileShareCandidate(name: string, blob: Blob): File | undefined {
@@ -39,7 +51,7 @@ function fileShareCandidate(name: string, blob: Blob): File | undefined {
   }
 }
 
-function downloadObjectUrl(name: string, blob: Blob): void {
+function downloadObjectUrl(name: string, blob: Blob, release?: () => void): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -48,6 +60,7 @@ function downloadObjectUrl(name: string, blob: Blob): void {
   const cleanup = (): void => {
     anchor.remove();
     URL.revokeObjectURL(url);
+    release?.();
   };
   try {
     document.body.append(anchor);

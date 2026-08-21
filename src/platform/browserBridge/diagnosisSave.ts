@@ -75,11 +75,10 @@ export async function saveBrowserDiagnosis(
       reportProgress,
     );
     await writer.close();
-    downloadBrowserBlob(name, await handle.getFile());
+    downloadBrowserBlob(name, await handle.getFile(), () => {
+      void storageRoot.removeEntry(temporaryName).catch(() => undefined);
+    });
     reportProgress?.({ completed: totalBytes, total: totalBytes });
-    setTimeout(() => {
-      void storageRoot.removeEntry(temporaryName);
-    }, 0);
     return true;
   } catch (error) {
     await writer.abort().catch(() => undefined);

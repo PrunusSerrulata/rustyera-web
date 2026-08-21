@@ -55,9 +55,12 @@ describe("GitHub Pages deployment workflow", () => {
     expect(workflow).toContain("id-token: write");
   });
 
-  it("does not pass multi-table wasm-bindgen output through wasm-pack's MVP wasm-opt", () => {
+  it("optimizes multi-table wasm-bindgen output with reference types enabled", () => {
     expect(wasmManifest).toContain("[package.metadata.wasm-pack.profile.release]");
-    expect(wasmManifest).toMatch(/\nwasm-opt = false\n/);
+    expect(wasmManifest).toMatch(
+      /\nwasm-opt\s*=\s*\[\s*["']-O["']\s*,\s*["']--enable-reference-types["']\s*\]\s*\n/,
+    );
+    expect(wasmManifest).not.toMatch(/\nwasm-opt = false\n/);
   });
 
   it("deploys the uploaded artifact after the build job", () => {

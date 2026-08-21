@@ -598,10 +598,9 @@ export class BrowserBridge implements FrontendBridge {
     if (!complete) return;
     await fallback.writer.close();
     const file = await (await fallback.root.getFileHandle(fallback.temporaryName)).getFile();
-    downloadBrowserBlob(fallback.name, file);
-    setTimeout(() => {
-      void fallback.root.removeEntry(fallback.temporaryName);
-    }, 0);
+    downloadBrowserBlob(fallback.name, file, () => {
+      void fallback.root.removeEntry(fallback.temporaryName).catch(() => undefined);
+    });
     this.projectFileFallback = undefined;
   }
 

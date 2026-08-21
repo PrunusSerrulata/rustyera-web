@@ -50,6 +50,20 @@ describe("browser blob downloads", () => {
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:download-id");
   });
 
+  it("releases an object-URL backing resource only after the download task", () => {
+    vi.useFakeTimers();
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:backed-download");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const release = vi.fn();
+
+    downloadBrowserBlob("game.reraproj", new Blob(), release);
+
+    expect(release).not.toHaveBeenCalled();
+    vi.runAllTimers();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it("cleans up immediately and preserves a synchronous click failure", () => {
     vi.useFakeTimers();
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:failed-download");
@@ -57,13 +71,40 @@ describe("browser blob downloads", () => {
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {
       throw new Error("download failed");
     });
+    const release = vi.fn();
 
-    expect(() => downloadBrowserBlob("runtime.snapshot", new Blob())).toThrow("download failed");
+    expect(() => downloadBrowserBlob("runtime.snapshot", new Blob(), release)).toThrow(
+      "download failed",
+    );
     expect(document.querySelector('a[download="runtime.snapshot"]')).toBeNull();
     expect(revokeObjectURL).toHaveBeenCalledOnce();
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:failed-download");
+    expect(release).toHaveBeenCalledOnce();
     vi.runAllTimers();
     expect(revokeObjectURL).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a backing resource until the queued iOS Firefox file is released", () => {
+    vi.stubGlobal("navigator", {
+      userAgent: "Mozilla/5.0 (iPhone) FxiOS/151.0 Mobile/15E148 Safari/605.1.15",
+      canShare: vi.fn(() => true),
+      share: vi.fn(),
+    });
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    const release = vi.fn();
+    let request: BrowserFileSaveRequest | undefined;
+    const receive = (event: Event) => {
+      request = (event as CustomEvent<BrowserFileSaveRequest>).detail;
+    };
+    window.addEventListener(BROWSER_FILE_SAVE_EVENT, receive, { once: true });
+
+    downloadBrowserBlob("game.reraproj", new Blob(), release);
+
+    expect(release).not.toHaveBeenCalled();
+    request?.release?.();
+    request?.release?.();
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it("offers each exported file type to iOS Firefox with intact metadata and contents", async () => {

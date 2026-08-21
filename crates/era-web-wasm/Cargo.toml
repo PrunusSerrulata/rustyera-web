@@ -23,6 +23,6 @@ wasm-bindgen = "0.2.104"
 workspace = true
 
 [package.metadata.wasm-pack.profile.release]
-# wasm-bindgen emits multiple tables for the current runtime. wasm-pack's bundled wasm-opt invokes
-# Binaryen with the MVP feature set and cannot parse that valid output in GitHub Actions.
-wasm-opt = false
+# Multiple tables are part of reference-types, but wasm-pack does not enable that Binaryen parser
+# feature unless asked explicitly. Keep the release optimizer enabled with the required feature.
+wasm-opt = ["-O", "--enable-reference-types"]
