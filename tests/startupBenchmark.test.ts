@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  CONSTRAINED_IOS_USER_AGENT,
+  CONSTRAINED_MOBILE_USER_AGENT,
   browserBenchmarkCommandArgs,
   compareDirectoryAndProjectFile,
   latestSuccessfulStartupTelemetry,
@@ -94,7 +94,7 @@ describe("startup benchmark reports", () => {
     ).not.toThrow();
   });
 
-  it("builds constrained iOS commands against an explicit matching project file", () => {
+  it("builds constrained mobile commands against an explicit matching project file", () => {
     expect(
       browserBenchmarkCommandArgs({
         scenario: "project-file.json",
@@ -112,7 +112,7 @@ describe("startup benchmark reports", () => {
       "--trace",
       "/tmp/trace.ndjson",
       "--user-agent",
-      CONSTRAINED_IOS_USER_AGENT,
+      CONSTRAINED_MOBILE_USER_AGENT,
       "--project-file",
       "/games/custom/custom.reraproj",
     ]);

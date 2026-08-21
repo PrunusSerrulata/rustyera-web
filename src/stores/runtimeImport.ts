@@ -56,7 +56,7 @@ export class RuntimeImportState {
       });
       // The Runtime owns the completed transfer after commit. Drop the browser-side copy before
       // snapshot startup, where the old VM, serialized snapshot, and restored VM can otherwise
-      // overlap long enough for iOS WebKit to terminate and reload the page under memory pressure.
+      // overlap long enough for a constrained browser to terminate and reload the page.
       this.bytes = undefined;
     } catch (error) {
       this.reset();

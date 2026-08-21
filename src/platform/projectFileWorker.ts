@@ -53,8 +53,8 @@ export function validateBrowserProjectFileSize(size: number): void {
 }
 
 function readBlob(blob: Blob): Promise<ArrayBuffer> {
-  // Disk-backed files selected on iOS can be large. Keep this asynchronous so WebKit does not
-  // synchronously materialize a second buffer while the same Worker owns the Runtime/WASM heap.
+  // Disk-backed files selected on constrained browsers can be large. Keep this asynchronous so a
+  // second buffer is not materialized synchronously while the same Worker owns Runtime/WASM.
   if (typeof blob.arrayBuffer === "function") return blob.arrayBuffer();
   const SyncReader = (
     globalThis as typeof globalThis & {

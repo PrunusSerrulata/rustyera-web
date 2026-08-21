@@ -255,7 +255,7 @@ describe("runtime store startup-save", () => {
     );
   });
 
-  it("recreates an iOS browser session before importing a selected VM snapshot", async () => {
+  it("recreates a constrained browser session before importing a selected VM snapshot", async () => {
     const bytes = Uint8Array.of(1, 2, 3, 4);
     bridge.kind = "browser";
     bridge.snapshotRestoreMode = "fresh_session";

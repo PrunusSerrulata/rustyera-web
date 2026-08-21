@@ -1,5 +1,5 @@
 import { scanBrowserProjectFile, type ScannedFile } from "@/platform/browserProjectScanner";
-import { needsLowMemoryProjectFileLoad } from "@/platform/browserProjectFilePolicy";
+import { isMemoryConstrainedBrowserHost } from "@/platform/browserMemoryPolicy";
 
 export interface BrowserProjectScanRequest {
   relativePath: string;
@@ -198,7 +198,7 @@ async function scanOnMainThread(
 }
 
 function scanConcurrencyLimit(): number {
-  return typeof navigator !== "undefined" && needsLowMemoryProjectFileLoad(navigator) ? 2 : 8;
+  return typeof navigator !== "undefined" && isMemoryConstrainedBrowserHost(navigator) ? 2 : 8;
 }
 
 export async function scanBrowserProjectFilesOffThread(

@@ -346,7 +346,7 @@ describe("browser startup bridge", () => {
     vi.stubGlobal("Worker", MemoryWorker);
   });
 
-  it("reloads an iOS packaged project and imports its snapshot only after replacing the old VM worker", async () => {
+  it("reloads a constrained packaged project and imports its snapshot only after replacing the old VM worker", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", {
       storage: { getDirectory: async () => storage },
@@ -418,6 +418,58 @@ describe("browser startup bridge", () => {
     expect(requests.at(-1)?.transfer).toEqual([chunk.buffer]);
   });
 
+  it.each([
+    {
+      host: "Android mobile browser",
+      signals: {
+        userAgent:
+          "Mozilla/5.0 (Linux; Android 15; K) AppleWebKit/537.36 Chrome/140.0.0.0 Mobile Safari/537.36",
+        platform: "Linux armv8l",
+        maxTouchPoints: 5,
+        deviceMemory: 8,
+      },
+    },
+    {
+      host: "4 GiB Chromium desktop",
+      signals: {
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/147.0.0.0 Safari/537.36",
+        platform: "Win32",
+        maxTouchPoints: 0,
+        deviceMemory: 4,
+      },
+    },
+  ])("applies the complete constrained-memory bridge strategy to $host", async ({ signals }) => {
+    const root = new MemoryDirectoryHandle("game");
+    vi.stubGlobal("navigator", {
+      storage: { getDirectory: async () => new MemoryDirectoryHandle("storage") },
+      ...signals,
+    });
+    pickBrowserDirectory.mockResolvedValue({
+      handle: root,
+      persistHandle: false,
+      projectName: "game",
+      manifest: { project_revision: 1, files: [] },
+    });
+    const bridge = new BrowserBridge();
+
+    expect(bridge.snapshotRestoreMode).toBe("fresh_session");
+    expect(bridge.automaticCompiledCacheExport).toBe(false);
+    await bridge.createSession(SESSION_OPTIONS);
+    await expect(bridge.openProject()).resolves.toMatchObject({ memoryConstrained: true });
+    const firstWorker = runtimeWorkers[0]!;
+    await bridge.prepareSnapshotRestore();
+
+    expect(requests[0]?.message.args[0]).toMatchObject({ retainProjectSourcePayloads: false });
+    expect(requests.map((request) => request.message.method)).toEqual([
+      "create",
+      "beginProjectManifest",
+      "finishProjectManifest",
+    ]);
+    expect(runtimeWorkers).toHaveLength(2);
+    expect(firstWorker.terminate).toHaveBeenCalledOnce();
+  });
+
   it("transfers snapshot import chunks into the runtime worker", async () => {
     const bridge = new BrowserBridge();
     const data = Uint8Array.of(1, 2, 3);
@@ -436,6 +488,13 @@ describe("browser startup bridge", () => {
   });
 
   it("keeps desktop snapshot restore in the active worker", async () => {
+    vi.stubGlobal("navigator", {
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/147.0.0.0 Safari/537.36",
+      platform: "Win32",
+      maxTouchPoints: 0,
+      deviceMemory: 8,
+    });
     const bridge = new BrowserBridge();
 
     expect(bridge.snapshotRestoreMode).toBe("in_place");
@@ -448,7 +507,7 @@ describe("browser startup bridge", () => {
     expect(requests[0]?.message.args[0]).toMatchObject({ retainProjectSourcePayloads: true });
   });
 
-  it("releases submitted iOS directory sources and rescans them for a restart", async () => {
+  it("releases submitted constrained-browser sources and rescans them for a restart", async () => {
     const root = new MemoryDirectoryHandle("game");
     await installCache(root, Uint8Array.of(9, 8, 7));
     const source = await root.getFileHandle("main.erb", { create: true });
@@ -540,7 +599,7 @@ describe("browser startup bridge", () => {
     expect(submissions[2]).toContain("PRINTL EXPORTED");
   });
 
-  it("cancels a failed iOS manifest stream and releases every partially submitted payload", async () => {
+  it("cancels a failed constrained manifest stream and releases every partial payload", async () => {
     const root = new MemoryDirectoryHandle("game");
     vi.stubGlobal("navigator", {
       storage: { getDirectory: async () => new MemoryDirectoryHandle("storage") },
@@ -582,7 +641,7 @@ describe("browser startup bridge", () => {
     expect(manifest.files.map((file) => file.payload.value)).toEqual(["", ""]);
   });
 
-  it("keeps the active iOS directory project when a replacement manifest stream fails", async () => {
+  it("keeps the active constrained project when a replacement manifest stream fails", async () => {
     const oldRoot = new MemoryDirectoryHandle("old-game");
     const oldSource = await oldRoot.getFileHandle("old.erb", { create: true });
     const oldText = "@OLD\nPRINTL ACTIVE\nRETURN\n";
@@ -1006,7 +1065,7 @@ describe("browser startup bridge", () => {
     });
   });
 
-  it("loads the packaged cache on iOS without silently copying the project", async () => {
+  it("loads a constrained packaged project without silently copying it", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", {
       storage: { getDirectory: async () => storage },
@@ -1078,7 +1137,7 @@ describe("browser startup bridge", () => {
   });
 
   it.each(["missing", "rejected"] as const)(
-    "opens an iOS packaged project when OPFS is $case and keeps volatile storage functional",
+    "opens a constrained packaged project when OPFS is $case and keeps volatile storage functional",
     async (storageCase) => {
       const getDirectory = vi
         .fn()

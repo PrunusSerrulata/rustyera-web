@@ -61,12 +61,13 @@ describe("browser project scan worker batches", () => {
     ]);
   });
 
-  it("caps constrained iOS scans at two readers and submits top-level names once per worker", async () => {
+  it("caps memory-constrained browser scans at two readers and submits top-level names once per worker", async () => {
     vi.stubGlobal("navigator", {
       hardwareConcurrency: 8,
       maxTouchPoints: 5,
-      platform: "iPhone",
-      userAgent: "Mozilla/5.0 (iPhone) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1",
+      platform: "Linux armv8l",
+      userAgent:
+        "Mozilla/5.0 (Linux; Android 15; K) AppleWebKit/537.36 Chrome/140.0.0.0 Mobile Safari/537.36",
     });
     const messages: any[][] = [];
     const factory: BrowserProjectScanWorkerFactory = () => {

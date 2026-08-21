@@ -9,7 +9,7 @@ export interface StartupSummary {
   metrics: Record<string, { p50: number; p95: number }>;
 }
 
-export const CONSTRAINED_IOS_USER_AGENT: string;
+export const CONSTRAINED_MOBILE_USER_AGENT: string;
 
 export function browserBenchmarkCommandArgs(options: {
   scenario: string;

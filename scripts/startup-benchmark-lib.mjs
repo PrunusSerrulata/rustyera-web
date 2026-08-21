@@ -1,5 +1,5 @@
-export const CONSTRAINED_IOS_USER_AGENT =
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1";
+export const CONSTRAINED_MOBILE_USER_AGENT =
+  "Mozilla/5.0 (Linux; Android 15; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36";
 
 export const STARTUP_SCENARIOS = {
   "browser-exact-cold": {
@@ -130,7 +130,7 @@ export function browserBenchmarkCommandArgs({
     "--trace",
     trace,
   ];
-  if (constrained) command.push("--user-agent", CONSTRAINED_IOS_USER_AGENT);
+  if (constrained) command.push("--user-agent", CONSTRAINED_MOBILE_USER_AGENT);
   if (projectFile) command.push("--project-file", projectFile);
   return command;
 }

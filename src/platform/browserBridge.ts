@@ -35,26 +35,26 @@ import { WorkerClient } from "@/platform/workerClient";
 import { ProjectFontRegistry } from "@/platform/projectFonts";
 import { browserTraditionalSaves } from "@/platform/browserBridge/traditionalSaves";
 import { BrowserProjectPreferenceStore } from "@/platform/projectPreferences";
-import { needsLowMemoryProjectFileLoad } from "@/platform/browserProjectFilePolicy";
+import { isMemoryConstrainedBrowserHost } from "@/platform/browserMemoryPolicy";
 import { validateBrowserProjectFileSize } from "@/platform/projectFileWorker";
 import { normalizeProjectFileManifest } from "@/platform/projectFileManifestTransfer";
 import { createBrowserSessionDirectory } from "@/platform/browserSessionFilesystem";
 import { downloadBrowserBlob } from "@/platform/browserDownload";
 
-const DESKTOP_PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
-const LOW_MEMORY_PROJECT_FILE_READ_CHUNK_BYTES = 1024 * 1024;
+const UNCONSTRAINED_PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
+const CONSTRAINED_PROJECT_FILE_READ_CHUNK_BYTES = 1024 * 1024;
 
 export class BrowserBridge implements FrontendBridge {
   readonly kind = "browser" as const;
-  private readonly lowMemoryBrowser = needsLowMemoryProjectFileLoad();
-  readonly snapshotRestoreMode = this.lowMemoryBrowser
+  private readonly memoryConstrained = isMemoryConstrainedBrowserHost();
+  readonly snapshotRestoreMode = this.memoryConstrained
     ? ("fresh_session" as const)
     : ("in_place" as const);
   readonly prewarmRuntimeOnInitialize = true;
   // The cooperative WASM encoder retains the compiled artifact while growing another project-sized
-  // buffer. That speculative peak can make iOS WebKit terminate and reload an otherwise healthy
-  // game immediately after compilation.
-  readonly automaticCompiledCacheExport = !this.lowMemoryBrowser;
+  // buffer. That speculative peak can terminate and reload an otherwise healthy constrained
+  // browser immediately after compilation.
+  readonly automaticCompiledCacheExport = !this.memoryConstrained;
   private readonly worker = new WorkerClient();
   readonly traditionalSaves = browserTraditionalSaves({
     project: () => this.requireProject(),
@@ -99,14 +99,14 @@ export class BrowserBridge implements FrontendBridge {
   createSession(options: SessionOptions): Promise<PumpBatch> {
     return this.worker.call("create", {
       ...options,
-      retainProjectSourcePayloads: !this.lowMemoryBrowser,
+      retainProjectSourcePayloads: !this.memoryConstrained,
     });
   }
 
   async prepareSnapshotRestore(): Promise<void> {
     // WebAssembly linear memory can grow but cannot shrink. Replacing the Rust session inside the
-    // same instance therefore cannot return a large old VM's pages to iOS before snapshot restore.
-    // A fresh dedicated worker gives constrained WebKit processes a new linear memory instead.
+    // same instance therefore cannot return a large old VM's pages before snapshot restore. A
+    // fresh dedicated worker gives constrained browser processes a new linear memory instead.
     if (this.snapshotRestoreMode === "fresh_session") await this.worker.restart(yieldToMainThread);
   }
 
@@ -206,7 +206,7 @@ export class BrowserBridge implements FrontendBridge {
       sourceReadDecodeHashMs: scanMetrics.sourceReadDecodeHashMs + loaded.sourceReadMs,
       submissionTransferMs: loaded.submitMs,
       wasmMode: "single",
-      memoryConstrained: this.lowMemoryBrowser,
+      memoryConstrained: this.memoryConstrained,
       projectFonts,
     } satisfies ProjectOpenMetrics;
   }
@@ -245,7 +245,7 @@ export class BrowserBridge implements FrontendBridge {
       file,
       picked.handle,
       this.prepareProjectConfigurationUpdate,
-      !picked.handle && !this.lowMemoryBrowser && storage.persistent
+      !picked.handle && !this.memoryConstrained && storage.persistent
         ? () => materializePackagedProjectFile(root, file)
         : undefined,
     );
@@ -261,7 +261,7 @@ export class BrowserBridge implements FrontendBridge {
       submitMs: performance.now() - started,
       cacheImported: loaded.cacheImported,
       wasmMode: "single",
-      memoryConstrained: this.lowMemoryBrowser,
+      memoryConstrained: this.memoryConstrained,
       projectFonts,
     };
   }
@@ -286,7 +286,7 @@ export class BrowserBridge implements FrontendBridge {
         submitMs: performance.now() - started,
         cacheImported: loaded.cacheImported,
         wasmMode: "single",
-        memoryConstrained: this.lowMemoryBrowser,
+        memoryConstrained: this.memoryConstrained,
         projectFonts: await this.projectFontRegistry.replace(this.project.fontSources()),
       };
     }
@@ -320,7 +320,7 @@ export class BrowserBridge implements FrontendBridge {
       sourceReadDecodeHashMs: scanMetrics.sourceReadDecodeHashMs + loaded.sourceReadMs,
       submissionTransferMs: loaded.submitMs,
       wasmMode: "single",
-      memoryConstrained: this.lowMemoryBrowser,
+      memoryConstrained: this.memoryConstrained,
       projectFonts: await this.projectFontRegistry.replace(this.project.fontSources()),
     };
   }
@@ -354,7 +354,7 @@ export class BrowserBridge implements FrontendBridge {
   async finalizeProjectReload(success: boolean) {
     const project = this.requireProject();
     project.finalizeReload(success);
-    if (success && this.lowMemoryBrowser) {
+    if (success && this.memoryConstrained) {
       project.markRuntimeManifestSparse();
       project.releaseSubmittedSourcePayloads();
     }
@@ -376,9 +376,9 @@ export class BrowserBridge implements FrontendBridge {
     const cacheStarted = performance.now();
     this.projectProgressListener?.({ stage: "loading_cache", completed: 0, total: 0 });
     // Reading an OPFS cache currently materializes the whole file before transferring it into
-    // WASM. Constrained iOS sessions use the source path so neither cache import nor cache export
+    // WASM. Constrained sessions use the source path so neither cache import nor cache export
     // creates another project-sized memory peak.
-    const cache = this.lowMemoryBrowser
+    const cache = this.memoryConstrained
       ? undefined
       : await project.readCompiledCache((completed, total) =>
           this.projectProgressListener?.({ stage: "loading_cache", completed, total }),
@@ -439,7 +439,7 @@ export class BrowserBridge implements FrontendBridge {
     project: BrowserProject,
     manifest: BrowserManifest,
   ): Promise<void> {
-    if (this.lowMemoryBrowser) {
+    if (this.memoryConstrained) {
       try {
         await this.worker.call(
           "beginProjectManifest",
@@ -627,7 +627,7 @@ export class BrowserBridge implements FrontendBridge {
       abort.signal.throwIfAborted();
       return { totalBytes: this.fullManifestSpool.totalBytes };
     } finally {
-      if (this.lowMemoryBrowser) project.releaseSubmittedSourcePayloads();
+      if (this.memoryConstrained) project.releaseSubmittedSourcePayloads();
       if (this.projectFileExportAbort === abort) this.projectFileExportAbort = undefined;
     }
   }
@@ -764,9 +764,9 @@ export class BrowserBridge implements FrontendBridge {
   }
 
   private async loadSelectedProjectFile<T>(file: File): Promise<T> {
-    if (this.lowMemoryBrowser) {
+    if (this.memoryConstrained) {
       return this.worker.call<T>("loadProjectFile", file, {
-        chunkBytes: LOW_MEMORY_PROJECT_FILE_READ_CHUNK_BYTES,
+        chunkBytes: CONSTRAINED_PROJECT_FILE_READ_CHUNK_BYTES,
       });
     }
     const bytes = await readProjectFile(file, (completed, total) =>
@@ -814,8 +814,8 @@ async function readProjectFile(
   validateBrowserProjectFileSize(file.size);
   if (file.size === 0) return new Uint8Array(await readBlobAsArrayBuffer(file));
   const output = new Uint8Array(file.size);
-  for (let offset = 0; offset < file.size; offset += DESKTOP_PROJECT_FILE_READ_CHUNK_BYTES) {
-    const end = Math.min(file.size, offset + DESKTOP_PROJECT_FILE_READ_CHUNK_BYTES);
+  for (let offset = 0; offset < file.size; offset += UNCONSTRAINED_PROJECT_FILE_READ_CHUNK_BYTES) {
+    const end = Math.min(file.size, offset + UNCONSTRAINED_PROJECT_FILE_READ_CHUNK_BYTES);
     output.set(new Uint8Array(await readBlobAsArrayBuffer(file.slice(offset, end))), offset);
     progress(end, file.size);
     await yieldToMainThread();
@@ -834,10 +834,14 @@ async function materializePackagedProjectFile(
       const bytes = new Uint8Array(await file.arrayBuffer());
       if (bytes.byteLength) await writer.write(bytes as FileSystemWriteChunkType);
     } else {
-      for (let offset = 0; offset < file.size; offset += DESKTOP_PROJECT_FILE_READ_CHUNK_BYTES) {
+      for (
+        let offset = 0;
+        offset < file.size;
+        offset += UNCONSTRAINED_PROJECT_FILE_READ_CHUNK_BYTES
+      ) {
         const bytes = new Uint8Array(
           await readBlobAsArrayBuffer(
-            file.slice(offset, offset + DESKTOP_PROJECT_FILE_READ_CHUNK_BYTES),
+            file.slice(offset, offset + UNCONSTRAINED_PROJECT_FILE_READ_CHUNK_BYTES),
           ),
         );
         await writer.write(bytes as FileSystemWriteChunkType);

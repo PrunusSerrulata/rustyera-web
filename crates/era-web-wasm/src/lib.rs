@@ -601,10 +601,10 @@ impl WasmRuntime {
         stage_project_file_bytes(self, &bytes)
     }
 
-    /// Load one complete transferred project-file buffer on desktop browsers.
+    /// Load one complete transferred project-file buffer on unconstrained browsers.
     ///
-    /// Desktop engines can read the selected file efficiently on the main thread and transfer the
-    /// JavaScript buffer to the Worker. Constrained iOS devices retain the acknowledged upload API
+    /// Unconstrained engines can read the selected file efficiently and transfer the JavaScript
+    /// buffer to the Worker. Constrained browsers retain the acknowledged upload API
     /// above so they never hold the complete file in both JavaScript and WebAssembly while reading.
     ///
     /// # Errors
