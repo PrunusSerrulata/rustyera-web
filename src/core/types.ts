@@ -182,6 +182,10 @@ export interface ProjectReloadSubmission extends ProjectFontLoadResult {
 
 export interface FrontendBridge {
   readonly kind: "tauri" | "browser";
+  /** How this host bounds memory while replacing the active VM from a snapshot. */
+  readonly snapshotRestoreMode: "in_place" | "fresh_session";
+  /** Release host runtime resources before creating a fresh snapshot-restore session. */
+  prepareSnapshotRestore(): Promise<void>;
   /** Whether this host benefits from preparing its Runtime before the first project selection. */
   readonly prewarmRuntimeOnInitialize?: boolean;
   readonly traditionalSaves?: TraditionalSaveAccess;

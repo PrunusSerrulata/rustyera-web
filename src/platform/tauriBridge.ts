@@ -38,6 +38,7 @@ type HostProjectFontSource = { relativePath: string; contentHash: number[] };
 
 export class TauriBridge implements FrontendBridge {
   readonly kind = "tauri" as const;
+  readonly snapshotRestoreMode = "in_place" as const;
   private projectPath?: string;
   private projectIsFile = false;
   private projectPreferences?: ProjectPreferences;
@@ -58,6 +59,11 @@ export class TauriBridge implements FrontendBridge {
 
   async createSession(options: SessionOptions): Promise<PumpBatch> {
     return decodeIpcResponse(await invoke("create_session", { options }));
+  }
+
+  prepareSnapshotRestore(): Promise<void> {
+    // Native sessions replace ordinary heap allocations without retaining a WASM linear memory.
+    return Promise.resolve();
   }
 
   async submitRuntime(

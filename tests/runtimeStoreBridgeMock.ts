@@ -10,6 +10,8 @@ import {
 
 export const bridge = {
   kind: "tauri" as "tauri" | "browser",
+  snapshotRestoreMode: "in_place" as "in_place" | "fresh_session",
+  prepareSnapshotRestore: vi.fn(),
   prewarmRuntimeOnInitialize: false,
   createSession: vi.fn(),
   submitRuntime: vi.fn(async (_message: RuntimeMessage, _correlationId?: number) => {

@@ -72,12 +72,17 @@ describe("browser game runner progress policy", () => {
   it("checks global preferences through the real UI before native-browser project load", () => {
     const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
 
+    expect(runner).toContain('compatibilityStage = "restoring Safari automation window"');
+    expect(runner).toContain(".maximizeWindow()");
     expect(runner.indexOf('compatibilityStage = "waiting for frontend test control"')).toBeLessThan(
       runner.indexOf("verifyGlobalPreferencesBeforeProject(browser)"),
     );
     expect(runner).toContain('typeof window.__RUSTYERA_TEST__?.snapshot === "function"');
     expect(runner).toContain("verifyGlobalPreferencesBeforeProject(browser)");
     expect(runner).toContain('activeBrowser.$("#welcome-preferences")');
+    expect(runner).toContain('if (browserName === "safari")');
+    expect(runner).toContain("activeBrowser.execute((target) => target.click(), element)");
+    expect(runner).toContain('document.querySelector("#welcome-preferences")?.click()');
     expect(runner).toContain("project preferences were enabled without a project");
     expect(runner).toContain('imageScale.setValue("1.25")');
     expect(runner).toContain('snapshot().status === "全局偏好已应用"');
@@ -89,11 +94,12 @@ describe("browser game runner progress policy", () => {
 
     expect(runner).toContain("async function clickFileMenuAction(activeBrowser, label)");
     expect(runner).toContain("attempt <= 2");
+    expect(runner).toContain('if (browserName !== "safari")');
     expect(runner).toContain("await menuButton.moveTo()");
     expect(runner).toContain("await activeBrowser.pause(200)");
-    expect(runner).toContain("await menuButton.click()");
+    expect(runner).toContain("await clickElement(activeBrowser, menuButton)");
     expect(runner).toContain("timeout: 1_000");
-    expect(runner).toContain("await action.click()");
+    expect(runner).toContain("await clickElement(activeBrowser, action)");
     expect(runner).toContain("await clickFileMenuAction(browser, action.menuLabel)");
     expect(runner).toContain('await clickFileMenuAction(browser, "项目设置…")');
     expect(runner).toContain('await clickFileMenuAction(activeBrowser, "偏好设置…")');

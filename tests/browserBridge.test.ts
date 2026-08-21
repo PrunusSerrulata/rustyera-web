@@ -19,7 +19,7 @@ vi.mock("@/platform/database", () => ({
 vi.mock("@/platform/diagnosis", () => ({ streamDiagnosisArchiveInWorker }));
 
 import { BrowserBridge } from "@/platform/browserBridge";
-import { defaultPreferences } from "@/core/types";
+import { defaultPreferences, type SessionOptions } from "@/core/types";
 import { loadBrowserPreferences, saveBrowserPreferences } from "@/platform/database";
 import { overlayBrowserDirectory } from "@/platform/browserDirectoryOverlay";
 import { BrowserProject } from "@/platform/browserProject";
@@ -258,24 +258,33 @@ async function directoryEntryNames(directory: MemoryDirectoryHandle): Promise<st
 }
 
 interface WorkerRequest {
+  worker: MemoryWorker;
   message: { id: number; method: string; args: unknown[] };
   transfer: Transferable[];
 }
 
 const requests: WorkerRequest[] = [];
+const runtimeWorkers: MemoryWorker[] = [];
+const workerEvents: Array<
+  | { type: "request"; worker: MemoryWorker; method: string }
+  | { type: "terminate"; worker: MemoryWorker }
+> = [];
 let respond: (method: string, args: unknown[]) => unknown;
 
 class MemoryWorker {
   onmessage?: (event: MessageEvent) => void;
   onerror?: (event: ErrorEvent) => void;
+  readonly terminate = vi.fn(() => workerEvents.push({ type: "terminate", worker: this }));
 
   constructor(url: URL) {
     if (String(url).includes("browserProjectScan.worker"))
       throw new Error("scan worker unavailable");
+    runtimeWorkers.push(this);
   }
 
   postMessage(message: WorkerRequest["message"], transfer: Transferable[] = []): void {
-    requests.push({ message, transfer });
+    requests.push({ worker: this, message, transfer });
+    workerEvents.push({ type: "request", worker: this, method: message.method });
     queueMicrotask(() => {
       try {
         if (message.method === "loadProjectFile") {
@@ -297,8 +306,6 @@ class MemoryWorker {
       }
     });
   }
-
-  terminate(): void {}
 }
 
 async function installCache(root: MemoryDirectoryHandle, bytes: Uint8Array): Promise<void> {
@@ -311,6 +318,8 @@ async function installCache(root: MemoryDirectoryHandle, bytes: Uint8Array): Pro
 describe("browser startup bridge", () => {
   beforeEach(() => {
     requests.length = 0;
+    runtimeWorkers.length = 0;
+    workerEvents.length = 0;
     pickBrowserDirectory.mockReset();
     pickBrowserFile.mockReset();
     pickBrowserProjectFile.mockReset();
@@ -325,6 +334,112 @@ describe("browser startup bridge", () => {
     vi.mocked(saveBrowserPreferences).mockReset();
     vi.mocked(saveBrowserPreferences).mockImplementation(async (value) => value);
     vi.stubGlobal("Worker", MemoryWorker);
+  });
+
+  it("reloads an iOS packaged project and imports its snapshot only after replacing the old VM worker", async () => {
+    const storage = new MemoryDirectoryHandle("storage");
+    vi.stubGlobal("navigator", {
+      storage: { getDirectory: async () => storage },
+      userAgent:
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1",
+      platform: "iPhone",
+      maxTouchPoints: 5,
+    });
+    const file = new File([Uint8Array.of(1, 2, 3, 4)], "game.reraproj");
+    pickBrowserFile.mockResolvedValue(file);
+    respond = (method) => {
+      if (method === "loadProjectFile")
+        return {
+          storageKey: "ios-restore-key",
+          manifest: { project_revision: 3, files: [] },
+          cacheImported: true,
+        };
+      return 1n;
+    };
+    const bridge = new BrowserBridge();
+
+    expect(bridge.snapshotRestoreMode).toBe("fresh_session");
+    const options: SessionOptions = {
+      clientName: "test",
+      availableFonts: [],
+      preferredLocales: [],
+      audioAvailable: true,
+      debugScopeMask: 0,
+      maximumEnvelopeBytes: 1024,
+      configurationProfile: "browser",
+    };
+    await bridge.createSession(options);
+    await bridge.openProjectFile();
+    const first = runtimeWorkers[0]!;
+
+    await bridge.prepareSnapshotRestore();
+    await bridge.createSession(options);
+    await bridge.restartProject();
+    await bridge.submitRuntime({
+      type: "state_import_begin",
+      value: {
+        kind: "vm_snapshot",
+        total_bytes: 3,
+        digest: new Uint8Array(32),
+        artifact_id: null,
+      },
+    });
+    const chunk = Uint8Array.of(5, 6, 7);
+    await bridge.submitRuntime({
+      type: "state_import_chunk",
+      value: { transfer_id: 9, offset: 0, data: chunk },
+    });
+
+    expect(runtimeWorkers).toHaveLength(2);
+    const second = runtimeWorkers[1]!;
+    expect(first.terminate).toHaveBeenCalledOnce();
+    expect(second.terminate).not.toHaveBeenCalled();
+    expect(
+      requests.map(({ worker, message }) => [runtimeWorkers.indexOf(worker), message.method]),
+    ).toEqual([
+      [0, "create"],
+      [0, "loadProjectFile"],
+      [1, "create"],
+      [1, "loadProjectFile"],
+      [1, "submitRuntime"],
+      [1, "submitRuntime"],
+    ]);
+    const terminatedAt = workerEvents.findIndex(
+      (event) => event.type === "terminate" && event.worker === first,
+    );
+    const firstReplacementRequest = workerEvents.findIndex(
+      (event) => event.type === "request" && event.worker === second,
+    );
+    expect(terminatedAt).toBeGreaterThanOrEqual(0);
+    expect(terminatedAt).toBeLessThan(firstReplacementRequest);
+    expect(requests.at(-1)?.transfer).toEqual([chunk.buffer]);
+  });
+
+  it("transfers snapshot import chunks into the runtime worker", async () => {
+    const bridge = new BrowserBridge();
+    const data = Uint8Array.of(1, 2, 3);
+
+    await bridge.submitRuntime({
+      type: "state_import_chunk",
+      value: { transfer_id: 7, offset: 0, data },
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.message.args[0]).toMatchObject({
+      type: "state_import_chunk",
+      value: { transfer_id: 7, offset: 0, data },
+    });
+    expect(requests[0]!.transfer).toEqual([data.buffer]);
+  });
+
+  it("keeps desktop snapshot restore in the active worker", async () => {
+    const bridge = new BrowserBridge();
+
+    expect(bridge.snapshotRestoreMode).toBe("in_place");
+    await bridge.prepareSnapshotRestore();
+
+    expect(runtimeWorkers).toHaveLength(1);
+    expect(runtimeWorkers[0]!.terminate).not.toHaveBeenCalled();
   });
 
   afterEach(() => {

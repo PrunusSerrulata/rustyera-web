@@ -46,7 +46,10 @@ const LOW_MEMORY_PROJECT_FILE_READ_CHUNK_BYTES = 1024 * 1024;
 
 export class BrowserBridge implements FrontendBridge {
   readonly kind = "browser" as const;
-  private readonly lowMemoryProjectFileLoad = needsLowMemoryProjectFileLoad();
+  private readonly lowMemoryBrowser = needsLowMemoryProjectFileLoad();
+  readonly snapshotRestoreMode = this.lowMemoryBrowser
+    ? ("fresh_session" as const)
+    : ("in_place" as const);
   readonly prewarmRuntimeOnInitialize = true;
   private readonly worker = new WorkerClient();
   readonly traditionalSaves = browserTraditionalSaves({
@@ -93,12 +96,26 @@ export class BrowserBridge implements FrontendBridge {
     return this.worker.call("create", options);
   }
 
+  async prepareSnapshotRestore(): Promise<void> {
+    // WebAssembly linear memory can grow but cannot shrink. Replacing the Rust session inside the
+    // same instance therefore cannot return a large old VM's pages to iOS before snapshot restore.
+    // A fresh dedicated worker gives constrained WebKit processes a new linear memory instead.
+    if (this.snapshotRestoreMode === "fresh_session") await this.worker.restart(yieldToMainThread);
+  }
+
   submitRuntime(message: RuntimeMessage, correlationId?: number | bigint): Promise<bigint> {
-    return this.worker.call(
-      "submitRuntime",
-      message,
-      correlationId == null ? undefined : BigInt(correlationId),
-    );
+    const runtimeCorrelationId = correlationId == null ? undefined : BigInt(correlationId);
+    const importChunk =
+      message.type === "state_import_chunk" && message.value?.data instanceof Uint8Array
+        ? message.value.data
+        : undefined;
+    if (importChunk)
+      return this.worker.callWithTransfer(
+        "submitRuntime",
+        [message, runtimeCorrelationId],
+        [importChunk.buffer as ArrayBuffer],
+      );
+    return this.worker.call("submitRuntime", message, runtimeCorrelationId);
   }
 
   submitDebug(message: DebugMessage, correlationId?: number | bigint): Promise<bigint> {
@@ -220,7 +237,7 @@ export class BrowserBridge implements FrontendBridge {
       file,
       picked.handle,
       this.prepareProjectConfigurationUpdate,
-      !picked.handle && !this.lowMemoryProjectFileLoad && storage.persistent
+      !picked.handle && !this.lowMemoryBrowser && storage.persistent
         ? () => materializePackagedProjectFile(root, file)
         : undefined,
     );
@@ -683,7 +700,7 @@ export class BrowserBridge implements FrontendBridge {
   }
 
   private async loadSelectedProjectFile<T>(file: File): Promise<T> {
-    if (this.lowMemoryProjectFileLoad) {
+    if (this.lowMemoryBrowser) {
       return this.worker.call<T>("loadProjectFile", file, {
         chunkBytes: LOW_MEMORY_PROJECT_FILE_READ_CHUNK_BYTES,
       });

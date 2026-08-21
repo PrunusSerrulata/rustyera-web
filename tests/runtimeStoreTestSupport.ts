@@ -70,6 +70,7 @@ export function installRuntimeStoreTestHarness(): void {
     bridge.pump.mockReset();
     bridge.submitRuntime.mockReset();
     bridge.kind = "tauri";
+    bridge.snapshotRestoreMode = "in_place";
     bridge.prewarmRuntimeOnInitialize = false;
     bridge.fullProjectExportSupported.mockReturnValue(true);
     bridge.createSession.mockResolvedValue(emptyBatch());

@@ -263,7 +263,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     finishExport: finishExportTransfer,
     logWarning: (message) => log("warning", message),
   });
-  let pendingStart: RuntimeTestConfiguration["start"] = { type: "new_game" };
+  type PendingRuntimeStart =
+    | { type: "new_game"; seed?: number | bigint }
+    | { type: Exclude<RuntimeStartKind, "new_game">; bytes: Uint8Array };
+  let pendingStart: PendingRuntimeStart = { type: "new_game" };
   let runtimeManifestSparse = false;
   let batchMediaDirty = false;
   const debugRequests = new RuntimeDebugRequestState();
@@ -295,6 +298,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     handleError(error) {
       gameProgressLossConfirmation.value = null;
       void projectReload.finalize(false);
+      runtimeImport.reset();
       startupTelemetryState.fail(error);
       finishProjectLoad();
       fault.value = { code: "frontend", message: String(error) };
@@ -531,11 +535,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } else if (!start.bytes?.length) {
       throw new Error(`${start.type} 测试必须提供状态文件`);
     }
-    pendingStart = {
-      ...start,
-      seed: normalizedSeed,
-      bytes: start.bytes ? new Uint8Array(start.bytes) : undefined,
-    };
+    pendingStart =
+      start.type === "new_game"
+        ? { type: "new_game", seed: normalizedSeed as number | bigint }
+        : { type: start.type, bytes: new Uint8Array(start.bytes!) };
     testEnvironment.configure(configuration.clock, start.seed, configuration.monotonicStartNs);
   }
 
@@ -851,6 +854,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
             .apply()
             .then(() => continueLoadedProject(runtimeAcceptedCompiledCache))
             .catch((error) => {
+              pendingStart = { type: "new_game" };
               const message = `客户端偏好初始化失败：${String(error)}`;
               startupTelemetryState.fail(message);
               finishProjectLoad();
@@ -868,6 +872,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           continueProjectBuildProgress();
           schedulePump(0);
         } else {
+          pendingStart = { type: "new_game" };
           startupTelemetryState.fail("项目加载失败");
           finishProjectLoad();
           baseStatus.value = "项目加载失败，请查看日志";
@@ -876,8 +881,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
       }
       case "state_changed":
         phase.value = value.phase;
-        if (value.phase === "faulted" || value.phase === "stopped")
+        if (value.phase === "faulted" || value.phase === "stopped") {
           gameProgressLossConfirmation.value = null;
+          runtimeImport.reset();
+        }
         if (
           startupTelemetry.value?.milestones.startSubmittedMs != null &&
           startupTelemetry.value.outcome === "loading" &&
@@ -895,6 +902,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         runtimeEpoch.value = value.epoch ?? runtimeEpoch.value;
         if (value.phase === "faulted" || value.phase === "stopped") {
           const startupWasLoading = startupTelemetry.value?.outcome === "loading";
+          if (startupWasLoading) pendingStart = { type: "new_game" };
           startupTelemetryState.fail(`Runtime entered ${value.phase} during startup`);
           if (startupWasLoading) finishProjectLoad();
         }
@@ -980,8 +988,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "fault": {
         if (fullManifestImport) await cleanupFullManifestImport(false);
+        runtimeImport.reset();
         gameProgressLossConfirmation.value = null;
         const startupWasLoading = startupTelemetry.value?.outcome === "loading";
+        if (startupWasLoading) pendingStart = { type: "new_game" };
         startupTelemetryState.fail(value.message ?? "Runtime fault");
         if (startupWasLoading) finishProjectLoad();
         diagnosisResult.value = "";
@@ -1024,6 +1034,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           log(value.level ?? "info", value.message, true, suppressNotification ? "none" : "all");
         break;
       case "command_rejected": {
+        runtimeImport.reject(correlationId);
         if (
           runtimeClientPreferences.reject(
             correlationId,
@@ -1311,6 +1322,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function restart(): Promise<void> {
+    await restartSession({ type: "new_game" }, "重新开始");
+  }
+
+  async function restartSession(
+    start: PendingRuntimeStart,
+    action: "重新开始" | "恢复快照",
+  ): Promise<void> {
     if (
       !projectOpen.value ||
       projectLoading.value ||
@@ -1322,6 +1340,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     startupTelemetryState.begin(performance.now(), projectSource.value, bridge.kind);
     beginProjectLoad("正在创建新的 Runtime session…");
     runtimePump.setTransitioning(true);
+    pendingStart = start;
     try {
       clearSessionTimers();
       resetSessionState(true);
@@ -1329,8 +1348,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
       await compiledCacheExport.cancel();
       await audio
         .synchronize([])
-        .catch((error) => log("warning", `重新开始时停止音频失败：${String(error)}`));
+        .catch((error) => log("warning", `${action}时停止音频失败：${String(error)}`));
       resetSessionState();
+      if (start.type === "vm_snapshot" && bridge.snapshotRestoreMode === "fresh_session")
+        await bridge.prepareSnapshotRestore();
       const batch = await bridge.createSession(sessionOptions());
       runtimePump.setReady(true);
       await handleBatch(batch);
@@ -1341,15 +1362,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
       if (!startupTelemetry.value)
         startupTelemetryState.begin(metrics.submittedAtMs, projectSource.value, bridge.kind);
       startupTelemetryState.applyBridgeMetrics(metrics, bridge.kind);
+      const reloadLabel = action === "重新开始" ? "项目重新读取" : "恢复快照时项目重新读取";
       log(
         "info",
-        `项目重新读取：快速扫描 ${metrics.quickScanMs.toFixed(0)} ms，缓存读取 ${metrics.cacheReadMs.toFixed(0)} ms，源码读取 ${metrics.sourceReadMs.toFixed(0)} ms，提交 ${metrics.submitMs.toFixed(0)} ms${metrics.cacheImported ? "（已导入项目文件）" : "（冷编译）"}`,
+        `${reloadLabel}：快速扫描 ${metrics.quickScanMs.toFixed(0)} ms，缓存读取 ${metrics.cacheReadMs.toFixed(0)} ms，源码读取 ${metrics.sourceReadMs.toFixed(0)} ms，提交 ${metrics.submitMs.toFixed(0)} ms${metrics.cacheImported ? "（已导入项目文件）" : "（冷编译）"}`,
       );
       continueProjectBuildProgress(metrics.cacheImported);
     } catch (error) {
+      pendingStart = { type: "new_game" };
       startupTelemetryState.fail(error);
       finishProjectLoad();
-      const message = `重新开始失败：${String(error)}`;
+      const message = `${action}失败：${String(error)}`;
       baseStatus.value = message;
       log("error", message);
     } finally {
@@ -2033,7 +2056,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function restoreSnapshot(): Promise<void> {
     if (diagnosisExporting.value) return;
-    await runtimeImport.pickSnapshot();
+    const bytes = await runtimeImport.pickSnapshot();
+    if (!bytes) return;
+    if (bridge.snapshotRestoreMode === "fresh_session") {
+      await restartSession({ type: "vm_snapshot", bytes }, "恢复快照");
+    } else {
+      await runtimeImport.begin("vm_snapshot", bytes);
+    }
   }
 
   async function restoreState(
@@ -2381,13 +2410,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
     baseStatus.value = PROJECT_STARTING_STATUS;
     finishProjectLoad();
-    if (pendingStart.type === "new_game") {
+    const start = pendingStart;
+    pendingStart = { type: "new_game" };
+    if (start.type === "new_game") {
       await send({
         type: "start",
-        value: { mode: { type: "new_game", seed: pendingStart.seed ?? null } },
+        value: { mode: { type: "new_game", seed: start.seed ?? null } },
       });
     } else {
-      await restoreState(pendingStart.type, pendingStart.bytes!);
+      await restoreState(start.type, start.bytes);
     }
     if (!runtimeManifestSparse) scheduleCompiledCacheExport(1000);
   }

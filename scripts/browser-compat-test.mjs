@@ -95,6 +95,15 @@ try {
             "wdio:enforceWebDriverClassic": true,
           },
   });
+  if (browserName === "safari") {
+    compatibilityStage = "restoring Safari automation window";
+    await browser.maximizeWindow().catch(() => undefined);
+    // SafariDriver can report maximize success while a window minimized by the previous run stays
+    // non-interactive. Setting a concrete rect restores it according to the WebDriver window API.
+    await browser.setWindowSize(1280, 900);
+    await browser.execute(() => window.focus());
+    await browser.pause(200);
+  }
   if (browserName === "firefox") {
     console.log(
       JSON.stringify({
@@ -233,7 +242,7 @@ try {
     projectFile ? "//button[normalize-space(.)='从项目文件启动…']" : "button.primary.large",
   );
   await open.waitForClickable({ timeout: 30_000 });
-  await open.click();
+  await clickElement(browser, open);
   let projectPreferencesDuringLoad;
   let projectPreferencesAfterLoad;
   if (projectFile) {
@@ -339,7 +348,7 @@ try {
       compatibilityStage = `clicking ${label}`;
       const button = await browser.$(`//button[normalize-space(.)=${JSON.stringify(label)}]`);
       await button.waitForClickable({ timeout: 30_000 });
-      await button.click();
+      await clickElement(browser, button);
     };
     compatibilityStage = "checking automatic interaction assistance";
     const automaticInteractionAssist = await inspectAutomaticInteractionAssist(browser);
@@ -983,12 +992,12 @@ async function exerciseProjectPreferencesDuringLoad(activeBrowser) {
   const projectTab = await dialog.$("#preference-tab-project");
   const projectTabEnabled = await projectTab.isEnabled();
   if (!projectTabEnabled) throw new Error("project preference tab was disabled during loading");
-  await projectTab.click();
+  await clickElement(activeBrowser, projectTab);
   const field = await dialog.$("#preference-project-UseMouse-override");
   await field.waitForEnabled({ timeout: 5_000 });
   const projectFieldEditable = await field.isEnabled();
-  if (!(await field.isSelected())) await field.click();
-  await (await dialog.$("button=应用")).click();
+  if (!(await field.isSelected())) await clickElement(activeBrowser, field);
+  await clickElement(activeBrowser, await dialog.$("button=应用"));
   await dialog.waitForDisplayed({ reverse: true, timeout: 30_000 });
   return {
     observedLoading: true,
@@ -1008,12 +1017,12 @@ async function verifyProjectPreferencesAfterLoad(activeBrowser) {
   const projectTab = await dialog.$("#preference-tab-project");
   const projectTabEnabled = await projectTab.isEnabled();
   if (!projectTabEnabled) throw new Error("project preference tab was disabled after game load");
-  await projectTab.click();
+  await clickElement(activeBrowser, projectTab);
   const field = await dialog.$("#preference-project-UseMouse-override");
   await field.waitForEnabled({ timeout: 5_000 });
   const projectFieldEditable = await field.isEnabled();
   const savedOverrideSelected = await field.isSelected();
-  await (await dialog.$("button=取消")).click();
+  await clickElement(activeBrowser, await dialog.$("button=取消"));
   await dialog.waitForDisplayed({ reverse: true, timeout: 5_000 });
   return { projectTabEnabled, projectFieldEditable, savedOverrideSelected };
 }
@@ -1030,7 +1039,7 @@ async function inspectInteractionAssistPanel(activeBrowser) {
       scrollTop: viewport instanceof HTMLElement ? viewport.scrollTop : null,
     };
   });
-  await (await panel.$("button[aria-label='展开']")).click();
+  await clickElement(activeBrowser, await panel.$("button[aria-label='展开']"));
   const expanded = await activeBrowser.execute(() => {
     const viewport = document.querySelector(".game-viewport");
     const panel = document.querySelector("section[aria-label='交互辅助面板']");
@@ -1056,7 +1065,7 @@ async function inspectInteractionAssistPanel(activeBrowser) {
       `interaction assistance panel geometry mismatch: ${JSON.stringify({ before, expanded })}`,
     );
   }
-  await (await panel.$("button[aria-label='折叠']")).click();
+  await clickElement(activeBrowser, await panel.$("button[aria-label='折叠']"));
   return { before, expanded };
 }
 
@@ -1088,11 +1097,16 @@ async function clickFileMenuAction(activeBrowser, label) {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     compatibilityStage = `opening 文件 menu for ${label} (attempt ${attempt})`;
     // Projects can hide the menu bar until hover. Safari may otherwise dispatch the click
-    // while the 120 ms reveal transform is still moving the button under the pointer.
-    await menuButton.moveTo();
-    await activeBrowser.pause(200);
+    // while the 120 ms reveal transform is still moving the button under the pointer. Safari's
+    // in-page click does not need pointer geometry, and SafariDriver moveTo can block its command
+    // queue long enough to starve the complete-snapshot monitor.
+    if (browserName !== "safari") {
+      await menuButton.moveTo();
+      await activeBrowser.pause(200);
+    }
     await menuButton.waitForDisplayed({ timeout: 2_000 });
-    if ((await menuButton.getAttribute("aria-expanded")) !== "true") await menuButton.click();
+    if ((await menuButton.getAttribute("aria-expanded")) !== "true")
+      await clickElement(activeBrowser, menuButton);
     const opened = await activeBrowser
       .waitUntil(() => menuButton.getAttribute("aria-expanded").then((value) => value === "true"), {
         timeout: 1_000,
@@ -1110,18 +1124,26 @@ async function clickFileMenuAction(activeBrowser, label) {
       .then(() => true)
       .catch(() => false);
     if (!displayed) continue;
-    await action.click();
+    await clickElement(activeBrowser, action);
     return;
   }
   throw new Error(`文件 menu action did not become clickable: ${label}`);
+}
+
+async function clickElement(activeBrowser, element) {
+  if (browserName === "safari") {
+    await activeBrowser.execute((target) => target.click(), element);
+    return;
+  }
+  await element.click();
 }
 
 async function enableGlobalInteractionAssist(activeBrowser) {
   await clickFileMenuAction(activeBrowser, "偏好设置…");
   const dialog = await activeBrowser.$("section[aria-label='RustyEra Web · 偏好设置']");
   await dialog.waitForDisplayed({ timeout: 5_000 });
-  await (await dialog.$("#preference-global-interactionAssistMode-on")).click();
-  await (await dialog.$("button=应用")).click();
+  await clickElement(activeBrowser, await dialog.$("#preference-global-interactionAssistMode-on"));
+  await clickElement(activeBrowser, await dialog.$("button=应用"));
   await dialog.waitForDisplayed({ reverse: true, timeout: 5_000 });
   await activeBrowser.waitUntil(
     () =>
@@ -1137,8 +1159,18 @@ async function verifyGlobalPreferencesBeforeProject(activeBrowser) {
     compatibilityStage = "opening global preferences before project load";
     const button = await activeBrowser.$("#welcome-preferences");
     await button.waitForClickable({ timeout: 5_000 });
-    await button.click();
+    await clickElement(activeBrowser, button);
     const dialog = await activeBrowser.$("section[aria-label='RustyEra Web · 偏好设置']");
+    const opened = await dialog
+      .waitForDisplayed({ timeout: 1_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!opened) {
+      // SafariDriver can report a successful native element click without dispatching it when a
+      // previous automation session left Safari in the background. Exercise the same mounted UI
+      // control in-page before treating the missing dialog as a product failure.
+      await activeBrowser.execute(() => document.querySelector("#welcome-preferences")?.click());
+    }
     await dialog.waitForDisplayed({ timeout: 5_000 });
     return dialog;
   };
@@ -1155,7 +1187,7 @@ async function verifyGlobalPreferencesBeforeProject(activeBrowser) {
   const tooltip = await imageScaleLabel.getAttribute("title");
   if (!tooltip) throw new Error("global image scale did not expose its explanatory tooltip");
   const fontOverride = await dialog.$("#preference-global-FontName-override");
-  await fontOverride.click();
+  await clickElement(activeBrowser, fontOverride);
   const fontInput = await dialog.$("#preference-global-FontName");
   await fontInput.waitForDisplayed({ timeout: 5_000 });
   const fontInputDetails = {
@@ -1172,12 +1204,13 @@ async function verifyGlobalPreferencesBeforeProject(activeBrowser) {
   const typedFont = await fontInput.getValue();
   if (typedFont !== "RustyEra Compatibility Font")
     throw new Error(`global game font was not editable: ${typedFont}`);
-  await fontOverride.click();
+  await clickElement(activeBrowser, fontOverride);
 
   compatibilityStage = "saving global preferences before project load";
   await imageScale.setValue("1.25");
-  if (!(await interactionAssistMode.isSelected())) await interactionAssistMode.click();
-  await (await dialog.$("button=应用")).click();
+  if (!(await interactionAssistMode.isSelected()))
+    await clickElement(activeBrowser, interactionAssistMode);
+  await clickElement(activeBrowser, await dialog.$("button=应用"));
   await dialog.waitForDisplayed({ reverse: true, timeout: 5_000 });
   await activeBrowser.waitUntil(
     () =>
@@ -1203,7 +1236,7 @@ async function verifyGlobalPreferencesBeforeProject(activeBrowser) {
       `global interaction assistance mode did not persist: ${persistedInteractionAssistMode}`,
     );
   await (await dialog.$("#preference-global-imageScale")).setValue("1");
-  await (await dialog.$("button=应用")).click();
+  await clickElement(activeBrowser, await dialog.$("button=应用"));
   await dialog.waitForDisplayed({ reverse: true, timeout: 5_000 });
   return {
     projectTabEnabled: false,
@@ -1287,7 +1320,7 @@ async function runCacheInputSmoke(
   compatibilityStage = "clicking the new-game button during compiled cache generation";
   const newGame = await activeBrowser.$(".game-viewport .game-button");
   await newGame.waitForClickable({ timeout: 30_000 });
-  await newGame.click();
+  await clickElement(activeBrowser, newGame);
   compatibilityStage = "waiting for game input during compiled cache generation";
   await activeBrowser.waitUntil(
     () =>
@@ -1338,7 +1371,7 @@ async function runLogInputSmoke(activeBrowser, activeBrowserName) {
 
   logWaitId = await openGameLog(activeBrowser);
   compatibilityStage = "returning from the game log with a left viewport click";
-  await (await activeBrowser.$(".game-viewport")).click();
+  await clickElement(activeBrowser, await activeBrowser.$(".game-viewport"));
   await waitForReturnedDialogue(activeBrowser, logWaitId);
 
   logWaitId = await openGameLog(activeBrowser);
@@ -1396,9 +1429,9 @@ async function advanceMessageWaitsUntil(activeBrowser, expectedText, maximum) {
     }
     if (state.wait.deadline_ns == null) {
       if (state.wait.kind === "string_value" && state.wait.one_input) {
-        await (await activeBrowser.$(".game-viewport .game-button")).click();
+        await clickElement(activeBrowser, await activeBrowser.$(".game-viewport .game-button"));
       } else {
-        await (await activeBrowser.$(".prompt-bar button[type=submit]")).click();
+        await clickElement(activeBrowser, await activeBrowser.$(".prompt-bar button[type=submit]"));
       }
     }
     await waitForChangedInput(activeBrowser, waitId);
@@ -1410,7 +1443,7 @@ async function openGameLog(activeBrowser) {
   compatibilityStage = "opening the in-game message log";
   const button = await activeBrowser.$("//button[contains(normalize-space(.), '[+] 日志')]");
   await button.waitForClickable({ timeout: 30_000 });
-  await button.click();
+  await clickElement(activeBrowser, button);
   await activeBrowser.waitUntil(
     () =>
       activeBrowser.execute(() => window.__RUSTYERA_TEST__?.snapshot().wait?.kind === "any_key"),

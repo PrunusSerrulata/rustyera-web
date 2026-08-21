@@ -247,11 +247,97 @@ describe("runtime store startup-save", () => {
       "monospace",
     ]);
     expect(bridge.restartProject).toHaveBeenCalledOnce();
+    expect(bridge.prepareSnapshotRestore).not.toHaveBeenCalled();
     expect(store.projectSource).toBe("file");
     expect(bridge.submitRuntime).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "start" }),
       expect.anything(),
     );
+  });
+
+  it("recreates an iOS browser session before importing a selected VM snapshot", async () => {
+    const bytes = Uint8Array.of(1, 2, 3, 4);
+    bridge.kind = "browser";
+    bridge.snapshotRestoreMode = "fresh_session";
+    bridge.openUpload.mockResolvedValueOnce(bytes);
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("project_load_report", { success: true, diagnostics: [] })],
+    });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    store.projectSource = "file";
+
+    await store.restoreSnapshot();
+
+    expect(bridge.prepareSnapshotRestore).toHaveBeenCalledOnce();
+    expect(bridge.createSession).toHaveBeenCalledOnce();
+    expect(bridge.restartProject).toHaveBeenCalledOnce();
+    expect(bridge.prepareSnapshotRestore.mock.invocationCallOrder[0]).toBeLessThan(
+      bridge.createSession.mock.invocationCallOrder[0]!,
+    );
+    expect(bridge.createSession.mock.invocationCallOrder[0]).toBeLessThan(
+      bridge.restartProject.mock.invocationCallOrder[0]!,
+    );
+    expect(bridge.submitRuntime).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "state_import_begin" }),
+      undefined,
+    );
+
+    await advanceUntil(() =>
+      bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) => (message as { type?: string }).type === "state_import_begin",
+      ),
+    );
+
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "state_import_begin",
+        value: expect.objectContaining({ kind: "vm_snapshot", total_bytes: bytes.length }),
+      }),
+      undefined,
+    );
+  });
+
+  it("keeps Tauri VM snapshot restore in the active session", async () => {
+    const bytes = Uint8Array.of(5, 6, 7);
+    bridge.kind = "tauri";
+    bridge.snapshotRestoreMode = "in_place";
+    bridge.openUpload.mockResolvedValueOnce(bytes);
+    const store = useRuntimeStore();
+
+    await store.restoreSnapshot();
+
+    expect(bridge.prepareSnapshotRestore).not.toHaveBeenCalled();
+    expect(bridge.createSession).not.toHaveBeenCalled();
+    expect(bridge.restartProject).not.toHaveBeenCalled();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "state_import_begin",
+        value: expect.objectContaining({ kind: "vm_snapshot", total_bytes: bytes.length }),
+      }),
+      undefined,
+    );
+  });
+
+  it.each([
+    runtimeEvent("command_rejected", { message: "snapshot rejected" }, 1),
+    runtimeEvent("fault", { code: "snapshot_restore", message: "snapshot fault" }),
+    runtimeEvent("state_changed", { phase: "stopped", epoch: 2 }),
+  ])("releases pending snapshot bytes when import terminates with $type", async (event) => {
+    bridge.openUpload.mockResolvedValueOnce(Uint8Array.of(1, 2, 3, 4));
+    bridge.createSession.mockResolvedValueOnce({ ...emptyBatch(), events: [event] });
+    const store = useRuntimeStore();
+
+    await store.restoreSnapshot();
+    expect(store.testTransferState()).toMatchObject({
+      importKind: "vm_snapshot",
+      importBytes: 4,
+    });
+
+    await store.enableDebug();
+
+    expect(store.testTransferState()).toMatchObject({ importKind: undefined, importBytes: 0 });
   });
 
   it("requires explicit confirmation before restarting or returning to the title", async () => {

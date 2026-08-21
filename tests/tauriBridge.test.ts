@@ -64,6 +64,7 @@ describe("Tauri project restart", () => {
     mockNativeProject(metrics);
     const bridge = new TauriBridge();
 
+    expect(bridge.snapshotRestoreMode).toBe("in_place");
     await bridge.openProject();
     expect(bridge.fullProjectExportSupported()).toBe(true);
     await bridge.restartProject();
