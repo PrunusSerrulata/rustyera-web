@@ -20,7 +20,7 @@ import type { DiagnosisArchiveInput, DiagnosisArchiveProgress } from "@/core/dia
 import { yieldToMainThread, yieldToPaint } from "@/platform/mainThread";
 import {
   pickBrowserDirectory,
-  pickBrowserFile,
+  pickBrowserFileBytes,
   pickBrowserProjectFile,
 } from "@/platform/browserDirectory";
 import { encodeBrowserManifest } from "@/platform/browserManifestCodec";
@@ -480,8 +480,7 @@ export class BrowserBridge implements FrontendBridge {
   }
 
   async openUpload(): Promise<Uint8Array | undefined> {
-    const file = await pickBrowserFile(".snapshot,application/octet-stream");
-    return file ? new Uint8Array(await file.arrayBuffer()) : undefined;
+    return pickBrowserFileBytes(".snapshot,application/octet-stream");
   }
 
   async saveDownload(name: string, bytes: Uint8Array): Promise<boolean> {

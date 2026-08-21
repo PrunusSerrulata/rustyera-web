@@ -3,6 +3,7 @@ import {
   importBrowserDirectory,
   pickBrowserDirectory,
   pickBrowserFile,
+  pickBrowserFileBytes,
   pickBrowserProjectFile,
   selectedProjectFiles,
 } from "@/platform/browserDirectory";
@@ -405,6 +406,54 @@ describe("portable browser directory selection", () => {
     input.dispatchEvent(new Event("cancel"));
 
     await expect(selection).resolves.toBeUndefined();
+  });
+
+  it("keeps a selected upload mounted until its provider-backed bytes finish reading", async () => {
+    let finishRead!: (value: ArrayBuffer) => void;
+    const bytes = new Promise<ArrayBuffer>((resolve) => (finishRead = resolve));
+    const file = { arrayBuffer: vi.fn(() => bytes) } as unknown as File;
+    const selection = pickBrowserFileBytes(".snapshot");
+    const input = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { value: [file] });
+
+    input.dispatchEvent(new Event("change"));
+
+    expect(document.body.contains(input)).toBe(true);
+    input.dispatchEvent(new Event("cancel"));
+    expect(document.body.contains(input)).toBe(true);
+    finishRead(Uint8Array.of(1, 2, 3).buffer);
+    await expect(selection).resolves.toEqual(Uint8Array.of(1, 2, 3));
+    expect(document.body.contains(input)).toBe(false);
+  });
+
+  it("preserves provider read failures and removes the owning upload", async () => {
+    const failure = { reason: "provider unavailable" };
+    const file = { arrayBuffer: vi.fn(() => Promise.reject(failure)) } as unknown as File;
+    const selection = pickBrowserFileBytes(".snapshot");
+    const input = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { value: [file] });
+
+    input.dispatchEvent(new Event("change"));
+
+    await expect(selection).rejects.toBe(failure);
+    expect(document.body.contains(input)).toBe(false);
+  });
+
+  it("cleans up when a provider throws before returning its read promise", async () => {
+    const failure = { reason: "provider read failed synchronously" };
+    const file = {
+      arrayBuffer: vi.fn(() => {
+        throw failure;
+      }),
+    } as unknown as File;
+    const selection = pickBrowserFileBytes(".snapshot");
+    const input = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { value: [file] });
+
+    input.dispatchEvent(new Event("change"));
+
+    await expect(selection).rejects.toBe(failure);
+    expect(document.body.contains(input)).toBe(false);
   });
 
   it("requests a read-write handle for a directly editable project file", async () => {

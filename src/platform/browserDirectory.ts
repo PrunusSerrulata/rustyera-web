@@ -11,6 +11,7 @@ import { hex, safePath } from "@/platform/browserProjectFilesystem";
 import {
   fileSnapshot,
   isPickerCancellation,
+  pickFileBytes,
   pickFiles,
   selectedProjectFiles,
 } from "@/platform/browserDirectory/fileSelection";
@@ -78,6 +79,10 @@ export async function pickBrowserDirectory(
 
 export async function pickBrowserFile(accept?: string): Promise<File | undefined> {
   return (await pickFiles({ accept }))?.[0];
+}
+
+export function pickBrowserFileBytes(accept?: string): Promise<Uint8Array | undefined> {
+  return pickFileBytes(accept);
 }
 
 export interface PickedBrowserProjectFile {

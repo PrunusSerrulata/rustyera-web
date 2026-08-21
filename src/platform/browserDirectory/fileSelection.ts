@@ -68,6 +68,55 @@ export function pickFiles(options: {
   });
 }
 
+export function pickFileBytes(accept?: string): Promise<Uint8Array | undefined> {
+  return new Promise((resolve, reject) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    if (accept) input.accept = accept;
+    input.hidden = true;
+    let state: "selecting" | "reading" | "settled" = "selecting";
+    const cleanup = () => {
+      state = "settled";
+      input.remove();
+    };
+    const finish = (result: Uint8Array | undefined) => {
+      if (state === "settled") return;
+      cleanup();
+      resolve(result);
+    };
+    const fail = (error: unknown) => {
+      if (state === "settled") return;
+      cleanup();
+      reject(error);
+    };
+    input.addEventListener("change", () => {
+      if (state !== "selecting") return;
+      const file = input.files?.[0];
+      if (!file) {
+        finish(undefined);
+        return;
+      }
+      state = "reading";
+      // iOS File values may be backed by security-scoped document-provider resources. Keep their
+      // owning picker control alive until WebKit has finished reading the resource.
+      try {
+        void file.arrayBuffer().then((bytes) => finish(new Uint8Array(bytes)), fail);
+      } catch (error) {
+        fail(error);
+      }
+    });
+    input.addEventListener("cancel", () => {
+      if (state === "selecting") finish(undefined);
+    });
+    document.body.append(input);
+    try {
+      input.click();
+    } catch (error) {
+      fail(error);
+    }
+  });
+}
+
 export function isPickerCancellation(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
