@@ -228,6 +228,7 @@ export interface FrontendBridge {
   projectName(): string | undefined;
   openUpload(): Promise<Uint8Array | undefined>;
   saveDownload(name: string, bytes: Uint8Array): Promise<boolean>;
+  fullProjectExportSupported(): boolean;
   stageFullProjectManifest(): Promise<{ totalBytes: number } | undefined>;
   readFullProjectManifestChunk(offset: number, maximumBytes: number): Promise<Uint8Array>;
   releaseFullProjectManifest(): Promise<void>;

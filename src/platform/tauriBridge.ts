@@ -393,6 +393,10 @@ export class TauriBridge implements FrontendBridge {
     return true;
   }
 
+  fullProjectExportSupported(): boolean {
+    return true;
+  }
+
   async stageFullProjectManifest(): Promise<{ totalBytes: number } | undefined> {
     if (this.projectIsFile) return undefined;
     return invoke<{ totalBytes: number }>("stage_full_project_manifest");

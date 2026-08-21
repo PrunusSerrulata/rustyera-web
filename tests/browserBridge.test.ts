@@ -675,8 +675,10 @@ describe("browser startup bridge", () => {
     const bridge = new BrowserBridge();
     const progress = vi.fn();
     bridge.setProjectProgressListener(progress);
+    expect(bridge.fullProjectExportSupported()).toBe(true);
 
     await expect(bridge.openProjectFile()).resolves.toMatchObject({ cacheImported: true });
+    expect(bridge.fullProjectExportSupported()).toBe(false);
     await expect(bridge.readResource("resources/a.bin")).resolves.toEqual(Uint8Array.of(4, 5, 6));
     await expect(bridge.restartProject()).resolves.toMatchObject({ cacheImported: true });
 

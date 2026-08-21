@@ -395,6 +395,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const canExportDiagnosis = computed(
     () => runtimeReady.value && !diagnosisExporting.value && !runtimePump.transitioning,
   );
+  const fullProjectExportSupported = computed(() => {
+    // Project source changes when a new selection replaces the active project. Keep the host-owned
+    // capability query reactive without duplicating its platform-specific state in the store.
+    void projectSource.value;
+    return bridge.fullProjectExportSupported();
+  });
+  const canExportProjectFile = computed(
+    () => runtimeReady.value && !gameInteractionsBlocked.value && fullProjectExportSupported.value,
+  );
   const canManageTraditionalSaves = computed(
     () =>
       bridge.traditionalSaves != null &&
@@ -1617,7 +1626,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function exportProjectFile(): Promise<void> {
-    if (!runtimeReady.value || gameInteractionsBlocked.value) return;
+    if (
+      !runtimeReady.value ||
+      gameInteractionsBlocked.value ||
+      !bridge.fullProjectExportSupported()
+    )
+      return;
     if (exportState && exportState.kind !== "compiled_cache") return;
     const title = diagnosisProjectName(
       presentation.title.trim() || bridge.projectName() || "RustyEra项目",
@@ -2668,6 +2682,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     traditionalSaveOverwriteSlot,
     runtimeReady,
     canExportDiagnosis,
+    fullProjectExportSupported,
+    canExportProjectFile,
     canManageTraditionalSaves,
     gameInteractionsBlocked,
     canOpenProject,

@@ -65,6 +65,7 @@ describe("Tauri project restart", () => {
     const bridge = new TauriBridge();
 
     await bridge.openProject();
+    expect(bridge.fullProjectExportSupported()).toBe(true);
     await bridge.restartProject();
 
     expect(commandCalls("open_project")).toEqual([
@@ -258,6 +259,7 @@ describe("Tauri project restart", () => {
     const bridge = new TauriBridge();
 
     await bridge.openProjectFile();
+    expect(bridge.fullProjectExportSupported()).toBe(true);
     await bridge.restartProject();
 
     expect(commandCalls("open_project_file")).toEqual([

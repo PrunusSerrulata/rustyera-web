@@ -39,7 +39,12 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
         </button>
         <hr />
         <button
-          :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
+          :disabled="!store.canExportProjectFile"
+          :title="
+            store.runtimeReady && !store.fullProjectExportSupported
+              ? '浏览器从项目文件启动时暂不支持导出全量项目文件'
+              : undefined
+          "
           @click="action(store.exportProjectFile)"
         >
           导出全量项目文件…

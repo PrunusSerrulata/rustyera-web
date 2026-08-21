@@ -552,6 +552,10 @@ export class BrowserBridge implements FrontendBridge {
     }
   }
 
+  fullProjectExportSupported(): boolean {
+    return this.project?.embeddedManifest() == null;
+  }
+
   async readFullProjectManifestChunk(offset: number, maximumBytes: number): Promise<Uint8Array> {
     if (!this.fullManifestSpool) throw new Error("完整项目 manifest 尚未暂存");
     return this.fullManifestSpool.read(offset, maximumBytes);

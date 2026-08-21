@@ -948,6 +948,34 @@ describe("runtime store settings-export", () => {
     await store.cancelProjectFileExport();
   });
 
+  it("does not start a full project export when the active WASM project file is ineligible", async () => {
+    bridge.kind = "browser";
+    bridge.fullProjectExportSupported.mockReturnValue(false);
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+
+    await store.exportProjectFile();
+
+    expect(store.canExportProjectFile).toBe(false);
+    expect(bridge.beginProjectFileExport).not.toHaveBeenCalled();
+    expect(bridge.submitRuntime).not.toHaveBeenCalled();
+  });
+
+  it("refreshes full project export eligibility when the active project source changes", () => {
+    let supported = true;
+    bridge.fullProjectExportSupported.mockImplementation(() => supported);
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+
+    expect(store.fullProjectExportSupported).toBe(true);
+    supported = false;
+    store.projectSource = "file";
+    expect(store.fullProjectExportSupported).toBe(false);
+    supported = true;
+    store.projectSource = "directory";
+    expect(store.fullProjectExportSupported).toBe(true);
+  });
+
   it("reads full manifests larger than four MiB through exact bounded bridge chunks", async () => {
     const manifest = new Uint8Array(4 * 1024 * 1024 + 3).fill(7);
     let messageId = 1;

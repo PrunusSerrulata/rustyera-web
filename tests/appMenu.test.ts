@@ -18,6 +18,8 @@ const store = vi.hoisted(() => ({
   singleStepEnabled: true,
   canStepDebug: true,
   canExportDiagnosis: false,
+  canExportProjectFile: false,
+  fullProjectExportSupported: true,
   canManageTraditionalSaves: false,
   diagnosisExporting: false,
   diagnosisProgress: undefined,
@@ -143,6 +145,8 @@ describe("application menus", () => {
     vi.clearAllMocks();
     store.runtimeReady = false;
     store.canExportDiagnosis = false;
+    store.canExportProjectFile = false;
+    store.fullProjectExportSupported = true;
     store.canManageTraditionalSaves = false;
     store.configurationEntries = [];
     store.projectOpen = true;
@@ -212,6 +216,7 @@ describe("application menus", () => {
 
     store.runtimeReady = true;
     store.canExportDiagnosis = true;
+    store.canExportProjectFile = true;
     store.canManageTraditionalSaves = true;
     const running = mountApp();
     states = await menuStates(running);
@@ -219,6 +224,24 @@ describe("application menus", () => {
       expect(states.get(label), label).toBe(false);
     }
     running.unmount();
+  });
+
+  it("explains and blocks full project export when the active browser project file is unsupported", async () => {
+    store.runtimeReady = true;
+    store.canExportProjectFile = false;
+    store.fullProjectExportSupported = false;
+    const wrapper = mountApp();
+
+    await wrapper.get("nav > .menu > button").trigger("click");
+    const exportButton = wrapper
+      .findAll(".menu-popup button")
+      .find((item) => item.text() === "导出全量项目文件…")!;
+    expect(exportButton.attributes("disabled")).toBeDefined();
+    expect(exportButton.attributes("title")).toBe("浏览器从项目文件启动时暂不支持导出全量项目文件");
+    await exportButton.trigger("click");
+    expect(store.exportProjectFile).not.toHaveBeenCalled();
+
+    wrapper.unmount();
   });
 
   it("shows portable save transfer actions only in the WASM host", async () => {

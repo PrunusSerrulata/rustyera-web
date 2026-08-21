@@ -48,6 +48,7 @@ export const bridge = {
   projectName: vi.fn(() => "eraTW"),
   openUpload: vi.fn(),
   saveDownload: vi.fn(),
+  fullProjectExportSupported: vi.fn(() => true),
   stageFullProjectManifest: vi.fn(),
   readFullProjectManifestChunk: vi.fn(),
   releaseFullProjectManifest: vi.fn(),
