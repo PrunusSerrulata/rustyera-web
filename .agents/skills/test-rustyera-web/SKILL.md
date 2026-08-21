@@ -34,12 +34,14 @@ or frontend-state actions, and [tauri-e2e.md](references/tauri-e2e.md) before ch
   the directly affected test file, named case, browser scenario, or native scenario; never rerun
   the full suite.
 - Run every command that may outlive its initial tool response in a persistent PTY. Start it with
-  `exec_command` using `tty: true` and a short yield, retain the returned `session_id`, and poll only
-  with `write_stdin` at intervals no longer than 30 seconds until an explicit exit code is observed.
-  Do not resume a yielded exec cell with a separate wait call: the cell may be reclaimed before its
-  result is collected. If a PTY session disappears without an exit code, report the command as
-  unverified; never restart a full suite, and rerun a targeted command only when the suite rules
-  permit it.
+  `exec_command` using `tty: true` and `yield_time_ms: 1000`; do not use a long initial yield. If the
+  initial response contains a `session_id`, retain it and poll only with `write_stdin` every 5
+  seconds until an explicit exit code is observed. If the initial response instead contains an exit
+  code, the command completed before yielding and needs no polling. Do not resume a yielded exec
+  cell with a separate wait call: the cell may be reclaimed before its result is collected. If the
+  initial response has neither a session ID nor an exit code, or a PTY session disappears without
+  an exit code, inspect its trace/artifacts but report the command as unverified; never restart a
+  full suite, and rerun a targeted command only when the suite rules permit it.
 - From launch through exit, every browser and Tauri end-to-end run must emit a complete snapshot
   every 5 seconds. Each snapshot enumerates every current HTML element with its tag, attributes,
   text/value, and visibility, and includes runtime, presentation, output, status, and log state.
