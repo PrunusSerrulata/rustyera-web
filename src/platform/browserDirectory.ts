@@ -42,6 +42,7 @@ export { selectedProjectFiles };
 
 const IMPORT_ROOT = ".rustyera-imports";
 const SOURCE_MANIFEST = "imported-sources.json";
+const PROJECT_CONFIGURATION = "reraconfig.toml";
 
 export async function pickBrowserDirectory(
   progress?: BrowserDirectoryProgress,
@@ -153,6 +154,7 @@ export async function importBrowserDirectory(
   const scannedFiles = new Map<string, ScannedFile>();
   const portableFiles: PortableBrowserFile[] = [];
   const scanRequests = new Array<{ relativePath: string; file: File }>(files.length);
+  const selectedConfiguration = files.some(({ path }) => isProjectConfigurationPath(path));
   progress?.("importing", 0, files.length);
 
   for (const path of previousSources) {
@@ -162,22 +164,34 @@ export async function importBrowserDirectory(
   await runBounded(
     files.map(({ path, file }, index) => async () => {
       const runtimeStorage = isRuntimeStoragePath(path);
-      const preserveRuntimeFile = runtimeStorage && (await fileExists(project, path));
-      if (runtimeStorage) {
-        const bytes = preserveRuntimeFile ? await readFile(project, path) : await fileBytes(file);
-        if (!preserveRuntimeFile) await writeFile(project, path, bytes);
+      const effectivePath = isProjectConfigurationPath(path) ? PROJECT_CONFIGURATION : path;
+      const preserveStoredFile =
+        (runtimeStorage || effectivePath === PROJECT_CONFIGURATION) &&
+        (await fileExists(project, effectivePath));
+      if (runtimeStorage || preserveStoredFile) {
+        const bytes = preserveStoredFile
+          ? await readFile(project, effectivePath)
+          : await fileBytes(file);
+        if (!preserveStoredFile) await writeFile(project, effectivePath, bytes);
         scanRequests[index] = {
-          relativePath: path,
-          file: preserveRuntimeFile ? fileSnapshot(file, bytes) : file,
+          relativePath: effectivePath,
+          file: preserveStoredFile ? fileSnapshot(file, bytes) : file,
         };
+        if (!runtimeStorage) portableFiles.push({ path: effectivePath, file });
       } else {
-        portableFiles.push({ path, file });
-        scanRequests[index] = { relativePath: path, file };
+        portableFiles.push({ path: effectivePath, file });
+        scanRequests[index] = { relativePath: effectivePath, file };
       }
     }),
     8,
     (completed, total) => progress?.("importing", completed, total),
   );
+  if (!selectedConfiguration && (await fileExists(project, PROJECT_CONFIGURATION))) {
+    scanRequests.push({
+      relativePath: PROJECT_CONFIGURATION,
+      file: await readFileEntry(project, PROJECT_CONFIGURATION),
+    });
+  }
   const statMs = performance.now() - statAndCopyStarted;
   const scanStarted = performance.now();
   const scans = await scanBrowserProjectFilesOffThread(scanRequests, topLevel);
@@ -272,6 +286,13 @@ async function readFile(
   return new Uint8Array(await file.arrayBuffer());
 }
 
+async function readFileEntry(root: FileSystemDirectoryHandle, relativePath: string): Promise<File> {
+  const parts = safePath(relativePath).split("/");
+  let directory = root;
+  for (const part of parts.slice(0, -1)) directory = await directory.getDirectoryHandle(part);
+  return (await directory.getFileHandle(parts.at(-1)!)).getFile();
+}
+
 async function fileExists(root: FileSystemDirectoryHandle, relativePath: string): Promise<boolean> {
   const parts = safePath(relativePath).split("/");
   let directory = root;
@@ -288,4 +309,8 @@ async function fileExists(root: FileSystemDirectoryHandle, relativePath: string)
 function isRuntimeStoragePath(path: string): boolean {
   const first = path.split("/", 1)[0].toLowerCase();
   return [".rustyera", "sav", "data", "logs", "project"].includes(first);
+}
+
+function isProjectConfigurationPath(path: string): boolean {
+  return path.toLowerCase() === PROJECT_CONFIGURATION;
 }

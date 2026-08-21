@@ -344,6 +344,67 @@ describe("portable browser directory selection", () => {
     });
   });
 
+  it.each([
+    { name: "generated configuration", configuration: undefined },
+    {
+      name: "mixed-case selected configuration override",
+      configuration: projectFile("game/ReraConfig.toml", "[text]\nfont_size = 12\n"),
+    },
+  ])("reimports the browser-owned $name baseline", async ({ configuration }) => {
+    const storage = new MemoryDirectoryHandle("root");
+    const selected = [
+      projectFile("game/ERB/main.erb", "@SYSTEM_TITLE\nRETURN\n"),
+      ...(configuration ? [configuration] : []),
+    ];
+    const first = await importBrowserDirectory(
+      selected,
+      storage as unknown as FileSystemDirectoryHandle,
+    );
+    const firstProject = new BrowserProject(first.handle, 1, first.projectName);
+    firstProject.useImportedManifest(first.manifest!);
+    const original = first.manifest!.files.find(
+      (file) => file.relative_path.toLowerCase() === "reraconfig.toml",
+    );
+    await firstProject.writeConfiguration(
+      original?.content_hash ?? new Uint8Array(),
+      "[text]\nfont_size = 18\n",
+    );
+
+    const reopened = await importBrowserDirectory(
+      selected,
+      storage as unknown as FileSystemDirectoryHandle,
+    );
+    const reopenedConfiguration = reopened.manifest!.files.find(
+      (file) => file.relative_path.toLowerCase() === "reraconfig.toml",
+    )!;
+    expect(
+      reopened.manifest!.files.filter((file) => file.category === "configuration"),
+    ).toHaveLength(1);
+    expect(reopenedConfiguration.relative_path).toBe("reraconfig.toml");
+    expect(reopenedConfiguration.payload).toEqual({
+      type: "utf8",
+      value: "[text]\nfont_size = 18\n",
+    });
+    const reopenedProject = new BrowserProject(reopened.handle, 1, reopened.projectName);
+    reopenedProject.useImportedManifest(reopened.manifest!);
+
+    await expect(
+      reopenedProject.writeConfiguration(
+        reopenedConfiguration.content_hash,
+        "[text]\nfont_size = 20\n",
+      ),
+    ).resolves.toBeUndefined();
+
+    const third = await importBrowserDirectory(
+      selected,
+      storage as unknown as FileSystemDirectoryHandle,
+    );
+    expect(
+      third.manifest!.files.find((file) => file.relative_path.toLowerCase() === "reraconfig.toml")
+        ?.payload,
+    ).toEqual({ type: "utf8", value: "[text]\nfont_size = 20\n" });
+  });
+
   it("keeps provider-backed image, audio, and font resources mounted for lazy reads", async () => {
     const storage = new MemoryDirectoryHandle("root");
     vi.stubGlobal("showDirectoryPicker", undefined);
