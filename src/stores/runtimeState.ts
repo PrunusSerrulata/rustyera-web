@@ -99,6 +99,21 @@ export interface FullProjectRequestSubmission {
   earlyPreparationRejections: Array<{ correlation: string; value: any }>;
 }
 
+export interface FullManifestImportTransaction {
+  activeExport: FullProjectExportState;
+  totalBytes: number;
+  purpose: "project_file" | "diagnosis_project";
+  beginMessageId?: string;
+  transferId?: number;
+  commitMessageId?: string;
+  commandMessageIds: Set<string>;
+  cancelled: boolean;
+  cancelSent: boolean;
+  commitStarted: boolean;
+  runtimeSubmission: Promise<void>;
+  hostRelease?: Promise<void>;
+}
+
 export function isFullProjectExport(
   state: ExportState | undefined,
 ): state is FullProjectExportState {
