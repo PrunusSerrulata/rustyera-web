@@ -1,8 +1,10 @@
 import { fileURLToPath, URL } from "node:url";
 import { readFileSync } from "node:fs";
 import vue from "@vitejs/plugin-vue";
+import { VitePWA } from "vite-plugin-pwa";
 import { configDefaults, defineConfig } from "vitest/config";
 
+import { rustyEraPwaOptionsForHost } from "./scripts/pwa-config";
 import { wasmAssetRevision } from "./scripts/wasm-assets";
 import { rustyeraWasmBuildPreload, rustyeraWasmDevServer } from "./scripts/vite-wasm-plugin";
 
@@ -24,6 +26,7 @@ const wasmBuildPreload = process.env.TAURI_ENV_PLATFORM
 export default defineConfig({
   plugins: [
     vue(),
+    ...VitePWA(rustyEraPwaOptionsForHost(process.env.TAURI_ENV_PLATFORM)),
     rustyeraWasmDevServer(wasmDirectory),
     ...(wasmBuildPreload ? [wasmBuildPreload.app] : []),
   ],
