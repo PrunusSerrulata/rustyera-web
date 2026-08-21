@@ -13,6 +13,7 @@ import {
   isPickerCancellation,
   pickFileBytes,
   pickFiles,
+  pickRetainedFiles,
   selectedProjectFiles,
 } from "@/platform/browserDirectory/fileSelection";
 import {
@@ -26,6 +27,8 @@ export interface PickedBrowserDirectory {
   projectName?: string;
   manifest?: BrowserManifest;
   scanMetrics?: BrowserProjectScanMetrics;
+  /** Keeps provider-backed directory files readable until the selected project is replaced. */
+  release?: () => void;
 }
 
 export type BrowserDirectoryProgress = (
@@ -68,13 +71,21 @@ export async function pickBrowserDirectory(
     throw new Error("此浏览器无法创建项目存储空间，请更新 Firefox 或 Safari 后重试。");
   }
 
-  const files = await pickDirectoryFiles();
-  if (!files) return undefined;
-  submitted?.();
-  await prepareAfterSelection?.();
-  progress?.("importing", 0, 0);
-  const storageRoot = await navigator.storage.getDirectory();
-  return importBrowserDirectory(files, storageRoot, progress);
+  const selection = await pickDirectoryFiles();
+  if (!selection) return undefined;
+  try {
+    submitted?.();
+    await prepareAfterSelection?.();
+    progress?.("importing", 0, 0);
+    const storageRoot = await navigator.storage.getDirectory();
+    return {
+      ...(await importBrowserDirectory(selection.files, storageRoot, progress)),
+      release: selection.release,
+    };
+  } catch (error) {
+    selection.release();
+    throw error;
+  }
 }
 
 export async function pickBrowserFile(accept?: string): Promise<File | undefined> {
@@ -206,8 +217,8 @@ async function fileBytes(file: File): Promise<Uint8Array> {
   return new Uint8Array(await file.arrayBuffer());
 }
 
-async function pickDirectoryFiles(): Promise<File[] | undefined> {
-  return pickFiles({ directory: true, multiple: true });
+async function pickDirectoryFiles() {
+  return pickRetainedFiles({ directory: true, multiple: true });
 }
 
 async function readSourceManifest(directory: FileSystemDirectoryHandle): Promise<string[]> {

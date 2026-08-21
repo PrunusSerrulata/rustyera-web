@@ -25,6 +25,7 @@ import { overlayBrowserDirectory } from "@/platform/browserDirectoryOverlay";
 import { BrowserProject } from "@/platform/browserProject";
 import { BrowserProjectPreferenceStore } from "@/platform/projectPreferences";
 import { BROWSER_FILE_SAVE_EVENT, type BrowserFileSaveRequest } from "@/platform/browserDownload";
+import { ProjectFontRegistry } from "@/platform/projectFonts";
 
 const SESSION_OPTIONS: SessionOptions = {
   clientName: "test",
@@ -490,6 +491,157 @@ describe("browser startup bridge", () => {
     ]);
     expect(runtimeWorkers).toHaveLength(2);
     expect(firstWorker.terminate).toHaveBeenCalledOnce();
+  });
+
+  it("retains only the active portable directory selection", async () => {
+    const firstRelease = vi.fn();
+    const secondRelease = vi.fn();
+    pickBrowserDirectory
+      .mockResolvedValueOnce({
+        handle: new MemoryDirectoryHandle("first"),
+        persistHandle: false,
+        projectName: "first",
+        manifest: { project_revision: 1, files: [] },
+        release: firstRelease,
+      })
+      .mockResolvedValueOnce({
+        handle: new MemoryDirectoryHandle("second"),
+        persistHandle: false,
+        projectName: "second",
+        manifest: { project_revision: 1, files: [] },
+        release: secondRelease,
+      });
+    const bridge = new BrowserBridge();
+
+    await bridge.openProject();
+    expect(firstRelease).not.toHaveBeenCalled();
+    await bridge.openProject();
+    expect(firstRelease).toHaveBeenCalledOnce();
+    expect(secondRelease).not.toHaveBeenCalled();
+    await bridge.close();
+    await bridge.close();
+    expect(secondRelease).toHaveBeenCalledOnce();
+  });
+
+  it("releases only a portable candidate whose runtime submission fails", async () => {
+    const firstRelease = vi.fn();
+    const candidateRelease = vi.fn();
+    pickBrowserDirectory
+      .mockResolvedValueOnce({
+        handle: new MemoryDirectoryHandle("active"),
+        persistHandle: false,
+        projectName: "active",
+        manifest: { project_revision: 1, files: [] },
+        release: firstRelease,
+      })
+      .mockResolvedValueOnce({
+        handle: new MemoryDirectoryHandle("candidate"),
+        persistHandle: false,
+        projectName: "candidate",
+        manifest: { project_revision: 1, files: [] },
+        release: candidateRelease,
+      });
+    const bridge = new BrowserBridge();
+    await bridge.openProject();
+    respond = (method) => {
+      if (method === "loadProjectBinary") throw new Error("candidate submission failed");
+      return 1n;
+    };
+
+    await expect(bridge.openProject()).rejects.toThrow("candidate submission failed");
+
+    expect(bridge.projectName()).toBe("active");
+    expect(candidateRelease).toHaveBeenCalledOnce();
+    expect(firstRelease).not.toHaveBeenCalled();
+    await bridge.close();
+    expect(firstRelease).toHaveBeenCalledOnce();
+  });
+
+  it("commits a portable project before reporting an unexpected font registration failure", async () => {
+    const firstRelease = vi.fn();
+    const secondRelease = vi.fn();
+    pickBrowserDirectory
+      .mockResolvedValueOnce({
+        handle: new MemoryDirectoryHandle("first"),
+        persistHandle: false,
+        projectName: "first",
+        manifest: { project_revision: 1, files: [] },
+        release: firstRelease,
+      })
+      .mockResolvedValueOnce({
+        handle: new MemoryDirectoryHandle("second"),
+        persistHandle: false,
+        projectName: "second",
+        manifest: { project_revision: 1, files: [] },
+        release: secondRelease,
+      });
+    vi.spyOn(ProjectFontRegistry.prototype, "replace")
+      .mockResolvedValueOnce({ fonts: [], errors: [] })
+      .mockRejectedValueOnce(new Error("font registry unavailable"));
+    const bridge = new BrowserBridge();
+    await bridge.openProject();
+
+    await expect(bridge.openProject()).rejects.toThrow("font registry unavailable");
+
+    expect(bridge.projectName()).toBe("second");
+    expect(firstRelease).toHaveBeenCalledOnce();
+    expect(secondRelease).not.toHaveBeenCalled();
+    await bridge.close();
+    expect(secondRelease).toHaveBeenCalledOnce();
+  });
+
+  it("drops a portable lease when a packaged project commits before a font failure", async () => {
+    const directoryRelease = vi.fn();
+    pickBrowserDirectory.mockResolvedValue({
+      handle: new MemoryDirectoryHandle("directory"),
+      persistHandle: false,
+      projectName: "directory",
+      manifest: { project_revision: 1, files: [] },
+      release: directoryRelease,
+    });
+    const file = new File([Uint8Array.of(1, 2, 3)], "packaged.reraproj");
+    pickBrowserProjectFile.mockResolvedValue({ file });
+    respond = (method) => {
+      if (method === "loadProjectFileBytes") {
+        return {
+          storageKey: "packaged-font-failure",
+          manifest: { project_revision: 2, files: [] },
+          cacheImported: true,
+        };
+      }
+      return 1n;
+    };
+    vi.spyOn(ProjectFontRegistry.prototype, "replace")
+      .mockResolvedValueOnce({ fonts: [], errors: [] })
+      .mockRejectedValueOnce(new Error("font registry unavailable"));
+    const bridge = new BrowserBridge();
+    await bridge.openProject();
+
+    await expect(bridge.openProjectFile()).rejects.toThrow("font registry unavailable");
+
+    expect(bridge.projectName()).toBe("packaged");
+    expect(directoryRelease).toHaveBeenCalledOnce();
+    await bridge.close();
+    expect(directoryRelease).toHaveBeenCalledOnce();
+  });
+
+  it("releases a picked directory when submission notification fails", async () => {
+    const release = vi.fn();
+    pickBrowserDirectory.mockResolvedValue({
+      handle: new MemoryDirectoryHandle("candidate"),
+      persistHandle: false,
+      manifest: { project_revision: 1, files: [] },
+      release,
+    });
+
+    await expect(
+      new BrowserBridge().openProject(() => {
+        throw new Error("submission notification failed");
+      }),
+    ).rejects.toThrow("submission notification failed");
+
+    expect(release).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(0);
   });
 
   it("transfers snapshot import chunks into the runtime worker", async () => {

@@ -96,6 +96,11 @@ interface PendingBrowserReload {
   runtimeManifestSparse: boolean;
 }
 
+interface BrowserResourceIdentity {
+  signature?: string;
+  contentHash: Uint8Array;
+}
+
 export interface BrowserProjectScanMetrics {
   enumerateMs: number;
   indexReadMs: number;
@@ -113,7 +118,7 @@ export class BrowserProject {
   private readonly embeddedResources = new Map<string, Uint8Array>();
   private packagedResourceReader?: PackagedResourceReader;
   private readonly canonicalPaths = new Map<string, string>();
-  private readonly resourceSignatures = new Map<string, string>();
+  private readonly resourceIdentities = new Map<string, BrowserResourceIdentity>();
   private usesEmbeddedManifest = false;
   private manifestValue?: BrowserManifest;
   private pendingSnapshot?: PendingBrowserSnapshot;
@@ -205,8 +210,13 @@ export class BrowserProject {
     this.importedSnapshot = true;
     this.sourcePayloadsReleased = false;
     this.canonicalPaths.clear();
+    this.resourceIdentities.clear();
     for (const file of manifest.files) {
-      this.canonicalPaths.set(file.relative_path.toLowerCase(), file.relative_path);
+      const key = file.relative_path.toLowerCase();
+      this.canonicalPaths.set(key, file.relative_path);
+      if (file.category === "resource") {
+        this.resourceIdentities.set(key, { contentHash: file.content_hash });
+      }
     }
     this.manifestValue = manifest;
   }
@@ -346,7 +356,7 @@ export class BrowserProject {
   ): Promise<BrowserManifest> {
     throwIfAborted(signal);
     this.files.clear();
-    this.resourceSignatures.clear();
+    this.resourceIdentities.clear();
     progress?.(0, 0);
     const enumerateStarted = performance.now();
     const { files: candidates, topLevel } = await this.enumerateFiles();
@@ -361,11 +371,6 @@ export class BrowserProject {
       const candidate = candidates[index]!;
       const file = await candidate.handle.getFile();
       snapshots[index] = file;
-      if (candidate.category === "resource")
-        this.resourceSignatures.set(
-          candidate.relativePath.toLowerCase(),
-          `${file.size}:${file.lastModified}`,
-        );
       const prepared = preloaded?.get(candidate.relativePath);
       if (prepared) {
         files.push(prepared);
@@ -383,6 +388,15 @@ export class BrowserProject {
       const file = scanned[index];
       if (!file) throw new Error(`无法分类项目文件：${requests[index]!.relativePath}`);
       files[positions[index]!] = file;
+    }
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index]!;
+      if (candidate.category !== "resource") continue;
+      const file = snapshots[index]!;
+      this.resourceIdentities.set(candidate.relativePath.toLowerCase(), {
+        signature: `${file.size}:${file.lastModified}`,
+        contentHash: files[index]!.content_hash,
+      });
     }
     progress?.(requests.length, requests.length);
     const sourceReadDecodeHashMs = performance.now() - readStarted;
@@ -430,7 +444,7 @@ export class BrowserProject {
 
   async scanQuick(progress?: FileScanProgress): Promise<BrowserManifest> {
     this.files.clear();
-    this.resourceSignatures.clear();
+    this.resourceIdentities.clear();
     progress?.(0, 0);
     const enumerateStarted = performance.now();
     const { files: candidates, topLevel } = await this.enumerateFiles();
@@ -534,8 +548,12 @@ export class BrowserProject {
       const file = snapshots[index]!;
       const signature = signatures[index]!;
       const scanned = files[index]!;
-      if (candidate.category === "resource")
-        this.resourceSignatures.set(candidate.relativePath.toLowerCase(), signature);
+      if (candidate.category === "resource") {
+        this.resourceIdentities.set(candidate.relativePath.toLowerCase(), {
+          signature,
+          contentHash: scanned.content_hash,
+        });
+      }
       const prepared = reused[index] && candidate.category !== "resource" ? undefined : scanned;
       pending[index] = { ...candidate, signature, prepared };
       indexEntries[index] = [
@@ -734,7 +752,10 @@ export class BrowserProject {
     if (!handle) throw new Error(`未知资源：${source.relative_path}`);
     const file = await handle.getFile();
     const signature = `${file.size}:${file.lastModified}`;
-    if (file.size !== source.payload.byteLength || this.resourceSignatures.get(key) !== signature)
+    if (
+      file.size !== source.payload.byteLength ||
+      this.resourceIdentities.get(key)?.signature !== signature
+    )
       throw new Error(`资源在项目扫描后发生变化：${source.relative_path}`);
     const hasher = blake3.create();
     for (let offset = 0; offset < file.size; offset += 4 * 1024 * 1024) {
@@ -898,6 +919,10 @@ export class BrowserProject {
     for (const [path, canonical] of candidate.canonicalPaths) {
       if (activePaths.has(path)) this.canonicalPaths.set(path, canonical);
     }
+    this.resourceIdentities.clear();
+    for (const [path, identity] of candidate.resourceIdentities) {
+      if (activePaths.has(path)) this.resourceIdentities.set(path, identity);
+    }
   }
 
   hasPendingReload(): boolean {
@@ -921,17 +946,15 @@ export class BrowserProject {
     if (!handle) throw new Error(`未知资源：${relativePath}`);
     const current = await handle.getFile();
     const bytes = new Uint8Array(await current.arrayBuffer());
-    const expected = this.manifestValue?.files.find(
-      (file) => file.category === "resource" && file.relative_path.toLowerCase() === key,
-    )?.content_hash;
-    const expectedSignature = this.resourceSignatures.get(key);
+    const identity = this.resourceIdentities.get(key);
+    if (!identity) throw new Error(`资源不在活动项目清单中：${relativePath}`);
     if (
-      !expected ||
-      (expectedSignature != null &&
-        `${current.size}:${current.lastModified}` !== expectedSignature) ||
-      !equalBytes(blake3(bytes), expected)
+      identity.signature != null &&
+      `${current.size}:${current.lastModified}` !== identity.signature
     )
-      throw new Error(`资源在项目扫描后发生变化：${relativePath}`);
+      throw new Error(`资源签名在项目扫描后发生变化：${relativePath}`);
+    if (!equalBytes(blake3(bytes), identity.contentHash))
+      throw new Error(`资源内容在项目扫描后发生变化：${relativePath}`);
     return bytes;
   }
 
@@ -951,15 +974,16 @@ export class BrowserProject {
       ));
     if (!handle) throw new Error(`未知资源：${relativePath}`);
     const file = await handle.getFile();
-    const expectedSignature = this.resourceSignatures.get(key);
+    const identity = this.resourceIdentities.get(key);
+    if (!identity) throw new Error(`资源不在活动项目清单中：${relativePath}`);
     const signature = `${file.size}:${file.lastModified}`;
-    if (expectedSignature && signature !== expectedSignature)
+    if (identity.signature && signature !== identity.signature)
       throw new Error(`资源在项目扫描后发生变化：${relativePath}`);
     const bytes = new Uint8Array(await file.slice(0, maximumBytes).arrayBuffer());
     const current = await handle.getFile();
     if (`${current.size}:${current.lastModified}` !== signature)
       throw new Error(`资源在项目扫描后发生变化：${relativePath}`);
-    if (!expectedSignature) this.resourceSignatures.set(key, signature);
+    if (!identity.signature) identity.signature = signature;
     return bytes;
   }
 

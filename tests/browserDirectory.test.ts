@@ -344,6 +344,69 @@ describe("portable browser directory selection", () => {
     });
   });
 
+  it("keeps provider-backed image, audio, and font resources mounted for lazy reads", async () => {
+    const storage = new MemoryDirectoryHandle("root");
+    vi.stubGlobal("showDirectoryPicker", undefined);
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    const selection = pickBrowserDirectory();
+    const input = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const providerFile = (path: string, contents: string) => {
+      const source = projectFile(path, contents);
+      return {
+        name: source.name,
+        webkitRelativePath: source.webkitRelativePath,
+        size: source.size,
+        lastModified: source.lastModified,
+        type: source.type,
+        arrayBuffer: async () => {
+          if (!input.isConnected) throw new Error(`provider access revoked: ${path}`);
+          return source.arrayBuffer();
+        },
+        text: () => source.text(),
+        slice: (start?: number, end?: number, contentType?: string) =>
+          source.slice(start, end, contentType),
+      } as File;
+    };
+    Object.defineProperty(input, "files", {
+      value: [
+        providerFile("game/ERB/main.erb", "@SYSTEM_TITLE\nRETURN\n"),
+        providerFile("game/resources/title.png", "image"),
+        providerFile("game/sound/theme.mp3", "audio"),
+        providerFile("game/font/game.ttf", "font"),
+      ],
+    });
+
+    input.dispatchEvent(new Event("change"));
+    const picked = await selection;
+    expect(picked).toBeDefined();
+    expect(input.isConnected).toBe(true);
+    const project = new BrowserProject(picked!.handle, 1, picked!.projectName);
+    project.useImportedManifest(picked!.manifest!);
+    project.releaseSubmittedSourcePayloads();
+
+    await expect(
+      project.readResource("resources/title.png").then((bytes) => [...bytes]),
+    ).resolves.toEqual([...new TextEncoder().encode("image")]);
+    await expect(
+      project.readResource("sound/theme.mp3").then((bytes) => [...bytes]),
+    ).resolves.toEqual([...new TextEncoder().encode("audio")]);
+    await expect(
+      project.readResource("font/game.ttf").then((bytes) => [...bytes]),
+    ).resolves.toEqual([...new TextEncoder().encode("font")]);
+    expect(
+      picked!
+        .manifest!.files.filter((file) => file.category === "resource")
+        .map((file) => file.payload),
+    ).toEqual([
+      { type: "external", byteLength: 4, imageMetadata: undefined },
+      { type: "external", byteLength: 5, imageMetadata: undefined },
+      { type: "external", byteLength: 5, imageMetadata: undefined },
+    ]);
+
+    picked!.release?.();
+    expect(input.isConnected).toBe(false);
+  });
+
   it("lets an existing OPFS entry win over a conflicting selected directory", async () => {
     const storage = new MemoryDirectoryHandle("root");
     const picked = await importBrowserDirectory(
@@ -376,6 +439,25 @@ describe("portable browser directory selection", () => {
     await expect(selection).resolves.toBeUndefined();
   });
 
+  it("releases a retained directory when submission notification fails", async () => {
+    const storage = new MemoryDirectoryHandle("root");
+    vi.stubGlobal("showDirectoryPicker", undefined);
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    const selection = pickBrowserDirectory(undefined, () => {
+      throw new Error("submission notification failed");
+    });
+    const input = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { value: [projectFile("game/ERB/main.erb")] });
+
+    input.dispatchEvent(new Event("change"));
+
+    await expect(selection).rejects.toThrow("submission notification failed");
+    expect(input.isConnected).toBe(false);
+    await expect(storage.getDirectoryHandle(".rustyera-imports")).rejects.toMatchObject({
+      name: "NotFoundError",
+    });
+  });
+
   it("does not import selected directory files when session preparation fails", async () => {
     const storage = new MemoryDirectoryHandle("root");
     vi.stubGlobal("showDirectoryPicker", undefined);
@@ -391,6 +473,7 @@ describe("portable browser directory selection", () => {
     input.dispatchEvent(new Event("change"));
 
     await expect(selection).rejects.toThrow("session failed");
+    expect(input.isConnected).toBe(false);
     expect(submitted).toHaveBeenCalledOnce();
     expect(progress).not.toHaveBeenCalled();
     await expect(storage.getDirectoryHandle(".rustyera-imports")).rejects.toMatchObject({

@@ -64,6 +64,7 @@ export class BrowserBridge implements FrontendBridge {
   });
   private readonly projectFontRegistry = new ProjectFontRegistry();
   private project?: BrowserProject;
+  private projectDirectorySelectionRelease?: () => void;
   private cacheWriter?: FileSystemWritableFileStream;
   private discardCompiledCacheExport = false;
   private projectFileWriter?: FileSystemWritableFileStream;
@@ -153,63 +154,73 @@ export class BrowserBridge implements FrontendBridge {
       prepareAfterSelection,
     );
     if (!picked) return undefined;
-    if (submittedAtMs === 0) {
-      submittedAtMs = performance.now();
-      onSubmitted?.(submittedAtMs);
+    let projectCommitted = false;
+    try {
+      if (submittedAtMs === 0) {
+        submittedAtMs = performance.now();
+        onSubmitted?.(submittedAtMs);
+      }
+      const handle = picked.handle;
+      // Playwright supplies an RPC-backed FileSystemDirectoryHandle which intentionally cannot be
+      // structured-cloned into IndexedDB. Production handles continue to be persisted normally.
+      if (picked.persistHandle && import.meta.env.VITE_RUSTYERA_TEST !== "1")
+        await database.handles.put({ key: "last-project", handle });
+      this.projectStoragePersistent = true;
+      this.projectPreferenceStore = await BrowserProjectPreferenceStore.source(handle);
+      const projectPreferences = this.projectPreferenceStore.values();
+      const project = new BrowserProject(
+        handle,
+        1,
+        picked.projectName,
+        projectPreferences.trustProjectFileMetadata ?? this.preferences.trustProjectFileMetadata,
+      );
+      project.useConfigurationUpdatePreparer(this.prepareProjectConfigurationUpdate);
+      const started = performance.now();
+      const sourcesReady = picked.manifest != null;
+      const manifest =
+        picked.manifest ??
+        (await project.scanQuick((completed, total) =>
+          this.projectProgressListener?.({ stage: "scanning", completed, total }),
+        ));
+      if (picked.manifest) {
+        project.useImportedManifest(picked.manifest);
+        if (picked.scanMetrics) project.useScanMetrics(picked.scanMetrics);
+      }
+      const quickScanMs = sourcesReady ? 0 : performance.now() - started;
+      const loaded = await this.loadSourceProject(project, manifest, sourcesReady);
+      const previousRelease = this.projectDirectorySelectionRelease;
+      this.project = project;
+      this.projectDirectorySelectionRelease = picked.release;
+      projectCommitted = true;
+      previousRelease?.();
+      const projectFonts = await this.projectFontRegistry.replace(project.fontSources());
+      const indexStats = project.sourceIndexStats();
+      const scanMetrics = project.scanMetrics();
+      return {
+        submittedAtMs,
+        quickScanMs,
+        cacheReadMs: loaded.cacheReadMs,
+        sourceReadMs: loaded.sourceReadMs,
+        submitMs: loaded.submitMs,
+        cacheImported: loaded.cacheImported,
+        sourceIndexTrusted: indexStats.trusted,
+        sourceIndexReusedFiles: indexStats.reusedFiles,
+        sourceIndexHashedFiles: indexStats.hashedFiles,
+        sourceIndexPresent: scanMetrics.sourceIndexPresent,
+        enumerateMs: scanMetrics.enumerateMs,
+        indexReadMs: scanMetrics.indexReadMs,
+        indexWriteMs: scanMetrics.indexWriteMs,
+        statMs: scanMetrics.statMs,
+        sourceReadDecodeHashMs: scanMetrics.sourceReadDecodeHashMs + loaded.sourceReadMs,
+        submissionTransferMs: loaded.submitMs,
+        wasmMode: "single",
+        memoryConstrained: this.memoryConstrained,
+        projectFonts,
+      } satisfies ProjectOpenMetrics;
+    } catch (error) {
+      if (!projectCommitted) picked.release?.();
+      throw error;
     }
-    const handle = picked.handle;
-    // Playwright supplies an RPC-backed FileSystemDirectoryHandle which intentionally cannot be
-    // structured-cloned into IndexedDB. Production handles continue to be persisted normally.
-    if (picked.persistHandle && import.meta.env.VITE_RUSTYERA_TEST !== "1")
-      await database.handles.put({ key: "last-project", handle });
-    this.projectStoragePersistent = true;
-    this.projectPreferenceStore = await BrowserProjectPreferenceStore.source(handle);
-    const projectPreferences = this.projectPreferenceStore.values();
-    const project = new BrowserProject(
-      handle,
-      1,
-      picked.projectName,
-      projectPreferences.trustProjectFileMetadata ?? this.preferences.trustProjectFileMetadata,
-    );
-    project.useConfigurationUpdatePreparer(this.prepareProjectConfigurationUpdate);
-    const started = performance.now();
-    const sourcesReady = picked.manifest != null;
-    const manifest =
-      picked.manifest ??
-      (await project.scanQuick((completed, total) =>
-        this.projectProgressListener?.({ stage: "scanning", completed, total }),
-      ));
-    if (picked.manifest) {
-      project.useImportedManifest(picked.manifest);
-      if (picked.scanMetrics) project.useScanMetrics(picked.scanMetrics);
-    }
-    const quickScanMs = sourcesReady ? 0 : performance.now() - started;
-    const loaded = await this.loadSourceProject(project, manifest, sourcesReady);
-    this.project = project;
-    const projectFonts = await this.projectFontRegistry.replace(project.fontSources());
-    const indexStats = project.sourceIndexStats();
-    const scanMetrics = project.scanMetrics();
-    return {
-      submittedAtMs,
-      quickScanMs,
-      cacheReadMs: loaded.cacheReadMs,
-      sourceReadMs: loaded.sourceReadMs,
-      submitMs: loaded.submitMs,
-      cacheImported: loaded.cacheImported,
-      sourceIndexTrusted: indexStats.trusted,
-      sourceIndexReusedFiles: indexStats.reusedFiles,
-      sourceIndexHashedFiles: indexStats.hashedFiles,
-      sourceIndexPresent: scanMetrics.sourceIndexPresent,
-      enumerateMs: scanMetrics.enumerateMs,
-      indexReadMs: scanMetrics.indexReadMs,
-      indexWriteMs: scanMetrics.indexWriteMs,
-      statMs: scanMetrics.statMs,
-      sourceReadDecodeHashMs: scanMetrics.sourceReadDecodeHashMs + loaded.sourceReadMs,
-      submissionTransferMs: loaded.submitMs,
-      wasmMode: "single",
-      memoryConstrained: this.memoryConstrained,
-      projectFonts,
-    } satisfies ProjectOpenMetrics;
   }
 
   async openProjectFile(
@@ -237,12 +248,12 @@ export class BrowserBridge implements FrontendBridge {
     this.projectPreferenceStore = storage.preferences;
     this.projectStoragePersistent = storage.persistent;
     const root = storage.projectRoot;
-    this.project = new BrowserProject(
+    const project = new BrowserProject(
       root,
       manifest.project_revision,
       file.name.replace(/\.reraproj$/i, ""),
     );
-    this.project.usePackagedFile(
+    project.usePackagedFile(
       file,
       picked.handle,
       this.prepareProjectConfigurationUpdate,
@@ -250,10 +261,14 @@ export class BrowserBridge implements FrontendBridge {
         ? () => materializePackagedProjectFile(root, file)
         : undefined,
     );
-    this.project.useOwnedEmbeddedManifest(manifest, (relativePath, maximumBytes) =>
+    project.useOwnedEmbeddedManifest(manifest, (relativePath, maximumBytes) =>
       this.worker.call("readProjectFileResource", relativePath, maximumBytes),
     );
-    const projectFonts = await this.projectFontRegistry.replace(this.project.fontSources());
+    const previousRelease = this.projectDirectorySelectionRelease;
+    this.project = project;
+    this.projectDirectorySelectionRelease = undefined;
+    previousRelease?.();
+    const projectFonts = await this.projectFontRegistry.replace(project.fontSources());
     return {
       submittedAtMs,
       quickScanMs: 0,
@@ -760,6 +775,8 @@ export class BrowserBridge implements FrontendBridge {
 
   async close(): Promise<void> {
     this.project?.finalizeReload(false);
+    this.projectDirectorySelectionRelease?.();
+    this.projectDirectorySelectionRelease = undefined;
     this.projectFontRegistry.clear();
     this.worker.close();
   }

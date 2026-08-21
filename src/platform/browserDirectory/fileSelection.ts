@@ -39,6 +39,23 @@ export function pickFiles(options: {
   directory?: boolean;
   multiple?: boolean;
 }): Promise<File[] | undefined> {
+  return pickRetainedFiles(options).then((selection) => {
+    if (!selection) return undefined;
+    selection.release();
+    return selection.files;
+  });
+}
+
+export interface RetainedFileSelection {
+  files: File[];
+  release(): void;
+}
+
+export function pickRetainedFiles(options: {
+  accept?: string;
+  directory?: boolean;
+  multiple?: boolean;
+}): Promise<RetainedFileSelection | undefined> {
   return new Promise((resolve, reject) => {
     const input = document.createElement("input");
     input.type = "file";
@@ -46,12 +63,21 @@ export function pickFiles(options: {
     input.webkitdirectory = options.directory ?? false;
     if (options.accept) input.accept = options.accept;
     input.hidden = true;
-    let settled = false;
-    const finish = (files?: File[]) => {
-      if (settled) return;
-      settled = true;
+    let state: "selecting" | "retained" | "settled" = "selecting";
+    const release = () => {
+      if (state === "settled") return;
+      state = "settled";
       input.remove();
-      resolve(files);
+    };
+    const finish = (files?: File[]) => {
+      if (state !== "selecting") return;
+      if (!files?.length) {
+        release();
+        resolve(undefined);
+        return;
+      }
+      state = "retained";
+      resolve({ files, release });
     };
     input.addEventListener("change", () =>
       finish(input.files?.length ? [...input.files] : undefined),
@@ -61,8 +87,7 @@ export function pickFiles(options: {
     try {
       input.click();
     } catch (error) {
-      settled = true;
-      input.remove();
+      release();
       reject(error);
     }
   });
