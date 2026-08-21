@@ -44,6 +44,10 @@ export class RuntimeImportState {
       });
     }
     await this.send({ type: "state_import_commit", value: { transfer_id: value.transfer_id } });
+    // The Runtime owns the completed transfer after commit. Drop the browser-side copy before
+    // snapshot startup, where the old VM, serialized snapshot, and restored VM can otherwise
+    // overlap long enough for iOS WebKit to terminate and reload the page under memory pressure.
+    this.bytes = undefined;
   }
 
   async ready(value: any): Promise<void> {
