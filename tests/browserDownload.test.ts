@@ -1,13 +1,32 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { downloadBrowserBlob } from "@/platform/browserDownload";
+import {
+  BROWSER_FILE_SAVE_EVENT,
+  type BrowserFileSaveRequest,
+  downloadBrowserBlob,
+} from "@/platform/browserDownload";
+
+const secureContextDescriptor = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+
+function readFile(file: File): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsArrayBuffer(file);
+  });
+}
 
 describe("browser blob downloads", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    if (secureContextDescriptor)
+      Object.defineProperty(window, "isSecureContext", secureContextDescriptor);
+    else Reflect.deleteProperty(window, "isSecureContext");
     vi.useRealTimers();
   });
 
-  it("keeps the named anchor connected while Firefox for iOS observes its click", () => {
+  it("uses an object URL outside Firefox for iOS", () => {
     vi.useFakeTimers();
     const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:download-id");
     const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
@@ -15,7 +34,6 @@ describe("browser blob downloads", () => {
       this: HTMLAnchorElement,
     ) {
       expect(this.isConnected).toBe(true);
-      expect(this.hidden).toBe(true);
       expect(this.download).toBe("runtime.snapshot");
       expect(this.href).toBe("blob:download-id");
     });
@@ -46,5 +64,74 @@ describe("browser blob downloads", () => {
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:failed-download");
     vi.runAllTimers();
     expect(revokeObjectURL).toHaveBeenCalledOnce();
+  });
+
+  it("offers each exported file type to iOS Firefox with intact metadata and contents", async () => {
+    const canShare = vi.fn(() => true);
+    const share = vi.fn();
+    vi.stubGlobal("navigator", {
+      userAgent: "Mozilla/5.0 (iPhone) FxiOS/151.0 Mobile/15E148 Safari/605.1.15",
+      canShare,
+      share,
+    });
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    const received: File[] = [];
+    const receive = (event: Event) =>
+      received.push((event as CustomEvent<BrowserFileSaveRequest>).detail.file);
+    window.addEventListener(BROWSER_FILE_SAVE_EVENT, receive);
+    const cases = [
+      ["runtime.snapshot", "", Uint8Array.of(1, 2, 3)],
+      ["game.reraproj", "application/octet-stream", Uint8Array.of(4, 5)],
+      ["diagnosis.tar.zst", "", Uint8Array.of(6)],
+      ["rustyera.log", "text/plain;charset=utf-8", Uint8Array.of(7, 8)],
+    ] as const;
+
+    for (const [name, type, bytes] of cases) downloadBrowserBlob(name, new Blob([bytes], { type }));
+
+    expect(canShare).toHaveBeenCalledTimes(cases.length);
+    expect(received.map((file) => file.name)).toEqual(cases.map(([name]) => name));
+    for (const [index, file] of received.entries()) {
+      expect(file.type).toBe(cases[index]![1] || "application/octet-stream");
+      expect(file.size).toBe(cases[index]![2].byteLength);
+      expect(await readFile(file)).toEqual(cases[index]![2]);
+    }
+    window.removeEventListener(BROWSER_FILE_SAVE_EVENT, receive);
+    expect(share).not.toHaveBeenCalled();
+  });
+
+  it.each(["unsupported", "throws"])("falls back when iOS Firefox file sharing %s", (behavior) => {
+    vi.stubGlobal("navigator", {
+      userAgent: "Mozilla/5.0 (iPhone) FxiOS/151.0 Mobile/15E148 Safari/605.1.15",
+      canShare: vi.fn(() => {
+        if (behavior === "throws") throw new TypeError("share probe failed");
+        return false;
+      }),
+      share: vi.fn(),
+    });
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:fallback");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+
+    downloadBrowserBlob("runtime.snapshot", new Blob());
+    expect(click).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["iOS Safari", "Mozilla/5.0 (iPhone) Version/26.0 Mobile/15E148 Safari/604.1"],
+    ["desktop Firefox", "Mozilla/5.0 (Macintosh) Gecko/20100101 Firefox/154.0"],
+    ["Tauri WebKit", "Mozilla/5.0 (Macintosh) AppleWebKit/620.1 Safari/620.1"],
+  ])("keeps %s on the object URL path", (_browser, userAgent) => {
+    const canShare = vi.fn(() => true);
+    vi.stubGlobal("navigator", { userAgent, canShare, share: vi.fn() });
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:standard-download");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+
+    downloadBrowserBlob("runtime.snapshot", new Blob());
+
+    expect(click).toHaveBeenCalledOnce();
+    expect(canShare).not.toHaveBeenCalled();
   });
 });

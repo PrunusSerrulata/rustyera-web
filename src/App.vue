@@ -2,6 +2,7 @@
 import { onMounted, ref } from "vue";
 
 import AboutDialog from "@/components/AboutDialog.vue";
+import BrowserFileSaveDialog from "@/components/BrowserFileSaveDialog.vue";
 import AppMenuBar from "@/components/AppMenuBar.vue";
 import CornerNotifications from "@/components/CornerNotifications.vue";
 import DebugDialogs from "@/components/DebugDialogs.vue";
@@ -199,6 +200,7 @@ onMounted(() => void store.initialize());
     />
     <DebugDialogs />
     <FaultDialog />
+    <BrowserFileSaveDialog />
     <AboutDialog
       :open="aboutOpen"
       :core-version="store.coreVersion"
