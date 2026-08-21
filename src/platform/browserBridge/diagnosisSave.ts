@@ -2,6 +2,7 @@ import type { DiagnosisArchiveInput, DiagnosisArchiveProgress } from "@/core/dia
 import { streamDiagnosisArchiveInWorker } from "@/platform/diagnosis";
 import type { BrowserManifest } from "@/platform/browserProject";
 import type { WorkerClient } from "@/platform/workerClient";
+import { downloadBrowserBlob } from "@/platform/browserDownload";
 
 export async function saveBrowserDiagnosis(
   worker: WorkerClient,
@@ -74,14 +75,9 @@ export async function saveBrowserDiagnosis(
       reportProgress,
     );
     await writer.close();
-    const url = URL.createObjectURL(await handle.getFile());
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = name;
-    anchor.click();
+    downloadBrowserBlob(name, await handle.getFile());
     reportProgress?.({ completed: totalBytes, total: totalBytes });
     setTimeout(() => {
-      URL.revokeObjectURL(url);
       void storageRoot.removeEntry(temporaryName);
     }, 0);
     return true;

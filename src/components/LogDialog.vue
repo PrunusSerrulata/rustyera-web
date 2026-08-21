@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from "vue";
 
 import DraggableDialog from "@/components/DraggableDialog.vue";
 import { formatLogEntry, formatLogTime, logLevelLabel } from "@/core/log";
+import { downloadBrowserBlob } from "@/platform/browserDownload";
 
 const props = defineProps<{ open: boolean; entries: any[] }>();
 const emit = defineEmits<{ close: []; clear: [] }>();
@@ -46,12 +47,10 @@ async function copy(): Promise<void> {
 }
 
 function download(): void {
-  const url = URL.createObjectURL(new Blob([text.value], { type: "text/plain;charset=utf-8" }));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `rustyera-${new Date().toISOString().replaceAll(":", "")}.log`;
-  anchor.click();
-  URL.revokeObjectURL(url);
+  downloadBrowserBlob(
+    `rustyera-${new Date().toISOString().replaceAll(":", "")}.log`,
+    new Blob([text.value], { type: "text/plain;charset=utf-8" }),
+  );
 }
 </script>
 

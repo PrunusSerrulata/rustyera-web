@@ -536,7 +536,7 @@ describe("dialog actions", () => {
 
     expect(writeText).toHaveBeenCalledOnce();
     expect(createObjectURL).toHaveBeenCalledOnce();
-    expect(revokeObjectURL).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledOnce());
     expect(anchorClick).toHaveBeenCalledOnce();
     expect(wrapper.emitted("clear")).toHaveLength(1);
     expect(wrapper.emitted("close")).toHaveLength(1);

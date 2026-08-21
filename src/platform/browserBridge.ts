@@ -39,6 +39,7 @@ import { needsLowMemoryProjectFileLoad } from "@/platform/browserProjectFilePoli
 import { validateBrowserProjectFileSize } from "@/platform/projectFileWorker";
 import { normalizeProjectFileManifest } from "@/platform/projectFileManifestTransfer";
 import { createBrowserSessionDirectory } from "@/platform/browserSessionFilesystem";
+import { downloadBrowserBlob } from "@/platform/browserDownload";
 
 const DESKTOP_PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 const LOW_MEMORY_PROJECT_FILE_READ_CHUNK_BYTES = 1024 * 1024;
@@ -495,14 +496,7 @@ export class BrowserBridge implements FrontendBridge {
       await writer.close();
       return true;
     }
-    const url = URL.createObjectURL(
-      new Blob([bytes as BlobPart], { type: "application/octet-stream" }),
-    );
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = name;
-    anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
+    downloadBrowserBlob(name, new Blob([bytes as BlobPart], { type: "application/octet-stream" }));
     return true;
   }
 
@@ -601,13 +595,8 @@ export class BrowserBridge implements FrontendBridge {
     if (!complete) return;
     await fallback.writer.close();
     const file = await (await fallback.root.getFileHandle(fallback.temporaryName)).getFile();
-    const url = URL.createObjectURL(file);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = fallback.name;
-    anchor.click();
+    downloadBrowserBlob(fallback.name, file);
     setTimeout(() => {
-      URL.revokeObjectURL(url);
       void fallback.root.removeEntry(fallback.temporaryName);
     }, 0);
     this.projectFileFallback = undefined;
@@ -825,12 +814,5 @@ function downloadBrowserFile(name: string, bytes: Uint8Array): void {
     (window.__RUSTYERA_TEST_DOWNLOADS__ ??= []).push({ name, bytes: new Uint8Array(bytes) });
     return;
   }
-  const url = URL.createObjectURL(
-    new Blob([bytes as BlobPart], { type: "application/octet-stream" }),
-  );
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+  downloadBrowserBlob(name, new Blob([bytes as BlobPart], { type: "application/octet-stream" }));
 }
