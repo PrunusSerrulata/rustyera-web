@@ -43,6 +43,8 @@ pub struct WebSessionOptions {
     pub maximum_envelope_bytes: u64,
     #[serde(default = "default_configuration_profile")]
     pub configuration_profile: ConfigurationClientProfile,
+    #[serde(default = "default_true")]
+    pub retain_project_source_payloads: bool,
 }
 
 impl Default for WebSessionOptions {
@@ -55,6 +57,7 @@ impl Default for WebSessionOptions {
             debug_scope_mask: default_debug_scope_mask(),
             maximum_envelope_bytes: DEFAULT_ENVELOPE_BYTES,
             configuration_profile: default_configuration_profile(),
+            retain_project_source_payloads: true,
         }
     }
 }
@@ -158,6 +161,7 @@ impl WebSession {
             wire_limits,
             vm_config: VmConfig::default(),
             debug_scope_mask: options.debug_scope_mask,
+            retain_project_source_payloads: options.retain_project_source_payloads,
         });
         let mut session = Self {
             runtime,

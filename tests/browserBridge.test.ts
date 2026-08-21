@@ -26,6 +26,16 @@ import { BrowserProject } from "@/platform/browserProject";
 import { BrowserProjectPreferenceStore } from "@/platform/projectPreferences";
 import { BROWSER_FILE_SAVE_EVENT, type BrowserFileSaveRequest } from "@/platform/browserDownload";
 
+const SESSION_OPTIONS: SessionOptions = {
+  clientName: "test",
+  availableFonts: [],
+  preferredLocales: [],
+  audioAvailable: true,
+  debugScopeMask: 0,
+  maximumEnvelopeBytes: 1024,
+  configurationProfile: "browser",
+};
+
 class MemoryFileHandle {
   readonly kind = "file";
   readonly abort = vi.fn(async () => {});
@@ -360,21 +370,13 @@ describe("browser startup bridge", () => {
 
     expect(bridge.snapshotRestoreMode).toBe("fresh_session");
     expect(bridge.automaticCompiledCacheExport).toBe(false);
-    const options: SessionOptions = {
-      clientName: "test",
-      availableFonts: [],
-      preferredLocales: [],
-      audioAvailable: true,
-      debugScopeMask: 0,
-      maximumEnvelopeBytes: 1024,
-      configurationProfile: "browser",
-    };
-    await bridge.createSession(options);
+    await bridge.createSession(SESSION_OPTIONS);
+    expect(requests[0]?.message.args[0]).toMatchObject({ retainProjectSourcePayloads: false });
     await bridge.openProjectFile();
     const first = runtimeWorkers[0]!;
 
     await bridge.prepareSnapshotRestore();
-    await bridge.createSession(options);
+    await bridge.createSession(SESSION_OPTIONS);
     await bridge.restartProject();
     await bridge.submitRuntime({
       type: "state_import_begin",
@@ -438,18 +440,23 @@ describe("browser startup bridge", () => {
 
     expect(bridge.snapshotRestoreMode).toBe("in_place");
     expect(bridge.automaticCompiledCacheExport).toBe(true);
+    await bridge.createSession(SESSION_OPTIONS);
     await bridge.prepareSnapshotRestore();
 
     expect(runtimeWorkers).toHaveLength(1);
     expect(runtimeWorkers[0]!.terminate).not.toHaveBeenCalled();
+    expect(requests[0]?.message.args[0]).toMatchObject({ retainProjectSourcePayloads: true });
   });
 
   it("releases submitted iOS directory sources and rescans them for a restart", async () => {
     const root = new MemoryDirectoryHandle("game");
     await installCache(root, Uint8Array.of(9, 8, 7));
     const source = await root.getFileHandle("main.erb", { create: true });
+    const other = await root.getFileHandle("other.erb", { create: true });
     const initial = "@SYSTEM_TITLE\nPRINTL OLD\nRETURN\n";
     await (await source.createWritable()).write(new TextEncoder().encode(initial));
+    const otherInitial = "@OTHER\nPRINTL OTHER OLD\nRETURN\n";
+    await (await other.createWritable()).write(new TextEncoder().encode(otherInitial));
     vi.stubGlobal("navigator", {
       storage: { getDirectory: async () => new MemoryDirectoryHandle("storage") },
       userAgent:
@@ -470,12 +477,35 @@ describe("browser startup bridge", () => {
             payload: { type: "utf8", value: initial },
             content_hash: blake3(new TextEncoder().encode(initial)),
           },
+          {
+            relative_path: "other.erb",
+            category: "erb",
+            payload: { type: "utf8", value: otherInitial },
+            content_hash: blake3(new TextEncoder().encode(otherInitial)),
+          },
         ],
       },
     });
     const bridge = new BrowserBridge();
 
     await bridge.openProject();
+    await (
+      await source.createWritable()
+    ).write(new TextEncoder().encode("@SYSTEM_TITLE\nPRINTL PARTIAL\nRETURN\n"));
+    await bridge.reloadProject({ type: "script", path: "main.erb" });
+    const reload = requests.find(
+      (request) =>
+        request.message.method === "submitRuntime" &&
+        (request.message.args[0] as { type?: string }).type === "reload_project",
+    )?.message.args[0] as {
+      value: { changes: Array<{ file: { relative_path: string; payload: { value: string } } }> };
+    };
+    expect(reload.value.changes).toHaveLength(2);
+    expect(
+      reload.value.changes.find((change) => change.file.relative_path === "other.erb")?.file.payload
+        .value,
+    ).toContain("OTHER OLD");
+    await bridge.finalizeProjectReload(true);
     await (
       await source.createWritable()
     ).write(new TextEncoder().encode("@SYSTEM_TITLE\nPRINTL NEW\nRETURN\n"));

@@ -471,7 +471,7 @@ describe("browser project reads", () => {
     await spool.release();
   });
 
-  it("reloads only the selected script folder and retains other changes for a later reload", async () => {
+  it("reloads only the selected script folder while the runtime retains complete sources", async () => {
     const root = new SaveDirectoryHandle("game");
     const erb = await root.getDirectoryHandle("ERB", { create: true });
     const selected = await erb.getDirectoryHandle("selected", { create: true });
@@ -480,8 +480,6 @@ describe("browser project reads", () => {
     await writeFixtureFile(other, "command.erb", "@COM1\nPRINTL OLD\nRETURN 1\n");
     const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
     await project.scan();
-    project.markRuntimeManifestSparse();
-    await project.prepareReloadBaseline();
 
     await writeFixtureFile(selected, "command.erb", "@COM0\nPRINTL SELECTED\nRETURN 1\n");
     await writeFixtureFile(other, "command.erb", "@COM1\nPRINTL OTHER\nRETURN 1\n");
@@ -490,18 +488,13 @@ describe("browser project reads", () => {
       path: "ERB/selected",
     });
 
-    expect(selectedReload.changes).toHaveLength(2);
+    expect(selectedReload.changes).toHaveLength(1);
     expect(Array.isArray(selectedReload.changes[0].file.content_hash)).toBe(true);
     expect(
       selectedReload.changes.find(
         (change: any) => change.file.relative_path === "ERB/selected/command.erb",
       ).file.payload.value,
     ).toContain("PRINTL SELECTED");
-    expect(
-      selectedReload.changes.find(
-        (change: any) => change.file.relative_path === "ERB/other/command.erb",
-      ).file.payload.value,
-    ).toContain("PRINTL OLD");
     expect((await project.materialize()).project_revision).toBe(1);
     project.finalizeReload(true);
     const active = await project.materialize();
@@ -577,25 +570,41 @@ describe("browser project reads", () => {
     expect((active.files[0].payload as { value: string }).value).toContain("PRINTL OLD");
   });
 
-  it("materializes every payload when fully reloading a cached project", async () => {
+  it("rebuilds a sparse runtime manifest with complete upserts and removals", async () => {
     const root = new SaveDirectoryHandle("game");
     await writeFixtureFile(root, "main.erb", "@SYSTEM_TITLE\nPRINTL OLD\nRETURN\n");
     await writeFixtureFile(root, "other.erb", "@OTHER\nPRINTL OLD\nRETURN\n");
     const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
-    await project.scan();
+    const original = await project.scan();
     project.markRuntimeManifestSparse();
-    await project.prepareReloadBaseline();
+    project.releaseSubmittedSourcePayloads();
     await writeFixtureFile(root, "main.erb", "@SYSTEM_TITLE\nPRINTL NEW\nRETURN\n");
+    await root.removeEntry("other.erb");
 
-    const reload = await project.reloadRequest({ type: "all" });
+    const reload = await project.reloadRequest({ type: "script", path: "main.erb" });
 
     expect(reload.changes).toHaveLength(2);
-    expect(reload.changes.every((change: any) => change.file.payload.value.length > 0)).toBe(true);
-    expect(
-      reload.changes.find((change: any) => change.file.relative_path === "other.erb").file.payload
-        .value,
-    ).toContain("PRINTL OLD");
+    expect(reload.changes[0].type).toBe("upsert");
+    expect(reload.changes[0].file.payload.value).toContain("PRINTL NEW");
+    expect(reload.changes[1]).toMatchObject({
+      type: "remove",
+      category: "erb",
+      relative_path: "other.erb",
+    });
+    project.finalizeReload(false);
+    const rejected = (project as any).manifestValue;
+    expect(rejected.project_revision).toBe(1);
+    expect(manifestIdentityHex(rejected)).toBe(manifestIdentityHex(original));
+
+    const accepted = await project.reloadRequest({ type: "all" });
+    expect(accepted.base_revision).toBe(1);
     project.finalizeReload(true);
+    project.markRuntimeManifestSparse();
+    project.releaseSubmittedSourcePayloads();
+    const compact = (project as any).manifestValue;
+    expect(compact.project_revision).toBe(2);
+    expect(compact.files).toHaveLength(1);
+    expect(compact.files[0].payload).toEqual({ type: "utf8", value: "" });
   });
 
   it("rejects an invalid reload scope before changing its revision or baseline", async () => {

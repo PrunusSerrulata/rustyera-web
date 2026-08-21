@@ -97,7 +97,10 @@ export class BrowserBridge implements FrontendBridge {
   }
 
   createSession(options: SessionOptions): Promise<PumpBatch> {
-    return this.worker.call("create", options);
+    return this.worker.call("create", {
+      ...options,
+      retainProjectSourcePayloads: !this.lowMemoryBrowser,
+    });
   }
 
   async prepareSnapshotRestore(): Promise<void> {
@@ -347,7 +350,10 @@ export class BrowserBridge implements FrontendBridge {
   async finalizeProjectReload(success: boolean) {
     const project = this.requireProject();
     project.finalizeReload(success);
-    if (success && this.lowMemoryBrowser) project.releaseSubmittedSourcePayloads();
+    if (success && this.lowMemoryBrowser) {
+      project.markRuntimeManifestSparse();
+      project.releaseSubmittedSourcePayloads();
+    }
     return success
       ? this.projectFontRegistry.replace(project.fontSources())
       : { fonts: [], errors: [] };
@@ -433,7 +439,10 @@ export class BrowserBridge implements FrontendBridge {
       this.projectProgressListener?.({ stage: "submitting", completed, total }),
     );
     await this.worker.callWithTransfer("loadProjectBinary", [encoded], [encoded.buffer]);
-    if (this.lowMemoryBrowser) project.releaseSubmittedSourcePayloads();
+    if (this.lowMemoryBrowser) {
+      project.markRuntimeManifestSparse();
+      project.releaseSubmittedSourcePayloads();
+    }
   }
 
   readResource(relativePath: string): Promise<Uint8Array> {

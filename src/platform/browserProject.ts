@@ -798,61 +798,32 @@ export class BrowserProject {
       this.sourceIndexTrusted,
     );
     let current = await candidate.scan(progress);
-    if (this.runtimeManifestSparse && selector.type === "all") {
-      current = await candidate.materialize(progress);
-    }
     const oldByPath = new Map(previous.files.map((file) => [file.relative_path, file]));
     const newByPath = new Map(current.files.map((file) => [file.relative_path, file]));
     const paths = [...new Set([...oldByPath.keys(), ...newByPath.keys()])].sort(comparePaths);
     const changes: any[] = [];
-    if (this.runtimeManifestSparse && selector.type === "all") {
+    if (this.runtimeManifestSparse) {
+      // A constrained runtime deliberately retained only file identities. Rebuild its complete
+      // manifest from the authorized directory for every hot reload; scoped delta baselines are
+      // available only while the runtime still owns all source payloads.
+      current = await candidate.materialize(progress);
+      const currentPaths = new Set(current.files.map((file) => file.relative_path));
       this.pendingReload = { candidate, manifest: current, runtimeManifestSparse: false };
       return {
         base_revision: previous.project_revision,
         target_revision: current.project_revision,
-        changes: current.files.map((file) => runtimeReloadUpsert(file)),
-      };
-    }
-    if (this.runtimeManifestSparse) {
-      const files = [
-        ...previous.files.filter(
-          (file) => !projectReloadScopeMatches(selector, file.relative_path, file.category),
-        ),
-        ...current.files
-          .filter((file) => projectReloadScopeMatches(selector, file.relative_path, file.category))
-          .map((file) => {
-            const baseline = oldByPath.get(file.relative_path);
-            return baseline &&
-              baseline.category === file.category &&
-              equalBytes(baseline.content_hash, file.content_hash)
-              ? baseline
-              : file;
-          }),
-      ].sort(compareScannedFiles);
-      const hydratedPaths = new Set(files.map((file) => file.relative_path));
-      changes.push(...files.map((file) => ({ type: "upsert", file })));
-      changes.push(
-        ...previous.files
-          .filter(
-            (file) =>
-              projectReloadScopeMatches(selector, file.relative_path, file.category) &&
-              !hydratedPaths.has(file.relative_path),
-          )
-          .map((file) => ({
-            type: "remove",
-            category: file.category,
-            relative_path: file.relative_path,
-          })),
-      );
-      this.pendingReload = {
-        candidate,
-        manifest: { project_revision: current.project_revision, files },
-        runtimeManifestSparse: false,
-      };
-      return {
-        base_revision: previous.project_revision,
-        target_revision: current.project_revision,
-        changes: changes.map(runtimeReloadChange),
+        changes: [
+          ...current.files.map((file) => runtimeReloadUpsert(file)),
+          ...previous.files
+            .filter((file) => !currentPaths.has(file.relative_path))
+            .map((file) =>
+              runtimeReloadChange({
+                type: "remove",
+                category: file.category,
+                relative_path: file.relative_path,
+              }),
+            ),
+        ],
       };
     }
     for (const path of paths) {
