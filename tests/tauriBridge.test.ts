@@ -65,6 +65,7 @@ describe("Tauri project restart", () => {
     const bridge = new TauriBridge();
 
     expect(bridge.snapshotRestoreMode).toBe("in_place");
+    expect(bridge.automaticCompiledCacheExport).toBe(true);
     await bridge.openProject();
     expect(bridge.fullProjectExportSupported()).toBe(true);
     await bridge.restartProject();

@@ -13,6 +13,7 @@ export const bridge = {
   snapshotRestoreMode: "in_place" as "in_place" | "fresh_session",
   prepareSnapshotRestore: vi.fn(),
   prewarmRuntimeOnInitialize: false,
+  automaticCompiledCacheExport: true,
   createSession: vi.fn(),
   submitRuntime: vi.fn(async (_message: RuntimeMessage, _correlationId?: number) => {
     void _message;

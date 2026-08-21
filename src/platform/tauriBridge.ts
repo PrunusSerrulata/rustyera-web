@@ -39,6 +39,7 @@ type HostProjectFontSource = { relativePath: string; contentHash: number[] };
 export class TauriBridge implements FrontendBridge {
   readonly kind = "tauri" as const;
   readonly snapshotRestoreMode = "in_place" as const;
+  readonly automaticCompiledCacheExport = true;
   private projectPath?: string;
   private projectIsFile = false;
   private projectPreferences?: ProjectPreferences;

@@ -122,6 +122,7 @@ export class BrowserProject {
   private materializePackagedHandle?: PackagedFileMaterializer;
   private prepareConfigurationUpdate?: ProjectConfigurationUpdatePreparer;
   private importedSnapshot = false;
+  private sourcePayloadsReleased = false;
   private runtimeManifestSparse = false;
   private pendingReload?: PendingBrowserReload;
   private scanMetricsValue: BrowserProjectScanMetrics = emptyScanMetrics();
@@ -162,6 +163,7 @@ export class BrowserProject {
     this.embeddedResources.clear();
     this.packagedResourceReader = resourceReader;
     this.usesEmbeddedManifest = true;
+    this.sourcePayloadsReleased = false;
     for (const file of owned.files) {
       if (file.category === "resource" && file.payload.type === "bytes") {
         if (!(file.payload.value instanceof Uint8Array)) {
@@ -201,6 +203,7 @@ export class BrowserProject {
 
   useImportedManifest(manifest: BrowserManifest): void {
     this.importedSnapshot = true;
+    this.sourcePayloadsReleased = false;
     this.canonicalPaths.clear();
     for (const file of manifest.files) {
       this.canonicalPaths.set(file.relative_path.toLowerCase(), file.relative_path);
@@ -210,6 +213,17 @@ export class BrowserProject {
 
   importedManifest(): BrowserManifest | undefined {
     return this.importedSnapshot ? this.manifestValue : undefined;
+  }
+
+  /** Retain reload identities after Runtime has taken ownership of every source payload. */
+  releaseSubmittedSourcePayloads(): void {
+    if (this.usesEmbeddedManifest || !this.manifestValue) return;
+    for (const file of this.manifestValue.files) file.payload = identityPayload(file);
+    this.pendingSnapshot = undefined;
+    this.sourcePayloadsReleased = true;
+    // A later restart must rescan the selected directory instead of treating the compact identity
+    // manifest as source-ready input.
+    this.importedSnapshot = false;
   }
 
   embeddedManifest(): BrowserManifest | undefined {
@@ -261,6 +275,7 @@ export class BrowserProject {
     }
     this.files.set("reraconfig.toml", handle);
     this.manifestValue = undefined;
+    this.sourcePayloadsReleased = false;
     await this.invalidateCompiledCache();
   }
 
@@ -403,6 +418,7 @@ export class BrowserProject {
     };
     this.manifestValue = { project_revision: this.revision, files };
     this.pendingSnapshot = undefined;
+    this.sourcePayloadsReleased = false;
     return this.manifestValue;
   }
 
@@ -556,11 +572,13 @@ export class BrowserProject {
       sourceIndexHashedFiles: reused.filter((value) => !value).length,
     };
     this.manifestValue = { project_revision: this.revision, files };
+    this.sourcePayloadsReleased = false;
     return this.manifestValue;
   }
 
   async materialize(progress?: FileScanProgress, signal?: AbortSignal): Promise<BrowserManifest> {
     throwIfAborted(signal);
+    if (this.sourcePayloadsReleased) return this.scan(progress, undefined, signal);
     const snapshot = this.pendingSnapshot;
     if (!snapshot) return this.manifestValue ?? this.scan(progress, undefined, signal);
     this.files.clear();
@@ -618,6 +636,7 @@ export class BrowserProject {
     files.sort(compareScannedFiles);
     this.pendingSnapshot = undefined;
     this.manifestValue = { project_revision: this.revision, files };
+    this.sourcePayloadsReleased = false;
     return this.manifestValue;
   }
 
@@ -889,6 +908,7 @@ export class BrowserProject {
     this.revision = pending.manifest.project_revision;
     this.manifestValue = pending.manifest;
     this.pendingSnapshot = undefined;
+    this.sourcePayloadsReleased = false;
     this.runtimeManifestSparse = pending.runtimeManifestSparse;
     this.files.clear();
     this.canonicalPaths.clear();
@@ -1123,14 +1143,17 @@ export function cacheIdentityManifest(manifest: BrowserManifest): BrowserManifes
     project_revision: manifest.project_revision,
     files: manifest.files.map((file) => ({
       ...file,
-      payload:
-        file.category === "resource"
-          ? file.payload.type === "external"
-            ? file.payload
-            : { type: "bytes", value: new Uint8Array() }
-          : { type: "utf8", value: "" },
+      payload: identityPayload(file),
     })),
   };
+}
+
+function identityPayload(file: ScannedFile): ScannedFile["payload"] {
+  return file.category === "resource"
+    ? file.payload.type === "external"
+      ? file.payload
+      : { type: "bytes", value: new Uint8Array() }
+    : { type: "utf8", value: "" };
 }
 
 function emptyPayload(

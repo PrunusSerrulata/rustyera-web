@@ -51,6 +51,10 @@ export class BrowserBridge implements FrontendBridge {
     ? ("fresh_session" as const)
     : ("in_place" as const);
   readonly prewarmRuntimeOnInitialize = true;
+  // The cooperative WASM encoder retains the compiled artifact while growing another project-sized
+  // buffer. That speculative peak can make iOS WebKit terminate and reload an otherwise healthy
+  // game immediately after compilation.
+  readonly automaticCompiledCacheExport = !this.lowMemoryBrowser;
   private readonly worker = new WorkerClient();
   readonly traditionalSaves = browserTraditionalSaves({
     project: () => this.requireProject(),
@@ -343,6 +347,7 @@ export class BrowserBridge implements FrontendBridge {
   async finalizeProjectReload(success: boolean) {
     const project = this.requireProject();
     project.finalizeReload(success);
+    if (success && this.lowMemoryBrowser) project.releaseSubmittedSourcePayloads();
     return success
       ? this.projectFontRegistry.replace(project.fontSources())
       : { fonts: [], errors: [] };
@@ -360,9 +365,14 @@ export class BrowserBridge implements FrontendBridge {
   }> {
     const cacheStarted = performance.now();
     this.projectProgressListener?.({ stage: "loading_cache", completed: 0, total: 0 });
-    const cache = await project.readCompiledCache((completed, total) =>
-      this.projectProgressListener?.({ stage: "loading_cache", completed, total }),
-    );
+    // Reading an OPFS cache currently materializes the whole file before transferring it into
+    // WASM. Constrained iOS sessions use the source path so neither cache import nor cache export
+    // creates another project-sized memory peak.
+    const cache = this.lowMemoryBrowser
+      ? undefined
+      : await project.readCompiledCache((completed, total) =>
+          this.projectProgressListener?.({ stage: "loading_cache", completed, total }),
+        );
     if (!cache) this.projectProgressListener?.({ stage: "loading_cache", completed: 1, total: 1 });
     const cacheReadMs = performance.now() - cacheStarted;
     const submitStarted = performance.now();
@@ -384,13 +394,13 @@ export class BrowserBridge implements FrontendBridge {
           ? manifest
           : await project.materialize(this.scanProgress);
         sourceReadMs = performance.now() - sourceStarted;
-        await this.submitSourceManifest(sourceManifest);
+        await this.submitSourceManifest(project, sourceManifest);
       }
     } else {
       const sourceStarted = performance.now();
       const sourceManifest = sourcesReady ? manifest : await project.materialize(this.scanProgress);
       sourceReadMs = performance.now() - sourceStarted;
-      await this.submitSourceManifest(sourceManifest);
+      await this.submitSourceManifest(project, sourceManifest);
     }
     return {
       cacheReadMs,
@@ -406,17 +416,24 @@ export class BrowserBridge implements FrontendBridge {
     if (embedded) {
       throw new Error("项目文件与当前 runtime 不兼容，无法回退到外部源码");
     }
-    await this.submitSourceManifest(await this.project.materialize(this.scanProgress));
+    await this.submitSourceManifest(
+      this.project,
+      await this.project.materialize(this.scanProgress),
+    );
   }
 
   private readonly scanProgress = (completed: number, total: number) =>
     this.projectProgressListener?.({ stage: "scanning", completed, total });
 
-  private async submitSourceManifest(manifest: BrowserManifest): Promise<void> {
+  private async submitSourceManifest(
+    project: BrowserProject,
+    manifest: BrowserManifest,
+  ): Promise<void> {
     const encoded = await encodeBrowserManifest(manifest, (completed, total) =>
       this.projectProgressListener?.({ stage: "submitting", completed, total }),
     );
     await this.worker.callWithTransfer("loadProjectBinary", [encoded], [encoded.buffer]);
+    if (this.lowMemoryBrowser) project.releaseSubmittedSourcePayloads();
   }
 
   readResource(relativePath: string): Promise<Uint8Array> {
@@ -564,6 +581,7 @@ export class BrowserBridge implements FrontendBridge {
       abort.signal.throwIfAborted();
       return { totalBytes: this.fullManifestSpool.totalBytes };
     } finally {
+      if (this.lowMemoryBrowser) project.releaseSubmittedSourcePayloads();
       if (this.projectFileExportAbort === abort) this.projectFileExportAbort = undefined;
     }
   }

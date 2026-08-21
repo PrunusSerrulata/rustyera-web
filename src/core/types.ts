@@ -188,6 +188,8 @@ export interface FrontendBridge {
   prepareSnapshotRestore(): Promise<void>;
   /** Whether this host benefits from preparing its Runtime before the first project selection. */
   readonly prewarmRuntimeOnInitialize?: boolean;
+  /** Whether this host can safely build and persist a speculative compiled cache. */
+  readonly automaticCompiledCacheExport: boolean;
   readonly traditionalSaves?: TraditionalSaveAccess;
   createSession(options: SessionOptions): Promise<PumpBatch>;
   submitRuntime(message: RuntimeMessage, correlationId?: number | bigint): Promise<number | bigint>;

@@ -996,6 +996,47 @@ describe("browser compiled cache identity", () => {
       ],
     });
   });
+
+  it("releases submitted source text while retaining hot-reload identities", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const oldSource = "@SYSTEM_TITLE\nPRINTL OLD\nRETURN\n";
+    await writeFixtureFile(root, "main.erb", oldSource);
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const imported = await project.scan();
+    project.useImportedManifest(imported);
+
+    project.releaseSubmittedSourcePayloads();
+
+    expect(project.importedManifest()).toBeUndefined();
+    expect(imported.files[0].payload).toEqual({ type: "utf8", value: "" });
+    const materialized = await project.materialize();
+    expect(materialized.project_revision).toBe(1);
+    expect(materialized.files[0].payload).toEqual({ type: "utf8", value: oldSource });
+    project.releaseSubmittedSourcePayloads();
+    const unchanged = await project.reloadRequest({ type: "all" });
+    expect(unchanged.changes).toEqual([]);
+    project.finalizeReload(true);
+
+    await writeFixtureFile(root, "main.erb", "@SYSTEM_TITLE\nPRINTL NEW\nRETURN\n");
+    project.releaseSubmittedSourcePayloads();
+    const changed = await project.reloadRequest({ type: "all" });
+    expect(changed.changes).toHaveLength(1);
+    expect(changed.changes[0].file.payload.value).toContain("PRINTL NEW");
+    project.finalizeReload(true);
+
+    project.releaseSubmittedSourcePayloads();
+    await writeFixtureFile(root, "main.erb", "@SYSTEM_TITLE\nPRINTL EXPORTED\nRETURN\n");
+    const storage = new SaveDirectoryHandle("opfs");
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    try {
+      const spool = await project.stageFullManifest();
+      const bytes = await spool.read(0, spool.totalBytes);
+      expect(new TextDecoder().decode(bytes)).toContain("PRINTL EXPORTED");
+      await spool.release();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("browser traditional saves", () => {

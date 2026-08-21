@@ -139,6 +139,40 @@ describe("runtime store cache-input", () => {
     expect(store.logs.at(-1)?.message).toContain("项目缓存生成失败");
   });
 
+  it("does not build a speculative compiled cache on a memory-constrained host", async () => {
+    bridge.automaticCompiledCacheExport = false;
+    mockProjectSelection({
+      submittedAtMs: 0,
+      quickScanMs: 1,
+      cacheReadMs: 0,
+      sourceReadMs: 1,
+      submitMs: 1,
+      cacheImported: false,
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", { success: true, diagnostics: [] }),
+        runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    await store.openProject();
+    await vi.advanceTimersByTimeAsync(1_100);
+
+    expect(
+      bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) =>
+          (message as { type?: string; value?: { kind?: string } }).type ===
+            "state_export_request" &&
+          (message as { value?: { kind?: string } }).value?.kind === "compiled_project_cache",
+      ),
+    ).toBe(false);
+    expect(store.testTransferState().export).toBeNull();
+    expect(bridge.writeCompiledCacheChunk).not.toHaveBeenCalled();
+  });
+
   it("clears a compiled-cache status when cooperative preparation fails", async () => {
     mockProjectSelection({
       submittedAtMs: 0,

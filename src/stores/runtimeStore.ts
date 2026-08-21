@@ -1636,6 +1636,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function scheduleCompiledCacheExport(delayMs = 0): void {
+    if (!bridge.automaticCompiledCacheExport) return;
     compiledCacheExport.schedule(delayMs);
   }
 

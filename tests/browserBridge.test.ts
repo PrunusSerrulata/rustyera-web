@@ -359,6 +359,7 @@ describe("browser startup bridge", () => {
     const bridge = new BrowserBridge();
 
     expect(bridge.snapshotRestoreMode).toBe("fresh_session");
+    expect(bridge.automaticCompiledCacheExport).toBe(false);
     const options: SessionOptions = {
       clientName: "test",
       availableFonts: [],
@@ -436,10 +437,66 @@ describe("browser startup bridge", () => {
     const bridge = new BrowserBridge();
 
     expect(bridge.snapshotRestoreMode).toBe("in_place");
+    expect(bridge.automaticCompiledCacheExport).toBe(true);
     await bridge.prepareSnapshotRestore();
 
     expect(runtimeWorkers).toHaveLength(1);
     expect(runtimeWorkers[0]!.terminate).not.toHaveBeenCalled();
+  });
+
+  it("releases submitted iOS directory sources and rescans them for a restart", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    await installCache(root, Uint8Array.of(9, 8, 7));
+    const source = await root.getFileHandle("main.erb", { create: true });
+    const initial = "@SYSTEM_TITLE\nPRINTL OLD\nRETURN\n";
+    await (await source.createWritable()).write(new TextEncoder().encode(initial));
+    vi.stubGlobal("navigator", {
+      storage: { getDirectory: async () => new MemoryDirectoryHandle("storage") },
+      userAgent:
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1",
+      platform: "iPhone",
+      maxTouchPoints: 5,
+    });
+    pickBrowserDirectory.mockResolvedValue({
+      handle: root,
+      persistHandle: false,
+      projectName: "game",
+      manifest: {
+        project_revision: 1,
+        files: [
+          {
+            relative_path: "main.erb",
+            category: "erb",
+            payload: { type: "utf8", value: initial },
+            content_hash: blake3(new TextEncoder().encode(initial)),
+          },
+        ],
+      },
+    });
+    const bridge = new BrowserBridge();
+
+    await bridge.openProject();
+    await (
+      await source.createWritable()
+    ).write(new TextEncoder().encode("@SYSTEM_TITLE\nPRINTL NEW\nRETURN\n"));
+    await bridge.restartProject();
+    await bridge.stageFullProjectManifest();
+    await bridge.releaseFullProjectManifest();
+    await (
+      await source.createWritable()
+    ).write(new TextEncoder().encode("@SYSTEM_TITLE\nPRINTL EXPORTED\nRETURN\n"));
+    await bridge.submitProjectSource();
+
+    const submissions = requests
+      .filter((request) => request.message.method === "loadProjectBinary")
+      .map((request) => new TextDecoder().decode(request.message.args[0] as Uint8Array));
+    expect(
+      requests.some((request) => request.message.method === "loadProjectWithCompiledCacheBinary"),
+    ).toBe(false);
+    expect(submissions).toHaveLength(3);
+    expect(submissions[0]).toContain("PRINTL OLD");
+    expect(submissions[1]).toContain("PRINTL NEW");
+    expect(submissions[2]).toContain("PRINTL EXPORTED");
   });
 
   afterEach(() => {
