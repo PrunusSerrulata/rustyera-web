@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 
 import AboutDialog from "@/components/AboutDialog.vue";
 import BrowserFileSaveDialog from "@/components/BrowserFileSaveDialog.vue";
@@ -17,10 +17,18 @@ import ProjectSettingsDialog from "@/components/ProjectSettingsDialog.vue";
 import ClientPreferencesDialog from "@/components/ClientPreferencesDialog.vue";
 import ProjectReloadDialog from "@/components/ProjectReloadDialog.vue";
 import TraditionalSaveDialog from "@/components/TraditionalSaveDialog.vue";
+import { useMenuVisibility } from "@/components/useMenuVisibility";
 import { useRuntimeStore } from "@/stores/runtime";
 
 const store = useRuntimeStore();
 const aboutOpen = ref(false);
+const menuMode = computed(() => store.menuMode);
+const {
+  baseVisible: menuBaseVisible,
+  temporarilyVisible: menuTemporarilyVisible,
+  touchToggleVisible: menuTouchToggleVisible,
+  toggleTouchMenu,
+} = useMenuVisibility(menuMode);
 
 function cssColor(color: any, fallback: string): string {
   return color
@@ -34,7 +42,10 @@ onMounted(() => void store.initialize());
 <template>
   <div
     class="app-shell"
-    :class="{ 'menu-disabled': !store.useMenu }"
+    :class="{
+      'menu-overlay': !menuBaseVisible,
+      'menu-overlay-open': menuTemporarilyVisible,
+    }"
     :aria-busy="store.projectLoading || store.diagnosisExporting"
     :style="{
       '--game-font': store.gameTextStyle.fontFamily,
@@ -46,6 +57,24 @@ onMounted(() => void store.initialize());
   >
     <div class="menu-row">
       <AppMenuBar @open-about="aboutOpen = true" />
+      <button
+        v-if="menuTouchToggleVisible"
+        type="button"
+        class="menu-touch-toggle"
+        aria-controls="app-menu-bar"
+        :aria-expanded="menuTemporarilyVisible"
+        :aria-label="menuTemporarilyVisible ? '隐藏菜单栏' : '显示菜单栏'"
+        @click="toggleTouchMenu"
+      >
+        <svg
+          class="menu-touch-toggle-icon"
+          :class="{ 'direction-up': menuTemporarilyVisible }"
+          viewBox="0 0 16 10"
+          aria-hidden="true"
+        >
+          <path d="m3 3 5 4 5-4" />
+        </svg>
+      </button>
     </div>
 
     <div
@@ -77,7 +106,6 @@ onMounted(() => void store.initialize());
 
     <section v-if="!store.projectOpen" class="welcome">
       <h1>RustyEra</h1>
-      <p>以同一套 Vue 界面运行于桌面和浏览器。</p>
       <button class="primary large" :disabled="!store.canOpenProject" @click="store.openProject">
         打开 Era 项目…
       </button>
@@ -87,8 +115,11 @@ onMounted(() => void store.initialize());
       <button id="welcome-preferences" class="large" @click="store.openPreferencesFromUser">
         偏好设置…
       </button>
-      <p v-if="store.bridgeKind === 'browser'" class="hint">
-        Chromium 可直接读写项目目录；Firefox 和 Safari 会将所选项目导入浏览器存储。
+      <p v-if="store.bridgeKind === 'browser' && !store.directProjectDirectoryAccess" class="hint">
+        该浏览器不支持文件系统访问API，启动性能会受影响
+      </p>
+      <p v-if="store.bridgeKind === 'browser' && store.memoryConstrained" class="hint">
+        低内存优化已启用，启动及快照恢复等会受影响
       </p>
     </section>
     <template v-else>

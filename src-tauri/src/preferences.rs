@@ -45,6 +45,7 @@ pub(super) struct ProjectPreferences {
 
 impl ProjectPreferences {
     fn normalized(mut self) -> Self {
+        normalize_menu_setting(&mut self.settings);
         self.image_scale = self
             .image_scale
             .filter(|value| value.is_finite())
@@ -120,7 +121,7 @@ impl Preferences {
                     .or_insert_with(|| value.clamp(8, 72).to_string());
             }
         }
-        self.schema_version = 6;
+        self.schema_version = 7;
         if obsolete_font_overrides {
             self.font_family_override = None;
         }
@@ -136,7 +137,25 @@ impl Preferences {
         } else {
             1.0
         };
+        normalize_menu_setting(&mut self.settings);
         self
+    }
+}
+
+fn normalize_menu_setting(settings: &mut BTreeMap<String, String>) {
+    let Some(value) = settings.get("UseMenu") else {
+        return;
+    };
+    let normalized = match value.trim().to_ascii_uppercase().as_str() {
+        "SHOW" => Some("SHOW"),
+        "AUTO" | "YES" | "TRUE" | "1" | "前" => Some("AUTO"),
+        "HIDE" | "NO" | "FALSE" | "0" | "後" => Some("HIDE"),
+        _ => None,
+    };
+    if let Some(normalized) = normalized {
+        settings.insert("UseMenu".into(), normalized.into());
+    } else {
+        settings.remove("UseMenu");
     }
 }
 
@@ -272,7 +291,7 @@ pub(super) fn preferences_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 pub(super) fn default_preferences() -> Preferences {
     Preferences {
-        schema_version: 6,
+        schema_version: 7,
         settings: BTreeMap::new(),
         font_family_override: None,
         font_size_override_px: None,
@@ -421,12 +440,13 @@ fn profile_preferences(document: &ProjectPreferenceDocument) -> ProjectPreferenc
             .get("interactionAssistMode")
             .and_then(|value| serde_json::from_value(value.clone()).ok()),
     }
+    .normalized()
 }
 
 fn global_profile_preferences(document: &ProjectPreferenceDocument) -> Preferences {
     let project = profile_preferences(document);
     Preferences {
-        schema_version: 6,
+        schema_version: 7,
         settings: project.settings,
         font_family_override: None,
         font_size_override_px: None,
@@ -582,7 +602,10 @@ mod tests {
     #[test]
     fn project_preference_values_normalize_only_finite_supported_ranges() {
         let normalized = ProjectPreferences {
-            settings: BTreeMap::from([("UseMouse".into(), "NO".into())]),
+            settings: BTreeMap::from([
+                ("UseMouse".into(), "NO".into()),
+                ("UseMenu".into(), "YES".into()),
+            ]),
             image_scale: Some(f64::INFINITY),
             master_volume: Some(-1.0),
             trust_project_file_metadata: Some(true),
@@ -593,6 +616,10 @@ mod tests {
         assert_eq!(
             normalized.settings.get("UseMouse").map(String::as_str),
             Some("NO")
+        );
+        assert_eq!(
+            normalized.settings.get("UseMenu").map(String::as_str),
+            Some("AUTO")
         );
         assert_eq!(normalized.image_scale, None);
         assert_eq!(normalized.master_volume, Some(0.0));

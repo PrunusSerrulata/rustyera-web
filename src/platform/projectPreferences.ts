@@ -1,4 +1,5 @@
 import type { ProjectPreferences } from "@/core/types";
+import { normalizeMenuSetting } from "@/core/menuVisibility";
 
 const FILE_NAME = "preferences-v1.json";
 const PROFILE = "browser";
@@ -72,7 +73,7 @@ export class BrowserProjectPreferenceStore {
     const profile = this.document.profiles[PROFILE] ?? {};
     const client = profile.client ?? {};
     return {
-      settings: { ...(profile.settings ?? {}) },
+      settings: normalizeMenuSetting(profile.settings),
       imageScale: finite(client.imageScale),
       masterVolume: finite(client.masterVolume),
       trustProjectFileMetadata:
@@ -114,7 +115,7 @@ export class BrowserProjectPreferenceStore {
 
 function preferenceProfile(value: ProjectPreferences): PreferenceDocument["profiles"][string] {
   return {
-    settings: { ...value.settings },
+    settings: normalizeMenuSetting(value.settings),
     client: {
       ...(value.imageScale == null ? {} : { imageScale: value.imageScale }),
       ...(value.masterVolume == null ? {} : { masterVolume: value.masterVolume }),

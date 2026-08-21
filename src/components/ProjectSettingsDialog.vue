@@ -4,6 +4,7 @@ import { computed, nextTick, ref } from "vue";
 import ColorPickerDialog from "@/components/ColorPickerDialog.vue";
 import DraggableDialog from "@/components/DraggableDialog.vue";
 import GameFontInput from "@/components/GameFontInput.vue";
+import SettingsRadioGroup from "@/components/SettingsRadioGroup.vue";
 import { useSettingsDraft } from "@/components/useSettingsDraft";
 import type { SettingsField } from "@/core/settings";
 import {
@@ -113,6 +114,7 @@ function settingItemClasses(field: SettingsField, groupTitle: string): Record<st
     "long-label-setting": field.code === "ReplaceContinuationBR",
     "viewport-actions-setting": field.code === "WindowMaximixed" && props.hostKind === "tauri",
     "setting-wide":
+      field.control === "radio" ||
       field.code === "AudioVolume" ||
       field.code === "ReplaceContinuationBR" ||
       (activeTab.value === "display" &&
@@ -243,12 +245,25 @@ async function tabKeydown(event: KeyboardEvent): Promise<void> {
                     使用当前主视口大小
                   </button>
                 </template>
-                <label v-else :for="`setting-${field.code}`" :title="field.description">
+                <label
+                  v-else
+                  :id="field.control === 'radio' ? `setting-${field.code}-label` : undefined"
+                  :for="field.control === 'radio' ? undefined : `setting-${field.code}`"
+                  :title="field.description"
+                >
                   {{ field.label }}<small v-if="entries.get(field.code)?.fixed">已固定</small>
                 </label>
                 <div v-if="field.control !== 'boolean'" class="setting-control">
+                  <SettingsRadioGroup
+                    v-if="field.control === 'radio'"
+                    :id="`setting-${field.code}`"
+                    v-model="configurationDraft[field.code]"
+                    :label-id="`setting-${field.code}-label`"
+                    :options="field.options ?? []"
+                    :disabled="fieldDisabled(field)"
+                  />
                   <select
-                    v-if="field.control === 'enum'"
+                    v-else-if="field.control === 'enum'"
                     :id="`setting-${field.code}`"
                     v-model="configurationDraft[field.code]"
                     :disabled="fieldDisabled(field)"

@@ -226,6 +226,7 @@ async function execute(args) {
     const context = await browser.newContext({
       locale: "zh-CN",
       viewport: scenario.viewport,
+      hasTouch: scenario.has_touch,
       reducedMotion: "reduce",
       userAgent: args.user_agent,
     });

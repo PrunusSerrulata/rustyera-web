@@ -1,5 +1,16 @@
 import { shallowMount, type VueWrapper } from "@vue/test-utils";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+
+const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+const originalTouchPoints = Object.getOwnPropertyDescriptor(navigator, "maxTouchPoints");
+
+function setViewportHeight(height: number): void {
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
+}
+
+function setTouchPoints(points: number): void {
+  Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, value: points });
+}
 
 const store = vi.hoisted(() => ({
   bridgeKind: "browser",
@@ -40,7 +51,9 @@ const store = vi.hoisted(() => ({
   projectPreferencesWritable: false,
   configurationEntries: [] as unknown[],
   configurationReadOnly: false,
-  useMenu: true,
+  menuMode: "SHOW" as "SHOW" | "AUTO" | "HIDE",
+  directProjectDirectoryAccess: true,
+  memoryConstrained: false,
   gameLineHeightPx: 13,
   systemFonts: [],
   availableFontFamilies: [],
@@ -141,6 +154,12 @@ async function menuStates(wrapper: VueWrapper): Promise<Map<string, boolean>> {
 }
 
 describe("application menus", () => {
+  afterAll(() => {
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+    if (originalTouchPoints)
+      Object.defineProperty(navigator, "maxTouchPoints", originalTouchPoints);
+  });
+
   afterEach(() => {
     vi.clearAllMocks();
     store.runtimeReady = false;
@@ -154,6 +173,55 @@ describe("application menus", () => {
     store.diagnosisExporting = false;
     store.diagnosisProgressValue = undefined;
     store.diagnosisProgressLabel = "正在准备诊断信息…";
+    store.menuMode = "SHOW";
+    store.directProjectDirectoryAccess = true;
+    store.memoryConstrained = false;
+    setViewportHeight(768);
+    setTouchPoints(0);
+  });
+
+  it("shows only applicable browser startup hints", () => {
+    store.projectOpen = false;
+    store.directProjectDirectoryAccess = false;
+    store.memoryConstrained = true;
+    const wrapper = mountApp();
+
+    expect(wrapper.text()).not.toContain("以同一套 Vue 界面运行于桌面和浏览器。");
+    expect(wrapper.text()).not.toContain("Chromium 可直接读写项目目录");
+    expect(wrapper.text()).toContain("该浏览器不支持文件系统访问API，启动性能会受影响");
+    expect(wrapper.text()).toContain("低内存优化已启用，启动及快照恢复等会受影响");
+    expect(wrapper.findAll(".welcome .hint")).toHaveLength(2);
+    wrapper.unmount();
+
+    store.directProjectDirectoryAccess = true;
+    store.memoryConstrained = false;
+    const chromium = mountApp();
+    expect(chromium.find(".welcome .hint").exists()).toBe(false);
+    chromium.unmount();
+  });
+
+  it("temporarily toggles an automatic hidden menu on touch devices", async () => {
+    store.menuMode = "AUTO";
+    setViewportHeight(479);
+    setTouchPoints(1);
+    const wrapper = mountApp();
+
+    expect(wrapper.classes()).toContain("menu-overlay");
+    const toggle = wrapper.get(".menu-touch-toggle");
+    expect(toggle.attributes("aria-expanded")).toBe("false");
+    await toggle.trigger("click");
+    expect(wrapper.classes()).toContain("menu-overlay-open");
+    expect(toggle.attributes("aria-expanded")).toBe("true");
+    await toggle.trigger("click");
+    expect(wrapper.classes()).not.toContain("menu-overlay-open");
+    expect(store.menuMode).toBe("AUTO");
+    wrapper.unmount();
+
+    setViewportHeight(480);
+    const boundary = mountApp();
+    expect(boundary.classes()).not.toContain("menu-overlay");
+    expect(boundary.find(".menu-touch-toggle").exists()).toBe(false);
+    boundary.unmount();
   });
 
   it("requests confirmation for progress-losing game actions", async () => {

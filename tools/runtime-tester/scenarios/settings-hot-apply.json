@@ -3,21 +3,70 @@
   "project": "../../../../emuera.em/emuera-reference-cli/tests/fixture",
   "mode": "fixed",
   "seed": 123456,
+  "has_touch": true,
   "actions": [
     { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
     { "type": "click", "locator": { "role": "button", "name": "项目设置…", "exact": true } },
-    { "type": "click", "locator": { "css": "#setting-UseMenu" } },
-    { "type": "click", "locator": { "role": "button", "name": "应用", "exact": true } },
     {
       "type": "assert_dom",
       "locator": { "css": "#setting-UseMenu" },
+      "fields": ["count", "visible", "attributes"],
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "attributes": { "role": "radiogroup", "aria-labelledby": "setting-UseMenu-label" }
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": "input[name='setting-UseMenu']" },
+      "fields": ["count", "visible", "enabled"],
+      "expect": { "count": 3, "visible": true, "enabled": true }
+    },
+    { "type": "click", "locator": { "css": "#setting-UseMenu-HIDE" } },
+    { "type": "click", "locator": { "role": "button", "name": "应用", "exact": true } },
+    { "type": "click", "locator": { "role": "button", "name": "取消", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".app-shell.menu-overlay .menu-touch-toggle" },
       "fields": ["count", "visible", "enabled", "attributes"],
       "expect": {
         "count": 1,
         "visible": true,
         "enabled": true,
-        "attributes": { "type": "checkbox" }
+        "attributes": { "aria-expanded": "false", "aria-label": "显示菜单栏" }
       }
+    },
+    { "type": "click", "locator": { "css": ".menu-touch-toggle" } },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".app-shell.menu-overlay-open .menu-touch-toggle" },
+      "fields": ["count", "visible", "attributes"],
+      "expect": { "count": 1, "visible": true, "attributes": { "aria-expanded": "true" } }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    { "type": "click", "locator": { "role": "button", "name": "项目设置…", "exact": true } },
+    { "type": "click", "locator": { "css": "#setting-UseMenu-AUTO" } },
+    { "type": "click", "locator": { "role": "button", "name": "应用", "exact": true } },
+    { "type": "set_viewport", "width": 800, "height": 479 },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".app-shell.menu-overlay .menu-touch-toggle" },
+      "fields": ["count", "visible", "attributes"],
+      "expect": { "count": 1, "visible": true, "attributes": { "aria-expanded": "false" } }
+    },
+    { "type": "set_viewport", "width": 800, "height": 480 },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".app-shell:not(.menu-overlay) .menu-bar" },
+      "fields": ["count", "visible"],
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".menu-touch-toggle" },
+      "fields": ["count"],
+      "expect": { "count": 0 }
     },
     { "type": "click", "locator": { "role": "tab", "name": "显示", "exact": true } },
     { "type": "fill", "locator": { "css": "#setting-FontName" }, "value": "monospace" },
@@ -46,7 +95,7 @@
     }
   ],
   "limits": {
-    "max_steps": 15,
+    "max_steps": 30,
     "timeout_seconds": 60
   }
 }

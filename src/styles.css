@@ -72,23 +72,60 @@ select {
   position: relative;
   min-height: 0;
 }
-.menu-disabled .menu-row {
+.menu-overlay .menu-row {
   height: 0;
   z-index: 30;
 }
-.menu-disabled .menu-bar {
+.menu-overlay .menu-bar {
   position: absolute;
   top: 0;
   left: 0;
   transform: translateY(calc(-100% + 4px));
   transition: transform 120ms ease-out;
 }
-.menu-disabled .menu-row:hover .menu-bar,
-.menu-disabled .menu-row:focus-within .menu-bar {
+.menu-overlay .menu-bar:focus-within,
+.menu-overlay.menu-overlay-open .menu-bar {
   transform: translateY(0);
 }
-.menu-disabled .project-load-progress {
+.menu-overlay .project-load-progress {
   top: 8px;
+}
+.menu-touch-toggle {
+  position: absolute;
+  top: 4px;
+  left: 7px;
+  z-index: 31;
+  border-top: 0;
+  border-radius: 0 0 5px 5px;
+  padding: 0.18rem 0.5rem;
+  background: #202329f5;
+  color: #cbd1dd;
+  line-height: 1;
+  transition: top 120ms ease-out;
+}
+.menu-overlay.menu-overlay-open .menu-touch-toggle {
+  top: 34px;
+}
+.menu-touch-toggle-icon {
+  display: block;
+  width: 1rem;
+  height: 0.625rem;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+.menu-touch-toggle-icon.direction-up {
+  transform: rotate(180deg);
+}
+@media (hover: hover) {
+  .menu-overlay .menu-row:hover .menu-bar {
+    transform: translateY(0);
+  }
+  .menu-overlay .menu-row:hover .menu-touch-toggle {
+    top: 34px;
+  }
 }
 .project-load-progress {
   position: absolute;
@@ -348,6 +385,9 @@ select {
   margin-top: 1rem;
   font-size: 0.85rem;
 }
+.welcome .hint + .hint {
+  margin-top: 0;
+}
 
 .game-viewport {
   position: relative;
@@ -477,18 +517,18 @@ select {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.interaction-assist-mode-control {
+.setting-radio-control {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem 0.85rem;
 }
-.interaction-assist-mode-control label {
+.setting-radio-control label {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
   white-space: nowrap;
 }
-.interaction-assist-mode-control input {
+.setting-radio-control input {
   margin: 0;
 }
 .game-tooltip {
@@ -1086,6 +1126,17 @@ select {
 .preference-interaction-assist-setting .preference-setting-control {
   margin-left: 0;
 }
+.preference-radio-setting {
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+}
+.preference-radio-setting > label {
+  min-height: var(--settings-control-height);
+  padding-top: 0;
+}
+.preference-radio-setting .preference-setting-control {
+  margin-left: 0;
+}
 .preference-boolean-control {
   display: flex;
   min-height: var(--settings-control-height, 2.25rem);
@@ -1386,12 +1437,14 @@ select {
   .preference-color-setting,
   .preference-image-scale-setting,
   .preference-interaction-assist-setting,
+  .preference-radio-setting,
   .preference-metadata-setting {
     grid-template-columns: minmax(0, 1fr);
   }
   .preference-color-setting .preference-setting-control,
   .preference-image-scale-setting .preference-setting-control,
   .preference-interaction-assist-setting .preference-setting-control,
+  .preference-radio-setting .preference-setting-control,
   .preference-metadata-setting .preference-setting-control {
     margin-left: 0;
   }

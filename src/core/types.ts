@@ -24,7 +24,7 @@ export interface PumpBatch {
 export type InteractionAssistMode = "off" | "on" | "auto";
 
 export interface Preferences {
-  schemaVersion: 6;
+  schemaVersion: 7;
   settings: Record<string, string>;
   fontFamilyOverride: string | null;
   fontSizeOverridePx: number | null;
@@ -35,7 +35,7 @@ export interface Preferences {
 }
 
 export const defaultPreferences = (): Preferences => ({
-  schemaVersion: 6,
+  schemaVersion: 7,
   settings: {},
   fontFamilyOverride: null,
   fontSizeOverridePx: null,
@@ -189,6 +189,10 @@ export interface ProjectReloadSubmission extends ProjectFontLoadResult {
 
 export interface FrontendBridge {
   readonly kind: "tauri" | "browser";
+  /** Whether a browser host can open a project directory without importing it first. */
+  readonly directProjectDirectoryAccess?: boolean;
+  /** Whether the host selected the constrained-memory browser strategy. */
+  readonly memoryConstrained?: boolean;
   /** How this host bounds memory while replacing the active VM from a snapshot. */
   readonly snapshotRestoreMode: "in_place" | "fresh_session";
   /** Release host runtime resources before creating a fresh snapshot-restore session. */

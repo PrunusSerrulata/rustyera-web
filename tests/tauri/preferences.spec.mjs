@@ -26,9 +26,34 @@ preferences("Tauri client preferences", () => {
     await $(".welcome .primary").click();
     await waitForInteractiveProject();
     await waitForBackgroundProjectExport();
+    await browser.setWindowSize(900, 470);
+    await browser.waitUntil(
+      async () =>
+        browser.execute(() =>
+          document.querySelector(".app-shell")?.classList.contains("menu-overlay"),
+        ),
+      { timeout: 5_000, interval: 50, timeoutMsg: "automatic menu did not hide below 480px" },
+    );
+    await browser.setWindowSize(900, 700);
+    await browser.waitUntil(
+      async () =>
+        browser.execute(
+          () => !document.querySelector(".app-shell")?.classList.contains("menu-overlay"),
+        ),
+      { timeout: 5_000, interval: 50, timeoutMsg: "automatic menu did not return above 480px" },
+    );
     const automaticPanel = await $("section[aria-label='交互辅助面板']");
     assert.equal(await automaticPanel.isDisplayed(), false, "Tauri auto mode must hide the panel");
     assert.equal(await automaticPanel.getAttribute("aria-hidden"), "true");
+    await $("button=文件").click();
+    await $("button=项目设置…").click();
+    const projectSettings = await $(".dialog-panel[aria-label='RustyEra Tauri · 项目设置']");
+    await projectSettings.waitForDisplayed();
+    const projectMenuModes = await projectSettings.$$("input[name='setting-UseMenu']");
+    assert.equal(projectMenuModes.length, 3);
+    assert.equal(await projectSettings.$("#setting-UseMenu-AUTO").isSelected(), true);
+    await projectSettings.$("button=取消").click();
+    await projectSettings.waitForDisplayed({ reverse: true });
     await $("button=文件").click();
     await $("button=偏好设置…").click();
 
@@ -41,6 +66,12 @@ preferences("Tauri client preferences", () => {
     assert.ok(await fontInput.isEnabled());
     const fontOptions = await dialog.$$("#available-game-fonts option");
     assert.ok(fontOptions.length > 0, "Tauri preferences must expose installed fonts");
+    await dialog.$("#preference-global-UseMenu-override").click();
+    const globalMenuModes = await dialog.$$("input[name='preference-global-UseMenu']");
+    assert.equal(globalMenuModes.length, 3);
+    await dialog.$("#preference-global-UseMenu-SHOW").click();
+    assert.equal(await dialog.$("#preference-global-UseMenu-SHOW").isSelected(), true);
+    await dialog.$("#preference-global-UseMenu-override").click();
     await fontInput.setValue("RustyEra Preference Font");
     assert.equal(await fontInput.getValue(), "RustyEra Preference Font");
     await dialog.$("#preference-global-FontName-override").click();
@@ -84,6 +115,10 @@ preferences("Tauri client preferences", () => {
     );
 
     await dialog.$("button=项目偏好").click();
+    await dialog.$("#preference-project-UseMenu-override").click();
+    const projectMenuMode = await dialog.$("#preference-project-UseMenu-SHOW");
+    await projectMenuMode.click();
+    assert.equal(await projectMenuMode.isSelected(), true);
     await dialog.$("#preference-project-interactionAssistMode-override").click();
     const interactionAssistMode = await dialog.$("#preference-project-interactionAssistMode-on");
     await interactionAssistMode.click();
@@ -161,6 +196,7 @@ preferences("Tauri client preferences", () => {
     assert.deepEqual(preferenceDocument.profiles.tauri.settings, {
       FontSize: "20",
       LineHeight: "20",
+      UseMenu: "SHOW",
     });
     assert.equal(preferenceDocument.profiles.tauri.client.interactionAssistMode, "on");
 

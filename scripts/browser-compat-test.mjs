@@ -186,6 +186,18 @@ try {
     throw new Error(`failed to clear OPFS for cold startup: ${JSON.stringify(opfsReset)}`);
   }
   console.log(JSON.stringify({ browser: browserName, type: "opfs-reset", ...opfsReset }));
+  compatibilityStage = "checking browser startup guidance";
+  const startupGuidance = await browser.execute(() => ({
+    directProjectDirectoryAccess: typeof window.showDirectoryPicker === "function",
+    hints: [...document.querySelectorAll(".welcome .hint")].map((hint) => hint.textContent?.trim()),
+  }));
+  if (
+    startupGuidance.directProjectDirectoryAccess ||
+    startupGuidance.hints.length !== 1 ||
+    startupGuidance.hints[0] !== "该浏览器不支持文件系统访问API，启动性能会受影响"
+  ) {
+    throw new Error(`browser startup guidance mismatch: ${JSON.stringify(startupGuidance)}`);
+  }
   const globalPreferencesBeforeProject = await verifyGlobalPreferencesBeforeProject(browser);
   console.log(
     JSON.stringify({
@@ -338,6 +350,7 @@ try {
         projectFile,
         opfs: setup.opfs,
         opfsReset,
+        startupGuidance,
         projectProgress,
         startupOnly: true,
         ...observed,
@@ -711,6 +724,7 @@ try {
         projectName: setup.projectName,
         opfs: setup.opfs,
         opfsReset,
+        startupGuidance,
         projectProgress,
         fontAccess,
         saveTransfer,

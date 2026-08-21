@@ -10,7 +10,7 @@ describe("preference normalization", () => {
       normalizePreferences({ ...defaultPreferences(), fontSizeOverridePx: null }),
     ).toMatchObject({
       fontSizeOverridePx: null,
-      schemaVersion: 6,
+      schemaVersion: 7,
       settings: {},
       interactionAssistMode: "auto",
     });
@@ -26,7 +26,7 @@ describe("preference normalization", () => {
         masterVolume: -1,
       }),
     ).toEqual({
-      schemaVersion: 6,
+      schemaVersion: 7,
       settings: { FontSize: "72" },
       fontFamilyOverride: null,
       fontSizeOverridePx: null,
@@ -50,7 +50,7 @@ describe("preference normalization", () => {
           masterVolume: 0.4,
         }),
       ).toEqual({
-        schemaVersion: 6,
+        schemaVersion: 7,
         settings: {},
         fontFamilyOverride: null,
         fontSizeOverridePx: null,
@@ -73,7 +73,7 @@ describe("preference normalization", () => {
         masterVolume: 0.5,
       }),
     ).toEqual({
-      schemaVersion: 6,
+      schemaVersion: 7,
       settings: { FontName: "Accessible Font", FontSize: "72" },
       fontFamilyOverride: null,
       fontSizeOverridePx: null,
@@ -87,14 +87,14 @@ describe("preference normalization", () => {
   it("enables metadata trust only for an explicit schema 4 preference", () => {
     expect(
       normalizePreferences({ ...defaultPreferences(), trustProjectFileMetadata: true }),
-    ).toMatchObject({ schemaVersion: 6, trustProjectFileMetadata: true });
+    ).toMatchObject({ schemaVersion: 7, trustProjectFileMetadata: true });
     expect(
       normalizePreferences({
         ...defaultPreferences(),
         schemaVersion: 3,
         trustProjectFileMetadata: true,
       }),
-    ).toMatchObject({ schemaVersion: 6, trustProjectFileMetadata: false });
+    ).toMatchObject({ schemaVersion: 7, trustProjectFileMetadata: false });
   });
 
   it("defaults invalid and legacy interaction assistance modes to automatic", () => {
@@ -107,5 +107,17 @@ describe("preference normalization", () => {
         interactionAssistMode: "invalid" as any,
       }),
     ).toMatchObject({ interactionAssistMode: "auto" });
+  });
+
+  it("migrates legacy menu booleans and removes invalid menu overrides", () => {
+    expect(
+      normalizePreferences({ ...defaultPreferences(), settings: { UseMenu: "前" } }),
+    ).toMatchObject({ settings: { UseMenu: "AUTO" } });
+    expect(
+      normalizePreferences({ ...defaultPreferences(), settings: { UseMenu: "後" } }),
+    ).toMatchObject({ settings: { UseMenu: "HIDE" } });
+    expect(
+      normalizePreferences({ ...defaultPreferences(), settings: { UseMenu: "sometimes" } }),
+    ).toMatchObject({ settings: {} });
   });
 });

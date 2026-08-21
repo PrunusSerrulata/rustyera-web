@@ -111,6 +111,33 @@ describe("web game test scenario", () => {
     );
   });
 
+  it("validates and preserves declared touch capability", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "rustyera-touch-scenario-"));
+    const scenario = path.join(directory, "scenario.json");
+    await writeFile(
+      scenario,
+      JSON.stringify({
+        schema_version: 1,
+        mode: "fixed",
+        project: ".",
+        has_touch: true,
+        limits: { max_steps: 1, timeout_seconds: 1 },
+      }),
+    );
+    await expect(loadScenario(scenario)).resolves.toMatchObject({ has_touch: true });
+
+    await writeFile(
+      scenario,
+      JSON.stringify({
+        schema_version: 1,
+        mode: "fixed",
+        project: ".",
+        has_touch: "yes",
+      }),
+    );
+    await expect(loadScenario(scenario)).rejects.toThrow("has_touch must be a boolean");
+  });
+
   it("accepts coalesced cold-start progress once runtime preparation completes", () => {
     expect(
       browserProjectProgressErrors({

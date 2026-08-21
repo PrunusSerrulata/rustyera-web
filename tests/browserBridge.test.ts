@@ -177,6 +177,28 @@ describe("browser project preferences", () => {
     });
   });
 
+  it("normalizes legacy menu values in browser project preferences", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    const rustyera = await root.getDirectoryHandle(".rustyera", { create: true });
+    const file = await rustyera.getFileHandle("preferences-v1.json", { create: true });
+    await (
+      await file.createWritable()
+    ).write(
+      JSON.stringify({
+        schemaVersion: 1,
+        profiles: { browser: { settings: { UseMenu: "前" }, client: {} } },
+      }),
+    );
+
+    const store = await BrowserProjectPreferenceStore.source(
+      root as unknown as FileSystemDirectoryHandle,
+    );
+    expect(store.values().settings).toEqual({ UseMenu: "AUTO" });
+    await expect(store.save({ settings: { UseMenu: "後" } })).resolves.toMatchObject({
+      settings: { UseMenu: "HIDE" },
+    });
+  });
+
   it.each([
     {
       label: "future schema",

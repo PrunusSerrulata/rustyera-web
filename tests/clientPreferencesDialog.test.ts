@@ -169,6 +169,68 @@ describe("client preferences dialog", () => {
     expect(wrapper.emitted("save")?.at(-1)?.[1]).toMatchObject({ interactionAssistMode: "off" });
   });
 
+  it("edits menu visibility as a full-width radio group in both preference scopes", async () => {
+    const entry: ProjectConfigurationEntry = {
+      code: "UseMenu",
+      japanese: "メニュー表示",
+      english: "Menu visibility",
+      value: "AUTO",
+      kind: "enum",
+      allowed: ["SHOW", "AUTO", "HIDE"],
+      fixed: false,
+      applicability: 12,
+      default_value: "AUTO",
+      effective_value: "AUTO",
+      application: "hot",
+      preference_eligible: true,
+      client_effective_value: "AUTO",
+    };
+    const wrapper = mount(ClientPreferencesDialog, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        globalValue: defaultPreferences(),
+        projectValue: { settings: {} },
+        entries: [entry],
+        projectWritable: true,
+      },
+    });
+
+    const globalItem = document.body
+      .querySelector("#preference-global-UseMenu-override")
+      ?.closest(".setting-item");
+    expect(globalItem).not.toBeNull();
+    expect(globalItem?.classList.contains("setting-wide")).toBe(true);
+    await setCheckbox("#preference-global-UseMenu-override", true);
+    const modes = document.body.querySelectorAll<HTMLInputElement>(
+      "input[name='preference-global-UseMenu']",
+    );
+    expect([...modes].map((option) => option.parentElement?.textContent?.trim())).toEqual([
+      "显示",
+      "自动",
+      "不显示",
+    ]);
+    await setCheckbox("#preference-global-UseMenu-SHOW", true);
+    document.body
+      .querySelector<HTMLFormElement>("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(wrapper.emitted("save")?.at(-1)?.[1]).toMatchObject({
+      settings: { UseMenu: "SHOW" },
+    });
+
+    document.body.querySelector<HTMLButtonElement>("#preference-tab-project")!.click();
+    await wrapper.vm.$nextTick();
+    expect(document.body.querySelector("#preference-project-UseMenu")).toBeNull();
+    await setCheckbox("#preference-project-UseMenu-override", true);
+    await setCheckbox("#preference-project-UseMenu-HIDE", true);
+    document.body
+      .querySelector<HTMLFormElement>("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(wrapper.emitted("save")?.at(-1)?.[1]).toMatchObject({
+      settings: { UseMenu: "HIDE" },
+    });
+  });
+
   it("keeps numeric project-setting overrides as protocol strings", async () => {
     const entry: ProjectConfigurationEntry = {
       code: "FontSize",

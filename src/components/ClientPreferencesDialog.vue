@@ -4,6 +4,7 @@ import { computed, nextTick, reactive, ref, watch } from "vue";
 import ColorPickerDialog from "@/components/ColorPickerDialog.vue";
 import DraggableDialog from "@/components/DraggableDialog.vue";
 import GameFontInput from "@/components/GameFontInput.vue";
+import SettingsRadioGroup from "@/components/SettingsRadioGroup.vue";
 import { projectSettingsTabs, type SettingsField } from "@/core/settings";
 import type {
   FontAccessStatus,
@@ -46,7 +47,7 @@ const scope = ref<"global" | "project">("global");
 const draft = reactive<ProjectPreferences>({ settings: {} });
 const colorField = ref<SettingsField>();
 const browserPreferenceDefaults: Record<string, string> = {
-  UseMenu: "YES",
+  UseMenu: "AUTO",
   UseMouse: "YES",
   ScrollHeight: "1",
   ButtonWrap: "NO",
@@ -187,7 +188,9 @@ function toggleAuxiliary(
 function settingItemClasses(field: SettingsField): Record<string, boolean> {
   return {
     "preference-color-setting": field.control === "color",
+    "preference-radio-setting": field.control === "radio",
     "setting-wide":
+      field.control === "radio" ||
       field.control === "color" ||
       ["AudioVolume", "ReplaceContinuationBR", "WindowMaximixed", "FontName"].includes(field.code),
   };
@@ -281,15 +284,23 @@ async function scopeKeydown(event: KeyboardEvent): Promise<void> {
                   :disabled="busy"
                   @change="toggle(field, ($event.target as HTMLInputElement).checked)"
                 />
-                <span>{{ field.label }}</span>
+                <span :id="`preference-${scope}-${field.code}-label`">{{ field.label }}</span>
                 <small>{{ overridden(field.code) ? "已覆盖" : "继承" }}</small>
               </label>
               <div
                 v-if="field.control === 'color' || overridden(field.code)"
                 class="setting-control preference-setting-control"
               >
+                <SettingsRadioGroup
+                  v-if="field.control === 'radio'"
+                  :id="`preference-${scope}-${field.code}`"
+                  v-model="draft.settings[field.code]"
+                  :label-id="`preference-${scope}-${field.code}-label`"
+                  :options="field.options ?? []"
+                  :disabled="busy || !overridden(field.code)"
+                />
                 <label
-                  v-if="field.control === 'boolean'"
+                  v-else-if="field.control === 'boolean'"
                   class="preference-boolean-control"
                   :for="`preference-${scope}-${field.code}`"
                   :title="field.description"
@@ -472,29 +483,15 @@ async function scopeKeydown(event: KeyboardEvent): Promise<void> {
                 />
                 <span :id="`preference-${scope}-interactionAssistMode-label`">交互辅助面板</span>
               </label>
-              <div
+              <SettingsRadioGroup
                 v-if="auxiliaryOverridden('interactionAssistMode')"
                 :id="`preference-${scope}-interactionAssistMode`"
-                class="setting-control preference-setting-control interaction-assist-mode-control"
-                role="radiogroup"
-                :aria-labelledby="`preference-${scope}-interactionAssistMode-label`"
-              >
-                <label
-                  v-for="mode in interactionAssistModes"
-                  :key="mode.value"
-                  :for="`preference-${scope}-interactionAssistMode-${mode.value}`"
-                >
-                  <input
-                    :id="`preference-${scope}-interactionAssistMode-${mode.value}`"
-                    v-model="draft.interactionAssistMode"
-                    type="radio"
-                    :name="`preference-${scope}-interactionAssistMode`"
-                    :value="mode.value"
-                    :disabled="busy || !auxiliaryOverridden('interactionAssistMode')"
-                  />
-                  <span>{{ mode.label }}</span>
-                </label>
-              </div>
+                v-model="draft.interactionAssistMode"
+                class="setting-control preference-setting-control"
+                :label-id="`preference-${scope}-interactionAssistMode-label`"
+                :options="interactionAssistModes"
+                :disabled="busy || !auxiliaryOverridden('interactionAssistMode')"
+              />
             </div>
           </div>
         </fieldset>

@@ -46,7 +46,8 @@ const CONSTRAINED_PROJECT_FILE_READ_CHUNK_BYTES = 1024 * 1024;
 
 export class BrowserBridge implements FrontendBridge {
   readonly kind = "browser" as const;
-  private readonly memoryConstrained = isMemoryConstrainedBrowserHost();
+  readonly directProjectDirectoryAccess = typeof window.showDirectoryPicker === "function";
+  readonly memoryConstrained = isMemoryConstrainedBrowserHost();
   readonly snapshotRestoreMode = this.memoryConstrained
     ? ("fresh_session" as const)
     : ("in_place" as const);

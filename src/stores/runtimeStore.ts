@@ -15,6 +15,7 @@ import {
 } from "@/core/debug";
 import { preferredRuntimeLocales, resolveGameTextStyle } from "@/core/gameText";
 import { suppressedMirroredLogNotificationIndexes } from "@/core/log";
+import { menuVisibilityMode } from "@/core/menuVisibility";
 import {
   isMessageContinuationWait,
   isMessageSkipWait,
@@ -346,7 +347,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const configurationReadOnly = runtimeConfiguration.readOnly;
   const configurationSessionOnly = runtimeConfiguration.sessionOnly;
   const configurationRestartPending = runtimeConfiguration.restartPending;
-  const useMenu = computed(() => runtimeConfiguration.boolean("UseMenu", true));
+  const menuMode = computed(() => menuVisibilityMode(runtimeConfiguration.value("UseMenu")));
   const useMouse = computed(() => runtimeConfiguration.boolean("UseMouse", true));
   const replaceFullWidthSpaces = computed(() =>
     runtimeConfiguration.boolean("ReplaceFullWidthSpaces", false),
@@ -2636,6 +2637,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   return {
     bridgeKind: bridge.kind,
+    directProjectDirectoryAccess: bridge.directProjectDirectoryAccess === true,
+    memoryConstrained: bridge.memoryConstrained === true,
     presentation,
     preferences,
     projectPreferences,
@@ -2645,7 +2648,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     configurationSessionOnly,
     configurationRestartPending,
     viewportMeasurement,
-    useMenu,
+    menuMode,
     useMouse,
     replaceFullWidthSpaces,
     scrollHeight,

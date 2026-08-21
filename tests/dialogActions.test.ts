@@ -107,6 +107,36 @@ describe("dialog actions", () => {
     wrapper.unmount();
   });
 
+  it("saves menu visibility from a full-width project radio group", async () => {
+    const wrapper = mount(ProjectSettingsDialog, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        fontFamilies: [],
+        hostKind: "browser",
+        configurationEntries: [
+          configurationEntry("UseMenu", "AUTO", "enum", ["SHOW", "AUTO", "HIDE"]),
+        ],
+      },
+    });
+
+    const group = document.body.querySelector<HTMLElement>("#setting-UseMenu")!;
+    expect(group.getAttribute("role")).toBe("radiogroup");
+    expect(group.closest(".setting-item")?.classList.contains("setting-wide")).toBe(true);
+    expect([...group.querySelectorAll("label")].map((label) => label.textContent?.trim())).toEqual([
+      "显示",
+      "自动",
+      "不显示",
+    ]);
+    const hide = document.body.querySelector<HTMLInputElement>("#setting-UseMenu-HIDE")!;
+    hide.checked = true;
+    hide.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
+    await clickButton("应用");
+    expect(wrapper.emitted("save")?.at(-1)?.[0]).toEqual([{ code: "UseMenu", value: "HIDE" }]);
+    wrapper.unmount();
+  });
+
   it("shows compact display rows and synchronizes the visual picker with HEX input", async () => {
     const wrapper = mount(ProjectSettingsDialog, {
       attachTo: document.body,
@@ -585,6 +615,7 @@ function configurationEntry(
   code: string,
   value: string,
   kind: ProjectConfigurationEntry["kind"],
+  allowed: string[] = [],
 ): ProjectConfigurationEntry {
   return {
     code,
@@ -592,7 +623,7 @@ function configurationEntry(
     english: code,
     value,
     kind,
-    allowed: [],
+    allowed,
     fixed: false,
     applicability: 12,
     default_value: value,

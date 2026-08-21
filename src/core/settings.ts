@@ -1,4 +1,5 @@
 import type { ProjectConfigurationEntry } from "@/core/types";
+import { menuVisibilityOptions } from "@/core/menuVisibility";
 
 import { integer, range, warningField, yesNo } from "./settings/fields";
 
@@ -8,7 +9,7 @@ export interface SettingsField {
   code: string;
   label: string;
   description: string;
-  control: "text" | "number" | "boolean" | "enum" | "color" | "range";
+  control: "text" | "number" | "boolean" | "enum" | "radio" | "color" | "range";
   min?: number;
   max?: number;
   options?: { value: string; label: string }[];
@@ -34,7 +35,13 @@ export const projectSettingsTabs: SettingsTab[] = [
       {
         title: "输入与菜单",
         fields: [
-          yesNo("UseMenu", "显示菜单", "控制游戏运行时是否显示应用菜单栏。"),
+          {
+            code: "UseMenu",
+            label: "显示菜单",
+            description: "控制应用菜单栏始终显示、按页面高度自动显示或始终隐藏。",
+            control: "radio",
+            options: menuVisibilityOptions,
+          },
           yesNo("UseMouse", "启用鼠标操作", "允许使用鼠标点击游戏按钮并提交交互。"),
           yesNo("AllowLongInputByMouse", "鼠标允许长输入", "允许鼠标向 ONEINPUT 提交多个字符。"),
           yesNo("Ctrl_Z_Enabled", "启用 Ctrl+Z 撤销", "允许用 Ctrl+Z 撤销最近一次游戏输入。"),

@@ -21,7 +21,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
 </script>
 
 <template>
-  <nav class="menu-bar" aria-label="应用菜单">
+  <nav id="app-menu-bar" class="menu-bar" aria-label="应用菜单">
     <div class="menu">
       <button
         id="menu-file"

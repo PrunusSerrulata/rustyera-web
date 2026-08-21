@@ -114,6 +114,8 @@ export async function loadScenario(file, projectOverride, stateOverride) {
     viewport.height < 240
   )
     throw new Error("scenario viewport must contain integer width/height of at least 320x240");
+  if (raw.has_touch != null && typeof raw.has_touch !== "boolean")
+    throw new Error("scenario has_touch must be a boolean");
   const actions = raw.actions
     ? raw.actions.map((item) => ({ ...item }))
     : (raw.inputs ?? []).map((item) => ({
@@ -136,6 +138,7 @@ export async function loadScenario(file, projectOverride, stateOverride) {
     },
     seed,
     viewport,
+    has_touch: raw.has_touch === true,
     actions,
     watches: (raw.watches ?? []).map(String),
     goal: raw.goal ?? {},

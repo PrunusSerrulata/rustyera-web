@@ -62,6 +62,8 @@ Use JSON `schema_version: 1`. The format is a compatible superset of the TUI sce
 - `clock`: Optional ISO timestamp; default `2026-01-01T00:00:00Z`.
 - `compiled_cache`: Copy an existing v8 project cache into the isolated browser fixture and verify
   the browser import path; absent or false forces a cold source load.
+- `has_touch`: Optional boolean passed to Chromium's real browser context. Use it only for UI that
+  depends on the host advertising touch input; it does not emulate a mobile user agent.
 - `clean_saves`: Omit the project's existing `sav/` directory from the isolated browser fixture so
   a `new_game` smoke test starts with fresh save storage.
 - `prepare_traditional_save`: Export a valid traditional save from the stable test runtime and

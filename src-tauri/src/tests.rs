@@ -131,7 +131,7 @@ fn obsolete_global_font_overrides_yield_to_project_configuration() {
         }
         .normalized();
 
-        assert_eq!(normalized.schema_version, 6);
+        assert_eq!(normalized.schema_version, 7);
         assert_eq!(normalized.font_family_override, None);
         assert_eq!(normalized.font_size_override_px, None);
         assert!((normalized.image_scale - 1.75).abs() < f64::EPSILON);
@@ -154,7 +154,7 @@ fn stored_camel_case_font_overrides_migrate_without_resetting_other_preferences(
     .unwrap()
     .normalized();
 
-    assert_eq!(stored.schema_version, 6);
+    assert_eq!(stored.schema_version, 7);
     assert_eq!(stored.font_family_override, None);
     assert_eq!(stored.font_size_override_px, None);
     assert!((stored.image_scale - 1.75).abs() < f64::EPSILON);

@@ -773,14 +773,14 @@ describe("runtime store configuration", () => {
         },
         {
           code: "UseMenu",
-          japanese: "メニューを使用する",
-          english: "Show menu",
-          value: "NO",
-          effective_value: "NO",
+          japanese: "メニュー表示",
+          english: "Menu visibility",
+          value: "HIDE",
+          effective_value: "HIDE",
           preference_eligible: true,
-          client_effective_value: "NO",
-          kind: "boolean",
-          allowed: [],
+          client_effective_value: "HIDE",
+          kind: "enum",
+          allowed: ["SHOW", "AUTO", "HIDE"],
           fixed: false,
           applicability: 12,
         },
@@ -836,7 +836,7 @@ describe("runtime store configuration", () => {
       "UseMouse",
       "ScrollHeight",
     ]);
-    expect(store.useMenu).toBe(false);
+    expect(store.menuMode).toBe("HIDE");
     expect(store.useMouse).toBe(false);
     expect(store.scrollHeight).toBe(4);
     expect(bridge.applyProjectConfiguration).toHaveBeenCalledWith(
