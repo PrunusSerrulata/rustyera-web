@@ -226,6 +226,12 @@ export class BrowserProject {
     this.importedSnapshot = false;
   }
 
+  /** Release one payload after the constrained Runtime has acknowledged direct ownership. */
+  releaseSubmittedSourceFilePayload(file: ScannedFile): void {
+    if (this.usesEmbeddedManifest) return;
+    file.payload = identityPayload(file);
+  }
+
   embeddedManifest(): BrowserManifest | undefined {
     return this.usesEmbeddedManifest ? this.manifestValue : undefined;
   }

@@ -23,6 +23,8 @@ const PROJECT_PROGRESS_LABELS: Record<ProjectProgress["stage"], string> = {
   cache_parsing: "正在解析项目缓存",
   cache_decoding: "正在解码项目缓存",
   cache_validating: "正在校验项目缓存",
+  initializing_memory: "正在初始化游戏内存",
+  indexing_program: "正在建立程序索引",
 };
 
 export function formatProjectProgress(progress: ProjectProgress): string {

@@ -16,6 +16,8 @@ export interface PumpBatch {
   vmInstructions: number | bigint;
   runtimeTransitions: number;
   cooperativeBackgroundWork?: boolean;
+  /** Current WASM linear-memory allocation; absent for native hosts. */
+  memoryBytes?: number;
   events: WebEvent[];
 }
 
@@ -82,6 +84,7 @@ export interface ProjectOpenMetrics {
   sourceReadDecodeHashMs?: number;
   submissionTransferMs?: number;
   wasmMode?: "single";
+  memoryConstrained?: boolean;
   projectFonts: ProjectFontLoadResult;
 }
 
@@ -112,7 +115,9 @@ export type ProjectProgressStage =
   | "packaging"
   | "cache_parsing"
   | "cache_decoding"
-  | "cache_validating";
+  | "cache_validating"
+  | "initializing_memory"
+  | "indexing_program";
 
 export interface ProjectProgress {
   stage: ProjectProgressStage;
@@ -120,6 +125,8 @@ export interface ProjectProgress {
   total: number;
   /** Core monotonic time used to report precise startup phase durations. */
   elapsedMs?: number;
+  /** Current WASM linear-memory high-water allocation, when reported by the browser host. */
+  memoryBytes?: number;
 }
 
 export type DiagnosisProgressStage =

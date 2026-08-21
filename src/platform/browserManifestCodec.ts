@@ -24,6 +24,46 @@ interface EncodedFile {
   payloadBytes: number;
 }
 
+export interface StreamedBrowserManifestFile {
+  source: ScannedFile;
+  category: number;
+  payloadTag: number;
+  payload: Uint8Array;
+  contentHash: Uint8Array;
+}
+
+export async function streamBrowserManifestFiles(
+  manifest: BrowserManifest,
+  append: (file: StreamedBrowserManifestFile) => Promise<void>,
+  progress?: (completed: number, total: number) => void,
+): Promise<void> {
+  const encoder = new TextEncoder();
+  progress?.(0, manifest.files.length);
+  for (let index = 0; index < manifest.files.length; index += 1) {
+    const source = manifest.files[index]!;
+    const category = CATEGORY_CODES[source.category];
+    if (category == null) throw new Error(`未知项目文件类别：${source.category}`);
+    if (source.content_hash.byteLength !== 32) throw new Error("项目文件内容哈希必须为 32 字节");
+    const payloadTag = source.payload.type === "utf8" ? 0 : source.payload.type === "bytes" ? 1 : 2;
+    const payload =
+      source.payload.type === "utf8"
+        ? encoder.encode(source.payload.value)
+        : source.payload.type === "bytes"
+          ? source.payload.value
+          : encodeExternalDescriptor(source.payload);
+    await append({
+      source,
+      category,
+      payloadTag,
+      payload,
+      // The manifest retains its identity after the transferred hash buffer is detached.
+      contentHash: source.content_hash.slice(),
+    });
+    progress?.(index + 1, manifest.files.length);
+    if ((index + 1) % FILES_PER_YIELD === 0) await yieldToMainThread();
+  }
+}
+
 export async function encodeBrowserManifest(
   manifest: BrowserManifest,
   progress?: (completed: number, total: number) => void,

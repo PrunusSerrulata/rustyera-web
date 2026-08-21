@@ -79,12 +79,18 @@ export function normalizeProjectProgress(value: ProjectProgress): ProjectProgres
     completed: Number(value.completed),
     total: Number(value.total),
     elapsedMs: value.elapsedMs == null ? undefined : Number(value.elapsedMs),
+    memoryBytes: value.memoryBytes == null ? undefined : Number(value.memoryBytes),
   } satisfies ProjectProgress;
   if (
     !Number.isSafeInteger(progress.completed) ||
     !Number.isSafeInteger(progress.total) ||
     progress.completed < 0 ||
     progress.total < 0
+  )
+    return undefined;
+  if (
+    progress.memoryBytes != null &&
+    (!Number.isSafeInteger(progress.memoryBytes) || progress.memoryBytes < 0)
   )
     return undefined;
   return progress;

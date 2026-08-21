@@ -421,6 +421,7 @@ describe("runtime store startup-save", () => {
           sourceReadMs: 3,
           submitMs: 4,
           cacheImported: true,
+          memoryConstrained: true,
         };
       },
     );
@@ -463,6 +464,7 @@ describe("runtime store startup-save", () => {
       completed: 0,
       total: 10,
       elapsedMs: 10,
+      memoryBytes: 64 * 1024 * 1024,
     });
     bridge.projectProgressListener?.({ stage: "compiling", completed: 7, total: 10 });
     expect(store.projectLoadProgressLabel).toBe("正在编译脚本函数：7/10（70%）");
@@ -472,9 +474,14 @@ describe("runtime store startup-save", () => {
       completed: 10,
       total: 10,
       elapsedMs: 60,
+      memoryBytes: 96 * 1024 * 1024,
     });
     bridge.projectProgressListener?.({ stage: "validating", completed: 1, total: 2 });
     expect(store.startupTelemetry?.durations.compileMs).toBe(50);
+    expect(store.startupTelemetry?.wasmMemory).toMatchObject({
+      peakBytes: 96 * 1024 * 1024,
+      stages: { compiling: 96 * 1024 * 1024 },
+    });
     expect(store.projectLoadProgressLabel).toBe("正在验证编译结果：1/2（50%）");
     expect(store.projectLoadProgressValue).toBe(50);
     await vi.advanceTimersByTimeAsync(5_000);
@@ -483,6 +490,7 @@ describe("runtime store startup-save", () => {
     bridge.pump
       .mockResolvedValueOnce({
         ...emptyBatch(),
+        memoryBytes: 112 * 1024 * 1024,
         events: [
           runtimeEvent("project_load_report", {
             success: true,
@@ -517,6 +525,7 @@ describe("runtime store startup-save", () => {
       cacheHit: true,
       outcome: "success",
       bridge: { quickScanMs: 1, cacheReadMs: 2, sourceReadMs: 3, submitMs: 4 },
+      wasmMemory: { constrained: true, peakBytes: 112 * 1024 * 1024 },
     });
     expect(store.startupTelemetry?.observedStages.scanning).toBeTypeOf("number");
     expect(store.startupTelemetry?.milestones.runtimeValidationReportedMs).toBeTypeOf("number");

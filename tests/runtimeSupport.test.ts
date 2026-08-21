@@ -31,6 +31,12 @@ describe("runtime support", () => {
     expect(formatProjectProgress({ stage: "packaging", completed: 1, total: 2 })).toBe(
       "正在打包全量项目文件：1/2（50%）",
     );
+    expect(formatProjectProgress({ stage: "initializing_memory", completed: 1, total: 1 })).toBe(
+      "正在初始化游戏内存：1/1（100%）",
+    );
+    expect(formatProjectProgress({ stage: "indexing_program", completed: 3, total: 4 })).toBe(
+      "正在建立程序索引：3/4（75%）",
+    );
   });
 
   it("shows diagnosis byte progress as a percentage without reaching 100 early", () => {

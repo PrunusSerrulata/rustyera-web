@@ -8,6 +8,9 @@ import { fileURLToPath } from "node:url";
 
 import {
   STARTUP_SCENARIOS,
+  browserBenchmarkCommandArgs,
+  compareDirectoryAndProjectFile,
+  latestSuccessfulStartupTelemetry,
   summarizeStartupSamples,
   validateStartupSample,
 } from "./startup-benchmark-lib.mjs";
@@ -15,6 +18,7 @@ import {
 const repository = fileURLToPath(new URL("..", import.meta.url));
 const args = parseArgs(process.argv.slice(2));
 const project = path.resolve(args.project ?? path.join(repository, "../games/eraTW"));
+const projectFile = args.project_file ? path.resolve(args.project_file) : undefined;
 const samples = Number.parseInt(args.samples ?? "5", 10);
 if (!Number.isInteger(samples) || samples < 1) throw new Error("--samples must be positive");
 const selected = args.scenario
@@ -32,9 +36,15 @@ const compiledCache = path.resolve(
 );
 for (const name of selected) {
   const scenario = STARTUP_SCENARIOS[name];
-  if (scenario.index) await requireFile(sourceIndex, `${name} source index`);
-  if (scenario.cache) await requireFile(compiledCache, `${name} compiled cache`);
+  if (!scenario.projectFile && scenario.index)
+    await requireFile(sourceIndex, `${name} source index`);
+  if (!scenario.projectFile && scenario.cache)
+    await requireFile(compiledCache, `${name} compiled cache`);
 }
+const projectFileSelected = selected.some((name) => STARTUP_SCENARIOS[name].projectFile);
+if (projectFileSelected && !projectFile)
+  throw new Error("--project-file is required for a project-file baseline scenario");
+if (projectFileSelected) await requireFile(projectFile, "browser project-file baseline");
 
 const report = { project, samples, scenarios: {}, generatedAt: new Date().toISOString() };
 for (const name of selected) {
@@ -48,6 +58,14 @@ for (const name of selected) {
   }
   report.scenarios[name] = summarizeStartupSamples(scenarioSamples);
 }
+if (report.scenarios["browser-exact-cold"] && report.scenarios["browser-project-file"]) {
+  report.comparisons = {
+    directoryVsProjectFile: compareDirectoryAndProjectFile(
+      report.scenarios["browser-exact-cold"],
+      report.scenarios["browser-project-file"],
+    ),
+  };
+}
 const encoded = `${JSON.stringify(report, null, 2)}\n`;
 if (args.output) await writeFile(path.resolve(args.output), encoded);
 process.stdout.write(encoded);
@@ -60,21 +78,23 @@ async function runBrowserSample(name, sampleIndex) {
     const environment = {
       ...process.env,
       VITE_RUSTYERA_TEST_TRUST_METADATA: scenario.trust ? "1" : "0",
-      RUSTYERA_TEST_SOURCE_INDEX_INPUT: scenario.index ? sourceIndex : "",
-      RUSTYERA_TEST_COMPILED_CACHE_INPUT: scenario.cache ? compiledCache : "",
+      RUSTYERA_TEST_SOURCE_INDEX_INPUT: !scenario.projectFile && scenario.index ? sourceIndex : "",
+      RUSTYERA_TEST_COMPILED_CACHE_INPUT:
+        !scenario.projectFile && scenario.cache ? compiledCache : "",
     };
     const execution = await runObserved(
       process.execPath,
-      [
-        "scripts/web-test.mjs",
-        "run",
-        "--scenario",
-        args.browser_scenario ?? "tools/runtime-tester/scenarios/project-smoke.json",
-        "--project",
+      browserBenchmarkCommandArgs({
+        scenario:
+          (scenario.projectFile ? args.browser_project_file_scenario : args.browser_scenario) ??
+          (scenario.projectFile
+            ? "tools/runtime-tester/scenarios/packaged-project-responsive.json"
+            : "tools/runtime-tester/scenarios/project-smoke.json"),
         project,
-        "--trace",
+        projectFile: scenario.projectFile ? projectFile : undefined,
         trace,
-      ],
+        constrained: scenario.constrained,
+      }),
       environment,
     );
     const telemetry = await telemetryFromTrace(trace);
@@ -198,12 +218,7 @@ async function telemetryFromTrace(trace) {
 }
 
 function latestTelemetry(events) {
-  const telemetry = events
-    .map((event) => event.runtime?.startupTelemetry ?? event.startupTelemetry)
-    .filter((value) => value?.outcome === "success")
-    .at(-1);
-  if (!telemetry) throw new Error("dynamic runner did not report successful startup telemetry");
-  return telemetry;
+  return latestSuccessfulStartupTelemetry(events);
 }
 
 async function prepareArtifact(directory, name, source) {

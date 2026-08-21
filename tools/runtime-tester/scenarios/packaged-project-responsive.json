@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "project": "../../../../emuera.em/emuera-reference-cli/tests/fixture",
-  "project_file": "../../../../games/eraTW/eraThe World.reraproj",
+  "requires_project_file": true,
   "mode": "fixed",
   "viewport": { "width": 568, "height": 320 },
   "seed": 123456,

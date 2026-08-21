@@ -12,6 +12,16 @@ type WasmModule = {
     submitDebug(message: unknown, correlationId?: bigint): bigint;
     loadProject(manifest: unknown): bigint;
     loadProjectBinary(manifest: Uint8Array): bigint;
+    beginProjectManifest(projectRevision: bigint, fileCount: number): void;
+    appendProjectManifestFile(
+      relativePath: string,
+      category: number,
+      payloadTag: number,
+      payload: Uint8Array,
+      contentHash: Uint8Array,
+    ): void;
+    finishProjectManifest(): bigint;
+    cancelProjectManifest(): void;
     projectFileManifest(bytes: Uint8Array): unknown;
     beginProjectFile(totalBytes: number): void;
     appendProjectFile(bytes: Uint8Array): void;
@@ -64,6 +74,24 @@ self.onmessage = async (event: MessageEvent) => {
           break;
         case "loadProjectBinary":
           result = runtime.loadProjectBinary(args[0] as Uint8Array);
+          break;
+        case "beginProjectManifest":
+          result = runtime.beginProjectManifest(args[0] as bigint, args[1] as number);
+          break;
+        case "appendProjectManifestFile":
+          result = runtime.appendProjectManifestFile(
+            args[0] as string,
+            args[1] as number,
+            args[2] as number,
+            args[3] as Uint8Array,
+            args[4] as Uint8Array,
+          );
+          break;
+        case "finishProjectManifest":
+          result = runtime.finishProjectManifest();
+          break;
+        case "cancelProjectManifest":
+          result = runtime.cancelProjectManifest();
           break;
         case "projectFileManifest":
           result = runtime.projectFileManifest(args[0] as Uint8Array);

@@ -21,13 +21,150 @@ struct WasmProjectProgress {
     completed: u32,
     total: u32,
     elapsed_ms: f64,
+    memory_bytes: u32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WasmPumpBatch {
+    #[serde(flatten)]
+    batch: era_web_bridge::PumpBatch,
+    memory_bytes: u32,
 }
 
 #[wasm_bindgen]
 pub struct WasmRuntime {
     inner: WebSession,
+    project_manifest_upload: ProjectManifestUpload,
     project_file_upload: ProjectFileUpload,
     project_file_resources: ProjectFileResources,
+}
+
+struct PendingProjectManifest {
+    manifest: ProjectManifest,
+    expected_files: usize,
+    received_bytes: usize,
+    maximum_bytes: usize,
+}
+
+#[derive(Default)]
+struct ProjectManifestUpload {
+    pending: Option<PendingProjectManifest>,
+}
+
+impl ProjectManifestUpload {
+    const HEADER_BYTES: usize = 20;
+    const FILE_FIXED_BYTES: usize = 15;
+
+    fn begin(
+        &mut self,
+        project_revision: u64,
+        expected_files: usize,
+        maximum_bytes: usize,
+    ) -> Result<(), String> {
+        if self.pending.is_some() {
+            return Err("a browser project manifest upload is already active".to_owned());
+        }
+        let minimum_bytes = expected_files
+            .checked_mul(Self::FILE_FIXED_BYTES)
+            .and_then(|bytes| bytes.checked_add(Self::HEADER_BYTES))
+            .ok_or_else(|| "browser project manifest size overflow".to_owned())?;
+        if minimum_bytes > maximum_bytes {
+            return Err(
+                "browser project manifest file count exceeds its transfer limit".to_owned(),
+            );
+        }
+        self.pending = Some(PendingProjectManifest {
+            manifest: ProjectManifest {
+                project_revision,
+                files: Vec::new(),
+            },
+            expected_files,
+            received_bytes: Self::HEADER_BYTES,
+            maximum_bytes,
+        });
+        Ok(())
+    }
+
+    fn preflight(
+        &self,
+        relative_path_bytes: usize,
+        payload_bytes: usize,
+        hash_bytes: usize,
+    ) -> Result<(), String> {
+        let pending = self
+            .pending
+            .as_ref()
+            .ok_or_else(|| "no browser project manifest upload is active".to_owned())?;
+        if pending.manifest.files.len() >= pending.expected_files {
+            return Err("browser project manifest has more files than declared".to_owned());
+        }
+        let file_bytes = Self::FILE_FIXED_BYTES
+            .checked_add(relative_path_bytes)
+            .and_then(|bytes| bytes.checked_add(payload_bytes))
+            .and_then(|bytes| bytes.checked_add(hash_bytes))
+            .ok_or_else(|| "browser project manifest size overflow".to_owned())?;
+        pending
+            .received_bytes
+            .checked_add(file_bytes)
+            .filter(|bytes| *bytes <= pending.maximum_bytes)
+            .ok_or_else(|| "browser project manifest exceeds its transfer limit".to_owned())?;
+        Ok(())
+    }
+
+    fn append(&mut self, file: SubmittedFile) -> Result<(), String> {
+        let pending = self
+            .pending
+            .as_mut()
+            .ok_or_else(|| "no browser project manifest upload is active".to_owned())?;
+        if pending.manifest.files.len() >= pending.expected_files {
+            return Err("browser project manifest has more files than declared".to_owned());
+        }
+        let payload_bytes = match &file.payload {
+            FilePayload::Utf8(value) => value.len(),
+            FilePayload::Bytes(value) => value.as_slice().len(),
+            FilePayload::ExternalResource(_) => 18,
+            FilePayload::IoError(error) => error.message.len(),
+        };
+        let hash_bytes = file
+            .content_hash
+            .as_ref()
+            .map_or(0, |hash| hash.as_slice().len());
+        let file_bytes = Self::FILE_FIXED_BYTES
+            .checked_add(file.relative_path.len())
+            .and_then(|bytes| bytes.checked_add(payload_bytes))
+            .and_then(|bytes| bytes.checked_add(hash_bytes))
+            .ok_or_else(|| "browser project manifest size overflow".to_owned())?;
+        pending.received_bytes = pending
+            .received_bytes
+            .checked_add(file_bytes)
+            .filter(|bytes| *bytes <= pending.maximum_bytes)
+            .ok_or_else(|| "browser project manifest exceeds its transfer limit".to_owned())?;
+        pending.manifest.files.push(file);
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<ProjectManifest, String> {
+        let pending = self
+            .pending
+            .as_ref()
+            .ok_or_else(|| "no browser project manifest upload is active".to_owned())?;
+        if pending.manifest.files.len() != pending.expected_files {
+            return Err(format!(
+                "browser project manifest upload is incomplete: received {} of {} files",
+                pending.manifest.files.len(),
+                pending.expected_files
+            ));
+        }
+        self.pending
+            .take()
+            .map(|completed| completed.manifest)
+            .ok_or_else(|| "no browser project manifest upload is active".to_owned())
+    }
+
+    fn cancel(&mut self) {
+        self.pending = None;
+    }
 }
 
 struct PendingProjectFile {
@@ -213,6 +350,7 @@ impl WasmRuntime {
                         completed: u32::try_from(progress.completed).unwrap_or(u32::MAX),
                         total: u32::try_from(progress.total).unwrap_or(u32::MAX),
                         elapsed_ms: (js_sys::Date::now() - progress_started_ms).max(0.0),
+                        memory_bytes: wasm_memory_bytes(),
                     }) {
                         let _ = progress_callback.call1(&JsValue::UNDEFINED, &value);
                     }
@@ -226,6 +364,7 @@ impl WasmRuntime {
         }
         Ok(Self {
             inner,
+            project_manifest_upload: ProjectManifestUpload::default(),
             project_file_upload: ProjectFileUpload::default(),
             project_file_resources: ProjectFileResources::default(),
         })
@@ -293,6 +432,113 @@ impl WasmRuntime {
         let message_id = self.inner.load_project(manifest).map_err(js_error)?;
         self.project_file_resources.track_replacement(message_id);
         to_js(message_id)
+    }
+
+    /// Begin receiving a browser directory manifest one final-owned file at a time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an upload is already active or the declared file table exceeds the
+    /// negotiated transfer bound.
+    #[wasm_bindgen(js_name = beginProjectManifest)]
+    pub fn begin_project_manifest(
+        &mut self,
+        project_revision: u64,
+        file_count: u32,
+    ) -> Result<(), JsValue> {
+        let maximum = usize::try_from(self.inner.maximum_transfer_bytes()).unwrap_or(usize::MAX);
+        self.project_manifest_upload
+            .begin(
+                project_revision,
+                usize::try_from(file_count)
+                    .map_err(|_| js_error("browser project file count is unsupported"))?,
+                maximum,
+            )
+            .map_err(js_error)
+    }
+
+    /// Append one browser directory file without retaining a complete encoded manifest buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the upload is absent, complete, or contains an invalid category,
+    /// payload, external descriptor, or content hash.
+    #[wasm_bindgen(js_name = appendProjectManifestFile)]
+    pub fn append_project_manifest_file(
+        &mut self,
+        relative_path: String,
+        category: u8,
+        payload_tag: u8,
+        payload: &js_sys::Uint8Array,
+        content_hash: &js_sys::Uint8Array,
+    ) -> Result<(), JsValue> {
+        let category = decode_file_category(category).map_err(js_error)?;
+        let payload_bytes = usize::try_from(payload.length())
+            .map_err(|_| js_error("browser project payload length is unsupported"))?;
+        match payload_tag {
+            0 | 1 => {}
+            2 if payload_bytes == 18 => {}
+            2 => {
+                return Err(js_error(
+                    "browser external resource descriptor must be 18 bytes",
+                ));
+            }
+            _ => return Err(js_error("browser project payload tag is invalid")),
+        }
+        let hash_bytes = usize::try_from(content_hash.length())
+            .map_err(|_| js_error("browser project hash length is unsupported"))?;
+        if !matches!(hash_bytes, 0 | 32) {
+            return Err(js_error(
+                "browser project content hash must be empty or 32 bytes",
+            ));
+        }
+        self.project_manifest_upload
+            .preflight(relative_path.len(), payload_bytes, hash_bytes)
+            .map_err(js_error)?;
+        let payload = copy_uint8_array(payload).map_err(js_error)?;
+        let payload = match payload_tag {
+            0 => FilePayload::Utf8(
+                String::from_utf8(payload)
+                    .map_err(|_| js_error("browser project text payload is not UTF-8"))?,
+            ),
+            1 => FilePayload::Bytes(ProtocolBytes::new(payload)),
+            2 => decode_external_resource(&payload).map_err(js_error)?,
+            _ => unreachable!("payload tag was checked before copying"),
+        };
+        let content_hash = match hash_bytes {
+            0 => None,
+            32 => Some(ProtocolBytes::new(
+                copy_uint8_array(content_hash).map_err(js_error)?,
+            )),
+            _ => unreachable!("hash length was checked before copying"),
+        };
+        self.project_manifest_upload
+            .append(SubmittedFile {
+                relative_path,
+                category,
+                payload,
+                content_hash,
+            })
+            .map_err(js_error)
+    }
+
+    /// Submit a complete directly owned browser directory manifest to Runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the upload is incomplete or Runtime rejects the manifest.
+    #[wasm_bindgen(js_name = finishProjectManifest)]
+    pub fn finish_project_manifest(&mut self) -> Result<JsValue, JsValue> {
+        let manifest = self.project_manifest_upload.finish().map_err(js_error)?;
+        let message_id = self.inner.load_project(manifest).map_err(js_error)?;
+        self.project_file_resources.track_replacement(message_id);
+        to_js(message_id)
+    }
+
+    /// Discard an incomplete browser directory manifest upload.
+    #[wasm_bindgen(js_name = cancelProjectManifest)]
+    pub fn cancel_project_manifest(&mut self) {
+        self.project_manifest_upload.cancel();
     }
 
     /// Decode the manifest embedded in a self-contained `RustyEra` project file.
@@ -535,7 +781,10 @@ impl WasmRuntime {
             self.project_file_resources
                 .complete_replacement(event.message_id, success);
         }
-        to_js(batch)
+        to_js(WasmPumpBatch {
+            batch,
+            memory_bytes: wasm_memory_bytes(),
+        })
     }
 }
 
@@ -552,6 +801,28 @@ fn to_js(value: impl serde::Serialize) -> Result<JsValue, JsValue> {
 
 fn js_error(error: impl std::fmt::Display) -> JsValue {
     js_sys::Error::new(&error.to_string()).into()
+}
+
+fn copy_uint8_array(bytes: &js_sys::Uint8Array) -> Result<Vec<u8>, String> {
+    let length = usize::try_from(bytes.length())
+        .map_err(|_| "browser project payload size is unsupported".to_owned())?;
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(length)
+        .map_err(|error| format!("failed to reserve browser project payload: {error}"))?;
+    result.resize(length, 0);
+    bytes.copy_to(&mut result);
+    Ok(result)
+}
+
+fn wasm_memory_bytes() -> u32 {
+    use wasm_bindgen::JsCast;
+
+    let memory = wasm_bindgen::memory().unchecked_into::<js_sys::WebAssembly::Memory>();
+    memory
+        .buffer()
+        .dyn_into::<js_sys::ArrayBuffer>()
+        .map_or(0, |buffer| buffer.byte_length())
 }
 
 const BROWSER_MANIFEST_MAGIC: &[u8; 8] = b"RERMAN01";
@@ -710,11 +981,11 @@ impl<'a> BinaryReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ProjectFileResources, ProjectFileUpload, decode_browser_manifest,
+        ProjectFileResources, ProjectFileUpload, ProjectManifestUpload, decode_browser_manifest,
         take_project_file_resources,
     };
     use era_runtime_protocol::{
-        FileCategory, FilePayload, ProjectManifest, ProtocolBytes, SubmittedFile,
+        ExternalResource, FileCategory, FilePayload, ProjectManifest, ProtocolBytes, SubmittedFile,
     };
 
     #[test]
@@ -751,6 +1022,95 @@ mod tests {
                 if resource.byte_length == 1234
                     && resource.image_metadata.as_ref().is_some_and(|value| value.width == 640)
         ));
+    }
+
+    #[test]
+    fn streamed_browser_manifest_retains_only_final_file_payloads() {
+        let mut upload = ProjectManifestUpload::default();
+        upload.begin(7, 2, 1024).unwrap();
+        let source = String::from("@MAIN\nRETURN\n");
+        let source_allocation = source.as_ptr();
+        upload
+            .append(SubmittedFile {
+                relative_path: "main.erb".into(),
+                category: FileCategory::Erb,
+                payload: FilePayload::Utf8(source),
+                content_hash: Some(ProtocolBytes::new(vec![3; 32])),
+            })
+            .unwrap();
+        upload
+            .append(SubmittedFile {
+                relative_path: "resources/a.png".into(),
+                category: FileCategory::Resource,
+                payload: FilePayload::ExternalResource(ExternalResource {
+                    byte_length: 1234,
+                    image_metadata: None,
+                }),
+                content_hash: Some(ProtocolBytes::new(vec![4; 32])),
+            })
+            .unwrap();
+
+        let manifest = upload.finish().unwrap();
+
+        assert_eq!(manifest.project_revision, 7);
+        assert!(matches!(
+            &manifest.files[0].payload,
+            FilePayload::Utf8(source) if source.as_ptr() == source_allocation
+        ));
+        assert!(upload.finish().unwrap_err().contains("no browser project"));
+    }
+
+    #[test]
+    fn streamed_browser_manifest_upload_is_transactional_and_reusable() {
+        let file = || SubmittedFile {
+            relative_path: "main.erb".into(),
+            category: FileCategory::Erb,
+            payload: FilePayload::Utf8("@MAIN\nRETURN\n".into()),
+            content_hash: None,
+        };
+        let mut upload = ProjectManifestUpload::default();
+
+        upload.begin(7, 2, 1024).unwrap();
+        assert!(
+            upload
+                .begin(8, 1, 1024)
+                .unwrap_err()
+                .contains("already active")
+        );
+        upload.append(file()).unwrap();
+        assert!(upload.finish().unwrap_err().contains("received 1 of 2"));
+        upload.append(file()).unwrap();
+        assert!(upload.append(file()).unwrap_err().contains("more files"));
+        assert_eq!(upload.finish().unwrap().files.len(), 2);
+
+        upload.begin(9, 1, 1024).unwrap();
+        upload.append(file()).unwrap();
+        upload.cancel();
+        upload.begin(10, 1, 1024).unwrap();
+        upload.append(file()).unwrap();
+        assert_eq!(upload.finish().unwrap().project_revision, 10);
+    }
+
+    #[test]
+    fn streamed_browser_manifest_preflights_header_and_file_size_before_append() {
+        let mut upload = ProjectManifestUpload::default();
+        assert!(upload.begin(1, 0, 19).unwrap_err().contains("file count"));
+        upload.begin(1, 1, 35).unwrap();
+        assert!(
+            upload
+                .preflight("main.erb".len(), 1, 0)
+                .unwrap_err()
+                .contains("transfer limit")
+        );
+        assert!(
+            upload
+                .pending
+                .as_ref()
+                .expect("active upload")
+                .manifest
+                .files
+                .is_empty()
+        );
     }
 
     #[test]

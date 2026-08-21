@@ -1,4 +1,5 @@
 import { scanBrowserProjectFile, type ScannedFile } from "@/platform/browserProjectScanner";
+import { needsLowMemoryProjectFileLoad } from "@/platform/browserProjectFilePolicy";
 
 export interface BrowserProjectScanRequest {
   relativePath: string;
@@ -18,6 +19,7 @@ class ScanWorkerSlot {
   private readonly pending = new Map<number, PendingScan>();
   private sequence = 0;
   private closed = false;
+  private topLevelSubmitted = false;
 
   constructor(private readonly worker: Worker) {
     worker.onmessage = (event: MessageEvent) => this.receive(event.data);
@@ -45,8 +47,9 @@ class ScanWorkerSlot {
           id,
           relativePath: request.relativePath,
           file: request.file,
-          topLevel: [...topLevel],
+          ...(this.topLevelSubmitted ? {} : { topLevel: [...topLevel] }),
         });
+        this.topLevelSubmitted = true;
       } catch (error) {
         this.pending.delete(id);
         reject(
@@ -109,7 +112,7 @@ async function scanWithWorkers(
 ): Promise<Array<ScannedFile | undefined>> {
   const workerCount = Math.min(
     requests.length,
-    8,
+    scanConcurrencyLimit(),
     Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 2) - 1),
   );
   const slots: ScanWorkerSlot[] = [];
@@ -185,11 +188,17 @@ async function scanOnMainThread(
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(requests.length, 8) }, () => worker()));
+  await Promise.all(
+    Array.from({ length: Math.min(requests.length, scanConcurrencyLimit()) }, () => worker()),
+  );
   if (signal?.aborted) throw abortError(signal);
   const firstError = errors.find((error) => error !== undefined);
   if (firstError !== undefined) throw firstError;
   return results;
+}
+
+function scanConcurrencyLimit(): number {
+  return typeof navigator !== "undefined" && needsLowMemoryProjectFileLoad(navigator) ? 2 : 8;
 }
 
 export async function scanBrowserProjectFilesOffThread(

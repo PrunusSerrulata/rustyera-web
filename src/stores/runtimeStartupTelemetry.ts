@@ -47,6 +47,7 @@ export class RuntimeStartupTelemetryState {
       },
       sourceIndex: { present: null, trusted: null, reusedFiles: null, hashedFiles: null },
       wasmMode: null,
+      wasmMemory: { constrained: null, peakBytes: null, stages: {} },
       observedStages: {},
       milestones: {
         runtimeValidationReportedMs: null,
@@ -83,6 +84,7 @@ export class RuntimeStartupTelemetryState {
       hashedFiles: metrics.sourceIndexHashedFiles ?? null,
     };
     telemetry.wasmMode = metrics.wasmMode ?? (client === "tauri" ? null : "single");
+    telemetry.wasmMemory.constrained = metrics.memoryConstrained ?? null;
   }
 
   elapsedMs(): number {
@@ -112,6 +114,16 @@ export class RuntimeStartupTelemetryState {
     const telemetry = this.current.value;
     if (!telemetry) return;
     const { stage } = progress;
+    if (progress.memoryBytes != null) {
+      telemetry.wasmMemory.peakBytes = Math.max(
+        telemetry.wasmMemory.peakBytes ?? 0,
+        progress.memoryBytes,
+      );
+      telemetry.wasmMemory.stages[stage] = Math.max(
+        telemetry.wasmMemory.stages[stage] ?? 0,
+        progress.memoryBytes,
+      );
+    }
     if (Number.isFinite(progress.elapsedMs)) {
       if (progress.completed === 0) this.coreProgressStartedAtMs[stage] = progress.elapsedMs;
       const started = this.coreProgressStartedAtMs[stage];
@@ -127,6 +139,19 @@ export class RuntimeStartupTelemetryState {
     this.finishProgressStage();
     this.progressStage = stage;
     this.progressStageStartedAtMs = this.elapsedMs();
+  }
+
+  recordWasmMemory(memoryBytes: number | undefined): void {
+    const telemetry = this.current.value;
+    if (
+      !telemetry ||
+      telemetry.outcome !== "loading" ||
+      memoryBytes == null ||
+      !Number.isSafeInteger(memoryBytes) ||
+      memoryBytes < 0
+    )
+      return;
+    telemetry.wasmMemory.peakBytes = Math.max(telemetry.wasmMemory.peakBytes ?? 0, memoryBytes);
   }
 
   finishProgressStage(): void {

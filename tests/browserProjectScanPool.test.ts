@@ -4,6 +4,7 @@ import {
   scanBrowserProjectFilesOffThread,
   type BrowserProjectScanWorkerFactory,
 } from "@/platform/browserProjectScanPool";
+import { createBrowserProjectScanHandler } from "@/platform/browserProjectScan.worker";
 
 type WorkerReply = (worker: FakeWorker, message: any) => void;
 
@@ -42,6 +43,57 @@ function request(path: string, read = vi.fn()) {
 }
 
 describe("browser project scan worker batches", () => {
+  it("reuses the initialized top-level set when later worker messages omit it", async () => {
+    const replies: any[] = [];
+    const handler = createBrowserProjectScanHandler((message) => replies.push(message));
+    const file = {
+      arrayBuffer: async () => new TextEncoder().encode("@LOOSE\nRETURN\n").buffer,
+    } as File;
+
+    await handler({
+      data: { id: 1, relativePath: "loose.erb", file, topLevel: ["erb"] },
+    } as MessageEvent);
+    await handler({ data: { id: 2, relativePath: "loose.erb", file } } as MessageEvent);
+
+    expect(replies).toEqual([
+      { id: 1, ok: true, result: undefined },
+      { id: 2, ok: true, result: undefined },
+    ]);
+  });
+
+  it("caps constrained iOS scans at two readers and submits top-level names once per worker", async () => {
+    vi.stubGlobal("navigator", {
+      hardwareConcurrency: 8,
+      maxTouchPoints: 5,
+      platform: "iPhone",
+      userAgent: "Mozilla/5.0 (iPhone) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1",
+    });
+    const messages: any[][] = [];
+    const factory: BrowserProjectScanWorkerFactory = () => {
+      const workerMessages: any[] = [];
+      messages.push(workerMessages);
+      return new FakeWorker((self, message) => {
+        workerMessages.push(message);
+        self.respond({ id: message.id, ok: true, result: scanned(message.relativePath) });
+      }) as unknown as Worker;
+    };
+
+    try {
+      await scanBrowserProjectFilesOffThread(
+        [request("a.erb"), request("b.erb"), request("c.erb"), request("d.erb")],
+        new Set(["erb", "csv"]),
+        undefined,
+        factory,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(messages).toHaveLength(2);
+    expect(messages.flat().filter((message) => message.topLevel !== undefined)).toHaveLength(2);
+    expect(messages.every((workerMessages) => workerMessages[0]?.topLevel)).toBe(true);
+  });
+
   it("merges out-of-order worker replies by request order and closes the batch", async () => {
     const workers: FakeWorker[] = [];
     const factory: BrowserProjectScanWorkerFactory = () => {

@@ -220,7 +220,9 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain('includes("runtime.compiled_cache_hit")');
     expect(runner).toContain("packaged project did not use its exact compiled cache");
     expect(runnerLibrary).toContain('fields.includes("scrollable_y")');
-    expect(scenario).toContain('"project_file": "../../../../games/eraTW/eraThe World.reraproj"');
+    expect(runner).toContain("requires an explicit --project-file artifact");
+    expect(scenario).toContain('"requires_project_file": true');
+    expect(scenario).not.toContain('"project_file"');
     expect(scenario).toContain('"viewport": { "width": 568, "height": 320 }');
     expect(scenario).toContain('"css": ".menu-popup"');
     expect(scenario).toContain('"css": "#preference-tab-project"');

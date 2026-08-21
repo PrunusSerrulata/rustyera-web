@@ -488,7 +488,7 @@ describe("browser startup bridge", () => {
     });
     const bridge = new BrowserBridge();
 
-    await bridge.openProject();
+    await expect(bridge.openProject()).resolves.toMatchObject({ memoryConstrained: true });
     await (
       await source.createWritable()
     ).write(new TextEncoder().encode("@SYSTEM_TITLE\nPRINTL PARTIAL\nRETURN\n"));
@@ -517,16 +517,145 @@ describe("browser startup bridge", () => {
     ).write(new TextEncoder().encode("@SYSTEM_TITLE\nPRINTL EXPORTED\nRETURN\n"));
     await bridge.submitProjectSource();
 
-    const submissions = requests
-      .filter((request) => request.message.method === "loadProjectBinary")
-      .map((request) => new TextDecoder().decode(request.message.args[0] as Uint8Array));
+    const submissions: string[] = [];
+    let streamed = "";
+    for (const request of requests) {
+      if (request.message.method === "beginProjectManifest") streamed = "";
+      if (request.message.method === "appendProjectManifestFile") {
+        streamed += new TextDecoder().decode(request.message.args[3] as Uint8Array);
+        expect(request.transfer).toEqual([
+          (request.message.args[3] as Uint8Array).buffer,
+          (request.message.args[4] as Uint8Array).buffer,
+        ]);
+      }
+      if (request.message.method === "finishProjectManifest") submissions.push(streamed);
+    }
     expect(
       requests.some((request) => request.message.method === "loadProjectWithCompiledCacheBinary"),
     ).toBe(false);
+    expect(requests.some((request) => request.message.method === "loadProjectBinary")).toBe(false);
     expect(submissions).toHaveLength(3);
     expect(submissions[0]).toContain("PRINTL OLD");
     expect(submissions[1]).toContain("PRINTL NEW");
     expect(submissions[2]).toContain("PRINTL EXPORTED");
+  });
+
+  it("cancels a failed iOS manifest stream and releases every partially submitted payload", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    vi.stubGlobal("navigator", {
+      storage: { getDirectory: async () => new MemoryDirectoryHandle("storage") },
+      userAgent:
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1",
+      platform: "iPhone",
+      maxTouchPoints: 5,
+    });
+    const manifest = {
+      project_revision: 1,
+      files: ["one", "two"].map((name, index) => ({
+        relative_path: `${name}.erb`,
+        category: "erb",
+        payload: { type: "utf8" as const, value: `@${name.toUpperCase()}\nRETURN\n` },
+        content_hash: new Uint8Array(32).fill(index),
+      })),
+    };
+    pickBrowserDirectory.mockResolvedValue({
+      handle: root,
+      persistHandle: false,
+      projectName: "game",
+      manifest,
+    });
+    let appended = 0;
+    respond = (method) => {
+      if (method === "appendProjectManifestFile" && appended++ === 1)
+        throw new Error("stream failed");
+      return 1n;
+    };
+
+    await expect(new BrowserBridge().openProject()).rejects.toThrow("stream failed");
+
+    expect(requests.map((request) => request.message.method)).toEqual([
+      "beginProjectManifest",
+      "appendProjectManifestFile",
+      "appendProjectManifestFile",
+      "cancelProjectManifest",
+    ]);
+    expect(manifest.files.map((file) => file.payload.value)).toEqual(["", ""]);
+  });
+
+  it("keeps the active iOS directory project when a replacement manifest stream fails", async () => {
+    const oldRoot = new MemoryDirectoryHandle("old-game");
+    const oldSource = await oldRoot.getFileHandle("old.erb", { create: true });
+    const oldText = "@OLD\nPRINTL ACTIVE\nRETURN\n";
+    await (await oldSource.createWritable()).write(new TextEncoder().encode(oldText));
+    const newRoot = new MemoryDirectoryHandle("new-game");
+    vi.stubGlobal("navigator", {
+      storage: { getDirectory: async () => new MemoryDirectoryHandle("storage") },
+      userAgent:
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1",
+      platform: "iPhone",
+      maxTouchPoints: 5,
+    });
+    pickBrowserDirectory
+      .mockResolvedValueOnce({
+        handle: oldRoot,
+        persistHandle: false,
+        projectName: "old-game",
+        manifest: {
+          project_revision: 1,
+          files: [
+            {
+              relative_path: "old.erb",
+              category: "erb",
+              payload: { type: "utf8", value: oldText },
+              content_hash: blake3(new TextEncoder().encode(oldText)),
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        handle: newRoot,
+        persistHandle: false,
+        projectName: "new-game",
+        manifest: {
+          project_revision: 2,
+          files: ["one", "two"].map((name) => ({
+            relative_path: `${name}.erb`,
+            category: "erb",
+            payload: { type: "utf8" as const, value: `@${name.toUpperCase()}\nRETURN\n` },
+            content_hash: new Uint8Array(32),
+          })),
+        },
+      });
+    const bridge = new BrowserBridge();
+    await bridge.openProject();
+    let failReplacementFinish = true;
+    respond = (method) => {
+      if (method === "finishProjectManifest" && failReplacementFinish) {
+        failReplacementFinish = false;
+        throw new Error("replacement failed");
+      }
+      return 1n;
+    };
+
+    await expect(bridge.openProject()).rejects.toThrow("replacement failed");
+    respond = () => 1n;
+    await bridge.restartProject();
+
+    const submissions: string[] = [];
+    let streamed = "";
+    for (const request of requests) {
+      if (request.message.method === "beginProjectManifest") streamed = "";
+      if (request.message.method === "appendProjectManifestFile")
+        streamed += new TextDecoder().decode(request.message.args[3] as Uint8Array);
+      if (request.message.method === "finishProjectManifest") submissions.push(streamed);
+    }
+    expect(
+      requests.filter((request) => request.message.method === "cancelProjectManifest"),
+    ).toHaveLength(1);
+    expect(submissions).toHaveLength(3);
+    expect(submissions[0]).toContain("PRINTL ACTIVE");
+    expect(submissions[1]).toContain("@TWO");
+    expect(submissions[2]).toContain("PRINTL ACTIVE");
   });
 
   afterEach(() => {

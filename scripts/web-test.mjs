@@ -45,6 +45,10 @@ function parseArgs(argv) {
 
 async function execute(args) {
   const scenario = await loadScenario(args.scenario, args.project, args.state);
+  if (args.project_file) scenario.project_file = path.resolve(args.project_file);
+  if (scenario.requires_project_file === true && !args.project_file) {
+    throw new Error(`${scenario.path} requires an explicit --project-file artifact`);
+  }
   await access(path.join(repository, "public/wasm/era_web_wasm.js"));
   const runId = `${new Date().toISOString().replaceAll(/[-:.TZ]/g, "")}-${process.pid}`;
   const tracePath = path.resolve(
@@ -223,6 +227,7 @@ async function execute(args) {
       locale: "zh-CN",
       viewport: scenario.viewport,
       reducedMotion: "reduce",
+      userAgent: args.user_agent,
     });
     await context.grantPermissions(["local-fonts"], {
       origin: `http://127.0.0.1:${port}`,
@@ -419,6 +424,7 @@ async function execute(args) {
       start: scenario.start.type,
       seed: scenario.seed,
       clock: scenario.clock ?? "2026-01-01T00:00:00Z",
+      userAgent: args.user_agent,
       trace: tracePath,
     });
     let current = await observe();

@@ -213,6 +213,11 @@ export interface StartupTelemetry {
     hashedFiles: number | null;
   };
   wasmMode: "single" | null;
+  wasmMemory: {
+    constrained: boolean | null;
+    peakBytes: number | null;
+    stages: Partial<Record<ProjectProgressStage, number>>;
+  };
   observedStages: Partial<Record<ProjectProgressStage, number>>;
   milestones: {
     runtimeValidationReportedMs: number | null;

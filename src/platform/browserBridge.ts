@@ -23,7 +23,7 @@ import {
   pickBrowserFileBytes,
   pickBrowserProjectFile,
 } from "@/platform/browserDirectory";
-import { encodeBrowserManifest } from "@/platform/browserManifestCodec";
+import { encodeBrowserManifest, streamBrowserManifestFiles } from "@/platform/browserManifestCodec";
 import { saveBrowserDiagnosis } from "@/platform/browserBridge/diagnosisSave";
 import {
   BrowserProject,
@@ -206,6 +206,7 @@ export class BrowserBridge implements FrontendBridge {
       sourceReadDecodeHashMs: scanMetrics.sourceReadDecodeHashMs + loaded.sourceReadMs,
       submissionTransferMs: loaded.submitMs,
       wasmMode: "single",
+      memoryConstrained: this.lowMemoryBrowser,
       projectFonts,
     } satisfies ProjectOpenMetrics;
   }
@@ -260,6 +261,7 @@ export class BrowserBridge implements FrontendBridge {
       submitMs: performance.now() - started,
       cacheImported: loaded.cacheImported,
       wasmMode: "single",
+      memoryConstrained: this.lowMemoryBrowser,
       projectFonts,
     };
   }
@@ -284,6 +286,7 @@ export class BrowserBridge implements FrontendBridge {
         submitMs: performance.now() - started,
         cacheImported: loaded.cacheImported,
         wasmMode: "single",
+        memoryConstrained: this.lowMemoryBrowser,
         projectFonts: await this.projectFontRegistry.replace(this.project.fontSources()),
       };
     }
@@ -317,6 +320,7 @@ export class BrowserBridge implements FrontendBridge {
       sourceReadDecodeHashMs: scanMetrics.sourceReadDecodeHashMs + loaded.sourceReadMs,
       submissionTransferMs: loaded.submitMs,
       wasmMode: "single",
+      memoryConstrained: this.lowMemoryBrowser,
       projectFonts: await this.projectFontRegistry.replace(this.project.fontSources()),
     };
   }
@@ -435,14 +439,47 @@ export class BrowserBridge implements FrontendBridge {
     project: BrowserProject,
     manifest: BrowserManifest,
   ): Promise<void> {
+    if (this.lowMemoryBrowser) {
+      try {
+        await this.worker.call(
+          "beginProjectManifest",
+          BigInt(manifest.project_revision),
+          manifest.files.length,
+        );
+        await streamBrowserManifestFiles(
+          manifest,
+          async (file) => {
+            await this.worker.callWithTransfer(
+              "appendProjectManifestFile",
+              [
+                file.source.relative_path,
+                file.category,
+                file.payloadTag,
+                file.payload,
+                file.contentHash,
+              ],
+              [file.payload.buffer, file.contentHash.buffer],
+            );
+            project.releaseSubmittedSourceFilePayload(file.source);
+          },
+          (completed, total) =>
+            this.projectProgressListener?.({ stage: "submitting", completed, total }),
+        );
+        await this.worker.call("finishProjectManifest");
+      } catch (error) {
+        await this.worker.call("cancelProjectManifest").catch(() => undefined);
+        // Some files may already have moved into WASM. Force a directory rescan before retrying.
+        project.releaseSubmittedSourcePayloads();
+        throw error;
+      }
+      project.markRuntimeManifestSparse();
+      project.releaseSubmittedSourcePayloads();
+      return;
+    }
     const encoded = await encodeBrowserManifest(manifest, (completed, total) =>
       this.projectProgressListener?.({ stage: "submitting", completed, total }),
     );
     await this.worker.callWithTransfer("loadProjectBinary", [encoded], [encoded.buffer]);
-    if (this.lowMemoryBrowser) {
-      project.markRuntimeManifestSparse();
-      project.releaseSubmittedSourcePayloads();
-    }
   }
 
   readResource(relativePath: string): Promise<Uint8Array> {

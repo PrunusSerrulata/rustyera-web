@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CONSTRAINED_IOS_USER_AGENT,
+  browserBenchmarkCommandArgs,
+  compareDirectoryAndProjectFile,
+  latestSuccessfulStartupTelemetry,
   percentile,
   summarizeStartupSamples,
   validateStartupSample,
@@ -12,7 +16,9 @@ function completeSample(overrides: Record<string, unknown> = {}) {
     telemetry: {
       outcome: "success",
       cacheHit: false,
+      scenario: "cold",
       wasmMode: "single",
+      wasmMemory: { constrained: true, peakBytes: 128 * 1024 * 1024, stages: {} },
       milestones: {
         runtimeValidationReportedMs: 1,
         frontendReadyToStartMs: 2,
@@ -68,5 +74,99 @@ describe("startup benchmark reports", () => {
     expect(() =>
       validateStartupSample({ ...completeSample(), peakRssBytes: 0 / 0 }, "browser-exact-cold"),
     ).toThrow("peakRssBytes");
+  });
+
+  it("accepts a packaged-project cache baseline with WASM memory telemetry", () => {
+    expect(() =>
+      validateStartupSample(
+        completeSample({
+          cacheHit: true,
+          scenario: "project_file",
+          durations: {
+            ...completeSample().telemetry.durations,
+            cacheParseMs: 1,
+            cacheDecodeMs: 1,
+            cacheValidateMs: 1,
+          },
+        }),
+        "browser-project-file",
+      ),
+    ).not.toThrow();
+  });
+
+  it("builds constrained iOS commands against an explicit matching project file", () => {
+    expect(
+      browserBenchmarkCommandArgs({
+        scenario: "project-file.json",
+        project: "/games/custom",
+        projectFile: "/games/custom/custom.reraproj",
+        trace: "/tmp/trace.ndjson",
+      }),
+    ).toEqual([
+      "scripts/web-test.mjs",
+      "run",
+      "--scenario",
+      "project-file.json",
+      "--project",
+      "/games/custom",
+      "--trace",
+      "/tmp/trace.ndjson",
+      "--user-agent",
+      CONSTRAINED_IOS_USER_AGENT,
+      "--project-file",
+      "/games/custom/custom.reraproj",
+    ]);
+    expect(
+      browserBenchmarkCommandArgs({
+        scenario: "warm.json",
+        project: "/games/custom",
+        trace: "/tmp/warm.ndjson",
+        constrained: false,
+      }),
+    ).not.toContain("--user-agent");
+  });
+
+  it("reports equal-sample directory overhead against the packaged baseline", () => {
+    const report = compareDirectoryAndProjectFile(
+      {
+        samples: [completeSample(), completeSample()],
+        metrics: {
+          peakRssBytes: { p50: 150, p95: 200 },
+          "telemetry.wasmMemory.peakBytes": { p50: 120, p95: 180 },
+        },
+      },
+      {
+        samples: [completeSample(), completeSample()],
+        metrics: {
+          peakRssBytes: { p50: 100, p95: 160 },
+          "telemetry.wasmMemory.peakBytes": { p50: 100, p95: 150 },
+        },
+      },
+    );
+
+    expect(report).toMatchObject({
+      sampleCount: 2,
+      wasmMemoryPeakBytes: {
+        p50: { directory: 120, projectFile: 100, delta: 20, ratio: 1.2 },
+        p95: { directory: 180, projectFile: 150, delta: 30, ratio: 1.2 },
+      },
+      peakRssBytes: { p50: { delta: 50, ratio: 1.5 }, p95: { delta: 40, ratio: 1.25 } },
+    });
+    expect(() =>
+      compareDirectoryAndProjectFile(
+        { samples: [completeSample()], metrics: {} },
+        { samples: [completeSample(), completeSample()], metrics: {} },
+      ),
+    ).toThrow("same sample count");
+  });
+
+  it("extracts successful telemetry from complete browser observations", () => {
+    const telemetry = completeSample().telemetry;
+    expect(
+      latestSuccessfulStartupTelemetry([
+        { rust: { frontend: { startupTelemetry: { outcome: "loading" } } } },
+        { rust: { frontend: { startupTelemetry: telemetry } } },
+      ]),
+    ).toBe(telemetry);
   });
 });

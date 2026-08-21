@@ -755,6 +755,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function handleBatch(batch: PumpBatch): Promise<void> {
+    startupTelemetryState.recordWasmMemory(batch.memoryBytes);
     batchMediaDirty = false;
     const suppressedLogNotificationIndexes = suppressedMirroredLogNotificationIndexes(batch.events);
     for (let index = 0; index < batch.events.length;) {

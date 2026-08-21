@@ -1,8 +1,41 @@
+export const CONSTRAINED_IOS_USER_AGENT =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1";
+
 export const STARTUP_SCENARIOS = {
-  "browser-exact-cold": { host: "browser", trust: false, index: false, cache: false },
-  "browser-trusted-cold": { host: "browser", trust: true, index: true, cache: false },
-  "browser-exact-warm": { host: "browser", trust: false, index: false, cache: true },
-  "browser-trusted-warm": { host: "browser", trust: true, index: true, cache: true },
+  "browser-exact-cold": {
+    host: "browser",
+    trust: false,
+    index: false,
+    cache: false,
+    constrained: true,
+  },
+  "browser-trusted-cold": {
+    host: "browser",
+    trust: true,
+    index: true,
+    cache: false,
+    constrained: true,
+  },
+  "browser-exact-warm": {
+    host: "browser",
+    trust: false,
+    index: false,
+    cache: true,
+    constrained: false,
+  },
+  "browser-trusted-warm": {
+    host: "browser",
+    trust: true,
+    index: true,
+    cache: true,
+    constrained: false,
+  },
+  "browser-project-file": {
+    host: "browser",
+    projectFile: true,
+    cache: true,
+    constrained: true,
+  },
   "tauri-cold-no-index": { host: "tauri", index: false, cache: false },
   "tauri-cold-indexed": { host: "tauri", index: true, cache: false },
   "tauri-warm": { host: "tauri", index: true, cache: true },
@@ -37,6 +70,11 @@ export function validateStartupSample(sample, scenarioName) {
     throw new Error(`${scenarioName} did not complete startup: ${JSON.stringify(telemetry)}`);
   if (telemetry.cacheHit !== scenario.cache)
     throw new Error(`${scenarioName} cache proof mismatch: ${String(telemetry.cacheHit)}`);
+  const expectedScenario = scenario.projectFile ? "project_file" : scenario.cache ? "warm" : "cold";
+  if (telemetry.scenario !== expectedScenario)
+    throw new Error(
+      `${scenarioName} startup identity mismatch: expected ${expectedScenario}, got ${String(telemetry.scenario)}`,
+    );
   for (const milestone of [
     "runtimeValidationReportedMs",
     "frontendReadyToStartMs",
@@ -45,7 +83,10 @@ export function validateStartupSample(sample, scenarioName) {
   ]) {
     requireFinite(telemetry.milestones?.[milestone], `${scenarioName}.${milestone}`);
   }
-  for (const field of HOST_DURATIONS) {
+  const hostDurations = scenario.projectFile
+    ? ["cacheReadMs", "submissionTransferMs"]
+    : HOST_DURATIONS;
+  for (const field of hostDurations) {
     requireFinite(telemetry.durations?.[field], `${scenarioName}.durations.${field}`);
   }
   for (const field of scenario.cache ? WARM_CORE_DURATIONS : COLD_CORE_DURATIONS) {
@@ -65,8 +106,74 @@ export function validateStartupSample(sample, scenarioName) {
       throw new Error(
         `${scenarioName} expected ${expectedMode} WASM, got ${String(telemetry.wasmMode)}`,
       );
+    requireFinite(telemetry.wasmMemory?.peakBytes, `${scenarioName}.wasmMemory.peakBytes`);
+    if (scenario.constrained && telemetry.wasmMemory?.constrained !== true)
+      throw new Error(`${scenarioName} did not use the constrained-memory browser bridge`);
   }
   return sample;
+}
+
+export function browserBenchmarkCommandArgs({
+  scenario,
+  project,
+  projectFile,
+  trace,
+  constrained = true,
+}) {
+  const command = [
+    "scripts/web-test.mjs",
+    "run",
+    "--scenario",
+    scenario,
+    "--project",
+    project,
+    "--trace",
+    trace,
+  ];
+  if (constrained) command.push("--user-agent", CONSTRAINED_IOS_USER_AGENT);
+  if (projectFile) command.push("--project-file", projectFile);
+  return command;
+}
+
+export function compareDirectoryAndProjectFile(directory, projectFile) {
+  if (directory.samples.length !== projectFile.samples.length)
+    throw new Error("directory and project-file baselines must use the same sample count");
+  return {
+    sampleCount: directory.samples.length,
+    wasmMemoryPeakBytes: compareMetric(
+      directory.metrics["telemetry.wasmMemory.peakBytes"],
+      projectFile.metrics["telemetry.wasmMemory.peakBytes"],
+    ),
+    peakRssBytes: compareMetric(directory.metrics.peakRssBytes, projectFile.metrics.peakRssBytes),
+  };
+}
+
+export function latestSuccessfulStartupTelemetry(events) {
+  const telemetry = events
+    .map(
+      (event) =>
+        event.rust?.frontend?.startupTelemetry ??
+        event.runtime?.startupTelemetry ??
+        event.startupTelemetry,
+    )
+    .filter((value) => value?.outcome === "success")
+    .at(-1);
+  if (!telemetry) throw new Error("dynamic runner did not report successful startup telemetry");
+  return telemetry;
+}
+
+function compareMetric(directory, projectFile) {
+  if (!directory || !projectFile) throw new Error("baseline comparison metric is missing");
+  const compare = (percentileName) => ({
+    directory: directory[percentileName],
+    projectFile: projectFile[percentileName],
+    delta: directory[percentileName] - projectFile[percentileName],
+    ratio:
+      projectFile[percentileName] === 0
+        ? null
+        : directory[percentileName] / projectFile[percentileName],
+  });
+  return { p50: compare("p50"), p95: compare("p95") };
 }
 
 export function summarizeStartupSamples(samples) {

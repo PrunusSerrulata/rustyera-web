@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { encodeBrowserManifest } from "@/platform/browserManifestCodec";
+import { encodeBrowserManifest, streamBrowserManifestFiles } from "@/platform/browserManifestCodec";
 
 describe("browser manifest codec", () => {
   it("encodes one transferable buffer while reporting bounded monotonic progress", async () => {
@@ -79,5 +79,44 @@ describe("browser manifest codec", () => {
     expect(view.getBigUint64(descriptor, true)).toBe(987654n);
     expect(view.getUint32(descriptor + 8, true)).toBe(640);
     expect(view.getUint32(descriptor + 12, true)).toBe(480);
+  });
+
+  it("streams one final-owned payload at a time without a project-sized output buffer", async () => {
+    const progress: Array<[number, number]> = [];
+    const prefixes: string[] = [];
+    const payloadSizes: number[] = [];
+    let activeBytes = 0;
+    let peakBytes = 0;
+    const manifest = {
+      project_revision: 7,
+      files: ["one", "two", "three"].map((text, index) => ({
+        relative_path: `${index}.erb`,
+        category: "erb",
+        payload: { type: "utf8" as const, value: text.repeat(1024) },
+        content_hash: new Uint8Array(32).fill(index),
+      })),
+    };
+
+    await streamBrowserManifestFiles(
+      manifest,
+      async ({ payload, contentHash }) => {
+        activeBytes += payload.byteLength + contentHash.byteLength;
+        peakBytes = Math.max(peakBytes, activeBytes);
+        prefixes.push(new TextDecoder().decode(payload).slice(0, 5));
+        payloadSizes.push(payload.byteLength + contentHash.byteLength);
+        activeBytes -= payload.byteLength + contentHash.byteLength;
+      },
+      (completed, total) => progress.push([completed, total]),
+    );
+
+    expect(prefixes).toEqual(["oneon", "twotw", "three"]);
+    expect(peakBytes).toBe(Math.max(...payloadSizes));
+    expect(peakBytes).toBeLessThan(payloadSizes.reduce((total, size) => total + size, 0));
+    expect(progress).toEqual([
+      [0, 3],
+      [1, 3],
+      [2, 3],
+      [3, 3],
+    ]);
   });
 });
