@@ -340,6 +340,10 @@ describe("browser game runner progress policy", () => {
       resolve("tools/runtime-tester/scenarios/touch-secondary-action.json"),
       "utf8",
     );
+    const roronaScenario = readFileSync(
+      resolve("tools/runtime-tester/scenarios/erarorona-touch-skip.json"),
+      "utf8",
+    );
 
     expect(runner).toContain('action.type === "touch_gesture"');
     expect(runner).toContain('session.send("Input.dispatchTouchEvent"');
@@ -349,6 +353,9 @@ describe("browser game runner progress policy", () => {
     expect(scenario).toContain('"gesture": "two_finger_tap"');
     expect(scenario).toContain('"gesture": "long_press"');
     expect(scenario).toContain('"stop_message_skip": true');
+    expect(roronaScenario).toContain('"has_touch": true');
+    expect(roronaScenario).toContain('"gesture": "two_finger_tap"');
+    expect(roronaScenario).toContain('"gesture": "long_press"');
   });
 
   it("can assert computed game-font styles after applying settings", () => {

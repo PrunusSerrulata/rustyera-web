@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/erarorona",
+  "mode": "fixed",
+  "compiled_cache": true,
+  "clean_saves": true,
+  "has_touch": true,
+  "seed": 1126218542,
+  "clock": "2026-01-01T00:00:00Z",
+  "viewport": { "width": 1415, "height": 1056 },
+  "actions": [
+    { "type": "drain_void_waits", "maximum": 300 },
+    { "type": "input", "value": 0 },
+    { "type": "drain_void_waits", "maximum": 300 },
+    { "type": "input", "value": 0 },
+    { "type": "input", "value": 999 },
+    { "type": "input", "value": 9, "auto_enter": false },
+    {
+      "type": "touch_gesture",
+      "gesture": "two_finger_tap",
+      "locator": { "css": ".game-viewport" },
+      "advances_game": true,
+      "auto_enter": false
+    },
+    {
+      "type": "advance_enter_waits_until",
+      "maximum": 50,
+      "auto_enter": false,
+      "until": { "output_tail_contains": "[0] 新的游戏", "tail_lines": 20 }
+    },
+    { "type": "input", "value": 0, "auto_enter": false },
+    {
+      "type": "touch_gesture",
+      "gesture": "long_press",
+      "locator": { "css": ".game-viewport" },
+      "advances_game": true,
+      "auto_enter": false
+    },
+    {
+      "type": "advance_enter_waits_until",
+      "maximum": 0,
+      "auto_enter": false,
+      "until": { "output_tail_contains": "开一间炼金术的工房。", "tail_lines": 40 }
+    },
+    { "type": "assert_state", "expect": { "wait": { "stop_message_skip": true } } }
+  ],
+  "limits": { "max_steps": 30, "timeout_seconds": 120 }
+}

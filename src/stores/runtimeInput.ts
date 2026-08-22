@@ -1,5 +1,6 @@
 import { ref } from "vue";
 
+import { isMessageSkipWait } from "@/core/messageSkip";
 import { restoreButtons, retireEnabledButtons, type PresentationState } from "@/core/presentation";
 import type { InteractionToken, RuntimeMessage } from "@/core/types";
 import type { PendingGameInput, PendingInputUndo, RuntimeInputIntent } from "@/stores/runtimeState";
@@ -51,18 +52,25 @@ export class RuntimeInputState {
     const pending = this.pending.value;
     if (!pending) return;
     if (!pending.retryPending) {
-      if (pending.waitClosed) this.pending.value = undefined;
-      return;
+      if (!pending.waitClosed) return;
+      if (!pending.messageSkip) {
+        this.pending.value = undefined;
+        return;
+      }
     }
     const wait = this.context.presentation().inputWait;
     if (!wait) {
       if (this.context.phase() === "running") return;
       this.pending.value = undefined;
-      this.context.logWarning(pending.retryError ?? "Runtime 拒绝了输入");
+      if (pending.retryError) this.context.logWarning(pending.retryError);
       return;
     }
     const waitIdentity = inputWaitIdentity(wait);
     if (waitIdentity === pending.waitIdentity) return;
+    if (pending.messageSkip && !isMessageSkipWait(wait)) {
+      this.pending.value = undefined;
+      return;
+    }
     if (String(wait.kind) !== pending.waitKind) {
       this.pending.value = undefined;
       this.context.logWarning(pending.retryError ?? "Runtime 拒绝了输入");
@@ -73,7 +81,7 @@ export class RuntimeInputState {
     pending.waitClosed = false;
     pending.retryPending = false;
     pending.retryError = undefined;
-    pending.staleRetries = 1;
+    pending.staleRetries += 1;
     try {
       const messageId = await this.sendInput(wait, pending.intent, pending.messageSkip);
       if (this.pending.value === pending) pending.messageId = String(messageId);

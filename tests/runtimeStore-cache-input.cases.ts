@@ -926,6 +926,128 @@ describe("runtime store cache-input", () => {
     expect(store.canInteract).toBe(true);
   });
 
+  it("keeps a message-skip intent across consecutive stale waits until a skip boundary", async () => {
+    let nextMessageId = 10;
+    bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
+    const store = await storeWithInputWait({
+      kind: "enter_key",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    });
+    bridge.submitRuntime.mockClear();
+    await store.skip();
+
+    for (const [waitId, tokenId, rejectedMessageId] of [
+      [18, 6, 10],
+      [19, 7, 11],
+    ]) {
+      bridge.pump.mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("wait_changed", {
+            type: "opened",
+            value: {
+              kind: "enter_key",
+              wait_id: waitId,
+              submission_token: { epoch: 2, id: tokenId },
+            },
+          }),
+          runtimeEvent(
+            "command_rejected",
+            { message: "input wait identity is stale" },
+            rejectedMessageId,
+          ),
+        ],
+      });
+      await vi.advanceTimersByTimeAsync(32);
+    }
+
+    const inputs = bridge.submitRuntime.mock.calls.filter(
+      ([message]: unknown[]) => (message as { type?: string }).type === "input",
+    );
+    expect(inputs.map((call: unknown[]) => (call[0] as any).value.wait_id)).toEqual([17, 18, 19]);
+    expect(inputs.every((call: unknown[]) => (call[0] as any).value.message_skip === true)).toBe(
+      true,
+    );
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("wait_changed", {
+          type: "opened",
+          value: {
+            kind: "enter_key",
+            wait_id: 20,
+            submission_token: { epoch: 2, id: 8 },
+            stop_message_skip: true,
+          },
+        }),
+        runtimeEvent("command_rejected", { message: "input wait identity is stale" }, 12),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "input",
+      ),
+    ).toHaveLength(3);
+    expect(store.canInteract).toBe(true);
+  });
+
+  it("resubmits message skip when a timed wait closes before its stale rejection arrives", async () => {
+    let nextMessageId = 10;
+    bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
+    const store = await storeWithInputWait({
+      kind: "enter_key",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    });
+    bridge.submitRuntime.mockClear();
+    await store.skip();
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("wait_changed", {
+          type: "opened",
+          value: {
+            kind: "enter_key",
+            wait_id: 18,
+            submission_token: { epoch: 2, id: 6 },
+          },
+        }),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("command_rejected", { message: "input wait identity is stale" }, 10),
+        runtimeEvent("wait_changed", {
+          type: "opened",
+          value: {
+            kind: "enter_key",
+            wait_id: 19,
+            submission_token: { epoch: 2, id: 7 },
+            stop_message_skip: true,
+          },
+        }),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+
+    const inputs = bridge.submitRuntime.mock.calls.filter(
+      ([message]: unknown[]) => (message as { type?: string }).type === "input",
+    );
+    expect(inputs.map((call: unknown[]) => (call[0] as any).value.wait_id)).toEqual([17, 18]);
+    expect(inputs.every((call: unknown[]) => (call[0] as any).value.message_skip === true)).toBe(
+      true,
+    );
+    expect(store.canInteract).toBe(true);
+  });
+
   it("releases a stale input without notifying when no next wait is available", async () => {
     let nextMessageId = 10;
     bridge.submitRuntime.mockImplementation(async () => nextMessageId++);

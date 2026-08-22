@@ -94,7 +94,7 @@ select {
   position: absolute;
   top: 4px;
   left: 7px;
-  z-index: 31;
+  z-index: 29;
   border-top: 0;
   border-radius: 0 0 5px 5px;
   padding: 0.18rem 0.5rem;
@@ -105,7 +105,7 @@ select {
 }
 .menu-touch-toggle::before {
   position: absolute;
-  inset: -4px -8px -10px;
+  inset: -4px -12px -20px;
   content: "";
 }
 .menu-overlay.menu-overlay-open .menu-touch-toggle::before {

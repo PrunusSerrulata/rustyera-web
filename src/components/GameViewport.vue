@@ -178,6 +178,20 @@ function click(event: MouseEvent): void {
   }
 }
 
+function pointerDown(event: PointerEvent): void {
+  if (
+    event.pointerType === "touch" &&
+    store.useMouse &&
+    viewport.value &&
+    isViewportContinuationClick(event, viewport.value)
+  ) {
+    // Animation frames replace their original output elements while a gesture is in progress.
+    // Capture only non-interactive output so button taps retain their original click target.
+    viewport.value.setPointerCapture?.(event.pointerId);
+  }
+  touchSecondaryAction.pointerDown(event);
+}
+
 function wheel(event: WheelEvent): void {
   if (!store.useMouse || !viewport.value) return;
   viewport.value.scrollTop += Math.sign(event.deltaY) * store.scrollHeight * store.gameLineHeightPx;
@@ -237,7 +251,7 @@ watch(
     @click.capture="click"
     @mousedown.right.prevent="store.useMouse && store.skip()"
     @contextmenu.prevent
-    @pointerdown="touchSecondaryAction.pointerDown"
+    @pointerdown="pointerDown"
     @pointermove="touchSecondaryAction.pointerMove"
     @pointerup="touchSecondaryAction.pointerUp"
     @pointercancel="touchSecondaryAction.pointerCancel"

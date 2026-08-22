@@ -295,6 +295,46 @@ describe("game viewport", () => {
     wrapper.unmount();
   });
 
+  it("captures touch gestures on the viewport while animated output replaces their target", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const wrapper = shallowMount(GameViewport);
+    const viewport = wrapper.get<HTMLElement>("main").element;
+    const animatedLine = document.createElement("span");
+    const setPointerCapture = vi.fn();
+    Object.defineProperty(viewport, "setPointerCapture", { value: setPointerCapture });
+    viewport.append(animatedLine);
+
+    dispatchTouch(animatedLine, "pointerdown", 7, 30, 40);
+    animatedLine.remove();
+    vi.advanceTimersByTime(600);
+
+    expect(setPointerCapture).toHaveBeenCalledWith(7);
+    expect(store.skip).toHaveBeenCalledOnce();
+    dispatchTouch(viewport, "pointerup", 7, 30, 40);
+    wrapper.unmount();
+  });
+
+  it("does not capture or continue a single-finger touch that starts on a game button", () => {
+    const wrapper = shallowMount(GameViewport);
+    const viewport = wrapper.get<HTMLElement>("main").element;
+    const button = document.createElement("button");
+    const activated = vi.fn();
+    const setPointerCapture = vi.fn();
+    Object.defineProperty(viewport, "setPointerCapture", { value: setPointerCapture });
+    button.addEventListener("click", activated);
+    viewport.append(button);
+
+    dispatchTouch(button, "pointerdown", 8, 30, 40);
+    dispatchTouch(button, "pointerup", 8, 30, 40);
+    button.click();
+
+    expect(setPointerCapture).not.toHaveBeenCalled();
+    expect(activated).toHaveBeenCalledOnce();
+    expect(continueFromViewport).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
   it("cancels touch secondary gestures that move, time out, gain a third touch, or cancel", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

@@ -788,9 +788,12 @@ describe("frontend host and image-line policy", () => {
 
     expect(toggle).toMatch(/padding:\s*0\.18rem 0\.5rem;/);
     expect(target).toMatch(/position:\s*absolute;/);
-    expect(target).toMatch(/inset:\s*-4px -8px -10px;/);
+    expect(target).toMatch(/inset:\s*-4px -12px -20px;/);
     expect(target).toMatch(/content:\s*"";/);
     expect(openTarget).toMatch(/top:\s*0;/);
+    expect(toggle).toMatch(/z-index:\s*29;/);
+    expect(stylesheet).toMatch(/\.menu-bar\s*\{[^}]*z-index:\s*30;/s);
+    expect(stylesheet).toMatch(/\.menu-popup\s*\{[^}]*z-index:\s*100;/s);
     expect(icon).toMatch(/width:\s*1rem;/);
     expect(icon).toMatch(/height:\s*0\.875rem;/);
     expect(down).toMatch(/transform:\s*rotate\(180deg\);/);

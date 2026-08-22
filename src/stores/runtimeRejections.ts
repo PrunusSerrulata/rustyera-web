@@ -62,7 +62,10 @@ export function classifyRuntimeRejection(
   const staleInput =
     rejectedInput != null &&
     ["input wait identity is stale", "no input is pending"].includes(message);
-  const willRetryInput = staleInput && rejectedInput != null && rejectedInput.staleRetries === 0;
+  const willRetryInput =
+    staleInput &&
+    rejectedInput != null &&
+    (rejectedInput.messageSkip || rejectedInput.staleRetries === 0);
   if (willRetryInput) {
     rejectedInput.messageId = undefined;
     rejectedInput.retryPending = true;
