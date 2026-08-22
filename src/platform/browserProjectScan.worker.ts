@@ -5,15 +5,23 @@ type ScanWorkerPost = (message: unknown, options?: StructuredSerializeOptions) =
 export function createBrowserProjectScanHandler(post: ScanWorkerPost) {
   let projectTopLevel = new Set<string>();
   return async (event: MessageEvent) => {
-    const { id, relativePath, file, topLevel } = event.data as {
+    const {
+      id,
+      relativePath,
+      file,
+      bytes: submittedBytes,
+      topLevel,
+    } = event.data as {
       id: number;
       relativePath: string;
-      file: File;
+      file?: File;
+      bytes?: Uint8Array;
       topLevel?: string[];
     };
     try {
       if (topLevel) projectTopLevel = new Set(topLevel);
-      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (!submittedBytes && !file) throw new Error("project scan request has no file payload");
+      const bytes = submittedBytes ?? new Uint8Array(await file!.arrayBuffer());
       const result = scanBrowserProjectFile(relativePath, bytes, projectTopLevel);
       const transfer = result
         ? [

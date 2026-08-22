@@ -1,5 +1,8 @@
 import { scanBrowserProjectFile, type ScannedFile } from "@/platform/browserProjectScanner";
-import { isMemoryConstrainedBrowserHost } from "@/platform/browserMemoryPolicy";
+import {
+  isAndroidBrowserHost,
+  isMemoryConstrainedBrowserHost,
+} from "@/platform/browserMemoryPolicy";
 
 export interface BrowserProjectScanRequest {
   relativePath: string;
@@ -32,23 +35,27 @@ class ScanWorkerSlot {
     };
   }
 
-  scan(
+  async scan(
     request: BrowserProjectScanRequest,
     topLevel: ReadonlySet<string>,
+    readBeforeSubmit: boolean,
   ): Promise<ScannedFile | undefined> {
     if (this.closed) {
       return Promise.reject(new ScanWorkerInfrastructureError("project scan worker is closed"));
     }
+    const bytes = readBeforeSubmit ? await readProjectFileBytes(request) : undefined;
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
       this.pending.set(id, { resolve, reject });
       try {
-        this.worker.postMessage({
+        const message = {
           id,
           relativePath: request.relativePath,
-          file: request.file,
+          ...(bytes ? { bytes } : { file: request.file }),
           ...(this.topLevelSubmitted ? {} : { topLevel: [...topLevel] }),
-        });
+        };
+        if (bytes) this.worker.postMessage(message, { transfer: [bytes.buffer] });
+        else this.worker.postMessage(message);
         this.topLevelSubmitted = true;
       } catch (error) {
         this.pending.delete(id);
@@ -110,6 +117,7 @@ async function scanWithWorkers(
   workerFactory: BrowserProjectScanWorkerFactory,
   signal?: AbortSignal,
 ): Promise<Array<ScannedFile | undefined>> {
+  const readBeforeSubmit = typeof navigator !== "undefined" && isAndroidBrowserHost(navigator);
   const workerCount = Math.min(
     requests.length,
     scanConcurrencyLimit(),
@@ -143,7 +151,7 @@ async function scanWithWorkers(
         while (next < requests.length && !signal?.aborted) {
           const index = next++;
           try {
-            results[index] = await slot.scan(requests[index]!, topLevel);
+            results[index] = await slot.scan(requests[index]!, topLevel, readBeforeSubmit);
           } catch (error) {
             errors[index] = error;
             if (error instanceof ScanWorkerInfrastructureError) close(error);
@@ -180,7 +188,7 @@ async function scanOnMainThread(
         const request = requests[index]!;
         results[index] = scanBrowserProjectFile(
           request.relativePath,
-          new Uint8Array(await request.file.arrayBuffer()),
+          await readProjectFileBytes(request),
           topLevel,
         );
       } catch (error) {
@@ -195,6 +203,16 @@ async function scanOnMainThread(
   const firstError = errors.find((error) => error !== undefined);
   if (firstError !== undefined) throw firstError;
   return results;
+}
+
+async function readProjectFileBytes(request: BrowserProjectScanRequest): Promise<Uint8Array> {
+  const bytes = new Uint8Array(await request.file.arrayBuffer());
+  if (Number.isSafeInteger(request.file.size) && bytes.byteLength !== request.file.size) {
+    throw new Error(
+      `项目文件读取不完整：${request.relativePath}（预期 ${request.file.size} 字节，实际 ${bytes.byteLength} 字节）`,
+    );
+  }
+  return bytes;
 }
 
 function scanConcurrencyLimit(): number {

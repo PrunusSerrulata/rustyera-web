@@ -22,6 +22,7 @@ class MemoryFileHandle {
     const file = new File([], this.name);
     const bytes = new Uint8Array(this.bytes);
     Object.defineProperties(file, {
+      size: { value: bytes.byteLength },
       arrayBuffer: { value: async () => bytes.buffer.slice(0) },
       text: { value: async () => new TextDecoder().decode(bytes) },
     });

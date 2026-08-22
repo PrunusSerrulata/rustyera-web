@@ -16,7 +16,10 @@ class FakeWorker {
 
   constructor(private readonly reply: WorkerReply) {}
 
-  postMessage(message: any): void {
+  postMessage(message: any, options?: StructuredSerializeOptions): void {
+    if (options?.transfer) {
+      expect(options.transfer).toEqual([message.bytes.buffer]);
+    }
     this.reply(this, message);
   }
 
@@ -61,6 +64,27 @@ describe("browser project scan worker batches", () => {
     ]);
   });
 
+  it("scans transferred Android bytes without requiring a cloned File", async () => {
+    const replies: any[] = [];
+    const handler = createBrowserProjectScanHandler((message) => replies.push(message));
+    const bytes = new TextEncoder().encode("@MAIN\nRETURN\n");
+
+    await handler({
+      data: { id: 1, relativePath: "ERB/main.erb", bytes, topLevel: ["erb"] },
+    } as MessageEvent);
+
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({
+      id: 1,
+      ok: true,
+      result: {
+        relative_path: "ERB/main.erb",
+        category: "erb",
+        payload: { type: "utf8", value: "@MAIN\nRETURN\n" },
+      },
+    });
+  });
+
   it("caps memory-constrained browser scans at two readers and submits top-level names once per worker", async () => {
     vi.stubGlobal("navigator", {
       hardwareConcurrency: 8,
@@ -75,6 +99,8 @@ describe("browser project scan worker batches", () => {
       messages.push(workerMessages);
       return new FakeWorker((self, message) => {
         workerMessages.push(message);
+        expect(message.file).toBeUndefined();
+        expect(message.bytes).toBeInstanceOf(Uint8Array);
         self.respond({ id: message.id, ok: true, result: scanned(message.relativePath) });
       }) as unknown as Worker;
     };
@@ -93,6 +119,116 @@ describe("browser project scan worker batches", () => {
     expect(messages).toHaveLength(2);
     expect(messages.flat().filter((message) => message.topLevel !== undefined)).toHaveLength(2);
     expect(messages.every((workerMessages) => workerMessages[0]?.topLevel)).toBe(true);
+  });
+
+  it("reads Android provider files before transferring their bytes to scan workers", async () => {
+    vi.stubGlobal("navigator", {
+      hardwareConcurrency: 4,
+      maxTouchPoints: 5,
+      platform: "Linux armv8l",
+      userAgent: "Mozilla/5.0 (Android 17; Mobile; rv:154.0) Gecko/154.0 Firefox/154.0",
+    });
+    const source = request(
+      "main.erb",
+      vi.fn(async () => new TextEncoder().encode("@MAIN\nRETURN\n").buffer),
+    );
+    Object.defineProperty(source.file, "size", { value: 13 });
+    const messages: any[] = [];
+    const worker = new FakeWorker((self, message) => {
+      messages.push(message);
+      self.respond({ id: message.id, ok: true, result: scanned(message.relativePath) });
+    });
+
+    try {
+      await expect(
+        scanBrowserProjectFilesOffThread(
+          [source],
+          new Set(["erb"]),
+          undefined,
+          () => worker as unknown as Worker,
+        ),
+      ).resolves.toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(source.read).toHaveBeenCalledOnce();
+    expect(messages[0]).toMatchObject({ relativePath: "main.erb" });
+    expect(messages[0].file).toBeUndefined();
+    expect(new TextDecoder().decode(messages[0].bytes)).toBe("@MAIN\nRETURN\n");
+  });
+
+  it("rejects a truncated Android provider read instead of compiling a partial project", async () => {
+    vi.stubGlobal("navigator", {
+      hardwareConcurrency: 4,
+      maxTouchPoints: 5,
+      platform: "Linux armv8l",
+      userAgent:
+        "Mozilla/5.0 (Linux; Android 17; K) AppleWebKit/537.36 Chrome/151.0.0.0 Mobile Safari/537.36",
+    });
+    const source = request(
+      "ERB/FUNCTIONS.ERB",
+      vi.fn(async () => Uint8Array.of(1, 2).buffer),
+    );
+    Object.defineProperty(source.file, "size", { value: 8 });
+    const worker = new FakeWorker(() => undefined);
+
+    try {
+      await expect(
+        scanBrowserProjectFilesOffThread(
+          [source],
+          new Set(["erb"]),
+          undefined,
+          () => worker as unknown as Worker,
+        ),
+      ).rejects.toThrow("项目文件读取不完整：ERB/FUNCTIONS.ERB（预期 8 字节，实际 2 字节）");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(worker.terminate).toHaveBeenCalledOnce();
+  });
+
+  it("preserves direct File submission for iOS and iPadOS scan workers", async () => {
+    for (const device of [
+      {
+        userAgent:
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1",
+        platform: "iPhone",
+        maxTouchPoints: 5,
+      },
+      {
+        userAgent:
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15 Version/18.6 Safari/605.1.15",
+        platform: "MacIntel",
+        maxTouchPoints: 5,
+      },
+    ]) {
+      vi.stubGlobal("navigator", { hardwareConcurrency: 4, ...device });
+      const source = request("main.erb");
+      const messages: any[] = [];
+      const worker = new FakeWorker((self, message) => {
+        messages.push(message);
+        self.respond({ id: message.id, ok: true, result: scanned(message.relativePath) });
+      });
+
+      try {
+        await expect(
+          scanBrowserProjectFilesOffThread(
+            [source],
+            new Set(["erb"]),
+            undefined,
+            () => worker as unknown as Worker,
+          ),
+        ).resolves.toHaveLength(1);
+
+        expect(source.read).not.toHaveBeenCalled();
+        expect(messages[0].file).toBe(source.file);
+        expect(messages[0].bytes).toBeUndefined();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
   });
 
   it("merges out-of-order worker replies by request order and closes the batch", async () => {

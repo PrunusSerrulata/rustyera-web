@@ -36,6 +36,7 @@ import { isPackagedProjectFontPath, type ProjectFontSource } from "@/platform/pr
 import { scanBrowserProjectFilesOffThread } from "@/platform/browserProjectScanPool";
 import type { ScannedFile } from "@/platform/browserProjectScanner";
 import { takeProjectFileManifestOwnership } from "@/platform/projectFileManifestTransfer";
+import { browserProjectFileReadConcurrency } from "@/platform/browserMemoryPolicy";
 
 export { scanBrowserProjectFile } from "@/platform/browserProjectScanner";
 export type { ScannedFile } from "@/platform/browserProjectScanner";
@@ -468,7 +469,7 @@ export class BrowserProject {
         snapshots[index] = file;
         signatures[index] = `${file.size}:${file.lastModified}`;
       }),
-      8,
+      browserProjectFileReadConcurrency(),
     );
     const statMs = performance.now() - statStarted;
     const requests: Array<{ relativePath: string; file: File }> = [];
@@ -624,7 +625,7 @@ export class BrowserProject {
       current.map((entry, index) => async () => {
         currentFiles[index] = await entry.handle.getFile();
       }),
-      8,
+      browserProjectFileReadConcurrency(),
       undefined,
       signal,
     );

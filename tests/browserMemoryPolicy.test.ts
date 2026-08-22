@@ -1,8 +1,33 @@
 import { describe, expect, it } from "vitest";
 
-import { isMemoryConstrainedBrowserHost } from "@/platform/browserMemoryPolicy";
+import {
+  browserProjectFileReadConcurrency,
+  isAndroidBrowserHost,
+  isMemoryConstrainedBrowserHost,
+} from "@/platform/browserMemoryPolicy";
 
 describe("browser memory policy", () => {
+  it("isolates Android provider I/O from the established Apple picker path", () => {
+    const android = {
+      userAgent: "Mozilla/5.0 (Android 17; Mobile; rv:154.0) Gecko/154.0 Firefox/154.0",
+    };
+    const ios = {
+      userAgent:
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1",
+    };
+    const ipados = {
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15 Version/18.6 Safari/605.1.15",
+    };
+
+    expect(isAndroidBrowserHost(android)).toBe(true);
+    expect(browserProjectFileReadConcurrency(android)).toBe(2);
+    expect(isAndroidBrowserHost(ios)).toBe(false);
+    expect(browserProjectFileReadConcurrency(ios)).toBe(8);
+    expect(isAndroidBrowserHost(ipados)).toBe(false);
+    expect(browserProjectFileReadConcurrency(ipados)).toBe(8);
+  });
+
   it.each([
     {
       host: "Chromium mobile client hint",

@@ -7,6 +7,7 @@ import type {
   ScannedFile,
 } from "@/platform/browserProject";
 import { scanBrowserProjectFilesOffThread } from "@/platform/browserProjectScanPool";
+import { browserProjectFileReadConcurrency } from "@/platform/browserMemoryPolicy";
 import { hex, safePath } from "@/platform/browserProjectFilesystem";
 import {
   fileSnapshot,
@@ -183,7 +184,7 @@ export async function importBrowserDirectory(
         scanRequests[index] = { relativePath: effectivePath, file };
       }
     }),
-    8,
+    browserProjectFileReadConcurrency(),
     (completed, total) => progress?.("importing", completed, total),
   );
   if (!selectedConfiguration && (await fileExists(project, PROJECT_CONFIGURATION))) {
