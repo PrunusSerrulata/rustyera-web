@@ -19,6 +19,7 @@ test("shared shell exposes menus and the unified settings dialog", async ({ page
   const about = page.getByRole("dialog", { name: "关于 RustyEra" });
   await expect(about).toBeVisible();
   await expect(about.getByText("PrunusSerrulata")).toBeVisible();
+  await expect(about.getByText("0.8.0-wasm")).toBeVisible();
   const coreRevision = readFileSync("rustyera-core.rev", "utf8").trim().slice(0, 8);
   await expect(about.getByText(`0.7.0 (${coreRevision})`)).toBeVisible();
   await expect(about.getByText("GPL-3.0-only")).toBeVisible();
