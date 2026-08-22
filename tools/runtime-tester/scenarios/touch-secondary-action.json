@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/touch-secondary-action-project",
+  "mode": "fixed",
+  "seed": 123456,
+  "has_touch": true,
+  "actions": [
+    {
+      "type": "assert_state",
+      "expect": { "wait": { "kind": "any_key", "stop_message_skip": false } }
+    },
+    {
+      "type": "touch_gesture",
+      "gesture": "two_finger_tap",
+      "locator": { "css": ".game-viewport" },
+      "advances_game": true,
+      "auto_enter": false
+    },
+    {
+      "type": "assert_state",
+      "expect": { "wait": { "kind": "enter_key", "stop_message_skip": true } }
+    },
+    {
+      "type": "input",
+      "value": "",
+      "advances_game": true,
+      "auto_enter": false
+    },
+    {
+      "type": "assert_state",
+      "expect": { "wait": { "kind": "any_key", "stop_message_skip": false } }
+    },
+    {
+      "type": "touch_gesture",
+      "gesture": "long_press",
+      "locator": { "css": ".game-viewport" },
+      "advances_game": true,
+      "auto_enter": false
+    },
+    {
+      "type": "assert_state",
+      "expect": { "wait": { "kind": "enter_key", "stop_message_skip": true } }
+    }
+  ],
+  "limits": {
+    "max_steps": 10,
+    "timeout_seconds": 60
+  }
+}

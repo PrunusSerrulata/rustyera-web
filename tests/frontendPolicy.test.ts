@@ -776,6 +776,26 @@ describe("frontend host and image-line policy", () => {
     expect(actionText).toMatch(/white-space:\s*nowrap;/);
   });
 
+  it("expands the hidden-menu touch target without changing its visual box", () => {
+    const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
+    const toggle = stylesheet.match(/\.menu-touch-toggle\s*\{([^}]*)\}/s)?.[1];
+    const target = stylesheet.match(/\.menu-touch-toggle::before\s*\{([^}]*)\}/s)?.[1];
+    const openTarget = stylesheet.match(
+      /\.menu-overlay\.menu-overlay-open \.menu-touch-toggle::before\s*\{([^}]*)\}/s,
+    )?.[1];
+    const icon = stylesheet.match(/\.menu-touch-toggle-icon\s*\{([^}]*)\}/s)?.[1];
+    const down = stylesheet.match(/\.menu-touch-toggle-icon\.direction-down\s*\{([^}]*)\}/s)?.[1];
+
+    expect(toggle).toMatch(/padding:\s*0\.18rem 0\.5rem;/);
+    expect(target).toMatch(/position:\s*absolute;/);
+    expect(target).toMatch(/inset:\s*-4px -8px -10px;/);
+    expect(target).toMatch(/content:\s*"";/);
+    expect(openTarget).toMatch(/top:\s*0;/);
+    expect(icon).toMatch(/width:\s*1rem;/);
+    expect(icon).toMatch(/height:\s*0\.875rem;/);
+    expect(down).toMatch(/transform:\s*rotate\(180deg\);/);
+  });
+
   it("keeps game output on physical lines and exposes horizontal overflow", () => {
     const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
     expect(stylesheet).toMatch(/\.game-viewport\s*\{[^}]*overflow:\s*auto;/s);

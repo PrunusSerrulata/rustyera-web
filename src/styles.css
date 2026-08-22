@@ -103,20 +103,28 @@ select {
   line-height: 1;
   transition: top 120ms ease-out;
 }
+.menu-touch-toggle::before {
+  position: absolute;
+  inset: -4px -8px -10px;
+  content: "";
+}
+.menu-overlay.menu-overlay-open .menu-touch-toggle::before {
+  top: 0;
+}
 .menu-overlay.menu-overlay-open .menu-touch-toggle {
   top: 34px;
 }
 .menu-touch-toggle-icon {
   display: block;
   width: 1rem;
-  height: 0.625rem;
+  height: 0.875rem;
   fill: none;
   stroke: currentcolor;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.5;
 }
-.menu-touch-toggle-icon.direction-up {
+.menu-touch-toggle-icon.direction-down {
   transform: rotate(180deg);
 }
 @media (hover: hover) {

@@ -6,6 +6,7 @@ import DisplayLine from "@/components/DisplayLine.vue";
 import GameTooltip from "@/components/GameTooltip.vue";
 import HtmlNode from "@/components/HtmlNode.vue";
 import MediaImage from "@/components/MediaImage.vue";
+import { useTouchSecondaryAction } from "@/components/useTouchSecondaryAction";
 import { isViewportContinuationClick } from "@/core/viewportInteraction";
 import { measureGameViewport } from "@/platform/viewportMeasurement";
 import { useRuntimeStore } from "@/stores/runtime";
@@ -13,6 +14,10 @@ import { useRuntimeStore } from "@/stores/runtime";
 const store = useRuntimeStore();
 const viewport = ref<HTMLElement>();
 const history = ref<HTMLElement>();
+const touchSecondaryAction = useTouchSecondaryAction(
+  () => store.useMouse,
+  () => void store.skip(),
+);
 const viewportColumns = ref(100);
 const viewportHeight = ref(0);
 const lineRenderKeys = ref<string[]>([]);
@@ -162,6 +167,11 @@ function projectHtmlLength(value: any, absolute = false): number | undefined {
 }
 
 function click(event: MouseEvent): void {
+  if (touchSecondaryAction.consumeClick()) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
   if (!store.useMouse) return;
   if (viewport.value && isViewportContinuationClick(event, viewport.value)) {
     void store.continueFromViewport();
@@ -224,9 +234,13 @@ watch(
     tabindex="0"
     :inert="store.gameInteractionsBlocked"
     :aria-busy="store.gameInteractionsBlocked"
-    @click="click"
+    @click.capture="click"
     @mousedown.right.prevent="store.useMouse && store.skip()"
     @contextmenu.prevent
+    @pointerdown="touchSecondaryAction.pointerDown"
+    @pointermove="touchSecondaryAction.pointerMove"
+    @pointerup="touchSecondaryAction.pointerUp"
+    @pointercancel="touchSecondaryAction.pointerCancel"
     @wheel.prevent="wheel"
   >
     <div class="background-layer">

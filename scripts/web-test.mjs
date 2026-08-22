@@ -28,6 +28,20 @@ import { createLoopbackViteServer, viteServerPort } from "./vite-test-server.mjs
 
 const repository = fileURLToPath(new URL("..", import.meta.url));
 const OBSERVATION_SLICE_MS = 5_000;
+const OBSERVABLE_STEP_ACTION_TYPES = new Set([
+  "input",
+  "click",
+  "touch_gesture",
+  "dblclick",
+  "press",
+  "drain_void_waits",
+  "advance_intermediate_waits_until",
+  "advance_enter_waits_until",
+]);
+
+function isObservableStepAction(type) {
+  return OBSERVABLE_STEP_ACTION_TYPES.has(type);
+}
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -384,18 +398,7 @@ async function execute(args) {
         throw new Error(`${action.type} that advances a compared game must declare semantic_input`);
       if (reference && result.semanticInput != null)
         referenceObservation = await reference.step(String(result.semanticInput), scenario.watches);
-      if (
-        [
-          "input",
-          "click",
-          "dblclick",
-          "press",
-          "drain_void_waits",
-          "advance_intermediate_waits_until",
-          "advance_enter_waits_until",
-        ].includes(action.type)
-      )
-        steps += 1;
+      if (isObservableStepAction(action.type)) steps += 1;
       return result;
     }
 
@@ -494,18 +497,7 @@ async function execute(args) {
         continue;
       const result = await act(action, "fixed");
       if (result.query || result.state) trace.emit({ type: "query", step: steps, ...result });
-      if (
-        [
-          "input",
-          "click",
-          "dblclick",
-          "press",
-          "drain_void_waits",
-          "advance_intermediate_waits_until",
-          "advance_enter_waits_until",
-        ].includes(action.type) &&
-        action.observe !== false
-      ) {
+      if (isObservableStepAction(action.type) && action.observe !== false) {
         current = await observe(action.settle_auto_enter ?? action.auto_enter !== false);
         if (current.rust.fault && action.allow_fault !== true)
           return fail("runtime_fault", 1, { fault: current.rust.fault });
@@ -551,18 +543,7 @@ async function execute(args) {
         throw new Error(`unknown agent operation ${command.op}`);
       const result = await act(action, "agent");
       if (result.query || result.state) trace.emit({ type: "query", ...result });
-      if (
-        [
-          "input",
-          "click",
-          "dblclick",
-          "press",
-          "drain_void_waits",
-          "advance_intermediate_waits_until",
-          "advance_enter_waits_until",
-        ].includes(action.type) &&
-        action.observe !== false
-      ) {
+      if (isObservableStepAction(action.type) && action.observe !== false) {
         current = await observe(action.settle_auto_enter ?? action.auto_enter !== false);
         if (current.rust.fault && action.allow_fault !== true)
           return fail("runtime_fault", 1, { fault: current.rust.fault });

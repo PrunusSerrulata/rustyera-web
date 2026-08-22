@@ -860,7 +860,53 @@ export async function runAction(page, action) {
     return { query: { viewport: { width, height } } };
   }
   const locator = action.locator ? resolveLocator(page, action.locator) : undefined;
-  if (action.type === "click") {
+  if (action.type === "touch_gesture") {
+    const gesture = String(action.gesture ?? "");
+    if (!["two_finger_tap", "long_press"].includes(gesture))
+      throw new Error("touch_gesture requires two_finger_tap or long_press");
+    const box = await locator.boundingBox();
+    if (!box) throw new Error("touch_gesture target is not visible");
+    const beforeWaitId = action.advances_game
+      ? await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot().wait?.wait_id)
+      : undefined;
+    const centerX = Math.round(box.x + box.width / 2);
+    const centerY = Math.round(box.y + box.height / 2);
+    const session = await page.context().newCDPSession(page);
+    let failure;
+    let touchStarted = false;
+    try {
+      const touchPoints =
+        gesture === "two_finger_tap"
+          ? [
+              { x: centerX - 18, y: centerY, id: 1, radiusX: 8, radiusY: 8, force: 1 },
+              { x: centerX + 18, y: centerY, id: 2, radiusX: 8, radiusY: 8, force: 1 },
+            ]
+          : [{ x: centerX, y: centerY, id: 1, radiusX: 8, radiusY: 8, force: 1 }];
+      await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints });
+      touchStarted = true;
+      await page.waitForTimeout(gesture === "long_press" ? 650 : 80);
+    } catch (error) {
+      failure = error;
+    }
+    if (touchStarted) {
+      try {
+        await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+    try {
+      await session.detach();
+    } catch (error) {
+      failure ??= error;
+    }
+    if (failure) throw failure;
+    if (beforeWaitId != null)
+      await page.waitForFunction((waitId) => {
+        const snapshot = window.__RUSTYERA_TEST__.snapshot();
+        return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
+      }, beforeWaitId);
+  } else if (action.type === "click") {
     const runtimeInput = await locator.evaluate((element) =>
       Boolean(
         (element.closest(".game-viewport") &&

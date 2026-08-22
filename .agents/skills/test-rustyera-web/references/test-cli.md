@@ -94,6 +94,8 @@ An action has `type`:
 - `input`: `value`; fills `.prompt-bar input` and clicks the submit button.
 - `click`: `locator`, optional `button` (`left`, `middle`, or `right`, default `left`); set
   `advances_game: true` and `semantic_input` when it advances a compared game.
+- `touch_gesture`: Chromium-only real touch input with `locator` and `gesture` set to
+  `two_finger_tap` or `long_press`; set `advances_game: true` when it advances the runtime.
 - `hover`: `locator`; moves the pointer over an element without advancing the game.
 - `scroll_key`: `locator`, optional `key` (default `PageUp`) and `settle_ms` (default 50); focuses
   the locator and scrolls it through Playwright's real keyboard input.

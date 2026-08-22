@@ -333,6 +333,24 @@ describe("browser game runner progress policy", () => {
     expect(fullProjectExport).toContain('"observe": false');
   });
 
+  it("runs touch secondary actions through a real Chromium gesture scenario", () => {
+    const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const scenarioRunner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
+    const scenario = readFileSync(
+      resolve("tools/runtime-tester/scenarios/touch-secondary-action.json"),
+      "utf8",
+    );
+
+    expect(runner).toContain('action.type === "touch_gesture"');
+    expect(runner).toContain('session.send("Input.dispatchTouchEvent"');
+    expect(scenarioRunner).toContain("const OBSERVABLE_STEP_ACTION_TYPES = new Set([");
+    expect(scenarioRunner).toContain('  "touch_gesture",');
+    expect(scenarioRunner).toContain("isObservableStepAction(action.type)");
+    expect(scenario).toContain('"gesture": "two_finger_tap"');
+    expect(scenario).toContain('"gesture": "long_press"');
+    expect(scenario).toContain('"stop_message_skip": true');
+  });
+
   it("can assert computed game-font styles after applying settings", () => {
     const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
     const scenario = readFileSync(

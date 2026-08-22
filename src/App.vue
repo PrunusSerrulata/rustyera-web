@@ -68,11 +68,11 @@ onMounted(() => void store.initialize());
       >
         <svg
           class="menu-touch-toggle-icon"
-          :class="{ 'direction-up': menuTemporarilyVisible }"
-          viewBox="0 0 16 10"
+          :class="{ 'direction-down': !menuTemporarilyVisible }"
+          viewBox="0 0 16 14"
           aria-hidden="true"
         >
-          <path d="m3 3 5 4 5-4" />
+          <path d="M3 7 8 2l5 5M3 12l5-5 5 5" />
         </svg>
       </button>
     </div>

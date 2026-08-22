@@ -209,9 +209,13 @@ describe("application menus", () => {
     expect(wrapper.classes()).toContain("menu-overlay");
     const toggle = wrapper.get(".menu-touch-toggle");
     expect(toggle.attributes("aria-expanded")).toBe("false");
+    expect(toggle.get("svg").attributes("viewBox")).toBe("0 0 16 14");
+    expect(toggle.get("path").attributes("d")).toBe("M3 7 8 2l5 5M3 12l5-5 5 5");
+    expect(toggle.get("svg").classes()).toContain("direction-down");
     await toggle.trigger("click");
     expect(wrapper.classes()).toContain("menu-overlay-open");
     expect(toggle.attributes("aria-expanded")).toBe("true");
+    expect(toggle.get("svg").classes()).not.toContain("direction-down");
     await toggle.trigger("click");
     expect(wrapper.classes()).not.toContain("menu-overlay-open");
     expect(store.menuMode).toBe("AUTO");

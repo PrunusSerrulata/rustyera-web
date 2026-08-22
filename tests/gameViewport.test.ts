@@ -61,7 +61,10 @@ describe("game viewport", () => {
     });
   });
 
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
 
   it("reports a viewport whose height changes without a width change", async () => {
     let resize: ResizeObserverCallback | undefined;
@@ -261,6 +264,133 @@ describe("game viewport", () => {
     wrapper.unmount();
   });
 
+  it("maps a stationary two-finger tap to the secondary action", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const wrapper = shallowMount(GameViewport);
+    const viewport = wrapper.get<HTMLElement>("main").element;
+
+    dispatchTouch(viewport, "pointerdown", 1, 30, 40);
+    vi.advanceTimersByTime(40);
+    dispatchTouch(viewport, "pointerdown", 2, 60, 40);
+    vi.advanceTimersByTime(40);
+    dispatchTouch(viewport, "pointerup", 1, 30, 40);
+    dispatchTouch(viewport, "pointerup", 2, 60, 40);
+
+    expect(store.skip).toHaveBeenCalledOnce();
+    wrapper.unmount();
+  });
+
+  it("maps a stationary single-finger long press to the secondary action", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const wrapper = shallowMount(GameViewport);
+    const viewport = wrapper.get<HTMLElement>("main").element;
+
+    dispatchTouch(viewport, "pointerdown", 1, 30, 40);
+    vi.advanceTimersByTime(600);
+
+    expect(store.skip).toHaveBeenCalledOnce();
+    dispatchTouch(viewport, "pointerup", 1, 30, 40);
+    wrapper.unmount();
+  });
+
+  it("cancels touch secondary gestures that move, time out, gain a third touch, or cancel", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const wrapper = shallowMount(GameViewport);
+    const viewport = wrapper.get<HTMLElement>("main").element;
+
+    dispatchTouch(viewport, "pointerdown", 1, 10, 10);
+    dispatchTouch(viewport, "pointermove", 1, 23, 10);
+    vi.advanceTimersByTime(600);
+    dispatchTouch(viewport, "pointerup", 1, 23, 10);
+
+    dispatchTouch(viewport, "pointerdown", 2, 10, 10);
+    dispatchTouch(viewport, "pointerdown", 3, 30, 10);
+    vi.advanceTimersByTime(351);
+    dispatchTouch(viewport, "pointerup", 2, 10, 10);
+    dispatchTouch(viewport, "pointerup", 3, 30, 10);
+
+    dispatchTouch(viewport, "pointerdown", 4, 10, 10);
+    dispatchTouch(viewport, "pointerdown", 5, 30, 10);
+    dispatchTouch(viewport, "pointerdown", 6, 50, 10);
+    dispatchTouch(viewport, "pointerup", 4, 10, 10);
+    dispatchTouch(viewport, "pointerup", 5, 30, 10);
+    dispatchTouch(viewport, "pointerup", 6, 50, 10);
+
+    dispatchTouch(viewport, "pointerdown", 7, 10, 10);
+    dispatchTouch(viewport, "pointercancel", 7, 10, 10);
+    vi.advanceTimersByTime(600);
+
+    expect(store.skip).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("suppresses only the click synthesized by a successful touch secondary action", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const wrapper = shallowMount(GameViewport);
+    const viewport = wrapper.get<HTMLElement>("main").element;
+    const button = document.createElement("button");
+    const activated = vi.fn();
+    button.addEventListener("click", activated);
+    viewport.append(button);
+
+    dispatchTouch(button, "pointerdown", 1, 30, 40);
+    vi.advanceTimersByTime(600);
+    dispatchTouch(button, "pointerup", 1, 30, 40);
+    vi.advanceTimersByTime(700);
+    button.click();
+
+    expect(store.skip).toHaveBeenCalledOnce();
+    expect(activated).not.toHaveBeenCalled();
+    button.click();
+    expect(activated).toHaveBeenCalledOnce();
+    wrapper.unmount();
+  });
+
+  it("lets a new touch sequence clear stale synthetic-click suppression", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const wrapper = shallowMount(GameViewport);
+    const viewport = wrapper.get<HTMLElement>("main").element;
+    const button = document.createElement("button");
+    const activated = vi.fn();
+    button.addEventListener("click", activated);
+    viewport.append(button);
+
+    dispatchTouch(button, "pointerdown", 1, 30, 40);
+    vi.advanceTimersByTime(600);
+    dispatchTouch(button, "pointerup", 1, 30, 40);
+    dispatchTouch(button, "pointerdown", 2, 30, 40);
+    dispatchTouch(button, "pointerup", 2, 30, 40);
+    button.click();
+
+    expect(store.skip).toHaveBeenCalledOnce();
+    expect(activated).toHaveBeenCalledOnce();
+    wrapper.unmount();
+  });
+
+  it("does not map touch gestures when mouse interactions are disabled", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    store.useMouse = false;
+    const wrapper = shallowMount(GameViewport);
+    const viewport = wrapper.get<HTMLElement>("main").element;
+
+    dispatchTouch(viewport, "pointerdown", 1, 30, 40);
+    vi.advanceTimersByTime(600);
+    dispatchTouch(viewport, "pointerup", 1, 30, 40);
+    dispatchTouch(viewport, "pointerdown", 2, 30, 40);
+    dispatchTouch(viewport, "pointerdown", 3, 60, 40);
+    dispatchTouch(viewport, "pointerup", 2, 30, 40);
+    dispatchTouch(viewport, "pointerup", 3, 60, 40);
+
+    expect(store.skip).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
   it("applies UseMouse and ScrollHeight to viewport pointer scrolling", async () => {
     const wrapper = shallowMount(GameViewport);
     const viewport = wrapper.get<HTMLElement>("main");
@@ -378,3 +508,18 @@ describe("game viewport", () => {
     wrapper.unmount();
   });
 });
+
+function dispatchTouch(
+  target: Element,
+  type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel",
+  pointerId: number,
+  clientX: number,
+  clientY: number,
+): void {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY });
+  Object.defineProperties(event, {
+    pointerId: { value: pointerId },
+    pointerType: { value: "touch" },
+  });
+  target.dispatchEvent(event);
+}

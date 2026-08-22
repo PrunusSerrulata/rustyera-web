@@ -138,6 +138,79 @@ describe("web game test scenario", () => {
     await expect(loadScenario(scenario)).rejects.toThrow("has_touch must be a boolean");
   });
 
+  it("drives declared gestures through real Chromium touch input", async () => {
+    const send = vi.fn(async () => undefined);
+    const detach = vi.fn(async () => undefined);
+    const locator = {
+      boundingBox: vi.fn(async () => ({ x: 10, y: 20, width: 100, height: 80 })),
+    };
+    const page = {
+      locator: vi.fn(() => locator),
+      context: vi.fn(() => ({ newCDPSession: vi.fn(async () => ({ send, detach })) })),
+      waitForTimeout: vi.fn(async () => undefined),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "touch_gesture",
+        gesture: "two_finger_tap",
+        locator: { css: ".game-viewport" },
+      }),
+    ).resolves.toEqual({ semanticInput: undefined });
+    expect(send).toHaveBeenNthCalledWith(1, "Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [
+        { x: 42, y: 60, id: 1, radiusX: 8, radiusY: 8, force: 1 },
+        { x: 78, y: 60, id: 2, radiusX: 8, radiusY: 8, force: 1 },
+      ],
+    });
+    expect(send).toHaveBeenNthCalledWith(2, "Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+    expect(page.waitForTimeout).toHaveBeenCalledWith(80);
+    expect(detach).toHaveBeenCalledOnce();
+
+    await expect(
+      runAction(page, {
+        type: "touch_gesture",
+        gesture: "unsupported",
+        locator: { css: ".game-viewport" },
+      }),
+    ).rejects.toThrow("requires two_finger_tap or long_press");
+  });
+
+  it("releases Chromium touch input when a gesture action fails", async () => {
+    const failure = new Error("gesture wait failed");
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("touch cleanup failed"));
+    const detach = vi.fn(async () => undefined);
+    const page = {
+      locator: vi.fn(() => ({
+        boundingBox: vi.fn(async () => ({ x: 10, y: 20, width: 100, height: 80 })),
+      })),
+      context: vi.fn(() => ({ newCDPSession: vi.fn(async () => ({ send, detach })) })),
+      waitForTimeout: vi.fn(async () => {
+        throw failure;
+      }),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "touch_gesture",
+        gesture: "long_press",
+        locator: { css: ".game-viewport" },
+      }),
+    ).rejects.toBe(failure);
+    expect(send).toHaveBeenNthCalledWith(2, "Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+    expect(detach).toHaveBeenCalledOnce();
+  });
+
   it("accepts coalesced cold-start progress once runtime preparation completes", () => {
     expect(
       browserProjectProgressErrors({
