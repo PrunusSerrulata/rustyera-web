@@ -156,6 +156,10 @@ export class BrowserProject {
     return { ...this.scanMetricsValue };
   }
 
+  quickManifestHasAllSources(): boolean {
+    return this.pendingSnapshot?.files.every((file) => file.prepared != null) ?? false;
+  }
+
   useScanMetrics(metrics: BrowserProjectScanMetrics): void {
     this.scanMetricsValue = { ...metrics };
   }
@@ -360,7 +364,9 @@ export class BrowserProject {
     this.resourceIdentities.clear();
     progress?.(0, 0);
     const enumerateStarted = performance.now();
-    const { files: candidates, topLevel } = await this.enumerateFiles();
+    const { files: candidates, topLevel } = await this.enumerateFiles((completed) =>
+      progress?.(completed, 0),
+    );
     candidates.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
     const enumerateMs = performance.now() - enumerateStarted;
     const files = new Array<ScannedFile>();
@@ -448,7 +454,9 @@ export class BrowserProject {
     this.resourceIdentities.clear();
     progress?.(0, 0);
     const enumerateStarted = performance.now();
-    const { files: candidates, topLevel } = await this.enumerateFiles();
+    const { files: candidates, topLevel } = await this.enumerateFiles((completed) =>
+      progress?.(completed, 0),
+    );
     candidates.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
     const enumerateMs = performance.now() - enumerateStarted;
     const indexReadStarted = performance.now();
@@ -461,7 +469,8 @@ export class BrowserProject {
     const reused = new Array<boolean>(candidates.length).fill(false);
     const snapshots = new Array<File>(candidates.length);
     const signatures = new Array<string>(candidates.length);
-    progress?.(0, candidates.length);
+    const scanWorkTotal = candidates.length * 2;
+    progress?.(0, scanWorkTotal);
     const statStarted = performance.now();
     await runBounded(
       candidates.map((candidate, index) => async () => {
@@ -470,6 +479,7 @@ export class BrowserProject {
         signatures[index] = `${file.size}:${file.lastModified}`;
       }),
       browserProjectFileReadConcurrency(),
+      (completed) => progress?.(completed, scanWorkTotal),
     );
     const statMs = performance.now() - statStarted;
     const requests: Array<{ relativePath: string; file: File }> = [];
@@ -536,7 +546,16 @@ export class BrowserProject {
       }
     }
     const readStarted = performance.now();
-    const scannedFiles = await scanBrowserProjectFilesOffThread(requests, topLevel);
+    const reusedCount = candidates.length - requests.length;
+    const scanWorkCompleted = candidates.length + reusedCount;
+    if (reusedCount > 0) progress?.(scanWorkCompleted, scanWorkTotal);
+    const scannedFiles = await scanBrowserProjectFilesOffThread(
+      requests,
+      topLevel,
+      undefined,
+      undefined,
+      (completed) => progress?.(scanWorkCompleted + completed, scanWorkTotal),
+    );
     for (let requestIndex = 0; requestIndex < requests.length; requestIndex += 1) {
       const candidateIndex = requestIndexes[requestIndex]!;
       const scanned = scannedFiles[requestIndex];
@@ -569,7 +588,6 @@ export class BrowserProject {
         },
       ];
     }
-    progress?.(candidates.length, candidates.length);
     const next = Object.fromEntries(indexEntries);
     let indexWriteMs = 0;
     if (!this.sourceIndexTrusted || !sourceIndex.portable || !sourceIndexesEqual(previous, next)) {
@@ -607,7 +625,9 @@ export class BrowserProject {
     const snapshot = this.pendingSnapshot;
     if (!snapshot) return this.manifestValue ?? this.scan(progress, undefined, signal);
     this.files.clear();
-    const { files: current, topLevel } = await this.enumerateFiles();
+    const { files: current, topLevel } = await this.enumerateFiles((completed) =>
+      progress?.(completed, 0),
+    );
     current.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
     if (
       !equalStringSets(snapshot.topLevel, topLevel) ||
@@ -1048,8 +1068,8 @@ export class BrowserProject {
     }
   }
 
-  private async enumerateFiles() {
-    const enumeration = await enumerateBrowserProject(this.root);
+  private async enumerateFiles(progress?: (visitedEntries: number) => void) {
+    const enumeration = await enumerateBrowserProject(this.root, progress);
     for (const file of enumeration.files) {
       this.files.set(file.relativePath.toLowerCase(), file.handle);
     }

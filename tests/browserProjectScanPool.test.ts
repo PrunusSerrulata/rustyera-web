@@ -85,7 +85,7 @@ describe("browser project scan worker batches", () => {
     });
   });
 
-  it("caps memory-constrained browser scans at two readers and submits top-level names once per worker", async () => {
+  it("uses four bounded readers on Android Chromium and reports completed scans", async () => {
     vi.stubGlobal("navigator", {
       hardwareConcurrency: 8,
       maxTouchPoints: 5,
@@ -94,6 +94,7 @@ describe("browser project scan worker batches", () => {
         "Mozilla/5.0 (Linux; Android 15; K) AppleWebKit/537.36 Chrome/140.0.0.0 Mobile Safari/537.36",
     });
     const messages: any[][] = [];
+    const progress = vi.fn();
     const factory: BrowserProjectScanWorkerFactory = () => {
       const workerMessages: any[] = [];
       messages.push(workerMessages);
@@ -111,14 +112,21 @@ describe("browser project scan worker batches", () => {
         new Set(["erb", "csv"]),
         undefined,
         factory,
+        progress,
       );
     } finally {
       vi.unstubAllGlobals();
     }
 
-    expect(messages).toHaveLength(2);
-    expect(messages.flat().filter((message) => message.topLevel !== undefined)).toHaveLength(2);
+    expect(messages).toHaveLength(4);
+    expect(messages.flat().filter((message) => message.topLevel !== undefined)).toHaveLength(4);
     expect(messages.every((workerMessages) => workerMessages[0]?.topLevel)).toBe(true);
+    expect(progress.mock.calls).toEqual([
+      [1, 4],
+      [2, 4],
+      [3, 4],
+      [4, 4],
+    ]);
   });
 
   it("reads Android provider files before transferring their bytes to scan workers", async () => {
@@ -287,6 +295,52 @@ describe("browser project scan worker batches", () => {
     const results = await scanBrowserProjectFilesOffThread(inputs, new Set(), undefined, factory);
     expect(results.map((value) => value?.relative_path)).toEqual(["a.erb", "b.erb"]);
     expect(first.terminate).toHaveBeenCalledOnce();
+    expect(inputs.every((input) => input.read.mock.calls.length === 1)).toBe(true);
+  });
+
+  it("keeps progress strictly increasing when a partially successful worker falls back", async () => {
+    vi.stubGlobal("navigator", {
+      hardwareConcurrency: 2,
+      maxTouchPoints: 0,
+      platform: "Linux x86_64",
+      userAgent: "Mozilla/5.0 (X11; Linux x86_64) Firefox/154.0",
+    });
+    let submitted = 0;
+    const worker = new FakeWorker((self, message) => {
+      submitted += 1;
+      if (submitted === 1) {
+        self.respond({ id: message.id, ok: true, result: scanned(message.relativePath) });
+      } else {
+        self.onerror?.({ message: "crashed", preventDefault: vi.fn() } as unknown as ErrorEvent);
+      }
+    });
+    const progress = vi.fn();
+    const inputs = ["a.erb", "b.erb", "c.erb"].map((path) =>
+      request(
+        path,
+        vi.fn(async () => new TextEncoder().encode(`@${path[0]}`).buffer),
+      ),
+    );
+
+    try {
+      await expect(
+        scanBrowserProjectFilesOffThread(
+          inputs,
+          new Set(),
+          undefined,
+          () => worker as unknown as Worker,
+          progress,
+        ),
+      ).resolves.toHaveLength(3);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(progress.mock.calls).toEqual([
+      [1, 3],
+      [2, 3],
+      [3, 3],
+    ]);
     expect(inputs.every((input) => input.read.mock.calls.length === 1)).toBe(true);
   });
 

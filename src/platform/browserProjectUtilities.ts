@@ -43,6 +43,7 @@ export async function runBounded(
   let next = 0;
   let completed = 0;
   const errors: unknown[] = new Array(tasks.length);
+  const report = createProjectProgressReporter(tasks.length, progress);
   const worker = async () => {
     while (next < tasks.length && !signal?.aborted) {
       const index = next++;
@@ -52,12 +53,7 @@ export async function runBounded(
         errors[index] = error;
       } finally {
         completed += 1;
-        if (
-          completed === tasks.length ||
-          Math.floor((completed * 30) / tasks.length) >
-            Math.floor(((completed - 1) * 30) / tasks.length)
-        )
-          progress?.(completed, tasks.length);
+        report(completed);
       }
     }
   };
@@ -67,6 +63,26 @@ export async function runBounded(
   throwIfAborted(signal);
   const firstError = errors.find((error) => error !== undefined);
   if (firstError !== undefined) throw firstError;
+}
+
+export function createProjectProgressReporter(
+  total: number,
+  progress?: (completed: number, total: number) => void,
+): (completed: number) => void {
+  if (!progress || total <= 0) return () => undefined;
+  let reported = 0;
+  let reportedAt = performance.now();
+  return (completed) => {
+    const now = performance.now();
+    // Small batches retain per-file reporting. Large fast batches are bounded to avoid flooding
+    // Vue, while slow Android SAF batches still expose genuine completion at least every few files.
+    if (completed < total && total > 16 && completed - reported < 8 && now - reportedAt < 250) {
+      return;
+    }
+    reported = completed;
+    reportedAt = now;
+    progress(completed, total);
+  };
 }
 
 export function throwIfAborted(signal?: AbortSignal): void {

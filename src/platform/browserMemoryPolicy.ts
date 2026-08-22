@@ -11,13 +11,38 @@ export function isAndroidBrowserHost(host: Pick<BrowserHostSignals, "userAgent">
   return /\bAndroid\b/i.test(host.userAgent ?? "");
 }
 
+export function isAndroidFirefoxHost(host: Pick<BrowserHostSignals, "userAgent">): boolean {
+  return isAndroidBrowserHost(host) && /\bFirefox\//i.test(host.userAgent ?? "");
+}
+
 export function browserProjectFileReadConcurrency(
   host: Pick<BrowserHostSignals, "userAgent"> = navigator,
 ): number {
   // Android directory handles and input Files are backed by Storage Access Framework providers.
   // Bound concurrent provider calls independently from the wider mobile-memory policy; Apple
   // browsers use a different picker implementation and retain their established I/O behavior.
-  return isAndroidBrowserHost(host) ? 2 : 8;
+  return isAndroidChromiumHost(host) ? 4 : isAndroidBrowserHost(host) ? 2 : 8;
+}
+
+export function browserProjectDirectoryReadConcurrency(
+  host: Pick<BrowserHostSignals, "userAgent"> = navigator,
+): number {
+  // Chromium's Android directory provider benefits from overlapping independent directory
+  // enumerations, while individual file operations remain effectively serialized by SAF.
+  // Keep every other browser on the established single-directory traversal path.
+  return isAndroidChromiumHost(host) ? 8 : 1;
+}
+
+export function browserProjectScanConcurrency(
+  host: BrowserHostSignals = navigator as BrowserHostSignals,
+): number {
+  if (isAndroidChromiumHost(host)) return 4;
+  return isMemoryConstrainedBrowserHost(host) ? 2 : 8;
+}
+
+function isAndroidChromiumHost(host: Pick<BrowserHostSignals, "userAgent">): boolean {
+  const userAgent = host.userAgent ?? "";
+  return isAndroidBrowserHost(host) && /\b(?:Chrome|Chromium)\//i.test(userAgent);
 }
 
 export function isMemoryConstrainedBrowserHost(

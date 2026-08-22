@@ -29,7 +29,11 @@ const PROJECT_PROGRESS_LABELS: Record<ProjectProgress["stage"], string> = {
 
 export function formatProjectProgress(progress: ProjectProgress): string {
   const label = PROJECT_PROGRESS_LABELS[progress.stage] ?? "正在处理项目";
-  if (progress.stage === "scanning" && progress.total <= 0) return "正在枚举项目文件…";
+  if (progress.stage === "scanning" && progress.total <= 0) {
+    return progress.completed > 0
+      ? `正在枚举项目文件：已检查 ${progress.completed} 项…`
+      : "正在枚举项目文件…";
+  }
   if (progress.total <= 0) return `${label}…`;
   const completed = Math.min(progress.completed, progress.total);
   const percent = Math.min(100, Math.round((completed * 100) / progress.total));

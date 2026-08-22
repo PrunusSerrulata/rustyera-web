@@ -27,7 +27,15 @@ exit and combine it with a full `document.querySelectorAll("*")` enumeration. Fo
 record tag, attributes, text/value, and visibility. Compare canonical snapshots after excluding
 timestamps and other reporting-only metadata. If a snapshot equals the preceding 5-second
 snapshot, immediately terminate the run as stalled; do not wait for a longer action, stage, or
-scenario timeout.
+scenario timeout. Android Firefox's post-DocumentsUI, pre-`FileList` provider-copy interval is the
+only exception: the page may temporarily be black or inaccessible, so retain the last complete DOM
+alongside native hierarchy/process/RDP evidence until Firefox returns. This exception ends before
+project importing or runtime loading begins.
+
+Run picker actions and complete-snapshot capture on independent schedules. Picker/page state should
+normally be polled about every 100 ms, and Android UI hierarchy should be dumped again immediately
+after each prior dump completes; do not make the mandatory 5-second observation interval a minimum
+wait between actions.
 
 Canonical presentation text is the differential source of truth because virtual history means the
 live DOM may contain only visible rows. DOM queries remain the source of truth for rendered

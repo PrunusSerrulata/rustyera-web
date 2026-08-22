@@ -11,6 +11,7 @@ import {
   saveSlotName,
   scanBrowserProjectFile,
 } from "../src/platform/browserProject";
+import { createProjectProgressReporter } from "@/platform/browserProjectUtilities";
 import {
   FailingIndexDirectoryHandle,
   SaveDirectoryHandle,
@@ -151,18 +152,40 @@ describe("browser project font resources", () => {
 });
 
 describe("browser project reads", () => {
+  it("reports enumeration before monotonic metadata and content work", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const erb = await root.getDirectoryHandle("ERB", { create: true });
+    const source = await erb.getFileHandle("main.erb", { create: true });
+    await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
+    const progress = vi.fn();
+
+    await new BrowserProject(root as any).scanQuick(progress);
+
+    expect(progress.mock.calls).toEqual([
+      [0, 0],
+      [2, 0],
+      [0, 2],
+      [1, 2],
+      [2, 2],
+    ]);
+  });
+
   it("reuses a persistent stat index for warm project identity scans", async () => {
     const root = new SaveDirectoryHandle("game");
     const erb = await root.getDirectoryHandle("ERB", { create: true });
     const source = await erb.getFileHandle("main.erb", { create: true });
     await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
 
-    const cold = await new BrowserProject(root as any, 1, "game", true).scanQuick();
-    const warm = await new BrowserProject(root as any, 1, "game", true).scanQuick();
+    const coldProject = new BrowserProject(root as any, 1, "game", true);
+    const cold = await coldProject.scanQuick();
+    const warmProject = new BrowserProject(root as any, 1, "game", true);
+    const warm = await warmProject.scanQuick();
 
     expect(cold.files[0].payload).toEqual({ type: "utf8", value: "@MAIN\nRETURN\n" });
     expect(warm.files[0].payload).toEqual({ type: "utf8", value: "" });
     expect(warm.files[0].content_hash).toEqual(cold.files[0].content_hash);
+    expect(coldProject.quickManifestHasAllSources()).toBe(true);
+    expect(warmProject.quickManifestHasAllSources()).toBe(false);
   });
 
   it("migrates a native source index and preserves incremental reuse", async () => {
@@ -951,6 +974,41 @@ describe("browser project reads", () => {
       [3, 4],
       [4, 4],
     ]);
+  });
+
+  it("throttles fast provider batches while retaining genuine intermediate completions", async () => {
+    const observed: Array<[number, number]> = [];
+    const tasks = Array.from({ length: 40 }, () => async () => Promise.resolve());
+
+    await runBounded(tasks, 4, (completed, total) => observed.push([completed, total]));
+
+    expect(observed).toEqual([
+      [8, 40],
+      [16, 40],
+      [24, 40],
+      [32, 40],
+      [40, 40],
+    ]);
+  });
+
+  it("reports a slow provider completion before the eight-file batch threshold", () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      const observed: Array<[number, number]> = [];
+      const report = createProjectProgressReporter(40, (completed, total) =>
+        observed.push([completed, total]),
+      );
+
+      now = 249;
+      report(1);
+      now = 250;
+      report(2);
+
+      expect(observed).toEqual([[2, 40]]);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("stops scheduling after cancellation and waits for started readers to clean up", async () => {

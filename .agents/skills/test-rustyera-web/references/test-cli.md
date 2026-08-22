@@ -30,14 +30,25 @@ instead of making one silent wait. The snapshot must enumerate every current HTM
 tag, attributes, text/value, and visibility, plus phase/status/wait/presentation/output/log state.
 Abort immediately on `fault` or a terminal version/protocol rejection. Compare snapshots after
 removing timestamps and reporting-only metadata; if two consecutive snapshots are identical,
-terminate immediately as stalled without waiting for another timeout. Preserve the reference
-output and DOM/layout assertions when repairing a timeout. All task tests share one 60-minute
-wall-clock budget, and each full suite may start only once.
+terminate immediately as stalled without waiting for another timeout, except during the Android
+Firefox native provider-copy handoff defined in the skill. In that interval, keep the 5-second
+record with the last complete DOM plus Android hierarchy/process/RDP state and wait for Firefox to
+surface its upload confirmation or `FileList`; resume ordinary identical-snapshot failure as soon
+as it does. Preserve the reference output and DOM/layout assertions when repairing a timeout. All
+task tests share one 60-minute wall-clock budget, and each full suite may start only once.
+
+The snapshot cadence is independent from action pacing. Poll actionable browser state at roughly
+100 ms and native Android hierarchy continuously (no extra delay after a completed dump, at most
+250 ms when a small debounce is necessary). Act as soon as the exact expected control appears;
+never insert a 5-second sleep between folder navigation, selection, confirmation, permission, and
+page-load transitions.
 
 After clicking the native compatibility runner's visible project-open button, require the portable
 directory-file fallback or project-open state to become observable within 10 seconds. On failure,
 report every created file input's type, multiplicity, accept filter, and directory property/attribute
-instead of waiting for the overall compile timeout or leaving a native file sheet open.
+instead of waiting for the overall compile timeout or leaving a native file sheet open. For Android
+Firefox only, pause this 10-second clock during the identified post-DocumentsUI, pre-`FileList`
+native provider-copy interval and record its duration separately.
 
 The native compatibility runner uses the short reference fixture and WebdriverIO. It must report the
 actual browser version/UA, OPFS availability, compile completion, and reference output. Firefox runs

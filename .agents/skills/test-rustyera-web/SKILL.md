@@ -46,7 +46,8 @@ or frontend-state actions, and [tauri-e2e.md](references/tauri-e2e.md) before ch
   every 5 seconds. Each snapshot enumerates every current HTML element with its tag, attributes,
   text/value, and visibility, and includes runtime, presentation, output, status, and log state.
   Ignore timestamps and reporting-only metadata during comparison. If two consecutive snapshots
-  are identical, the game is static: terminate immediately and report a stalled-test failure.
+  are identical, the game is static: terminate immediately and report a stalled-test failure,
+  except for the narrowly scoped Android Firefox native directory handoff described below.
 - At the 60-minute deadline, terminate all test processes and report the active command, exact
   case/stage, last complete snapshot, elapsed time, completed checks, and unverified checks.
 
@@ -136,10 +137,48 @@ one. There is no additional stall grace period. If the test stalls at an actiona
 test flow; if the runtime keeps advancing but never reaches the expected state, diagnose the
 product or game behavior. Do not weaken the expected reference state to avoid a timeout.
 
+## Drive Android directory pickers
+
+Treat the 5-second complete snapshot as a watchdog running alongside picker automation, never as
+the delay between actions. Poll page/CDP state about every 100 ms. For Android native UI, start the
+next hierarchy dump immediately after the previous dump completes; add no fixed sleep longer than
+250 ms. Once the exact expected control is visible and enabled, act immediately and restart the
+fast poll. Do not wait for the next 5-second snapshot before handling project-loss confirmation,
+Downloads navigation, folder selection, **Use this folder**, Android permission, Chromium's
+edit-files prompt, Firefox's upload prompt, or first-run onboarding.
+
+Use visible state rather than a memorized sequence because DocumentsUI remembers its location. At
+the Downloads root select the requested folder; when already inside that folder use the
+current-folder action. Clicking a Web button that opens a picker must use real pointer/touch input,
+not `Runtime.evaluate(() => button.click())`, because the latter does not preserve user activation.
+An authorization to discard a state created by the current automated fixture may be reused for
+later test-created states in the same task, but never for a user's save or a pre-existing session.
+
+Android Firefox has one native exception to identical-snapshot failure. After DocumentsUI has
+confirmed the selected directory and before Firefox shows its upload confirmation or dispatches
+the directory input's `change`/`FileList`, Gecko may copy provider-backed files while the app is
+black or unresponsive. During exactly this interval:
+
+- keep the 5-second evidence stream, preserving the last accessible complete DOM and adding the
+  complete Android UI hierarchy, Firefox process/foreground state, and RDP target URL/status;
+- do not classify identical black/native snapshots as a stall and do not cancel merely because the
+  page has not received files yet;
+- fail immediately if Firefox exits, the authorized localhost target disappears, DocumentsUI or
+  Firefox reports cancellation/error, or the task's remaining wall-clock budget expires;
+- end the exception as soon as the Firefox upload confirmation, directory-input `change`, import
+  progress, or any other observable page transition appears. From that point, two identical
+  normalized snapshots are again an immediate stalled-test failure.
+
+This exception does not apply to Chromium, to DocumentsUI before folder confirmation, to Firefox
+after `FileList` delivery, or to ordinary runtime loading. Report the native handoff duration
+separately from project import/scan time.
+
 For native-browser compatibility startup, require the visible project-open action to
 exercise the directory-file fallback or begin opening a project within 10 seconds. Record the
 created file input's type, multiplicity, accept filter, and directory flag in failure diagnostics;
-do not leave a native file sheet open until the overall runtime timeout.
+do not leave a native file sheet open until the overall runtime timeout. The 10-second rule does
+not start while Android Firefox is inside the explicitly identified native provider-copy handoff;
+start it when Firefox presents the upload confirmation or delivers the `FileList`.
 
 Real-host end-to-end builds must start with the frontend's default preferences unless the scenario
 explicitly tests a preference. Do not inherit a developer's persisted font size, image scale, or

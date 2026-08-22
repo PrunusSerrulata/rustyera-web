@@ -1,7 +1,8 @@
 import { scanBrowserProjectFile, type ScannedFile } from "@/platform/browserProjectScanner";
+import { createProjectProgressReporter } from "@/platform/browserProjectUtilities";
 import {
+  browserProjectScanConcurrency,
   isAndroidBrowserHost,
-  isMemoryConstrainedBrowserHost,
 } from "@/platform/browserMemoryPolicy";
 
 export interface BrowserProjectScanRequest {
@@ -10,6 +11,7 @@ export interface BrowserProjectScanRequest {
 }
 
 export type BrowserProjectScanWorkerFactory = () => Worker;
+export type BrowserProjectScanProgress = (completed: number, total: number) => void;
 
 interface PendingScan {
   resolve: (value: ScannedFile | undefined) => void;
@@ -116,6 +118,7 @@ async function scanWithWorkers(
   topLevel: ReadonlySet<string>,
   workerFactory: BrowserProjectScanWorkerFactory,
   signal?: AbortSignal,
+  progress?: BrowserProjectScanProgress,
 ): Promise<Array<ScannedFile | undefined>> {
   const readBeforeSubmit = typeof navigator !== "undefined" && isAndroidBrowserHost(navigator);
   const workerCount = Math.min(
@@ -127,6 +130,8 @@ async function scanWithWorkers(
   const results = new Array<ScannedFile | undefined>(requests.length);
   const errors = new Array<unknown>(requests.length);
   let next = 0;
+  let completed = 0;
+  const report = createProjectProgressReporter(requests.length, progress);
   const close = (reason?: unknown) => {
     const error =
       reason instanceof Error
@@ -152,6 +157,7 @@ async function scanWithWorkers(
           const index = next++;
           try {
             results[index] = await slot.scan(requests[index]!, topLevel, readBeforeSubmit);
+            report(++completed);
           } catch (error) {
             errors[index] = error;
             if (error instanceof ScanWorkerInfrastructureError) close(error);
@@ -177,10 +183,13 @@ async function scanOnMainThread(
   requests: readonly BrowserProjectScanRequest[],
   topLevel: ReadonlySet<string>,
   signal?: AbortSignal,
+  progress?: BrowserProjectScanProgress,
 ): Promise<Array<ScannedFile | undefined>> {
   const results = new Array<ScannedFile | undefined>(requests.length);
   const errors = new Array<unknown>(requests.length);
   let next = 0;
+  let completed = 0;
+  const report = createProjectProgressReporter(requests.length, progress);
   const worker = async () => {
     while (next < requests.length && !signal?.aborted) {
       const index = next++;
@@ -191,6 +200,7 @@ async function scanOnMainThread(
           await readProjectFileBytes(request),
           topLevel,
         );
+        report(++completed);
       } catch (error) {
         errors[index] = error;
       }
@@ -216,7 +226,7 @@ async function readProjectFileBytes(request: BrowserProjectScanRequest): Promise
 }
 
 function scanConcurrencyLimit(): number {
-  return typeof navigator !== "undefined" && isMemoryConstrainedBrowserHost(navigator) ? 2 : 8;
+  return typeof navigator !== "undefined" ? browserProjectScanConcurrency(navigator) : 8;
 }
 
 export async function scanBrowserProjectFilesOffThread(
@@ -224,18 +234,27 @@ export async function scanBrowserProjectFilesOffThread(
   topLevel: ReadonlySet<string>,
   signal?: AbortSignal,
   workerFactory: BrowserProjectScanWorkerFactory = defaultWorkerFactory,
+  progress?: BrowserProjectScanProgress,
 ): Promise<Array<ScannedFile | undefined>> {
   if (requests.length === 0) return [];
   if (signal?.aborted) throw abortError(signal);
+  let completed = 0;
+  const monotonicProgress = progress
+    ? (nextCompleted: number, total: number) => {
+        if (nextCompleted <= completed) return;
+        completed = nextCompleted;
+        progress(completed, total);
+      }
+    : undefined;
   if (typeof Worker !== "undefined" || workerFactory !== defaultWorkerFactory) {
     try {
-      return await scanWithWorkers(requests, topLevel, workerFactory, signal);
+      return await scanWithWorkers(requests, topLevel, workerFactory, signal, monotonicProgress);
     } catch (error) {
       if (signal?.aborted) throw abortError(signal);
       if (!(error instanceof ScanWorkerInfrastructureError)) throw error;
     }
   }
-  return scanOnMainThread(requests, topLevel, signal);
+  return scanOnMainThread(requests, topLevel, signal, monotonicProgress);
 }
 
 export async function scanBrowserProjectFileOffThread(

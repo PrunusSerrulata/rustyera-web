@@ -40,6 +40,7 @@ const SESSION_OPTIONS: SessionOptions = {
 class MemoryFileHandle {
   readonly kind = "file";
   readonly abort = vi.fn(async () => {});
+  reads = 0;
   private lastModified = 1;
 
   constructor(
@@ -48,6 +49,7 @@ class MemoryFileHandle {
   ) {}
 
   async getFile(): Promise<File> {
+    this.reads += 1;
     const bytes = new Uint8Array(this.bytes);
     const file = new File([], this.name, { lastModified: this.lastModified });
     Object.defineProperties(file, {
@@ -949,6 +951,22 @@ describe("browser startup bridge", () => {
       sourceIndexReusedFiles: 0,
       sourceIndexHashedFiles: 1,
     });
+  });
+
+  it("submits a complete cold quick scan without a second directory stat pass", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    const source = await root.getFileHandle("main.erb", { create: true });
+    await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
+    pickBrowserDirectory.mockResolvedValue({ handle: root, persistHandle: false });
+
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => (now += 10));
+
+    const metrics = await new BrowserBridge().openProject();
+
+    expect(source.reads).toBe(1);
+    expect(metrics?.quickScanMs).toBeGreaterThan(0);
+    expect(requests.some((request) => request.message.method === "loadProjectBinary")).toBe(true);
   });
 
   it("falls back with one binary manifest transfer and retries its cache without rescanning", async () => {

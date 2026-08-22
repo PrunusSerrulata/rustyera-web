@@ -25,6 +25,9 @@ describe("runtime support", () => {
     expect(formatProjectProgress({ stage: "scanning", completed: 0, total: 0 })).toBe(
       "正在枚举项目文件…",
     );
+    expect(formatProjectProgress({ stage: "scanning", completed: 64, total: 0 })).toBe(
+      "正在枚举项目文件：已检查 64 项…",
+    );
     expect(formatProjectProgress({ stage: "compiling", completed: 12, total: 10 })).toBe(
       "正在编译脚本函数：10/10（100%）",
     );

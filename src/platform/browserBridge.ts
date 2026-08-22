@@ -176,17 +176,19 @@ export class BrowserBridge implements FrontendBridge {
       );
       project.useConfigurationUpdatePreparer(this.prepareProjectConfigurationUpdate);
       const started = performance.now();
-      const sourcesReady = picked.manifest != null;
+      const quickScanRequired = picked.manifest == null;
+      let sourcesReady = !quickScanRequired;
       const manifest =
         picked.manifest ??
         (await project.scanQuick((completed, total) =>
           this.projectProgressListener?.({ stage: "scanning", completed, total }),
         ));
+      sourcesReady ||= project.quickManifestHasAllSources();
       if (picked.manifest) {
         project.useImportedManifest(picked.manifest);
         if (picked.scanMetrics) project.useScanMetrics(picked.scanMetrics);
       }
-      const quickScanMs = sourcesReady ? 0 : performance.now() - started;
+      const quickScanMs = quickScanRequired ? performance.now() - started : 0;
       const loaded = await this.loadSourceProject(project, manifest, sourcesReady);
       const previousRelease = this.projectDirectorySelectionRelease;
       this.project = project;

@@ -151,7 +151,8 @@ describe("portable browser directory selection", () => {
       progress.mock.invocationCallOrder[0],
     );
     expect(progress.mock.calls[0]).toEqual(["importing", 0, 0]);
-    expect(progress.mock.calls.at(-1)).toEqual(["importing", 1, 1]);
+    expect(progress).toHaveBeenCalledWith("importing", 1, 1);
+    expect(progress.mock.calls.at(-1)).toEqual(["scanning", 1, 1]);
   });
 
   it("starts progress only after a native directory handle is provided", async () => {
@@ -200,6 +201,70 @@ describe("portable browser directory selection", () => {
     const erb = await (picked.handle as any).getDirectoryHandle("ERB");
     await expect(erb.getFileHandle("main.erb")).resolves.toBeDefined();
     await expect((picked.handle as any).getDirectoryHandle(".rustyera")).resolves.toBeDefined();
+  });
+
+  it("rejects Android Firefox omissions recorded by the portable project index", async () => {
+    const storage = new MemoryDirectoryHandle("root");
+    vi.stubGlobal("navigator", {
+      userAgent: "Mozilla/5.0 (Android 17; Mobile; rv:154.0) Gecko/154.0 Firefox/154.0",
+    });
+    const index = JSON.stringify({
+      version: 3,
+      files: {
+        "ERB/main.erb": {},
+        "ERB/a/b/c/d/e/missing.erb": {},
+      },
+    });
+
+    await expect(
+      importBrowserDirectory(
+        [
+          projectFile("game/ERB/main.erb", "@SYSTEM_TITLE\nRETURN\n"),
+          projectFile("game/.rustyera/cache/source-index-v1.json", index),
+        ],
+        storage as unknown as FileSystemDirectoryHandle,
+      ),
+    ).rejects.toThrow(/missing\.erb.*超过 5 层/);
+    await expect(storage.getDirectoryHandle(".rustyera-imports")).rejects.toMatchObject({
+      name: "NotFoundError",
+    });
+  });
+
+  it("ignores malformed portable index paths on Android Firefox", async () => {
+    const storage = new MemoryDirectoryHandle("root");
+    vi.stubGlobal("navigator", {
+      userAgent: "Mozilla/5.0 (Android 17; Mobile; rv:154.0) Gecko/154.0 Firefox/154.0",
+    });
+    const index = JSON.stringify({ version: 3, files: { "../outside.erb": {} } });
+
+    await expect(
+      importBrowserDirectory(
+        [
+          projectFile("game/ERB/main.erb", "@SYSTEM_TITLE\nRETURN\n"),
+          projectFile("game/.rustyera/cache/source-index-v1.json", index),
+        ],
+        storage as unknown as FileSystemDirectoryHandle,
+      ),
+    ).resolves.toMatchObject({ projectName: "game", persistHandle: false });
+  });
+
+  it("preserves iPadOS fallback imports when a portable project index is stale", async () => {
+    const storage = new MemoryDirectoryHandle("root");
+    vi.stubGlobal("navigator", {
+      userAgent:
+        "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
+    });
+    const index = JSON.stringify({ version: 3, files: { "ERB/missing.erb": {} } });
+
+    await expect(
+      importBrowserDirectory(
+        [
+          projectFile("game/ERB/main.erb", "@SYSTEM_TITLE\nRETURN\n"),
+          projectFile("game/.rustyera/cache/source-index-v1.json", index),
+        ],
+        storage as unknown as FileSystemDirectoryHandle,
+      ),
+    ).resolves.toMatchObject({ projectName: "game", persistHandle: false });
   });
 
   it("returns a runtime manifest from the bytes already read during import", async () => {
@@ -704,6 +769,9 @@ describe("portable browser directory selection", () => {
       ["importing", 0, 2],
       ["importing", 1, 2],
       ["importing", 2, 2],
+      ["scanning", 0, 2],
+      ["scanning", 1, 2],
+      ["scanning", 2, 2],
     ]);
   });
 });

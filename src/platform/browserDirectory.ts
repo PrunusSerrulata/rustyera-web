@@ -7,7 +7,10 @@ import type {
   ScannedFile,
 } from "@/platform/browserProject";
 import { scanBrowserProjectFilesOffThread } from "@/platform/browserProjectScanPool";
-import { browserProjectFileReadConcurrency } from "@/platform/browserMemoryPolicy";
+import {
+  browserProjectFileReadConcurrency,
+  isAndroidFirefoxHost,
+} from "@/platform/browserMemoryPolicy";
 import { hex, safePath } from "@/platform/browserProjectFilesystem";
 import {
   fileSnapshot,
@@ -44,6 +47,8 @@ export { selectedProjectFiles };
 const IMPORT_ROOT = ".rustyera-imports";
 const SOURCE_MANIFEST = "imported-sources.json";
 const PROJECT_CONFIGURATION = "reraconfig.toml";
+const PORTABLE_SOURCE_INDEX = ".rustyera/cache/source-index-v1.json";
+const PORTABLE_SOURCE_INDEX_VERSION = 3;
 
 export async function pickBrowserDirectory(
   progress?: BrowserDirectoryProgress,
@@ -136,6 +141,7 @@ export async function importBrowserDirectory(
   const enumerateStarted = performance.now();
   progress?.("importing", 0, 0);
   const { projectName, files } = selectedProjectFiles(selectedFiles);
+  await rejectIncompleteAndroidFirefoxSelection(files);
   const imports = await storageRoot.getDirectoryHandle(IMPORT_ROOT, { create: true });
   const projectKey = hex(
     blake3(new TextEncoder().encode(projectName.normalize("NFC").toLowerCase())),
@@ -195,7 +201,14 @@ export async function importBrowserDirectory(
   }
   const statMs = performance.now() - statAndCopyStarted;
   const scanStarted = performance.now();
-  const scans = await scanBrowserProjectFilesOffThread(scanRequests, topLevel);
+  progress?.("scanning", 0, scanRequests.length);
+  const scans = await scanBrowserProjectFilesOffThread(
+    scanRequests,
+    topLevel,
+    undefined,
+    undefined,
+    (completed, total) => progress?.("scanning", completed, total),
+  );
   for (const scanned of scans) {
     if (scanned) scannedFiles.set(scanned.relative_path, scanned);
   }
@@ -234,6 +247,53 @@ async function fileBytes(file: File): Promise<Uint8Array> {
 
 async function pickDirectoryFiles() {
   return pickRetainedFiles({ directory: true, multiple: true });
+}
+
+async function rejectIncompleteAndroidFirefoxSelection(
+  files: ReadonlyArray<{ path: string; file: File }>,
+): Promise<void> {
+  if (!isAndroidFirefoxHost(navigator)) return;
+  const sourceIndex = files.find(
+    ({ path }) => path.toLocaleLowerCase() === PORTABLE_SOURCE_INDEX,
+  )?.file;
+  if (!sourceIndex) return;
+  let value: unknown;
+  try {
+    value = JSON.parse(await sourceIndex.text());
+  } catch {
+    return;
+  }
+  if (!isRecord(value) || value.version !== PORTABLE_SOURCE_INDEX_VERSION) return;
+  if (!isRecord(value.files)) return;
+  const selected = new Set(files.map(({ path }) => path.toLocaleLowerCase()));
+  const missing = Object.keys(value.files)
+    .map(normalizeIndexedPath)
+    .filter((path): path is string => Boolean(path && !selected.has(path.toLocaleLowerCase())))
+    .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+  if (!missing.length) return;
+  const examples = missing.slice(0, 5).join("、");
+  const exceedsFirefoxDepthLimit = missing.every((path) => path.split("/").length > 6);
+  const depthHint = exceedsFirefoxDepthLimit
+    ? "这些文件均位于所选目录下超过 5 层的子目录，超出当前 Android Firefox 的目录枚举上限。"
+    : "这通常表示 Firefox 未完整上传目录；也可能是项目索引已过期。";
+  throw new Error(
+    `Android Firefox 选择结果与项目索引不一致：本次目录选择缺少 ${missing.length} 个源码或资源文件（例如 ${examples}）。` +
+      `${depthHint}请改用 .reraproj、支持目录句柄的浏览器，或将相关文件移动到 5 层以内。`,
+  );
+}
+
+function normalizeIndexedPath(path: string): string | undefined {
+  try {
+    return safePath(path) || undefined;
+  } catch {
+    // The index is a disposable cache. Ignore malformed entries instead of turning cache
+    // corruption into a directory-selection failure unrelated to Firefox's missing files.
+    return undefined;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function readSourceManifest(directory: FileSystemDirectoryHandle): Promise<string[]> {
