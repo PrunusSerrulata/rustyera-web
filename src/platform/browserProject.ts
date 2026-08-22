@@ -12,6 +12,7 @@ import {
   safePath,
 } from "@/platform/browserProjectFilesystem";
 import {
+  createProjectProgressReporter,
   decodeProjectSource,
   isScriptCategory,
   projectReloadScopeMatches,
@@ -36,7 +37,10 @@ import { isPackagedProjectFontPath, type ProjectFontSource } from "@/platform/pr
 import { scanBrowserProjectFilesOffThread } from "@/platform/browserProjectScanPool";
 import type { ScannedFile } from "@/platform/browserProjectScanner";
 import { takeProjectFileManifestOwnership } from "@/platform/projectFileManifestTransfer";
-import { browserProjectFileReadConcurrency } from "@/platform/browserMemoryPolicy";
+import {
+  browserProjectFileReadConcurrency,
+  isAndroidChromiumHost,
+} from "@/platform/browserMemoryPolicy";
 
 export { scanBrowserProjectFile } from "@/platform/browserProjectScanner";
 export type { ScannedFile } from "@/platform/browserProjectScanner";
@@ -77,6 +81,11 @@ export type PackagedResourceReader = (
   relativePath: string,
   maximumBytes?: number,
 ) => Promise<Uint8Array>;
+
+interface BrowserProjectFilePrefetch {
+  files: Promise<File>[];
+  completed: Promise<void>;
+}
 
 interface PendingBrowserFile {
   relativePath: string;
@@ -471,21 +480,54 @@ export class BrowserProject {
     const signatures = new Array<string>(candidates.length);
     const scanWorkTotal = candidates.length * 2;
     progress?.(0, scanWorkTotal);
+    const reportScanWork = createProjectProgressReporter(scanWorkTotal, progress);
     const statStarted = performance.now();
-    await runBounded(
-      candidates.map((candidate, index) => async () => {
-        const file = await candidate.handle.getFile();
-        snapshots[index] = file;
-        signatures[index] = `${file.size}:${file.lastModified}`;
-      }),
-      browserProjectFileReadConcurrency(),
-      (completed) => progress?.(completed, scanWorkTotal),
-    );
-    const statMs = performance.now() - statStarted;
-    const requests: Array<{ relativePath: string; file: File }> = [];
+    const pipelineProviderReads =
+      !this.sourceIndexTrusted &&
+      typeof navigator !== "undefined" &&
+      isAndroidChromiumHost(navigator);
+    let statCompleted = 0;
+    let scanCompleted = 0;
+    let statFinishedAt = statStarted;
+    let prefetchCompleted: Promise<void> | undefined;
+    let prefetched: Promise<File>[] | undefined;
+    if (pipelineProviderReads) {
+      const prefetch = prefetchBrowserProjectFiles(
+        candidates,
+        browserProjectFileReadConcurrency(),
+        (index, file, completed) => {
+          snapshots[index] = file;
+          signatures[index] = `${file.size}:${file.lastModified}`;
+          statCompleted = completed;
+          statFinishedAt = performance.now();
+          reportScanWork(statCompleted + scanCompleted);
+        },
+      );
+      prefetched = prefetch.files;
+      prefetchCompleted = prefetch.completed;
+    } else {
+      await runBounded(
+        candidates.map((candidate, index) => async () => {
+          const file = await candidate.handle.getFile();
+          snapshots[index] = file;
+          signatures[index] = `${file.size}:${file.lastModified}`;
+        }),
+        browserProjectFileReadConcurrency(),
+        (completed) => reportScanWork(completed),
+      );
+      statCompleted = candidates.length;
+      statFinishedAt = performance.now();
+    }
+    let statMs = statFinishedAt - statStarted;
+    const requests: Array<{ relativePath: string; file: File | Promise<File> }> = [];
     const requestIndexes: number[] = [];
     for (let index = 0; index < candidates.length; index += 1) {
       const candidate = candidates[index]!;
+      if (pipelineProviderReads) {
+        requestIndexes.push(index);
+        requests.push({ relativePath: candidate.relativePath, file: prefetched![index]! });
+        continue;
+      }
       const file = snapshots[index]!;
       const signature = signatures[index]!;
       const prior = previous[candidate.relativePath];
@@ -547,15 +589,19 @@ export class BrowserProject {
     }
     const readStarted = performance.now();
     const reusedCount = candidates.length - requests.length;
-    const scanWorkCompleted = candidates.length + reusedCount;
-    if (reusedCount > 0) progress?.(scanWorkCompleted, scanWorkTotal);
+    if (reusedCount > 0) reportScanWork(statCompleted + reusedCount);
     const scannedFiles = await scanBrowserProjectFilesOffThread(
       requests,
       topLevel,
       undefined,
       undefined,
-      (completed) => progress?.(scanWorkCompleted + completed, scanWorkTotal),
+      (completed) => {
+        scanCompleted = completed + reusedCount;
+        reportScanWork(statCompleted + scanCompleted);
+      },
     );
+    await prefetchCompleted;
+    statMs = statFinishedAt - statStarted;
     for (let requestIndex = 0; requestIndex < requests.length; requestIndex += 1) {
       const candidateIndex = requestIndexes[requestIndex]!;
       const scanned = scannedFiles[requestIndex];
@@ -1079,6 +1125,46 @@ export class BrowserProject {
 
 function runtimeReloadChange(change: any): any {
   return change.type === "upsert" ? runtimeReloadUpsert(change.file) : change;
+}
+
+function prefetchBrowserProjectFiles(
+  candidates: readonly { handle: FileSystemFileHandle }[],
+  maximumConcurrency: number,
+  loaded: (index: number, file: File, completed: number) => void,
+): BrowserProjectFilePrefetch {
+  const deferred = candidates.map(() => deferredFile());
+  let loadedCount = 0;
+  const completed = runBounded(
+    candidates.map((candidate, index) => async () => {
+      try {
+        const file = await candidate.handle.getFile();
+        deferred[index]!.resolve(file);
+        loaded(index, file, ++loadedCount);
+      } catch (error) {
+        deferred[index]!.reject(error);
+        throw error;
+      }
+    }),
+    maximumConcurrency,
+  );
+  // The scan consumes every individual rejection. Keep the aggregate promise observed while the
+  // scan is still running, then await it explicitly before committing the snapshot.
+  void completed.catch(() => undefined);
+  return { files: deferred.map(({ promise }) => promise), completed };
+}
+
+function deferredFile(): {
+  promise: Promise<File>;
+  resolve: (file: File) => void;
+  reject: (error: unknown) => void;
+} {
+  let resolve!: (file: File) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<File>((accept, decline) => {
+    resolve = accept;
+    reject = decline;
+  });
+  return { promise, resolve, reject };
 }
 
 function runtimeReloadUpsert(file: ScannedFile): any {

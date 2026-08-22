@@ -7,6 +7,11 @@ import {
 
 export interface BrowserProjectScanRequest {
   relativePath: string;
+  file: File | Promise<File>;
+}
+
+interface ResolvedBrowserProjectScanRequest {
+  relativePath: string;
   file: File;
 }
 
@@ -38,7 +43,7 @@ class ScanWorkerSlot {
   }
 
   async scan(
-    request: BrowserProjectScanRequest,
+    request: ResolvedBrowserProjectScanRequest,
     topLevel: ReadonlySet<string>,
     readBeforeSubmit: boolean,
   ): Promise<ScannedFile | undefined> {
@@ -156,7 +161,13 @@ async function scanWithWorkers(
         while (next < requests.length && !signal?.aborted) {
           const index = next++;
           try {
-            results[index] = await slot.scan(requests[index]!, topLevel, readBeforeSubmit);
+            const request = requests[index]!;
+            const file = await request.file;
+            results[index] = await slot.scan(
+              { relativePath: request.relativePath, file },
+              topLevel,
+              readBeforeSubmit,
+            );
             report(++completed);
           } catch (error) {
             errors[index] = error;
@@ -195,9 +206,10 @@ async function scanOnMainThread(
       const index = next++;
       try {
         const request = requests[index]!;
+        const file = await request.file;
         results[index] = scanBrowserProjectFile(
           request.relativePath,
-          await readProjectFileBytes(request),
+          await readProjectFileBytes({ relativePath: request.relativePath, file }),
           topLevel,
         );
         report(++completed);
@@ -215,7 +227,9 @@ async function scanOnMainThread(
   return results;
 }
 
-async function readProjectFileBytes(request: BrowserProjectScanRequest): Promise<Uint8Array> {
+async function readProjectFileBytes(
+  request: ResolvedBrowserProjectScanRequest,
+): Promise<Uint8Array> {
   const bytes = new Uint8Array(await request.file.arrayBuffer());
   if (Number.isSafeInteger(request.file.size) && bytes.byteLength !== request.file.size) {
     throw new Error(

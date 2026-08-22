@@ -152,6 +152,61 @@ describe("browser project font resources", () => {
 });
 
 describe("browser project reads", () => {
+  it("pipelines Android Chromium file snapshots with content reads", async () => {
+    vi.stubGlobal("navigator", {
+      hardwareConcurrency: 4,
+      maxTouchPoints: 5,
+      platform: "Linux armv8l",
+      userAgent:
+        "Mozilla/5.0 (Linux; Android 17; K) AppleWebKit/537.36 Chrome/151.0.0.0 Mobile Safari/537.36",
+    });
+    const root = new SaveDirectoryHandle("game");
+    const handles = await Promise.all(
+      Array.from({ length: 5 }, async (_, index) => {
+        const handle = await root.getFileHandle(`${index}.erb`, { create: true });
+        await (
+          await handle.createWritable()
+        ).write(new TextEncoder().encode(`@TEST_${index}\nRETURN\n`));
+        return handle;
+      }),
+    );
+    const firstReadStarted = deferred<void>();
+    const releaseFirstRead = deferred<void>();
+    const fifthSnapshotStarted = deferred<void>();
+    const releaseFifthSnapshot = deferred<void>();
+    const firstGetFile = handles[0]!.getFile.bind(handles[0]);
+    const fifthGetFile = handles[4]!.getFile.bind(handles[4]);
+    vi.spyOn(handles[0]!, "getFile").mockImplementation(async () => {
+      const file = await firstGetFile();
+      return {
+        ...file,
+        name: file.name,
+        size: file.size,
+        lastModified: file.lastModified,
+        arrayBuffer: async () => {
+          firstReadStarted.resolve();
+          await releaseFirstRead.promise;
+          return file.arrayBuffer();
+        },
+      } as File;
+    });
+    vi.spyOn(handles[4]!, "getFile").mockImplementation(async () => {
+      fifthSnapshotStarted.resolve();
+      await releaseFifthSnapshot.promise;
+      return fifthGetFile();
+    });
+
+    try {
+      const scan = new BrowserProject(root as any).scanQuick();
+      await Promise.all([firstReadStarted.promise, fifthSnapshotStarted.promise]);
+      releaseFirstRead.resolve();
+      releaseFifthSnapshot.resolve();
+      expect((await scan).files).toHaveLength(5);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("reports enumeration before monotonic metadata and content work", async () => {
     const root = new SaveDirectoryHandle("game");
     const erb = await root.getDirectoryHandle("ERB", { create: true });

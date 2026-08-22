@@ -40,7 +40,7 @@ export function browserProjectScanConcurrency(
   return isMemoryConstrainedBrowserHost(host) ? 2 : 8;
 }
 
-function isAndroidChromiumHost(host: Pick<BrowserHostSignals, "userAgent">): boolean {
+export function isAndroidChromiumHost(host: Pick<BrowserHostSignals, "userAgent">): boolean {
   const userAgent = host.userAgent ?? "";
   return isAndroidBrowserHost(host) && /\b(?:Chrome|Chromium)\//i.test(userAgent);
 }

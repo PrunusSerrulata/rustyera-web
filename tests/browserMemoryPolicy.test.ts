@@ -5,6 +5,7 @@ import {
   browserProjectFileReadConcurrency,
   browserProjectScanConcurrency,
   isAndroidBrowserHost,
+  isAndroidChromiumHost,
   isAndroidFirefoxHost,
   isMemoryConstrainedBrowserHost,
 } from "@/platform/browserMemoryPolicy";
@@ -43,12 +44,15 @@ describe("browser memory policy", () => {
     expect(browserProjectFileReadConcurrency(androidChrome)).toBe(4);
     expect(browserProjectDirectoryReadConcurrency(androidChrome)).toBe(8);
     expect(browserProjectScanConcurrency(androidChrome)).toBe(4);
+    expect(isAndroidChromiumHost(androidChrome)).toBe(true);
     expect(isAndroidFirefoxHost(androidChrome)).toBe(false);
     expect(isAndroidBrowserHost(ios)).toBe(false);
+    expect(isAndroidChromiumHost(ios)).toBe(false);
     expect(browserProjectFileReadConcurrency(ios)).toBe(8);
     expect(browserProjectDirectoryReadConcurrency(ios)).toBe(1);
     expect(browserProjectScanConcurrency(ios)).toBe(2);
     expect(isAndroidBrowserHost(ipados)).toBe(false);
+    expect(isAndroidChromiumHost(ipados)).toBe(false);
     expect(isAndroidFirefoxHost(ipados)).toBe(false);
     expect(browserProjectFileReadConcurrency(ipados)).toBe(8);
     expect(browserProjectDirectoryReadConcurrency(ipados)).toBe(1);
