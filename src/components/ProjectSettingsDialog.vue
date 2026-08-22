@@ -35,6 +35,7 @@ const props = withDefaults(
     projectSource: "directory",
     fontAccessStatus: "idle",
     fontAccessError: "",
+    viewportMeasurement: undefined,
     configurationReadOnly: false,
     configurationSessionOnly: false,
     restartPending: false,

@@ -8,6 +8,7 @@ import { platformBridge } from "@/platform";
 import { useRuntimeStore } from "@/stores/runtime";
 
 const props = withDefaults(defineProps<{ placement: any; alt?: string; lineSlot?: boolean }>(), {
+  alt: undefined,
   lineSlot: true,
 });
 const store = useRuntimeStore();

@@ -8,6 +8,15 @@ import type { MenuVisibilityMode } from "@/core/menuVisibility";
 const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
 const originalTouchPoints = Object.getOwnPropertyDescriptor(navigator, "maxTouchPoints");
 
+const MenuVisibilityHarness = defineComponent({
+  setup() {
+    const mode = ref<MenuVisibilityMode>("AUTO");
+    return { mode, ...useMenuVisibility(mode) };
+  },
+  template:
+    '<button :data-base="baseVisible" :data-toggle="touchToggleVisible" :data-temporary="temporarilyVisible" @click="toggleTouchMenu" />',
+});
+
 function setViewportHeight(height: number): void {
   Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
 }
@@ -27,16 +36,7 @@ describe("useMenuVisibility", () => {
   it("uses initial viewport and touch values before mount effects run", () => {
     setViewportHeight(479);
     setTouchPoints(1);
-    const mode = ref<MenuVisibilityMode>("AUTO");
-    const wrapper = mount(
-      defineComponent({
-        setup() {
-          return useMenuVisibility(mode);
-        },
-        template:
-          '<div :data-base="baseVisible" :data-toggle="touchToggleVisible" :data-temporary="temporarilyVisible" />',
-      }),
-    );
+    const wrapper = mount(MenuVisibilityHarness);
 
     expect(wrapper.attributes()).toMatchObject({
       "data-base": "false",
@@ -49,16 +49,7 @@ describe("useMenuVisibility", () => {
   it("clears temporary visibility on height or mode changes and removes resize listeners", async () => {
     setViewportHeight(479);
     setTouchPoints(1);
-    const mode = ref<MenuVisibilityMode>("AUTO");
-    const wrapper = mount(
-      defineComponent({
-        setup() {
-          return { mode, ...useMenuVisibility(mode) };
-        },
-        template:
-          '<button :data-base="baseVisible" :data-temporary="temporarilyVisible" @click="toggleTouchMenu" />',
-      }),
-    );
+    const wrapper = mount(MenuVisibilityHarness);
 
     await wrapper.trigger("click");
     expect(wrapper.attributes("data-temporary")).toBe("true");
@@ -69,11 +60,11 @@ describe("useMenuVisibility", () => {
     expect(wrapper.attributes("data-temporary")).toBe("false");
 
     await wrapper.trigger("click");
-    mode.value = "HIDE";
+    wrapper.vm.mode = "HIDE";
     await nextTick();
     expect(wrapper.attributes("data-temporary")).toBe("false");
 
-    mode.value = "AUTO";
+    wrapper.vm.mode = "AUTO";
     setViewportHeight(600);
     window.dispatchEvent(new Event("resize"));
     await nextTick();
