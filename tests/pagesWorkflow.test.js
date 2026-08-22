@@ -27,6 +27,10 @@ const buildJob = job("build");
 const deployJob = job("deploy");
 
 describe("GitHub Pages deployment workflow", () => {
+  it("runs for every new commit on master", () => {
+    expect(workflow).toMatch(/on:\n {2}push:\n {4}branches:\n {6}- master\n {2}workflow_dispatch:/);
+  });
+
   it("uses the requested core commit or resolves the latest default-branch commit", () => {
     expect(coreInput).toContain("required: false");
     expect(coreInput).toContain('default: ""');

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const wasmPack = process.env.RUSTYERA_WASM_PACK || "wasm-pack";
+const cargoLocal = resolve(frontendRoot, "scripts/cargo-local.mjs");
 const environment = { ...process.env };
 const publicRoot = resolve(frontendRoot, "public");
 const outputDirectory = resolve(publicRoot, "wasm");
@@ -22,11 +23,11 @@ if (process.platform === "darwin" && !environment.CC_wasm32_unknown_unknown) {
 let result;
 try {
   result = spawnSync(
-    wasmPack,
-    ["build", "crates/era-web-wasm", "--target", "web", "--out-dir", stagingDirectory],
+    process.execPath,
+    [cargoLocal, "build", "crates/era-web-wasm", "--target", "web", "--out-dir", stagingDirectory],
     {
       cwd: frontendRoot,
-      env: environment,
+      env: { ...environment, RUSTYERA_CARGO: wasmPack },
       stdio: "inherit",
     },
   );

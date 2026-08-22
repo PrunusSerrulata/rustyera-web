@@ -3,6 +3,9 @@ name: Build and deploy WebAssembly to GitHub Pages
 run-name: Deploy Pages (core ${{ inputs.core_commit || 'default branch' }})
 
 on:
+  push:
+    branches:
+      - master
   workflow_dispatch:
     inputs:
       core_commit:

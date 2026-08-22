@@ -38,7 +38,8 @@ own ignored `target`, so neither build mode requires repository-local path depen
 Rust commands through `npm run cargo:local -- <command>` (or `just web-cargo <command>` from the
 outer workspace). The wrapper preserves the committed Git-based `Cargo.lock` while Cargo resolves
 the sibling checkout through the local path patch; CI continues to validate the Git lockfile with
-`--locked`.
+`--locked`. `npm run build:wasm` uses the same wrapper automatically, so a local WASM build also
+leaves `Cargo.lock` unchanged.
 
 ## Testing
 
