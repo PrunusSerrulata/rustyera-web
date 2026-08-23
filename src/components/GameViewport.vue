@@ -27,16 +27,29 @@ let projectedHeight = -1;
 let projectedLineColumns = -1;
 let keyedRuntimeEpoch = "";
 let keyedLineCount = 0;
+let keyedHistoryRevision = "";
 let bottomFollowRevision = 0;
 let followingBottom = false;
 const keyedLines = new Map<number, { id: string; key: string }>();
 
 watch(
-  () => [store.runtimeEpoch, store.presentation.lines.length] as const,
-  ([runtimeEpoch, lineCount]) => {
+  () =>
+    [
+      store.runtimeEpoch,
+      store.presentation.historyRevision,
+      store.presentation.lines.length,
+    ] as const,
+  ([runtimeEpoch, historyRevision, lineCount]) => {
     const epoch = String(runtimeEpoch);
-    if (epoch !== keyedRuntimeEpoch || lineCount !== keyedLineCount) keyedLines.clear();
+    const history = String(historyRevision);
+    if (
+      epoch !== keyedRuntimeEpoch ||
+      history !== keyedHistoryRevision ||
+      lineCount !== keyedLineCount
+    )
+      keyedLines.clear();
     keyedRuntimeEpoch = epoch;
+    keyedHistoryRevision = history;
     keyedLineCount = lineCount;
   },
   { immediate: true, flush: "sync" },
@@ -45,10 +58,12 @@ watch(
 function lineRenderKey(index: number): string {
   // Vue Virtual asks only for rows near its active window. Cache those indices so an equal-length
   // animation tail can retain mounted canvases without scanning every historical line per delta.
+  // A history revision clears this cache above so a rebuilt fixed-layout screen cannot inherit
+  // measurements from the dialogue rows that previously occupied the same indices.
   const id = String(store.presentation.lines[index]?.line_id ?? index);
   const cached = keyedLines.get(index);
   if (cached?.id === id) return cached.key;
-  const key = cached?.key ?? `${keyedRuntimeEpoch}:${id}`;
+  const key = cached?.key ?? `${keyedRuntimeEpoch}:${keyedHistoryRevision}:${id}`;
   keyedLines.set(index, { id, key });
   return key;
 }

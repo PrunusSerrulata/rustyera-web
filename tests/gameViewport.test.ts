@@ -473,13 +473,13 @@ describe("game viewport", () => {
 
   it("keeps row keys stable across refresh snapshots to retain measured positions", async () => {
     const wrapper = shallowMount(GameViewport);
-    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1");
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1:1");
     store.presentation.lines = [{ line_id: 1, alignment: "left", runs: [] }];
     await nextTick();
-    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1");
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1:1");
     store.runtimeEpoch = 2;
     await nextTick();
-    expect(virtualOptions.value.value.getItemKey(0)).toBe("2:1");
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("2:1:1");
     wrapper.unmount();
   });
 
@@ -509,7 +509,7 @@ describe("game viewport", () => {
       { line_id: 2, alignment: "left", runs: [{ type: "text", text: "frame 1" }] },
     ];
     const wrapper = shallowMount(GameViewport);
-    expect(virtualOptions.value.value.getItemKey(1)).toBe("1:2");
+    expect(virtualOptions.value.value.getItemKey(1)).toBe("1:1:2");
 
     store.presentation.lines = [
       store.presentation.lines[0],
@@ -517,7 +517,19 @@ describe("game viewport", () => {
     ];
     await nextTick();
 
-    expect(virtualOptions.value.value.getItemKey(1)).toBe("1:2");
+    expect(virtualOptions.value.value.getItemKey(1)).toBe("1:1:2");
+    wrapper.unmount();
+  });
+
+  it("rekeys rebuilt history rows so fixed screens discard stale dialogue measurements", async () => {
+    const wrapper = shallowMount(GameViewport);
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1:1");
+
+    store.presentation.lines = [{ line_id: 2, alignment: "left", runs: [] }];
+    store.presentation.historyRevision += 1;
+    await nextTick();
+
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:2:2");
     wrapper.unmount();
   });
 
