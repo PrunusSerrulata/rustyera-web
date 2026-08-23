@@ -636,6 +636,54 @@ describe("game viewport", () => {
     );
     wrapper.unmount();
   });
+
+  it("measures ordinary console rows by Emuera line height instead of DOM media bounds", () => {
+    const wrapper = shallowMount(GameViewport);
+    const row = document.createElement("div");
+    row.dataset.index = "0";
+    vi.spyOn(row, "getBoundingClientRect").mockReturnValue({ height: 480 } as DOMRect);
+
+    expect(virtualOptions.value.value.measureElement(row)).toBe(store.gameLineHeightPx);
+    wrapper.unmount();
+  });
+
+  it("keeps the explicit negative-y space reservation in virtual row measurements", () => {
+    store.presentation.lines = [
+      {
+        line_id: 1,
+        alignment: "left",
+        runs: [
+          {
+            type: "html_document",
+            document: {
+              nodes: [
+                {
+                  semantic: {
+                    type: "shape",
+                    kind: "space",
+                    parameters: [{ unit: "font_height_hundredths", value: 3600 }],
+                  },
+                },
+                {
+                  semantic: {
+                    type: "image",
+                    height: { unit: "font_height_hundredths", value: 3600 },
+                    y: { unit: "font_height_hundredths", value: -3300 },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ];
+    const wrapper = shallowMount(GameViewport);
+    const row = document.createElement("div");
+    row.dataset.index = "0";
+
+    expect(virtualOptions.value.value.measureElement(row)).toBe(36);
+    wrapper.unmount();
+  });
 });
 
 function dispatchTouch(
