@@ -32,7 +32,19 @@
       "type": "click",
       "locator": { "css": ".game-viewport button:has-text(\"[0] 交谈\")", "nth": -1 },
       "advances_game": true,
-      "semantic_input": 0
+      "semantic_input": 0,
+      "auto_enter": false
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite[style*='width: 992px']", "nth": -1 },
+      "relative_to": { "css": ".game-line:has-text('┌')", "nth": -1 },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "above": { "min": 0 },
+        "no_overlap": true
+      }
     },
     {
       "type": "advance_enter_waits_until",
@@ -55,7 +67,7 @@
     },
     {
       "type": "assert_layout",
-      "locator": { "css": ".media-visual.media-sprite", "nth": -2 },
+      "locator": { "css": ".media-visual.media-sprite[style*='width: 992px']", "nth": -1 },
       "relative_to": { "css": ".game-viewport" },
       "expect": {
         "count": 1,
@@ -65,7 +77,7 @@
     },
     {
       "type": "assert_layout",
-      "locator": { "css": ".media-visual.media-sprite", "nth": -2 },
+      "locator": { "css": ".media-visual.media-sprite[style*='width: 992px']", "nth": -1 },
       "relative_to": {
         "css": ".game-viewport button:has-text(\"[0] 交谈\")",
         "nth": -1
@@ -81,7 +93,19 @@
       "type": "click",
       "locator": { "css": ".game-viewport button:has-text(\"[0] 交谈\")", "nth": -1 },
       "advances_game": true,
-      "semantic_input": 0
+      "semantic_input": 0,
+      "auto_enter": false
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite[style*='width: 992px']", "nth": -1 },
+      "relative_to": { "css": ".game-line:has-text('┌')", "nth": -1 },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "above": { "min": 0 },
+        "no_overlap": true
+      }
     },
     {
       "type": "advance_enter_waits_until",
@@ -93,7 +117,7 @@
     },
     {
       "type": "assert_layout",
-      "locator": { "css": ".media-visual.media-sprite", "nth": -2 },
+      "locator": { "css": ".media-visual.media-sprite[style*='width: 992px']", "nth": -1 },
       "relative_to": { "css": ".game-viewport" },
       "expect": {
         "count": 1,
@@ -103,7 +127,7 @@
     },
     {
       "type": "assert_layout",
-      "locator": { "css": ".media-visual.media-sprite", "nth": -2 },
+      "locator": { "css": ".media-visual.media-sprite[style*='width: 992px']", "nth": -1 },
       "relative_to": {
         "css": ".game-viewport button:has-text(\"[0] 交谈\")",
         "nth": -1
@@ -119,7 +143,19 @@
       "type": "click",
       "locator": { "css": ".game-viewport button:has-text(\"[6] 共度时光\")", "nth": -1 },
       "advances_game": true,
-      "semantic_input": 6
+      "semantic_input": 6,
+      "auto_enter": false
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite[style*='width: 992px']", "nth": -1 },
+      "relative_to": { "css": ".game-line:has-text('┌')", "nth": -1 },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "above": { "min": 0 },
+        "no_overlap": true
+      }
     },
     {
       "type": "advance_enter_waits_until",
@@ -127,8 +163,76 @@
       "settle_auto_enter": false,
       "until": { "output_tail_contains": "[0] 讨论话题", "tail_lines": 30 }
     },
-    { "type": "input", "value": 0 },
-    { "type": "input", "value": 0 }
+    { "type": "input", "value": 0, "auto_enter": false },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite[style*='width: 992px']" },
+      "expect": { "visible": true }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite[style*='width: 992px']", "nth": -1 },
+      "relative_to": {
+        "css": ".game-viewport button:has-text(\"[0] 工作\")",
+        "nth": -1
+      },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "above": { "min": 0 },
+        "no_overlap": true
+      }
+    },
+    { "type": "input", "value": 0, "auto_enter": false },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".game-line:has(.media-visual.media-sprite[style*='width: 992px'])",
+        "nth": -1
+      },
+      "fields": ["count", "attributes", "box", "html"],
+      "expect": { "count": 1 }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-line:has-text('┌')", "nth": -1 },
+      "fields": ["count", "attributes", "box", "html"],
+      "expect": { "count": 1 }
+    },
+    {
+      "type": "sample_queries",
+      "count": 3,
+      "interval_ms": 100,
+      "queries": [
+        {
+          "name": "background",
+          "locator": {
+            "css": ".media-visual.media-sprite[style*='width: 992px']",
+            "nth": -1
+          },
+          "fields": ["box"]
+        },
+        {
+          "name": "textbox",
+          "locator": { "css": ".game-line:has-text('┌')", "nth": -1 },
+          "fields": ["box"]
+        }
+      ],
+      "expect": {
+        "stable": ["background.box", "textbox.box"]
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".media-visual.media-sprite[style*='width: 992px']", "nth": -1 },
+      "relative_to": { "css": ".game-line:has-text('┌')", "nth": -1 },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "above": { "min": 0 },
+        "no_overlap": true
+      }
+    }
   ],
   "limits": { "max_steps": 80, "timeout_seconds": 900 }
 }

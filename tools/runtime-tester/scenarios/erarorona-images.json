@@ -155,8 +155,11 @@
     },
     {
       "type": "assert_layout",
-      "locator": { "css": ".media-visual.media-sprite", "nth": 1 },
-      "relative_to": { "css": ".media-visual.media-sprite", "nth": 0 },
+      "locator": { "css": ".media-visual.media-sprite:not([style*='width: 992px'])", "nth": -1 },
+      "relative_to": {
+        "css": ".media-visual.media-sprite[style*='width: 992px']",
+        "nth": -1
+      },
       "expect": {
         "count": 1,
         "visible": true,
@@ -166,7 +169,7 @@
     },
     {
       "type": "assert_layout",
-      "locator": { "css": ".media-visual.media-sprite", "nth": 1 },
+      "locator": { "css": ".media-visual.media-sprite:not([style*='width: 992px'])", "nth": -1 },
       "relative_to": { "text": "师傅还没回来啊", "exact": false },
       "expect": {
         "count": 1,
