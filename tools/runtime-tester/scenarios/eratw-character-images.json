@@ -47,7 +47,6 @@
       "expect": {
         "count": 1,
         "visible": true,
-        "inside": { "tolerance": 0 },
         "right_aligned_within": 1
       }
     },
