@@ -5,7 +5,7 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: [".playwright-browsers", "dist", "public/wasm", "src-tauri/gen"] },
+  { ignores: [".playwright-browsers", "dist", "public/wasm", "src-tauri/gen", "target"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   ...vue.configs["flat/recommended"],

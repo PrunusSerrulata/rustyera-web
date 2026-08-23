@@ -237,6 +237,27 @@ describe("game viewport", () => {
     wrapper.unmount();
   });
 
+  it("coalesces burst history following into the newest refresh", async () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    const wrapper = shallowMount(GameViewport);
+    store.presentation.historyRevision += 1;
+    await nextTick();
+    store.presentation.historyRevision += 1;
+    await nextTick();
+
+    while (callbacks.length) callbacks.shift()?.(0);
+    await flushPromises();
+    while (callbacks.length) callbacks.shift()?.(0);
+    await flushPromises();
+
+    expect(scrollToIndex).toHaveBeenCalledTimes(3);
+    wrapper.unmount();
+  });
+
   it("continues an Enter wait when the viewport itself is left-clicked", async () => {
     const wrapper = shallowMount(GameViewport);
     await wrapper.get("main").trigger("click", { button: 0 });
@@ -459,6 +480,26 @@ describe("game viewport", () => {
     store.runtimeEpoch = 2;
     await nextTick();
     expect(virtualOptions.value.value.getItemKey(0)).toBe("2:1");
+    wrapper.unmount();
+  });
+
+  it("does not scan accumulated line IDs for an ordinary presentation revision", async () => {
+    let lineIdReads = 0;
+    store.presentation.lines = Array.from({ length: 5_000 }, (_, index) => ({
+      get line_id() {
+        lineIdReads += 1;
+        return index;
+      },
+      alignment: "left",
+      runs: [],
+    }));
+    const wrapper = shallowMount(GameViewport);
+    lineIdReads = 0;
+
+    store.presentation.revision += 1;
+    await nextTick();
+
+    expect(lineIdReads).toBe(0);
     wrapper.unmount();
   });
 

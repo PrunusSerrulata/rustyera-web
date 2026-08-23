@@ -274,6 +274,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const debugRequests = new RuntimeDebugRequestState();
   const runtimeInput = new RuntimeInputState({
     presentation: currentPresentation,
+    mutableInteractions: () => presentationProjection.mutableInteractions(),
     send,
     sampleMonotonic: () => testEnvironment.sampleMonotonic(),
     phase: () => phase.value,

@@ -20,49 +20,43 @@ const touchSecondaryAction = useTouchSecondaryAction(
 );
 const viewportColumns = ref(100);
 const viewportHeight = ref(0);
-const lineRenderKeys = ref<string[]>([]);
 let viewportObserver: ResizeObserver | undefined;
 let viewportFrame: number | undefined;
 let projectedWidth = -1;
 let projectedHeight = -1;
 let projectedLineColumns = -1;
 let keyedRuntimeEpoch = "";
-let keyedLines: Array<{ id: string; key: string }> = [];
+let keyedLineCount = 0;
+let bottomFollowRevision = 0;
+let followingBottom = false;
+const keyedLines = new Map<number, { id: string; key: string }>();
 
 watch(
-  () => [store.runtimeEpoch, store.presentation.lines.map((line) => String(line.line_id))] as const,
-  ([runtimeEpoch, lineIds]) => {
+  () => [store.runtimeEpoch, store.presentation.lines.length] as const,
+  ([runtimeEpoch, lineCount]) => {
     const epoch = String(runtimeEpoch);
-    if (epoch !== keyedRuntimeEpoch) {
-      keyedRuntimeEpoch = epoch;
-      keyedLines = [];
-    }
-    const previousById = new Map(keyedLines.map((entry) => [entry.id, entry.key]));
-    const currentIds = new Set(lineIds);
-    const sameLength = lineIds.length === keyedLines.length;
-    const usedKeys = new Set<string>();
-    const next = lineIds.map((id, index) => {
-      let key = previousById.get(id);
-      const replaced = keyedLines[index];
-      if (
-        key == null &&
-        sameLength &&
-        replaced != null &&
-        !currentIds.has(replaced.id) &&
-        !usedKeys.has(replaced.key)
-      )
-        key = replaced.key;
-      key ??= `${epoch}:${id}`;
-      usedKeys.add(key);
-      return { id, key };
-    });
-    keyedLines = next;
-    lineRenderKeys.value = next.map((entry) => entry.key);
+    if (epoch !== keyedRuntimeEpoch || lineCount !== keyedLineCount) keyedLines.clear();
+    keyedRuntimeEpoch = epoch;
+    keyedLineCount = lineCount;
   },
   { immediate: true, flush: "sync" },
 );
+
+function lineRenderKey(index: number): string {
+  // Vue Virtual asks only for rows near its active window. Cache those indices so an equal-length
+  // animation tail can retain mounted canvases without scanning every historical line per delta.
+  const id = String(store.presentation.lines[index]?.line_id ?? index);
+  const cached = keyedLines.get(index);
+  if (cached?.id === id) return cached.key;
+  const key = cached?.key ?? `${keyedRuntimeEpoch}:${id}`;
+  keyedLines.set(index, { id, key });
+  return key;
+}
 const virtualizer = useVirtualizer(
   computed(() => {
+    // Equal-length replacements do not change count; revision keeps the virtualizer's key lookup
+    // synchronized while lineRenderKey limits work to the requested virtual window.
+    void store.presentation.revision;
     return {
       count: store.presentation.lines.length,
       getScrollElement: () => viewport.value ?? null,
@@ -71,9 +65,7 @@ const virtualizer = useVirtualizer(
       // Preserve measured rows and mounted media across same-epoch snapshots. When an animation
       // deletes and recreates an equal-length tail, reuse that row's render key so its canvas can
       // keep the prior frame visible until the replacement replay has committed.
-      getItemKey: (index: number) =>
-        lineRenderKeys.value[index] ??
-        `${store.runtimeEpoch}:${store.presentation.lines[index]?.line_id ?? index}`,
+      getItemKey: lineRenderKey,
     };
   }),
 );
@@ -94,16 +86,22 @@ watch(
     // Equal-length dynamic-map refreshes replace the tail with new line IDs without
     // counting as new history. Keep following them only when the old frame was at bottom;
     // an intentionally scrolled-back viewport must remain untouched.
-    if (historyRevision === previousHistoryRevision && !isAtBottom()) return;
+    if (historyRevision === previousHistoryRevision && !followingBottom && !isAtBottom()) return;
+    const followRevision = ++bottomFollowRevision;
+    followingBottom = true;
     await nextTick();
+    if (followRevision !== bottomFollowRevision) return;
     goBottom();
     // Dynamic rows are measured only after the first scroll makes the tail
     // visible. Follow the corrected size on the next frame, then clamp to the
     // actual DOM bottom after Vue Virtual has applied that measurement.
     await nextAnimationFrame();
+    if (followRevision !== bottomFollowRevision) return;
     goBottom();
     await nextAnimationFrame();
+    if (followRevision !== bottomFollowRevision) return;
     if (viewport.value) viewport.value.scrollTop = viewport.value.scrollHeight;
+    followingBottom = false;
   },
 );
 

@@ -1,0 +1,83 @@
+import { describe, expect, it } from "vitest";
+import { toRaw } from "vue";
+
+import { restoreButtons, retireEnabledButtons } from "@/core/presentation";
+import { RuntimePresentationProjection } from "@/stores/runtimePresentation";
+
+function line(lineId: number, enabled = false): any {
+  return {
+    line_id: lineId,
+    alignment: "left",
+    runs: enabled
+      ? [
+          {
+            type: "button",
+            enabled: true,
+            generation: 1,
+            token: { epoch: 1, id: lineId },
+            runs: [],
+          },
+        ]
+      : [],
+  };
+}
+
+describe("runtime presentation staging", () => {
+  it("shares unchanged accumulated lines while staging an automatic tail refresh", () => {
+    const projection = new RuntimePresentationProjection();
+    projection.presentation.revision = 1;
+    projection.presentation.lines = Array.from({ length: 5_000 }, (_, index) => line(index));
+    const publishedFirstLine = toRaw(projection.presentation.lines[0]);
+
+    expect(
+      projection.projectDelta({
+        base_revision: 1,
+        new_revision: 2,
+        operations: [{ type: "delete_lines", count: 1 }],
+      }),
+    ).toBe(false);
+
+    expect(projection.current().lines).not.toBe(projection.presentation.lines);
+    expect(projection.current().lines[0]).toBe(publishedFirstLine);
+    expect(projection.presentation.lines).toHaveLength(5_000);
+  });
+
+  it("detaches shared interactions before staging a generation-wide button update", () => {
+    const projection = new RuntimePresentationProjection();
+    projection.presentation.revision = 1;
+    projection.presentation.lines = [line(1, true)];
+    const publishedInteraction = (projection.presentation.lines[0] as any).runs[0];
+
+    projection.projectDelta({
+      base_revision: 1,
+      new_revision: 2,
+      operations: [
+        { type: "set_redraw", redraw: { enabled: false } },
+        { type: "set_button_generation", generation: 2 },
+      ],
+    });
+
+    expect(publishedInteraction.enabled).toBe(true);
+    expect((projection.current().lines[0] as any).runs[0].enabled).toBe(false);
+  });
+
+  it("detaches shared interactions before staged button retirement and restoration", () => {
+    const projection = new RuntimePresentationProjection();
+    projection.presentation.revision = 1;
+    projection.presentation.lines = [line(1, true)];
+    const publishedInteraction = (projection.presentation.lines[0] as any).runs[0];
+    projection.projectDelta({
+      base_revision: 1,
+      new_revision: 2,
+      operations: [{ type: "delete_lines", count: 0 }],
+    });
+
+    const retired = retireEnabledButtons(projection.mutableInteractions());
+    expect(publishedInteraction.enabled).toBe(true);
+    expect((projection.current().lines[0] as any).runs[0].enabled).toBe(false);
+
+    restoreButtons(projection.mutableInteractions(), retired);
+    expect(publishedInteraction.enabled).toBe(true);
+    expect((projection.current().lines[0] as any).runs[0].enabled).toBe(true);
+  });
+});

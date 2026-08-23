@@ -7,6 +7,7 @@ import type { PendingGameInput, PendingInputUndo, RuntimeInputIntent } from "@/s
 
 interface RuntimeInputContext {
   presentation(): PresentationState;
+  mutableInteractions(): PresentationState;
   send(message: RuntimeMessage): Promise<number | bigint>;
   sampleMonotonic(): number;
   phase(): string;
@@ -24,7 +25,7 @@ export class RuntimeInputState {
     const wait = this.context.presentation().inputWait;
     if (!wait) return false;
     const waitIdentity = inputWaitIdentity(wait);
-    const retiredButtonTokens = retireEnabledButtons(this.context.presentation());
+    const retiredButtonTokens = retireEnabledButtons(this.context.mutableInteractions());
     this.pending.value = {
       waitIdentity,
       waitId: String(wait.wait_id),
@@ -40,7 +41,7 @@ export class RuntimeInputState {
         this.pending.value.messageId = String(messageId);
     } catch (error) {
       if (this.pending.value?.waitIdentity === waitIdentity) {
-        restoreButtons(this.context.presentation(), retiredButtonTokens);
+        restoreButtons(this.context.mutableInteractions(), retiredButtonTokens);
         this.pending.value = undefined;
       }
       throw error;
@@ -102,7 +103,7 @@ export class RuntimeInputState {
 
   rejectInput(rejected: PendingGameInput | undefined, willRetry: boolean): void {
     if (!rejected || willRetry) return;
-    restoreButtons(this.context.presentation(), rejected.retiredButtonTokens);
+    restoreButtons(this.context.mutableInteractions(), rejected.retiredButtonTokens);
     if (this.pending.value === rejected) this.pending.value = undefined;
   }
 

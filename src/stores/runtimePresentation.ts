@@ -14,9 +14,15 @@ export class RuntimePresentationProjection {
   private stagedPresentation?: PresentationState;
   private stagedReady = false;
   private stagedCanFlushWhenIdle = false;
+  private stagedOwnsInteractions = false;
 
   current(): PresentationState {
     return this.stagedPresentation ?? this.presentation;
+  }
+
+  mutableInteractions(): PresentationState {
+    this.ownStagedInteractions();
+    return this.current();
   }
 
   markStagedReady(): void {
@@ -87,6 +93,12 @@ export class RuntimePresentationProjection {
       disablesRedraw ||
       startsTransientReplacement;
     const target = shouldStage ? this.stage() : this.presentation;
+    if (
+      target === this.stagedPresentation &&
+      operations.some((operation: any) => operation.type === "set_button_generation")
+    ) {
+      this.ownStagedInteractions();
+    }
     applyDelta(target, delta);
     if (target !== this.stagedPresentation) return true;
     if (disablesRedraw || target.redraw?.enabled === false) this.stagedCanFlushWhenIdle = false;
@@ -99,6 +111,7 @@ export class RuntimePresentationProjection {
     this.stagedPresentation = undefined;
     this.stagedReady = false;
     this.stagedCanFlushWhenIdle = false;
+    this.stagedOwnsInteractions = false;
     this.staged.value = false;
   }
 
@@ -112,12 +125,31 @@ export class RuntimePresentationProjection {
       this.stagedPresentation = this.clone(this.presentation);
       this.stagedReady = false;
       this.stagedCanFlushWhenIdle = false;
+      this.stagedOwnsInteractions = false;
       this.staged.value = true;
     }
     return this.stagedPresentation;
   }
 
   private clone(source: PresentationState): PresentationState {
-    return structuredClone(toRaw(source));
+    const raw = toRaw(source);
+    // Automatic redraw frames usually replace only a short tail. Share immutable line payloads
+    // with the published frame and copy the history container, rather than deep-cloning the
+    // complete accumulated log on every frame.
+    return {
+      ...raw,
+      lines: [...raw.lines],
+      retiredButtonTokens: new Set(raw.retiredButtonTokens),
+    };
+  }
+
+  private ownStagedInteractions(): void {
+    if (!this.stagedPresentation || this.stagedOwnsInteractions) return;
+    // BREAKBUTTON is the exceptional delta that mutates interactions throughout existing
+    // history. Detach those payloads only when that operation occurs so an unpublished frame
+    // cannot alter the currently visible one.
+    this.stagedPresentation.lines = structuredClone(toRaw(this.stagedPresentation.lines));
+    this.stagedPresentation.htmlIsland = structuredClone(toRaw(this.stagedPresentation.htmlIsland));
+    this.stagedOwnsInteractions = true;
   }
 }
