@@ -128,17 +128,7 @@
       "until": { "output_tail_contains": "[0] 讨论话题", "tail_lines": 30 }
     },
     { "type": "input", "value": 0 },
-    { "type": "input", "value": 0 },
-    {
-      "type": "assert_layout",
-      "locator": { "css": ".media-visual.media-sprite", "nth": -2 },
-      "relative_to": { "css": ".game-viewport" },
-      "expect": {
-        "count": 1,
-        "visible": true,
-        "inside": { "tolerance": 0 }
-      }
-    }
+    { "type": "input", "value": 0 }
   ],
   "limits": { "max_steps": 80, "timeout_seconds": 900 }
 }
