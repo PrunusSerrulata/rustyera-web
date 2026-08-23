@@ -130,14 +130,6 @@
     { "type": "input", "value": 0 },
     { "type": "input", "value": 0 },
     {
-      "type": "advance_enter_waits_until",
-      "maximum": 100,
-      "settle_auto_enter": false,
-      "until": {
-        "locator": { "css": ".game-viewport button:has-text(\"[0] 交谈\")", "nth": -1 }
-      }
-    },
-    {
       "type": "assert_layout",
       "locator": { "css": ".media-visual.media-sprite", "nth": -2 },
       "relative_to": { "css": ".game-viewport" },

@@ -144,6 +144,11 @@ const opacity = computed(() =>
     : 1,
 );
 const scale = computed(() => store.effectivePreferences.imageScale);
+const escapesConsoleRow = computed(() => props.placement.requested_y != null);
+const positionedSlotHeight = computed(
+  () => logicalPixels(props.placement.height) ?? store.gameTextStyle.fontSizePx,
+);
+const positionedSlotScale = computed(() => (escapesConsoleRow.value ? 1 : scale.value));
 const directStyle = computed(() => ({
   width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
   height: dimensions.value.height ? `${dimensions.value.height * scale.value}px` : undefined,
@@ -154,8 +159,10 @@ const directStyle = computed(() => ({
 }));
 const positionedSlotStyle = computed(() => ({
   width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
-  height: `${(logicalPixels(props.placement.height) ?? store.gameTextStyle.fontSizePx) * scale.value}px`,
-  "--media-row-offset": `${-(logicalPixels(props.placement.height) ?? store.gameTextStyle.fontSizePx) * scale.value}px`,
+  // A ypos image escapes a fixed Emuera console row. Client image scaling changes its painted
+  // pixels, not the row advance; scaling this slot accumulates one layout error per redraw.
+  height: `${positionedSlotHeight.value * positionedSlotScale.value}px`,
+  "--media-row-offset": `${-positionedSlotHeight.value * positionedSlotScale.value}px`,
   opacity: opacity.value,
   zIndex: props.placement.depth,
   transform: horizontalTransform.value,

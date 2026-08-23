@@ -98,6 +98,7 @@ function mediaLayoutIdentity(line: PresentationLine | undefined): string | undef
       )
     : undefined;
 }
+
 const virtualizer = useVirtualizer(
   computed(() => {
     // Equal-length replacements do not change count; revision keeps the virtualizer's key lookup
@@ -107,10 +108,6 @@ const virtualizer = useVirtualizer(
       count: store.presentation.lines.length,
       getScrollElement: () => viewport.value ?? null,
       estimateSize: () => Math.max(1, store.gameLineHeightPx),
-      // Emuera advances every physical console row by the configured line height. Escaped
-      // images may paint far outside that row, but neither their DOM ink bounds nor an inline
-      // element's browser-specific baseline may change the next row's origin.
-      measureElement: measureLineElement,
       overscan: 20,
       // Preserve measured rows and mounted media across same-epoch snapshots. When an animation
       // deletes and recreates an equal-length tail, reuse that row's render key so its canvas can
@@ -199,17 +196,6 @@ function lineMinimumHeight(line: any): string | undefined {
   return hasSpaceShape && negativeImageBottom > store.gameTextStyle.fontSizePx
     ? `${negativeImageBottom}px`
     : undefined;
-}
-
-function measureLineElement(element: Element): number {
-  const index = Number(element.getAttribute("data-index"));
-  const line = Number.isInteger(index) ? store.presentation.lines[index] : undefined;
-  const projectedMinimum = Number.parseFloat(lineMinimumHeight(line) ?? "0");
-  return Math.max(
-    1,
-    store.gameLineHeightPx,
-    Number.isFinite(projectedMinimum) ? projectedMinimum : 0,
-  );
 }
 
 function projectHtmlLength(value: any, absolute = false): number | undefined {

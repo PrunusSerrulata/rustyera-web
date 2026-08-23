@@ -93,7 +93,7 @@
     { "type": "drain_void_waits", "maximum": 240 },
     {
       "type": "assert_dom",
-      "locator": { "text": "弗理希艾尔", "exact": false },
+      "locator": { "css": ".game-viewport .game-line:has-text('弗理希艾尔')" },
       "fields": ["count", "visible"],
       "expect": { "count": 1, "visible": true }
     },

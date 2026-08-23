@@ -24,7 +24,7 @@
     },
     {
       "type": "assert_dom",
-      "locator": { "text": "[霊夢]", "exact": true },
+      "locator": { "css": ".game-viewport .game-line:has-text('[霊夢]')" },
       "fields": ["count", "visible"],
       "expect": { "count": 2, "visible": true }
     },

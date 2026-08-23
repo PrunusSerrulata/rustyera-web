@@ -47,6 +47,7 @@ const canvasReplayStub = {
 describe("Era sprite images", () => {
   beforeEach(() => {
     store.projectResourceGeneration = 0;
+    store.effectivePreferences.imageScale = 1;
     store.presentation.resources.sprites = [
       {
         name: "TW_TITLE000",
@@ -366,6 +367,55 @@ describe("Era sprite images", () => {
       "--media-row-offset: -12px",
     );
     expect(wrapper.get(".media-visual").classes()).toContain("media-bottom-anchored");
+  });
+
+  it("does not scale the console-row slot reserved by an escaped image", async () => {
+    store.effectivePreferences.imageScale = 2;
+    const wrapper = mount(MediaImage, {
+      props: {
+        placement: {
+          resource_id: "portrait",
+          width: 0,
+          height: 12_000,
+          depth: 0,
+          opacity: { numerator: 1, denominator: 1 },
+          revision: 5,
+          requested_height: { unit: "pixels", value: 48 },
+          requested_y: { unit: "pixels", value: -48 },
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(wrapper.get(".media-positioned").attributes("style")).toContain("height: 12px");
+    expect(wrapper.get(".media-positioned").attributes("style")).toContain(
+      "--media-row-offset: -12px",
+    );
+    expect(wrapper.get(".media-visual").attributes("style")).toContain("height: 96px");
+  });
+
+  it("keeps scaling the layout slot of an ordinary positioned image", async () => {
+    store.effectivePreferences.imageScale = 2;
+    const wrapper = mount(MediaImage, {
+      props: {
+        placement: {
+          resource_id: "portrait",
+          width: 0,
+          height: 12_000,
+          depth: 0,
+          opacity: { numerator: 1, denominator: 1 },
+          revision: 5,
+          requested_height: { unit: "pixels", value: 48 },
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(wrapper.get(".media-positioned").attributes("style")).toContain("height: 24px");
+    expect(wrapper.get(".media-positioned").attributes("style")).toContain(
+      "--media-row-offset: -24px",
+    );
+    expect(wrapper.get(".media-visual").attributes("style")).toContain("height: 96px");
   });
 
   it("keeps the full positioned visual mounted while loading its hover image", async () => {
