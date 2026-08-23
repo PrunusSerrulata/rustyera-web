@@ -1004,7 +1004,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
           value.level ?? "info",
           formatDiagnostic(value),
           true,
-          value.code === "runtime.html.nonstandard_crossed_closing_tag" ? "none" : "all",
+          [
+            "runtime.html.nonstandard_crossed_closing_tag",
+            "vm.control_flow.goto_into_structured_block",
+          ].includes(value.code)
+            ? "none"
+            : "all",
         );
         if (
           value.code === "runtime.compiled_cache_ready" &&

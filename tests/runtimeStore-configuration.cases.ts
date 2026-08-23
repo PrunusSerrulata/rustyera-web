@@ -660,6 +660,33 @@ describe("runtime store configuration", () => {
     expect(store.logNotifications).toEqual([]);
   });
 
+  it("retains GOTO-into-CASE warnings without showing a notification", async () => {
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("diagnostic", {
+          code: "vm.control_flow.goto_into_structured_block",
+          level: "warning",
+          message:
+            "GOTO entered a structured block without executing its opener; avoid jumping into FOR, REPEAT, or SELECTCASE blocks",
+          source: { relative_path: "ERB/GUILD/GUILD.ERB", line: 341, byte_column: 5 },
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+
+    expect(store.logs).toEqual([
+      expect.objectContaining({
+        level: "warning",
+        message:
+          "ERB/GUILD/GUILD.ERB:342:6: [vm.control_flow.goto_into_structured_block] GOTO entered a structured block without executing its opener; avoid jumping into FOR, REPEAT, or SELECTCASE blocks",
+      }),
+    ]);
+    expect(store.logNotifications).toEqual([]);
+  });
+
   it("does not notify for a standalone fatal fault", async () => {
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
