@@ -287,6 +287,64 @@ describe("Era sprite images", () => {
     expect(getComputedStyle(wrapper.get(".media-positioned").element).transform).toBe("");
   });
 
+  it("flips a negative requested height without moving its positioned line slot", async () => {
+    const wrapper = mount(MediaImage, {
+      props: {
+        placement: {
+          resource_id: "portrait",
+          width: 0,
+          height: 20_000,
+          depth: 0,
+          opacity: { numerator: 1, denominator: 1 },
+          revision: 5,
+          requested_width: { unit: "pixels", value: 64 },
+          requested_height: { unit: "pixels", value: -48 },
+          requested_y: { unit: "pixels", value: 12 },
+        },
+      },
+    });
+    await flushPromises();
+
+    const slot = wrapper.get<HTMLElement>(".media-positioned");
+    const visual = wrapper.get<HTMLElement>(".media-visual");
+    expect(getComputedStyle(slot.element).transform).toBe("");
+    expect(visual.attributes("style")).toContain("height: 48px");
+    expect(visual.attributes("style")).toContain("top: 12px");
+    expect(getComputedStyle(visual.element).transform).toBe("scaleY(-1)");
+  });
+
+  it("keeps sprite cropping transforms separate from combined axis flips", async () => {
+    store.presentation.resources.sprites = [
+      {
+        name: "portrait",
+        size: [100, 100],
+        frames: [{ resource_id: "portrait.webp", source_rectangle: [10, 20, 100, 100] }],
+      },
+    ];
+    const wrapper = mount(MediaImage, {
+      props: {
+        placement: {
+          resource_id: "portrait",
+          width: 0,
+          height: 20_000,
+          depth: 0,
+          opacity: { numerator: 1, denominator: 1 },
+          revision: 5,
+          requested_width: { unit: "pixels", value: -64 },
+          requested_height: { unit: "pixels", value: -48 },
+        },
+      },
+    });
+    await flushPromises();
+
+    const slot = wrapper.get<HTMLElement>(".media-positioned");
+    const visual = wrapper.get<HTMLElement>(".media-visual");
+    const image = visual.get<HTMLElement>("img");
+    expect(getComputedStyle(slot.element).transform).toBe("scaleX(-1)");
+    expect(getComputedStyle(visual.element).transform).toBe("scaleY(-1)");
+    expect(image.attributes("style")).toContain("transform: scale(0.64, 0.48)");
+  });
+
   it("marks ypos=-height images for Emuera bottom-row anchoring", async () => {
     const wrapper = mount(MediaImage, {
       props: {

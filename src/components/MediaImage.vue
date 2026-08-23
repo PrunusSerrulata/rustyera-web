@@ -131,6 +131,12 @@ const dimensions = computed(() => {
 });
 const horizontallyFlipped = computed(() => Number(props.placement.requested_width?.value) < 0);
 const horizontalTransform = computed(() => (horizontallyFlipped.value ? "scaleX(-1)" : undefined));
+const verticallyFlipped = computed(() => Number(props.placement.requested_height?.value) < 0);
+const imageTransform = computed(() => {
+  if (horizontallyFlipped.value && verticallyFlipped.value) return "scale(-1, -1)";
+  if (horizontallyFlipped.value) return "scaleX(-1)";
+  return verticallyFlipped.value ? "scaleY(-1)" : undefined;
+});
 
 const opacity = computed(() =>
   props.placement.opacity?.denominator
@@ -144,7 +150,7 @@ const directStyle = computed(() => ({
   top: verticalOffset(),
   opacity: opacity.value,
   zIndex: props.placement.depth,
-  transform: horizontalTransform.value,
+  transform: imageTransform.value,
 }));
 const positionedSlotStyle = computed(() => ({
   width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
@@ -158,6 +164,7 @@ const positionedVisualStyle = computed(() => ({
   width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
   height: dimensions.value.height ? `${dimensions.value.height * scale.value}px` : undefined,
   top: verticalOffset() ?? "0px",
+  transform: verticallyFlipped.value ? "scaleY(-1)" : undefined,
 }));
 const bottomAnchored = computed(() => {
   const y = props.placement.requested_y as PresentationLength | undefined;
@@ -173,7 +180,7 @@ const spriteStyle = computed(() => ({
   top: verticalOffset(),
   opacity: opacity.value,
   zIndex: props.placement.depth,
-  transform: horizontalTransform.value,
+  transform: imageTransform.value,
 }));
 const spriteSourceStyle = computed(() => {
   const rectangle = frame.value?.source_rectangle ?? [0, 0, 0, 0];
