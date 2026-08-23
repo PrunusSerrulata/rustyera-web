@@ -1,6 +1,6 @@
 import { ref } from "vue";
 
-import { isMessageSkipWait } from "@/core/messageSkip";
+import { isMessageSkipWait, messageWaitIntent } from "@/core/messageSkip";
 import { restoreButtons, retireEnabledButtons, type PresentationState } from "@/core/presentation";
 import type { InteractionToken, RuntimeMessage } from "@/core/types";
 import type { PendingGameInput, PendingInputUndo, RuntimeInputIntent } from "@/stores/runtimeState";
@@ -17,6 +17,7 @@ interface RuntimeInputContext {
 export class RuntimeInputState {
   readonly pending = ref<PendingGameInput>();
   readonly pendingUndo = ref<PendingInputUndo>();
+  private messageSkipRequested = false;
 
   constructor(private readonly context: RuntimeInputContext) {}
 
@@ -49,9 +50,18 @@ export class RuntimeInputState {
     return true;
   }
 
+  async requestMessageSkip(): Promise<void> {
+    if (this.pending.value || this.pendingUndo.value) return;
+    this.messageSkipRequested = true;
+    await this.settleMessageSkipRequest();
+  }
+
   async settle(): Promise<void> {
     const pending = this.pending.value;
-    if (!pending) return;
+    if (!pending) {
+      await this.settleMessageSkipRequest();
+      return;
+    }
     if (!pending.retryPending) {
       if (!pending.waitClosed) return;
       if (!pending.messageSkip) {
@@ -133,6 +143,19 @@ export class RuntimeInputState {
   reset(): void {
     this.pending.value = undefined;
     this.pendingUndo.value = undefined;
+    this.messageSkipRequested = false;
+  }
+
+  private async settleMessageSkipRequest(): Promise<void> {
+    if (!this.messageSkipRequested || this.pending.value || this.pendingUndo.value) return;
+    const wait = this.context.presentation().inputWait;
+    if (!wait) return;
+    if (!isMessageSkipWait(wait)) {
+      this.messageSkipRequested = false;
+      return;
+    }
+    const submitted = await this.submit(messageWaitIntent(wait), true);
+    if (submitted) this.messageSkipRequested = false;
   }
 
   private sendInput(wait: any, intent: RuntimeInputIntent, messageSkip: boolean) {

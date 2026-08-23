@@ -607,6 +607,92 @@ describe("runtime store cache-input", () => {
     );
   });
 
+  it("holds a right-click skip across a running frame until the next message wait", async () => {
+    const store = await storeWithInputWait({
+      kind: "any_key",
+      wait_id: 22,
+      submission_token: { epoch: 2, id: 9 },
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("wait_changed", { type: "closed", value: null }),
+        runtimeEvent("state_changed", { phase: "running", epoch: 2 }),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    bridge.submitRuntime.mockClear();
+
+    await store.skip();
+
+    expect(bridge.submitRuntime).not.toHaveBeenCalled();
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("wait_changed", {
+          type: "opened",
+          value: {
+            kind: "any_key",
+            wait_id: 23,
+            submission_token: { epoch: 2, id: 10 },
+            deadline_ns: 1_000_000,
+          },
+        }),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+
+    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "input",
+        value: expect.objectContaining({
+          wait_id: 23,
+          intent: { type: "any_key", value: "\n" },
+          message_skip: true,
+        }),
+      }),
+      undefined,
+    );
+  });
+
+  it("drops a held right-click skip at a non-skippable input boundary", async () => {
+    const store = await storeWithInputWait({
+      kind: "any_key",
+      wait_id: 23,
+      submission_token: { epoch: 2, id: 10 },
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("wait_changed", { type: "closed", value: null }),
+        runtimeEvent("state_changed", { phase: "running", epoch: 2 }),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    bridge.submitRuntime.mockClear();
+
+    await store.skip();
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("wait_changed", {
+          type: "opened",
+          value: {
+            kind: "integer_value",
+            wait_id: 24,
+            submission_token: { epoch: 2, id: 11 },
+          },
+        }),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+
+    expect(bridge.submitRuntime).not.toHaveBeenCalled();
+  });
+
   it("submits one ordinary keyboard event for an AnyKey wait", async () => {
     const store = useRuntimeStore();
     await store.initialize();

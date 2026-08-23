@@ -16,11 +16,7 @@ import {
 import { preferredRuntimeLocales, resolveGameTextStyle } from "@/core/gameText";
 import { suppressedMirroredLogNotificationIndexes } from "@/core/log";
 import { menuVisibilityMode } from "@/core/menuVisibility";
-import {
-  isMessageContinuationWait,
-  isMessageSkipWait,
-  messageWaitIntent,
-} from "@/core/messageSkip";
+import { isMessageContinuationWait, messageWaitIntent } from "@/core/messageSkip";
 import {
   concatenateChunks,
   diagnosisProgressPercentage,
@@ -1282,10 +1278,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function skip(): Promise<void> {
-    const wait = currentPresentation().inputWait;
-    if (canInteract.value && isMessageSkipWait(wait)) {
-      await submitIntent(messageWaitIntent(wait), true);
-    }
+    if (!runtimeReady.value || gameInteractionsBlocked.value || diagnosisExporting.value) return;
+    await runtimeInput.requestMessageSkip();
   }
 
   async function continueFromViewport(): Promise<void> {
