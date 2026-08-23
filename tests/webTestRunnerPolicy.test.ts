@@ -358,6 +358,35 @@ describe("browser game runner progress policy", () => {
     expect(roronaScenario).toContain('"gesture": "long_press"');
   });
 
+  it("covers running-animation right click and the February save regression", () => {
+    const opening = JSON.parse(
+      readFileSync(
+        resolve("tools/runtime-tester/scenarios/erarorona-opening-right-skip.json"),
+        "utf8",
+      ),
+    );
+    const february = JSON.parse(
+      readFileSync(resolve("tools/runtime-tester/scenarios/erarorona-february-first.json"), "utf8"),
+    );
+
+    expect(opening.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "click", button: "right", advances_game: true }),
+        expect.objectContaining({
+          type: "assert_state",
+          expect: { phase: "waiting_input", fault: null },
+        }),
+      ]),
+    );
+    expect(february.start.path).toContain("save05.sav");
+    expect(february.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "input", value: 11 }),
+        expect.objectContaining({ type: "input", value: 1 }),
+      ]),
+    );
+  });
+
   it("can assert computed game-font styles after applying settings", () => {
     const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
     const scenario = readFileSync(

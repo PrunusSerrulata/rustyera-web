@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/erarorona",
+  "mode": "fixed",
+  "compiled_cache": true,
+  "start": {
+    "type": "traditional_save",
+    "path": "../../../../games/erarorona/sav/save05.sav"
+  },
+  "clock": "2026-01-01T00:00:00Z",
+  "viewport": { "width": 1415, "height": 1056 },
+  "actions": [
+    { "type": "input", "value": 11 },
+    {
+      "type": "advance_enter_waits_until",
+      "maximum": 20,
+      "settle_auto_enter": false,
+      "until": { "output_tail_contains": "请选择休息的天数", "tail_lines": 30 }
+    },
+    { "type": "input", "value": 1, "auto_enter": false },
+    { "type": "input", "value": "", "auto_enter": false },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "2月  1日", "exact": false, "nth": -1 },
+      "fields": ["count", "visible"],
+      "expect": { "count": 1, "visible": true }
+    },
+    { "type": "assert_state", "expect": { "phase": "waiting_input", "fault": null } }
+  ],
+  "limits": { "max_steps": 240, "timeout_seconds": 180 }
+}

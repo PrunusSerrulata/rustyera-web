@@ -8,6 +8,7 @@ import HtmlNode from "@/components/HtmlNode.vue";
 import MediaImage from "@/components/MediaImage.vue";
 import { useTouchSecondaryAction } from "@/components/useTouchSecondaryAction";
 import { isViewportContinuationClick } from "@/core/viewportInteraction";
+import type { DisplayLine as PresentationLine, DisplayRun, MediaPlacement } from "@/core/types";
 import { measureGameViewport } from "@/platform/viewportMeasurement";
 import { useRuntimeStore } from "@/stores/runtime";
 
@@ -26,46 +27,76 @@ let projectedWidth = -1;
 let projectedHeight = -1;
 let projectedLineColumns = -1;
 let keyedRuntimeEpoch = "";
-let keyedLineCount = 0;
-let keyedHistoryRevision = "";
 let bottomFollowRevision = 0;
 let followingBottom = false;
-const keyedLines = new Map<number, { id: string; key: string }>();
+const keyedLines = new Map<number, { id: string; key: string; mediaLayout?: string }>();
 
 watch(
-  () =>
-    [
-      store.runtimeEpoch,
-      store.presentation.historyRevision,
-      store.presentation.lines.length,
-    ] as const,
-  ([runtimeEpoch, historyRevision, lineCount]) => {
+  () => store.runtimeEpoch,
+  (runtimeEpoch) => {
     const epoch = String(runtimeEpoch);
-    const history = String(historyRevision);
-    if (
-      epoch !== keyedRuntimeEpoch ||
-      history !== keyedHistoryRevision ||
-      lineCount !== keyedLineCount
-    )
-      keyedLines.clear();
+    if (epoch !== keyedRuntimeEpoch) keyedLines.clear();
     keyedRuntimeEpoch = epoch;
-    keyedHistoryRevision = history;
-    keyedLineCount = lineCount;
   },
   { immediate: true, flush: "sync" },
 );
 
 function lineRenderKey(index: number): string {
-  // Vue Virtual asks only for rows near its active window. Cache those indices so an equal-length
-  // animation tail can retain mounted canvases without scanning every historical line per delta.
-  // A history revision clears this cache above so a rebuilt fixed-layout screen cannot inherit
-  // measurements from the dialogue rows that previously occupied the same indices.
-  const id = String(store.presentation.lines[index]?.line_id ?? index);
+  // Appending history must not invalidate every measured row. Reuse an index key only for media
+  // frames with identical geometry; this preserves a generated animation's mounted canvas while
+  // ensuring ordinary replacement rows never inherit the previous screen's measured height.
+  const line = store.presentation.lines[index];
+  const id = String(line?.line_id ?? index);
+  const mediaLayout = mediaLayoutIdentity(line);
   const cached = keyedLines.get(index);
   if (cached?.id === id) return cached.key;
-  const key = cached?.key ?? `${keyedRuntimeEpoch}:${keyedHistoryRevision}:${id}`;
-  keyedLines.set(index, { id, key });
+  const key =
+    mediaLayout != null && mediaLayout === cached?.mediaLayout
+      ? cached.key
+      : `${keyedRuntimeEpoch}:${id}`;
+  keyedLines.set(index, { id, key, mediaLayout });
   return key;
+}
+
+function mediaLayoutIdentity(line: PresentationLine | undefined): string | undefined {
+  const placements: unknown[] = [];
+  const visitNode = (node: any): void => {
+    if (node?.semantic?.type === "image") {
+      placements.push([node.semantic.width, node.semantic.height, node.semantic.y]);
+    }
+    for (const child of node?.children ?? []) visitNode(child);
+  };
+  const visitPlacement = (placement: MediaPlacement): void => {
+    placements.push([
+      placement.requested_width,
+      placement.requested_height,
+      placement.requested_y,
+      placement.width,
+      placement.height,
+    ]);
+  };
+  const visitRun = (run: DisplayRun): void => {
+    switch (run.type) {
+      case "image":
+        visitPlacement(run.placement);
+        break;
+      case "html_document":
+        for (const node of run.document?.nodes ?? []) visitNode(node);
+        break;
+      case "button":
+        for (const child of run.runs) visitRun(child);
+        break;
+      case "column_cell":
+        for (const child of run.content) visitRun(child);
+        break;
+    }
+  };
+  for (const run of line?.runs ?? []) visitRun(run);
+  return placements.length
+    ? JSON.stringify(placements, (_key, value) =>
+        typeof value === "bigint" ? value.toString() : value,
+      )
+    : undefined;
 }
 const virtualizer = useVirtualizer(
   computed(() => {

@@ -53,6 +53,19 @@ export class RuntimeInputState {
   async requestMessageSkip(): Promise<void> {
     if (this.pending.value || this.pendingUndo.value) return;
     this.messageSkipRequested = true;
+    // Reference Emuera raises MesSkip on mouse-down, not only when a subsequent WAIT is answered.
+    // This ordered device event lets a running EraBasic animation observe MESSKIP immediately.
+    await this.context.send({
+      type: "device_state_changed",
+      value: {
+        device: "mouse",
+        code: 2,
+        pressed: true,
+        x: 0,
+        y: 0,
+        monotonic_time_ns: this.context.sampleMonotonic(),
+      },
+    });
     await this.settleMessageSkipRequest();
   }
 

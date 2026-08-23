@@ -593,7 +593,15 @@ describe("runtime store cache-input", () => {
 
     await store.skip();
 
-    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).toHaveBeenCalledTimes(2);
+    expect(bridge.submitRuntime).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        type: "device_state_changed",
+        value: expect.objectContaining({ device: "mouse", code: 2, pressed: true }),
+      }),
+      undefined,
+    );
     expect(bridge.submitRuntime).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "input",
@@ -625,7 +633,11 @@ describe("runtime store cache-input", () => {
 
     await store.skip();
 
-    expect(bridge.submitRuntime).not.toHaveBeenCalled();
+    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "device_state_changed" }),
+      undefined,
+    );
 
     bridge.pump.mockResolvedValueOnce({
       ...emptyBatch(),
@@ -643,8 +655,8 @@ describe("runtime store cache-input", () => {
     });
     await vi.advanceTimersByTimeAsync(32);
 
-    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
-    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+    expect(bridge.submitRuntime).toHaveBeenCalledTimes(2);
+    expect(bridge.submitRuntime).toHaveBeenLastCalledWith(
       expect.objectContaining({
         type: "input",
         value: expect.objectContaining({
@@ -690,7 +702,11 @@ describe("runtime store cache-input", () => {
     });
     await vi.advanceTimersByTimeAsync(32);
 
-    expect(bridge.submitRuntime).not.toHaveBeenCalled();
+    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "device_state_changed" }),
+      undefined,
+    );
   });
 
   it("submits one ordinary keyboard event for an AnyKey wait", async () => {
@@ -1024,8 +1040,8 @@ describe("runtime store cache-input", () => {
     await store.skip();
 
     for (const [waitId, tokenId, rejectedMessageId] of [
-      [18, 6, 10],
-      [19, 7, 11],
+      [18, 6, 11],
+      [19, 7, 12],
     ]) {
       bridge.pump.mockResolvedValueOnce({
         ...emptyBatch(),
@@ -1068,7 +1084,7 @@ describe("runtime store cache-input", () => {
             stop_message_skip: true,
           },
         }),
-        runtimeEvent("command_rejected", { message: "input wait identity is stale" }, 12),
+        runtimeEvent("command_rejected", { message: "input wait identity is stale" }, 13),
       ],
     });
     await vi.advanceTimersByTimeAsync(32);
@@ -1110,7 +1126,7 @@ describe("runtime store cache-input", () => {
     bridge.pump.mockResolvedValueOnce({
       ...emptyBatch(),
       events: [
-        runtimeEvent("command_rejected", { message: "input wait identity is stale" }, 10),
+        runtimeEvent("command_rejected", { message: "input wait identity is stale" }, 11),
         runtimeEvent("wait_changed", {
           type: "opened",
           value: {

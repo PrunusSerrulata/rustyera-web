@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/erarorona",
+  "mode": "fixed",
+  "compiled_cache": true,
+  "clean_saves": true,
+  "seed": 1126218542,
+  "clock": "2026-01-01T00:00:00Z",
+  "viewport": { "width": 1415, "height": 1056 },
+  "actions": [
+    { "type": "drain_void_waits", "maximum": 300 },
+    { "type": "input", "value": 0 },
+    { "type": "drain_void_waits", "maximum": 300 },
+    { "type": "input", "value": 0 },
+    { "type": "input", "value": 999 },
+    { "type": "input", "value": 9, "auto_enter": false },
+    { "type": "input", "value": 0, "auto_enter": false },
+    {
+      "type": "click",
+      "locator": { "css": ".game-viewport" },
+      "button": "right",
+      "advances_game": true,
+      "auto_enter": false
+    },
+    { "type": "assert_state", "expect": { "phase": "waiting_input", "fault": null } }
+  ],
+  "limits": { "max_steps": 30, "timeout_seconds": 120 }
+}

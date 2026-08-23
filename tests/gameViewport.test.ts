@@ -473,13 +473,13 @@ describe("game viewport", () => {
 
   it("keeps row keys stable across refresh snapshots to retain measured positions", async () => {
     const wrapper = shallowMount(GameViewport);
-    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1:1");
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1");
     store.presentation.lines = [{ line_id: 1, alignment: "left", runs: [] }];
     await nextTick();
-    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1:1");
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1");
     store.runtimeEpoch = 2;
     await nextTick();
-    expect(virtualOptions.value.value.getItemKey(0)).toBe("2:1:1");
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("2:1");
     wrapper.unmount();
   });
 
@@ -504,32 +504,68 @@ describe("game viewport", () => {
   });
 
   it("reuses a replaced animation row key so mounted media can retain its prior frame", async () => {
+    const image = (resourceId: string) => ({
+      type: "image",
+      placement: {
+        resource_id: resourceId,
+        requested_width: { unit: "pixels", value: 100 },
+        requested_height: { unit: "pixels", value: 80 },
+        requested_y: { unit: "pixels", value: -80 },
+        width: 100_000n,
+        height: 80_000n,
+      },
+    });
     store.presentation.lines = [
       { line_id: 1, alignment: "left", runs: [] },
-      { line_id: 2, alignment: "left", runs: [{ type: "text", text: "frame 1" }] },
+      { line_id: 2, alignment: "left", runs: [image("frame-1")] },
     ];
     const wrapper = shallowMount(GameViewport);
-    expect(virtualOptions.value.value.getItemKey(1)).toBe("1:1:2");
+    expect(virtualOptions.value.value.getItemKey(1)).toBe("1:2");
 
     store.presentation.lines = [
       store.presentation.lines[0],
-      { line_id: 3, alignment: "left", runs: [{ type: "text", text: "frame 2" }] },
+      { line_id: 3, alignment: "left", runs: [image("frame-2")] },
     ];
     await nextTick();
 
-    expect(virtualOptions.value.value.getItemKey(1)).toBe("1:1:2");
+    expect(virtualOptions.value.value.getItemKey(1)).toBe("1:2");
+    wrapper.unmount();
+  });
+
+  it("does not invalidate measured media rows when unrelated history is appended", async () => {
+    const media = {
+      type: "image",
+      placement: {
+        resource_id: "portrait",
+        requested_height: { unit: "pixels", value: 80 },
+        requested_y: { unit: "pixels", value: -80 },
+        width: 100_000n,
+        height: 80_000n,
+      },
+    };
+    store.presentation.lines = [{ line_id: 1, alignment: "left", runs: [media] }];
+    const wrapper = shallowMount(GameViewport);
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1");
+
+    store.presentation.lines.push({ line_id: 2, alignment: "left", runs: [] });
+    store.presentation.historyRevision += 1;
+    await nextTick();
+    store.presentation.lines[0] = { line_id: 3, alignment: "left", runs: [media] };
+    await nextTick();
+
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1");
     wrapper.unmount();
   });
 
   it("rekeys rebuilt history rows so fixed screens discard stale dialogue measurements", async () => {
     const wrapper = shallowMount(GameViewport);
-    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1:1");
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1");
 
     store.presentation.lines = [{ line_id: 2, alignment: "left", runs: [] }];
     store.presentation.historyRevision += 1;
     await nextTick();
 
-    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:2:2");
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:2");
     wrapper.unmount();
   });
 
