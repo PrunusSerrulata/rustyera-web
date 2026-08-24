@@ -24,10 +24,15 @@ describe("browser PWA configuration", () => {
     );
   });
 
-  it("precaches the application shell and large runtime WASM without forcing live updates", () => {
-    expect(rustyEraPwaOptions.registerType).toBe("prompt");
-    expect(rustyEraPwaOptions.workbox?.clientsClaim).toBe(false);
-    expect(rustyEraPwaOptions.workbox?.skipWaiting).toBe(false);
+  it("activates updates and refreshes existing clients without waiting for them to close", () => {
+    expect(rustyEraPwaOptions.injectRegister).toBe("auto");
+    expect(rustyEraPwaOptions.registerType).toBe("autoUpdate");
+    expect(rustyEraPwaOptions.workbox?.clientsClaim).toBe(true);
+    expect(rustyEraPwaOptions.workbox?.skipWaiting).toBe(true);
+    expect(rustyEraPwaOptions.workbox?.importScripts).toContain("pwa-update.js");
+  });
+
+  it("precaches the application shell and large runtime WASM", () => {
     expect(rustyEraPwaOptions.workbox?.globPatterns).toContain(
       "**/*.{html,js,css,wasm,webmanifest,png,svg,ico}",
     );

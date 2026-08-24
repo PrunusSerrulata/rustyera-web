@@ -1,8 +1,11 @@
 import { createPinia } from "pinia";
 import { createApp } from "vue";
+import { registerSW } from "virtual:pwa-register";
 
 import App from "./App.vue";
 import "./styles.css";
+
+registerSW({ immediate: true });
 
 if (import.meta.env.VITE_RUSTYERA_TAURI_TEST === "1") await import("@wdio/tauri-plugin");
 

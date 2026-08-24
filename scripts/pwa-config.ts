@@ -4,8 +4,8 @@ const MEBIBYTE = 1024 * 1024;
 
 /** Browser-only installation and offline-cache policy shared by Vite and its regression tests. */
 export const rustyEraPwaOptions = {
-  injectRegister: "script-defer",
-  registerType: "prompt",
+  injectRegister: "auto",
+  registerType: "autoUpdate",
   includeAssets: ["apple-touch-icon.png"],
   manifest: {
     id: ".",
@@ -35,13 +35,14 @@ export const rustyEraPwaOptions = {
     ],
   },
   workbox: {
-    clientsClaim: false,
+    clientsClaim: true,
     cleanupOutdatedCaches: true,
     globPatterns: ["**/*.{html,js,css,wasm,webmanifest,png,svg,ico}"],
+    importScripts: ["pwa-update.js"],
     // The runtime WASM is intentionally precached so an installed app can cold-start offline.
     maximumFileSizeToCacheInBytes: 20 * MEBIBYTE,
     navigateFallback: "index.html",
-    skipWaiting: false,
+    skipWaiting: true,
     sourcemap: false,
   },
 } satisfies Partial<VitePWAOptions>;
