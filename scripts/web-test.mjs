@@ -21,6 +21,7 @@ import {
   publishCrossHostArtifacts,
   runAction,
   shellWords,
+  waitForAutomaticWaitChange,
 } from "./web-test-lib.mjs";
 import { finalizeBrowserGameRun } from "./web-test-lifecycle.mjs";
 import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs";
@@ -345,9 +346,9 @@ async function execute(args) {
 
     async function observe(automaticEnter = true) {
       for (
-        let automaticEnters = 0;
-        automaticEnters <= scenario.limits.max_steps;
-        automaticEnters += 1
+        let automaticWaits = 0;
+        automaticWaits <= scenario.limits.max_steps;
+        automaticWaits += 1
       ) {
         if (Date.now() > deadline) throw new Error("scenario timeout exhausted");
         const snapshot = await waitForObservation();
@@ -377,6 +378,10 @@ async function execute(args) {
           !automaticEnter
         )
           return event;
+        if (rust.wait.deadline_ns != null) {
+          await waitForAutomaticWaitChange(page, rust.wait.wait_id);
+          continue;
+        }
         trace.emit({
           type: "action",
           step: steps,
@@ -386,7 +391,7 @@ async function execute(args) {
         await runAction(page, { type: "input", value: "" });
         if (reference) referenceObservation = await reference.step("", scenario.watches);
       }
-      throw new Error("automatic Enter budget exhausted");
+      throw new Error("automatic wait budget exhausted");
     }
 
     async function act(action, source) {

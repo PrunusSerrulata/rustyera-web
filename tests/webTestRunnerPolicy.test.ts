@@ -23,6 +23,28 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain("action.observe !== false");
   });
 
+  it("lets timed Enter waits expire before submitting an automatic Enter", () => {
+    const runner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
+    const observationLoop = runner.slice(
+      runner.indexOf("async function observe"),
+      runner.indexOf("async function act"),
+    );
+    const timedWaitBranch = observationLoop.slice(
+      observationLoop.indexOf("if (rust.wait.deadline_ns != null)"),
+      observationLoop.indexOf('source: "automatic_enter"'),
+    );
+    const stableEnterBranch = observationLoop.slice(
+      observationLoop.indexOf('source: "automatic_enter"'),
+    );
+
+    expect(runner).toContain("waitForAutomaticWaitChange");
+    expect(timedWaitBranch).toContain("await waitForAutomaticWaitChange(page, rust.wait.wait_id)");
+    expect(timedWaitBranch).toContain("continue;");
+    expect(timedWaitBranch).not.toContain("runAction");
+    expect(stableEnterBranch).toContain('source: "automatic_enter"');
+    expect(stableEnterBranch).toContain('await runAction(page, { type: "input", value: "" })');
+  });
+
   it("sets the repository browser path before importing Playwright", () => {
     const runner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
 

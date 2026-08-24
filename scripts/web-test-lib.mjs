@@ -973,7 +973,7 @@ function hex(bytes) {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function waitForAutomaticWaitChange(page, waitId) {
+export async function waitForAutomaticWaitChange(page, waitId) {
   await page.waitForFunction((previousWaitId) => {
     const current = window.__RUSTYERA_TEST__.snapshot();
     return current.fault != null || current.wait?.wait_id !== previousWaitId;
