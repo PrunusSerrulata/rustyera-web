@@ -78,6 +78,65 @@ describe("display line column groups", () => {
     expect(separator.text()).toBe("*-".repeat(6));
   });
 
+  it("caps DRAWLINE at the game drawable width on a wider viewport", () => {
+    const wrapper = mount(DisplayLine, {
+      props: {
+        viewportColumns: 180,
+        separatorWidthPx: 1080,
+        line: {
+          line_id: 3,
+          temporary: false,
+          logical_line_start: true,
+          line_end: true,
+          alignment: "left",
+          runs: [{ type: "separator", pattern: "-", style: {} }],
+        } as any,
+      },
+    });
+
+    const separator = wrapper.get<HTMLElement>(".separator");
+    expect(separator.element.style.width).toBe("1080px");
+    expect(separator.text()).toHaveLength(180);
+  });
+
+  it.each([
+    [12_000, 236],
+    [16_000, 177],
+    [18_000, 158],
+    [24_000, 118],
+  ])(
+    "keeps a %i millipixel DRAWLINE filled while clipping it at the drawable width",
+    (fontMillipixels, viewportColumns) => {
+      const wrapper = mount(DisplayLine, {
+        props: {
+          viewportColumns,
+          separatorWidthPx: 1080,
+          line: {
+            line_id: 3,
+            temporary: false,
+            logical_line_start: true,
+            line_end: true,
+            alignment: "left",
+            runs: [
+              {
+                type: "separator",
+                pattern: "-",
+                style: { font_millipixels: fontMillipixels },
+              },
+            ],
+          } as any,
+        },
+      });
+
+      const separator = wrapper.get<HTMLElement>(".separator");
+      expect(separator.element.style.width).toBe("1080px");
+      expect(separator.element.style.fontSize).toBe(`${fontMillipixels / 1000}px`);
+      expect(separator.text().length).toBeGreaterThanOrEqual(
+        Math.floor((1080 * 2000) / fontMillipixels),
+      );
+    },
+  );
+
   it("projects eraFL COLOR_LINE rectangles as a contiguous filled rule", () => {
     const color = (value: number) => ({ red: value, green: value, blue: value, alpha: 255 });
     // COLOR_LINE converts 0x202020 through integer HSV arithmetic, yielding

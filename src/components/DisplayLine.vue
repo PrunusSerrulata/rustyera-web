@@ -5,7 +5,11 @@ import RunRenderer from "@/components/RunRenderer.vue";
 import { responsiveColumnGroupLayout } from "@/core/columnLayout";
 import type { DisplayLine, DisplayRun } from "@/core/types";
 
-const props = defineProps<{ line: DisplayLine; viewportColumns: number }>();
+const props = defineProps<{
+  line: DisplayLine;
+  viewportColumns: number;
+  separatorWidthPx?: number;
+}>();
 
 interface SingleRun {
   type: "run";
@@ -53,6 +57,7 @@ const fragments = computed<(SingleRun | ColumnGroup)[]>(() => {
       v-if="fragment.type === 'run'"
       :run="fragment.run"
       :viewport-columns="viewportColumns"
+      :separator-width-px="separatorWidthPx"
     />
     <span
       v-else
@@ -66,6 +71,7 @@ const fragments = computed<(SingleRun | ColumnGroup)[]>(() => {
         :key="index"
         :run="cell"
         :viewport-columns="viewportColumns"
+        :separator-width-px="separatorWidthPx"
       />
     </span>
   </template>

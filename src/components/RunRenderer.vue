@@ -7,7 +7,11 @@ import { projectRectangleShape, projectSpaceShape } from "@/core/shapeProjection
 import { useRuntimeStore } from "@/stores/runtime";
 
 defineOptions({ name: "RunRenderer" });
-const props = defineProps<{ run: any; viewportColumns?: number }>();
+const props = defineProps<{
+  run: any;
+  viewportColumns?: number;
+  separatorWidthPx?: number;
+}>();
 const store = useRuntimeStore();
 const textStyle = computed(() => {
   const style = props.run.style ?? {};
@@ -56,8 +60,8 @@ const separatorColumns = computed(() => {
   const columns = Number(props.viewportColumns);
   return Number.isFinite(columns) ? Math.max(1, Math.floor(columns)) : 1;
 });
-// Generate enough complete pattern units for every viewport column, then let
-// the `ch`-sized element clip wide glyphs and multi-character patterns.
+// Generate enough complete pattern units for every viewport column, then let the element clip
+// wide glyphs and multi-character patterns at the configured drawable width.
 const separatorText = computed(() =>
   props.run.type === "separator"
     ? String(props.run.pattern ?? "").repeat(separatorColumns.value)
@@ -118,6 +122,7 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
       :key="index"
       :run="child"
       :viewport-columns="viewportColumns"
+      :separator-width-px="separatorWidthPx"
     />
   </button>
   <template v-else-if="run.type === 'html_document'">
@@ -147,13 +152,17 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
       :key="index"
       :run="child"
       :viewport-columns="viewportColumns"
+      :separator-width-px="separatorWidthPx"
     />
   </span>
   <span
     v-else-if="run.type === 'separator'"
     class="separator"
     :data-pattern="run.pattern"
-    :style="[textStyle, { width: `${separatorColumns}ch` }]"
+    :style="[
+      textStyle,
+      { width: separatorWidthPx == null ? `${separatorColumns}ch` : `${separatorWidthPx}px` },
+    ]"
     >{{ separatorText }}</span
   >
   <span v-else-if="run.type === 'space'" class="space" :style="directSpaceStyle" />
