@@ -3,7 +3,16 @@ import { computed } from "vue";
 
 import HtmlNode from "@/components/HtmlNode.vue";
 import MediaImage from "@/components/MediaImage.vue";
+import TextRunGroup from "@/components/TextRunGroup.vue";
+import {
+  collectTextRunGroup,
+  renderedText as presentText,
+  textLayoutStyle as layoutText,
+  textRunStyle as styleText,
+  type TextDisplayRun,
+} from "@/components/textRunPresentation";
 import { projectRectangleShape, projectSpaceShape } from "@/core/shapeProjection";
+import type { DisplayRun } from "@/core/types";
 import { useRuntimeStore } from "@/stores/runtime";
 
 defineOptions({ name: "RunRenderer" });
@@ -13,49 +22,37 @@ const props = defineProps<{
   separatorWidthPx?: number;
 }>();
 const store = useRuntimeStore();
-const textStyle = computed(() => {
-  const style = props.run.style ?? {};
-  const foreground = style.foreground;
-  const background = style.background;
-  return {
-    color: foreground ? `var(--game-interaction-foreground, ${rgba(foreground)})` : undefined,
-    backgroundColor: background ? rgba(background) : undefined,
-    fontWeight: style.bold ? "bold" : undefined,
-    fontStyle: style.italic ? "italic" : undefined,
-    textDecoration:
-      [style.underline && "underline", style.strikeout && "line-through"]
-        .filter(Boolean)
-        .join(" ") || undefined,
-    fontFamily: store.effectivePreferences.fontFamilyOverride
-      ? "var(--game-font)"
-      : style.font_family
-        ? `${style.font_family}, var(--game-font)`
-        : undefined,
-    fontSize:
-      store.effectivePreferences.fontSizeOverridePx != null
-        ? "var(--game-size)"
-        : style.font_millipixels
-          ? `${Number(style.font_millipixels) / 1000}px`
-          : undefined,
-  };
+
+type NestedFragment =
+  | { type: "text_group"; key: number; runs: TextDisplayRun[] }
+  | { type: "run"; key: number; run: DisplayRun };
+
+const nestedFragments = computed<NestedFragment[]>(() => {
+  const runs: DisplayRun[] =
+    props.run.type === "button"
+      ? props.run.runs
+      : props.run.type === "column_cell"
+        ? props.run.content
+        : [];
+  const fragments: NestedFragment[] = [];
+  for (let index = 0; index < runs.length;) {
+    const textGroup = collectTextRunGroup(runs, index);
+    if (textGroup) {
+      fragments.push({ type: "text_group", key: index, runs: textGroup.runs });
+      index = textGroup.nextIndex;
+    } else {
+      fragments.push({ type: "run", key: index, run: runs[index] });
+      index += 1;
+    }
+  }
+  return fragments;
 });
-const textLayoutStyle = computed(() =>
-  props.run.type === "text_layout"
-    ? {
-        display: "inline-block",
-        // The viewport reports columns from the active font's zero advance. Use the
-        // same physical cell here so fonts whose half-width advance is not exactly
-        // half an em cannot accumulate layout drift across a console row.
-        width: `${Math.max(0, Number(props.run.columns) || 0)}ch`,
-        verticalAlign: "top",
-      }
-    : undefined,
-);
-const renderedText = computed(() =>
-  store.replaceFullWidthSpaces
-    ? String(props.run.text ?? "").replaceAll("　", "  ")
-    : props.run.text,
-);
+
+const textStyle = computed(() => {
+  return styleText(props.run, store.effectivePreferences);
+});
+const textLayoutStyle = computed(() => layoutText(props.run));
+const renderedText = computed(() => presentText(props.run, store.replaceFullWidthSpaces));
 const separatorColumns = computed(() => {
   const columns = Number(props.viewportColumns);
   return Number.isFinite(columns) ? Math.max(1, Math.floor(columns)) : 1;
@@ -117,13 +114,15 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
     :data-era-tooltip="run.title || undefined"
     @click="store.activate(run.token)"
   >
-    <RunRenderer
-      v-for="(child, index) in run.runs"
-      :key="index"
-      :run="child"
-      :viewport-columns="viewportColumns"
-      :separator-width-px="separatorWidthPx"
-    />
+    <template v-for="fragment in nestedFragments" :key="fragment.key">
+      <TextRunGroup v-if="fragment.type === 'text_group'" :runs="fragment.runs" />
+      <RunRenderer
+        v-else
+        :run="fragment.run"
+        :viewport-columns="viewportColumns"
+        :separator-width-px="separatorWidthPx"
+      />
+    </template>
   </button>
   <template v-else-if="run.type === 'html_document'">
     <HtmlNode v-for="(node, index) in run.document.nodes" :key="index" :node="node" />
@@ -147,13 +146,15 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
     class="column-cell"
     :style="{ textAlign: run.alignment }"
   >
-    <RunRenderer
-      v-for="(child, index) in run.content"
-      :key="index"
-      :run="child"
-      :viewport-columns="viewportColumns"
-      :separator-width-px="separatorWidthPx"
-    />
+    <template v-for="fragment in nestedFragments" :key="fragment.key">
+      <TextRunGroup v-if="fragment.type === 'text_group'" :runs="fragment.runs" />
+      <RunRenderer
+        v-else
+        :run="fragment.run"
+        :viewport-columns="viewportColumns"
+        :separator-width-px="separatorWidthPx"
+      />
+    </template>
   </span>
   <span
     v-else-if="run.type === 'separator'"

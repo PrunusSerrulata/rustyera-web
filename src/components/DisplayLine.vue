@@ -2,6 +2,8 @@
 import { computed } from "vue";
 
 import RunRenderer from "@/components/RunRenderer.vue";
+import TextRunGroup from "@/components/TextRunGroup.vue";
+import { collectTextRunGroup, type TextDisplayRun } from "@/components/textRunPresentation";
 import { responsiveColumnGroupLayout } from "@/core/columnLayout";
 import type { DisplayLine, DisplayRun } from "@/core/types";
 
@@ -17,6 +19,12 @@ interface SingleRun {
   run: DisplayRun;
 }
 
+interface TextGroup {
+  type: "text_group";
+  key: number;
+  runs: TextDisplayRun[];
+}
+
 interface ColumnGroup {
   type: "column_group";
   key: number;
@@ -25,10 +33,18 @@ interface ColumnGroup {
   columns: number;
 }
 
-const fragments = computed<(SingleRun | ColumnGroup)[]>(() => {
-  const result: (SingleRun | ColumnGroup)[] = [];
+type DisplayFragment = SingleRun | TextGroup | ColumnGroup;
+
+const fragments = computed<DisplayFragment[]>(() => {
+  const result: DisplayFragment[] = [];
   for (let index = 0; index < props.line.runs.length;) {
     const run = props.line.runs[index];
+    const textGroup = collectTextRunGroup(props.line.runs, index);
+    if (textGroup) {
+      result.push({ type: "text_group", key: index, runs: textGroup.runs });
+      index = textGroup.nextIndex;
+      continue;
+    }
     if (run.type !== "column_cell") {
       result.push({ type: "run", key: index, run });
       index += 1;
@@ -53,8 +69,9 @@ const fragments = computed<(SingleRun | ColumnGroup)[]>(() => {
 
 <template>
   <template v-for="fragment in fragments" :key="fragment.key">
+    <TextRunGroup v-if="fragment.type === 'text_group'" :runs="fragment.runs" />
     <RunRenderer
-      v-if="fragment.type === 'run'"
+      v-else-if="fragment.type === 'run'"
       :run="fragment.run"
       :viewport-columns="viewportColumns"
       :separator-width-px="separatorWidthPx"

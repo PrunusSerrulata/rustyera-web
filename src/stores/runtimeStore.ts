@@ -2586,9 +2586,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
       telemetry?.outcome === "loading" &&
       telemetry.milestones.startSubmittedMs == null;
     if (startupStart) telemetry.milestones.startSubmittedMs = startupTelemetryState.elapsedMs();
-    const messageId = await bridge.submitRuntime(transportValue(message), correlationId);
+    const submission = bridge.submitRuntime(transportValue(message), correlationId);
+    // WorkerClient posts both requests to one Worker port, so queue the drive immediately:
+    // FIFO delivery still guarantees that the runtime accepts this command before pumping it.
+    // Native IPC does not expose that ordering guarantee and keeps the acknowledgement barrier.
+    if (bridge.kind === "browser") schedulePump(0);
+    const messageId = await submission;
     if (startupStart) startupTelemetryState.startMessageId = String(messageId);
-    schedulePump(0);
+    if (bridge.kind !== "browser") schedulePump(0);
     return messageId;
   }
 

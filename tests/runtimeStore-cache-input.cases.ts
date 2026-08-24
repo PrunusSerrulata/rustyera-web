@@ -617,6 +617,30 @@ describe("runtime store cache-input", () => {
     );
   });
 
+  it("queues browser pumping without waiting for the ordered submission acknowledgement", async () => {
+    const store = await storeWithInputWait({
+      kind: "any_key",
+      wait_id: 22,
+      submission_token: { epoch: 2, id: 9 },
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    bridge.kind = "browser";
+    bridge.pump.mockClear();
+    let acknowledge!: (messageId: number) => void;
+    bridge.submitRuntime.mockReturnValueOnce(
+      new Promise<number>((resolve) => {
+        acknowledge = resolve;
+      }),
+    );
+
+    const skipping = store.skip();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(bridge.pump).toHaveBeenCalled();
+    acknowledge(41);
+    await skipping;
+  });
+
   it("holds a right-click skip across a running frame until the next message wait", async () => {
     const store = await storeWithInputWait({
       kind: "any_key",
