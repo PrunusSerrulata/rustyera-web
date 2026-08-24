@@ -840,6 +840,7 @@ describe("frontend host and image-line policy", () => {
 
     expect(menu).toMatch(/max-height:\s*calc\(100dvh/);
     expect(menu).toMatch(/overflow-y:\s*auto;/);
+    expect(menu).not.toMatch(/scrollbar-gutter\s*:[^;]*\bstable\b/);
     expect(panel).toMatch(/max-width:\s*calc\(100vw - 16px\);/);
     expect(panel).toMatch(/max-height:\s*calc\(100dvh - 16px\);/);
     expect(content).toMatch(/overflow:\s*auto;/);
