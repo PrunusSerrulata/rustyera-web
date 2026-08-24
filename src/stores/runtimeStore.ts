@@ -101,6 +101,14 @@ import type {
 
 const FULL_PROJECT_MANIFEST_CHUNK_BYTES = 4 * 1024 * 1024;
 
+function diagnosticNotificationPolicy(
+  diagnostic: any,
+  fallback: LogNotificationPolicy,
+): LogNotificationPolicy {
+  if (diagnostic.notification === "log_only") return "none";
+  return fallback;
+}
+
 export const useRuntimeStore = defineStore("runtime", () => {
   const bridge = platformBridge();
   const presentationProjection = new RuntimePresentationProjection();
@@ -836,7 +844,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
             message: formatDiagnostic(diagnostic),
             authoritative: true,
           })),
-          "errors_only",
+          diagnostics.map((diagnostic: any) =>
+            diagnosticNotificationPolicy(diagnostic, "errors_only"),
+          ),
         );
         runtimeConfiguration.refreshWritable();
         runtimeConfiguration.update(value.configuration);
@@ -1004,12 +1014,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           value.level ?? "info",
           formatDiagnostic(value),
           true,
-          [
-            "runtime.html.nonstandard_crossed_closing_tag",
-            "vm.control_flow.goto_into_structured_block",
-          ].includes(value.code)
-            ? "none"
-            : "all",
+          diagnosticNotificationPolicy(value, "all"),
         );
         if (
           value.code === "runtime.compiled_cache_ready" &&
@@ -1164,7 +1169,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         message: formatDiagnostic(diagnostic),
         authoritative: true,
       })),
-      "errors_only",
+      diagnostics.map((diagnostic: any) => diagnosticNotificationPolicy(diagnostic, "errors_only")),
     );
     const committedFonts = await projectReload.finalize(Boolean(value.success));
     if (!value.success) {
@@ -2611,7 +2616,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   function appendLogEntries(
     entries: LogEntry[],
-    notificationPolicy: LogNotificationPolicy = "all",
+    notificationPolicy: LogNotificationPolicy | readonly LogNotificationPolicy[] = "all",
   ): void {
     runtimeLogs.append(entries, notificationPolicy);
   }

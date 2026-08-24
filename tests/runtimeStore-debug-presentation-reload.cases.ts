@@ -679,7 +679,20 @@ describe("runtime store debug-presentation-reload", () => {
           "project_load_report",
           {
             success: false,
-            diagnostics: [{ level: "error", code: "compile.failed", message: "bad script" }],
+            diagnostics: [
+              {
+                level: "warning",
+                code: "compile.warning",
+                message: "warning detail",
+                notification: "default",
+              },
+              {
+                level: "error",
+                code: "compile.failed",
+                message: "bad script",
+                notification: "default",
+              },
+            ],
           },
           79,
         ),
@@ -693,6 +706,11 @@ describe("runtime store debug-presentation-reload", () => {
     expect(store.projectResourceGeneration).toBe(resourceGenerationBefore);
     expect(bridge.finalizeProjectReload).toHaveBeenCalledWith(false);
     expect(store.logs.some((entry) => entry.message.includes("bad script"))).toBe(true);
+    expect(
+      store.logNotifications.some((notification) =>
+        notification.message.includes("warning detail"),
+      ),
+    ).toBe(false);
     expect(
       bridge.submitRuntime.mock.calls.filter(
         ([message]: unknown[]) => (message as { type?: string }).type === "start",

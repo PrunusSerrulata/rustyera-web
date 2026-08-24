@@ -466,6 +466,7 @@ describe("runtime store configuration", () => {
     const diagnostics = Array.from({ length: 10_050 }, (_, index) => ({
       code: "runtime.duplicate_sprite",
       level: "warning",
+      notification: index < 50 ? "default" : "log_only",
       message: `duplicate ${index}`,
     }));
     bridge.createSession.mockResolvedValueOnce({
@@ -495,6 +496,7 @@ describe("runtime store configuration", () => {
         runtimeEvent("diagnostic", {
           code: "runtime.compatibility",
           level: "warning",
+          notification: "default",
           message: "legacy behavior",
           source: { relative_path: "ERB/WARN.ERB", line: 4, byte_column: 2 },
         }),
@@ -607,7 +609,7 @@ describe("runtime store configuration", () => {
     });
   });
 
-  it("suppresses compile warnings while surfacing compile errors", async () => {
+  it("honors compile diagnostic notification guidance while surfacing errors", async () => {
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
       events: [
@@ -615,8 +617,24 @@ describe("runtime store configuration", () => {
           success: false,
           payload_required: false,
           diagnostics: [
-            { code: "compile.warning", level: "warning", message: "compile warning" },
-            { code: "compile.error", level: "error", message: "compile error" },
+            {
+              code: "compile.warning",
+              level: "warning",
+              notification: "log_only",
+              message: "compile warning",
+            },
+            {
+              code: "compile.default_warning",
+              level: "warning",
+              notification: "default",
+              message: "default compile warning",
+            },
+            {
+              code: "compile.error",
+              level: "error",
+              notification: "default",
+              message: "compile error",
+            },
           ],
         }),
       ],
@@ -627,6 +645,7 @@ describe("runtime store configuration", () => {
 
     expect(store.logs.map((entry) => entry.message)).toEqual([
       "[compile.warning] compile warning",
+      "[compile.default_warning] default compile warning",
       "[compile.error] compile error",
     ]);
     expect(store.logNotifications).toEqual([
@@ -641,6 +660,7 @@ describe("runtime store configuration", () => {
         runtimeEvent("diagnostic", {
           code: "runtime.html.nonstandard_crossed_closing_tag",
           level: "warning",
+          notification: "log_only",
           message: "PRINTHTML normalized non-standard crossed closing tag",
           source: { relative_path: "ERB/HTML.ERB", line: 4, byte_column: 2 },
         }),
@@ -667,6 +687,7 @@ describe("runtime store configuration", () => {
         runtimeEvent("diagnostic", {
           code: "vm.control_flow.goto_into_structured_block",
           level: "warning",
+          notification: "log_only",
           message:
             "GOTO entered a structured block without executing its opener; avoid jumping into FOR, REPEAT, or SELECTCASE blocks",
           source: { relative_path: "ERB/GUILD/GUILD.ERB", line: 341, byte_column: 5 },
