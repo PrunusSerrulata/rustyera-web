@@ -882,7 +882,15 @@ describe("browser project reads", () => {
   });
 
   it("appends a compact packaged configuration update through a writable handle", async () => {
-    const project = new BrowserProject(new SaveDirectoryHandle("storage") as any, 1, "game");
+    const root = new SaveDirectoryHandle("storage");
+    const privateDirectory = await root.getDirectoryHandle(".rustyera", { create: true });
+    const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
+    await (
+      await (
+        await cacheDirectory.getFileHandle("compiled-project.reracache", { create: true })
+      ).createWritable()
+    ).write(Uint8Array.of(9, 8, 7));
+    const project = new BrowserProject(root as any, 1, "game");
     const handle = new SaveFileHandle("game.reraproj", new TextEncoder().encode("base-tail"));
     const file = await handle.getFile();
     const prepare = vi.fn(async () => {
@@ -904,12 +912,36 @@ describe("browser project reads", () => {
       "basejournal",
     );
     expect(prepare).toHaveBeenCalledOnce();
+    await expect(cacheDirectory.getFileHandle("compiled-project.reracache")).rejects.toMatchObject({
+      name: "NotFoundError",
+    });
     expect(project.embeddedManifest()?.files).toContainEqual(
       expect.objectContaining({
         relative_path: "reraconfig.toml",
         payload: { type: "utf8", value: "[text]\nreplace_full_width_spaces = true\n" },
       }),
     );
+  });
+
+  it("keeps a packaged sidecar when the authoritative configuration update fails", async () => {
+    const root = new SaveDirectoryHandle("storage");
+    const privateDirectory = await root.getDirectoryHandle(".rustyera", { create: true });
+    const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
+    const cache = await cacheDirectory.getFileHandle("compiled-project.reracache", {
+      create: true,
+    });
+    await (await cache.createWritable()).write(Uint8Array.of(9, 8, 7));
+    const project = new BrowserProject(root as any, 1, "game");
+    const handle = new SaveFileHandle("game.reraproj", new TextEncoder().encode("base-tail"));
+    project.usePackagedFile(await handle.getFile(), handle as any, async () => {
+      throw new Error("update rejected");
+    });
+    project.useEmbeddedManifest({ project_revision: 1, files: [] });
+
+    await expect(
+      project.writeConfiguration(new Uint8Array(), "[text]\nfont_size = 18\n"),
+    ).rejects.toThrow("update rejected");
+    await expect(project.readPersistedCompiledCache()).resolves.toEqual(Uint8Array.of(9, 8, 7));
   });
 
   it("reuses the selected packaged file without copying it into browser storage", async () => {
@@ -923,6 +955,21 @@ describe("browser project reads", () => {
     const progress = vi.fn();
     await expect(project.readCompiledCache(progress)).resolves.toEqual(bytes);
     expect(progress.mock.calls.at(-1)).toEqual([bytes.byteLength, bytes.byteLength]);
+  });
+
+  it("prefers a refreshed packaged-project sidecar over the embedded legacy cache", async () => {
+    const root = new SaveDirectoryHandle("storage");
+    const privateDirectory = await root.getDirectoryHandle(".rustyera", { create: true });
+    const cacheDirectory = await privateDirectory.getDirectoryHandle("cache", { create: true });
+    const cacheHandle = await cacheDirectory.getFileHandle("compiled-project.reracache", {
+      create: true,
+    });
+    const refreshed = Uint8Array.of(9, 8, 7);
+    await (await cacheHandle.createWritable()).write(refreshed);
+    const project = new BrowserProject(root as any, 1, "game");
+    project.usePackagedFile(new File([Uint8Array.of(1, 2, 3, 4)], "game.reraproj"));
+
+    await expect(project.readCompiledCache()).resolves.toEqual(refreshed);
   });
 
   it("serves resources embedded in a packaged project", async () => {

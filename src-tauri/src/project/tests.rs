@@ -2,6 +2,44 @@ use std::cell::RefCell;
 
 use super::*;
 
+fn packaged_host(path: PathBuf) -> ProjectHost {
+    ProjectHost {
+        root: path.parent().unwrap().to_owned(),
+        manifest: None,
+        indexed_files: Vec::new(),
+        revision: 1,
+        embedded_resources: BTreeMap::new(),
+        packaged_project: Some(PackagedProjectFile {
+            storage_key: packaged_project_storage_key(&path),
+            path,
+        }),
+        runtime_manifest_sparse: false,
+        pending_reload: None,
+        source_index_stats: (0, 0),
+    }
+}
+
+#[test]
+fn packaged_project_cache_is_scoped_with_its_runtime_storage() {
+    let directory = tempfile::tempdir().unwrap();
+    let first = packaged_host(directory.path().join("first.reraproj"));
+    let second = packaged_host(directory.path().join("second.reraproj"));
+
+    assert_ne!(first.compiled_cache_path(), second.compiled_cache_path());
+    assert_eq!(
+        first.compiled_cache_path(),
+        first
+            .runtime_storage_root()
+            .join("cache/compiled-project.reracache")
+    );
+    fs::create_dir_all(first.compiled_cache_path().parent().unwrap()).unwrap();
+    fs::write(first.compiled_cache_path(), b"refreshed").unwrap();
+    assert_eq!(first.compiled_cache().unwrap().unwrap(), b"refreshed");
+
+    first.invalidate_compiled_cache();
+    assert!(first.compiled_cache().unwrap().is_none());
+}
+
 #[test]
 #[ignore = "invoked by the cross-frontend cache handoff scenario"]
 fn cross_frontend_source_index_handoff_driver() {

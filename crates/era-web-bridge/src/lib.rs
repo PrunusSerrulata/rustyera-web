@@ -290,10 +290,23 @@ impl WebSession {
         &mut self,
         decoded: era_runtime::DecodedProjectFile,
     ) -> Result<ProjectManifest, String> {
+        self.load_decoded_project_file_with_message(decoded)
+            .map(|(_, manifest)| manifest)
+    }
+
+    /// Submit a decoded portable project and retain its request ID for host-owned resources.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the decoded manifest is invalid or cannot be queued for Runtime.
+    pub fn load_decoded_project_file_with_message(
+        &mut self,
+        decoded: era_runtime::DecodedProjectFile,
+    ) -> Result<(u64, ProjectManifest), String> {
         let (runtime_manifest, frontend_manifest) =
             split_browser_project_manifest(decoded.manifest)?;
-        self.load_project(runtime_manifest)?;
-        Ok(frontend_manifest)
+        let message_id = self.load_project(runtime_manifest)?;
+        Ok((message_id, frontend_manifest))
     }
 
     /// Decode a portable project file, stage its embedded compiled artifact, and return the

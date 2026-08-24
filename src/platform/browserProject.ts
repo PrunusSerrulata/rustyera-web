@@ -328,6 +328,7 @@ export class BrowserProject {
     await applyProjectFileUpdate(handle, current.size, projectDigest, update);
     this.packagedFile = await handle.getFile();
     this.updateEmbeddedConfiguration(contents);
+    await this.invalidateCompiledCache();
   }
 
   async invalidateCompiledCache(): Promise<void> {
@@ -842,8 +843,14 @@ export class BrowserProject {
   }
 
   async readCompiledCache(progress?: FileScanProgress): Promise<Uint8Array | undefined> {
+    const persisted = await this.readPersistedCompiledCache(progress);
+    if (persisted) return persisted;
     if (this.packagedHandle) return readFileInChunks(await this.packagedHandle.getFile(), progress);
     if (this.packagedFile) return readFileInChunks(this.packagedFile, progress);
+    return undefined;
+  }
+
+  async readPersistedCompiledCache(progress?: FileScanProgress): Promise<Uint8Array | undefined> {
     try {
       const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
       const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");

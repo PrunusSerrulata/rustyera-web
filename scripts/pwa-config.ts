@@ -39,6 +39,10 @@ export const rustyEraPwaOptions = {
     cleanupOutdatedCaches: true,
     globPatterns: ["**/*.{html,js,css,wasm,webmanifest,png,svg,ico}"],
     importScripts: ["pwa-update.js"],
+    // Runtime assets carry one build fingerprint in `?v=` so Pages never combines a new Worker
+    // with an old WASM module. Let that request resolve to the active worker's precache entry;
+    // service-worker activation then updates the shell, Worker, module, and binary atomically.
+    ignoreURLParametersMatching: [/^utm_/, /^fbclid$/, /^v$/],
     // The runtime WASM is intentionally precached so an installed app can cold-start offline.
     maximumFileSizeToCacheInBytes: 20 * MEBIBYTE,
     navigateFallback: "index.html",

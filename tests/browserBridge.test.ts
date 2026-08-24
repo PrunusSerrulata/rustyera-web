@@ -1257,6 +1257,99 @@ describe("browser startup bridge", () => {
     });
   });
 
+  it("reuses a refreshed packaged-project cache and retains the embedded fallback", async () => {
+    const storage = new MemoryDirectoryHandle("storage");
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    const bytes = Uint8Array.of(1, 2, 3, 4);
+    const file = new File([bytes], "game.reraproj");
+    pickBrowserFile.mockResolvedValue(file);
+    const storageKey = Array.from(blake3(bytes), (byte) => byte.toString(16).padStart(2, "0")).join(
+      "",
+    );
+    const projects = await storage.getDirectoryHandle(".rustyera-project-files", { create: true });
+    const projectRoot = await projects.getDirectoryHandle(storageKey, { create: true });
+    const refreshedCache = Uint8Array.of(9, 8, 7);
+    await installCache(projectRoot, refreshedCache);
+    respond = (method) => {
+      if (
+        method === "loadProjectFileWithCompiledCacheBytes" ||
+        method === "loadProjectFileSourceBytes"
+      ) {
+        return {
+          storageKey,
+          manifest: {
+            project_revision: 3,
+            files: [
+              {
+                relative_path: "resources/a.bin",
+                category: "resource",
+                payload: {
+                  type: "external_resource",
+                  value: { byte_length: 3, image_metadata: null },
+                },
+                content_hash: new Uint8Array(32),
+              },
+            ],
+          },
+          cacheImported: method === "loadProjectFileWithCompiledCacheBytes",
+        };
+      }
+      if (method === "readProjectFileResource") return Uint8Array.of(4, 5, 6);
+      return 1n;
+    };
+    const bridge = new BrowserBridge();
+
+    await bridge.openProjectFile();
+    await bridge.submitProjectSource();
+    await expect(bridge.readResource("resources/a.bin")).resolves.toEqual(Uint8Array.of(4, 5, 6));
+
+    expect(requests.map((request) => request.message.method)).toEqual([
+      "loadProjectFileWithCompiledCacheBytes",
+      "loadProjectFileSourceBytes",
+      "readProjectFileResource",
+    ]);
+    expect(requests[0].message.args).toEqual([bytes, refreshedCache]);
+    expect(requests[0].transfer).toEqual([
+      (requests[0].message.args[0] as Uint8Array).buffer,
+      (requests[0].message.args[1] as Uint8Array).buffer,
+    ]);
+  });
+
+  it("opens the authoritative project file when its packaged sidecar cannot be staged", async () => {
+    const storage = new MemoryDirectoryHandle("storage");
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    const bytes = Uint8Array.of(1, 2, 3, 4);
+    const file = new File([bytes], "game.reraproj");
+    pickBrowserFile.mockResolvedValue(file);
+    const storageKey = Array.from(blake3(bytes), (byte) => byte.toString(16).padStart(2, "0")).join(
+      "",
+    );
+    const projects = await storage.getDirectoryHandle(".rustyera-project-files", { create: true });
+    const projectRoot = await projects.getDirectoryHandle(storageKey, { create: true });
+    await installCache(projectRoot, Uint8Array.of(0xff));
+    respond = (method) => {
+      if (method === "loadProjectFileWithCompiledCacheBytes") throw new Error("bad sidecar");
+      if (method === "loadProjectFileBytes") {
+        return {
+          storageKey,
+          manifest: { project_revision: 3, files: [] },
+          cacheImported: true,
+        };
+      }
+      return 1n;
+    };
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(new BrowserBridge().openProjectFile()).resolves.toMatchObject({
+      cacheImported: true,
+    });
+
+    expect(requests.map((request) => request.message.method)).toEqual([
+      "loadProjectFileWithCompiledCacheBytes",
+      "loadProjectFileBytes",
+    ]);
+  });
+
   it("loads a constrained packaged project without silently copying it", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", {
@@ -1592,6 +1685,8 @@ describe("browser startup bridge", () => {
         [{ stage: "scanning", completed: 0, total: bytes.byteLength }],
         [{ stage: "scanning", completed: 4 * 1024 * 1024, total: bytes.byteLength }],
         [{ stage: "scanning", completed: bytes.byteLength, total: bytes.byteLength }],
+        [{ stage: "loading_cache", completed: 0, total: 0 }],
+        [{ stage: "loading_cache", completed: 1, total: 1 }],
       ]);
       expect(requests.map((request) => request.message.method)).toEqual(["loadProjectFileBytes"]);
       const transferred = requests[0].message.args[0] as Uint8Array;

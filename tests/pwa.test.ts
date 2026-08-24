@@ -40,6 +40,9 @@ describe("browser PWA configuration", () => {
       15 * 1024 * 1024,
     );
     expect(rustyEraPwaOptions.workbox?.navigateFallback).toBe("index.html");
+    expect(
+      rustyEraPwaOptions.workbox?.ignoreURLParametersMatching?.some((pattern) => pattern.test("v")),
+    ).toBe(true);
   });
 
   it("disables service workers in the Tauri host", () => {

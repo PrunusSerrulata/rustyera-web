@@ -2,6 +2,7 @@ export interface ProjectFileUploadRuntime {
   beginProjectFile(totalBytes: number): void;
   appendProjectFile(bytes: Uint8Array): void;
   finishProjectFile(): unknown;
+  finishProjectFileSource(): unknown;
   cancelProjectFile(): void;
 }
 
@@ -16,6 +17,7 @@ const MAXIMUM_BROWSER_PROJECT_FILE_BYTES = 0xffff_ffff;
 
 export interface ProjectFileReadOptions {
   chunkBytes?: number;
+  sourceFallback?: boolean;
 }
 
 export async function loadProjectFileInWorker(
@@ -39,7 +41,7 @@ export async function loadProjectFileInWorker(
       report({ stage: "scanning", completed: end, total: file.size });
       await yieldTurn();
     }
-    return runtime.finishProjectFile();
+    return options.sourceFallback ? runtime.finishProjectFileSource() : runtime.finishProjectFile();
   } catch (error) {
     runtime.cancelProjectFile();
     throw error;

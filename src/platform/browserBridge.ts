@@ -16,6 +16,7 @@ import {
   type SystemFontQueryResult,
 } from "@/core/types";
 import { decodeImageMetadata } from "@/core/imageMetadata";
+import { blake3 } from "@noble/hashes/blake3.js";
 import type { DiagnosisArchiveInput, DiagnosisArchiveProgress } from "@/core/diagnosis";
 import { yieldToMainThread, yieldToPaint } from "@/platform/mainThread";
 import {
@@ -40,6 +41,7 @@ import { validateBrowserProjectFileSize } from "@/platform/projectFileWorker";
 import { normalizeProjectFileManifest } from "@/platform/projectFileManifestTransfer";
 import { createBrowserSessionDirectory } from "@/platform/browserSessionFilesystem";
 import { downloadBrowserBlob } from "@/platform/browserDownload";
+import { hex } from "@/platform/browserProjectFilesystem";
 
 const UNCONSTRAINED_PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 const CONSTRAINED_PROJECT_FILE_READ_CHUNK_BYTES = 1024 * 1024;
@@ -240,21 +242,57 @@ export class BrowserBridge implements FrontendBridge {
     this.projectProgressListener?.({ stage: "scanning", completed: 0, total: file.size });
     await yieldToPaint();
     const started = performance.now();
-    const loaded = await this.loadSelectedProjectFile<{
+    type LoadedProject = {
       manifest: unknown;
       storageKey: string;
       cacheImported: boolean;
-    }>(file);
+    };
+    let cacheReadMs = 0;
+    let loaded: LoadedProject;
+    let storage: PackagedProjectStorage;
+    let project: BrowserProject;
+    if (this.memoryConstrained) {
+      loaded = await this.loadSelectedProjectFile<LoadedProject>(file);
+      storage = await openPackagedProjectStorage(loaded.storageKey);
+      project = new BrowserProject(storage.projectRoot, 1, file.name.replace(/\.reraproj$/i, ""));
+    } else {
+      const { bytes, storageKey } = await readProjectFile(file, (completed, total) =>
+        this.projectProgressListener?.({ stage: "scanning", completed, total }),
+      );
+      storage = await openPackagedProjectStorage(storageKey);
+      project = new BrowserProject(storage.projectRoot, 1, file.name.replace(/\.reraproj$/i, ""));
+      const cacheStarted = performance.now();
+      this.projectProgressListener?.({ stage: "loading_cache", completed: 0, total: 0 });
+      let compiledCache: Uint8Array | undefined;
+      try {
+        compiledCache = await project.readPersistedCompiledCache((completed, total) =>
+          this.projectProgressListener?.({ stage: "loading_cache", completed, total }),
+        );
+      } catch (error) {
+        console.warn("Ignoring unreadable packaged-project cache", error);
+      }
+      if (!compiledCache)
+        this.projectProgressListener?.({ stage: "loading_cache", completed: 1, total: 1 });
+      cacheReadMs = performance.now() - cacheStarted;
+      try {
+        loaded = await this.loadSelectedProjectFile<LoadedProject>(file, compiledCache, bytes);
+      } catch (error) {
+        if (!compiledCache) throw error;
+        console.warn("Ignoring unusable packaged-project cache", error);
+        compiledCache = undefined;
+        loaded = await this.loadSelectedProjectFile<LoadedProject>(file);
+      }
+      if (loaded.storageKey !== storageKey) {
+        if (compiledCache) throw new Error("项目文件缓存身份与 Runtime 返回值不一致");
+        // Retain compatibility if an older Runtime used a different storage-key derivation.
+        storage = await openPackagedProjectStorage(loaded.storageKey);
+        project = new BrowserProject(storage.projectRoot, 1, file.name.replace(/\.reraproj$/i, ""));
+      }
+    }
     const manifest = normalizeProjectFileManifest(loaded.manifest);
-    const storage = await openPackagedProjectStorage(loaded.storageKey);
     this.projectPreferenceStore = storage.preferences;
     this.projectStoragePersistent = storage.persistent;
     const root = storage.projectRoot;
-    const project = new BrowserProject(
-      root,
-      manifest.project_revision,
-      file.name.replace(/\.reraproj$/i, ""),
-    );
     project.usePackagedFile(
       file,
       picked.handle,
@@ -274,7 +312,7 @@ export class BrowserBridge implements FrontendBridge {
     return {
       submittedAtMs,
       quickScanMs: 0,
-      cacheReadMs: 0,
+      cacheReadMs,
       sourceReadMs: 0,
       submitMs: performance.now() - started,
       cacheImported: loaded.cacheImported,
@@ -295,11 +333,30 @@ export class BrowserBridge implements FrontendBridge {
       this.projectProgressListener?.({ stage: "scanning", completed: 0, total: file.size });
       await yieldToPaint();
       const started = performance.now();
-      const loaded = await this.loadSelectedProjectFile<{ cacheImported: boolean }>(file);
+      const cacheStarted = performance.now();
+      let compiledCache: Uint8Array | undefined;
+      if (!this.memoryConstrained) {
+        try {
+          compiledCache = await this.project.readPersistedCompiledCache((completed, total) =>
+            this.projectProgressListener?.({ stage: "loading_cache", completed, total }),
+          );
+        } catch (error) {
+          console.warn("Ignoring unreadable packaged-project cache", error);
+        }
+      }
+      const cacheReadMs = performance.now() - cacheStarted;
+      let loaded: { cacheImported: boolean };
+      try {
+        loaded = await this.loadSelectedProjectFile(file, compiledCache);
+      } catch (error) {
+        if (!compiledCache) throw error;
+        console.warn("Ignoring unusable packaged-project cache", error);
+        loaded = await this.loadSelectedProjectFile(file);
+      }
       return {
         submittedAtMs,
         quickScanMs: 0,
-        cacheReadMs: 0,
+        cacheReadMs,
         sourceReadMs: 0,
         submitMs: performance.now() - started,
         cacheImported: loaded.cacheImported,
@@ -442,7 +499,10 @@ export class BrowserBridge implements FrontendBridge {
     if (!this.project) throw new Error("没有打开的项目");
     const embedded = this.project.embeddedManifest();
     if (embedded) {
-      throw new Error("项目文件与当前 runtime 不兼容，无法回退到外部源码");
+      const file = await this.project.packagedProjectFile();
+      if (!file) throw new Error("项目文件缓存缺失，无法回退到内嵌源码");
+      await this.loadSelectedProjectSource(file);
+      return;
     }
     await this.submitSourceManifest(
       this.project,
@@ -783,16 +843,44 @@ export class BrowserBridge implements FrontendBridge {
     this.worker.close();
   }
 
-  private async loadSelectedProjectFile<T>(file: File): Promise<T> {
+  private async loadSelectedProjectFile<T>(
+    file: File,
+    compiledCache?: Uint8Array,
+    preparedBytes?: Uint8Array,
+  ): Promise<T> {
     if (this.memoryConstrained) {
       return this.worker.call<T>("loadProjectFile", file, {
         chunkBytes: CONSTRAINED_PROJECT_FILE_READ_CHUNK_BYTES,
       });
     }
-    const bytes = await readProjectFile(file, (completed, total) =>
+    const bytes =
+      preparedBytes ??
+      (
+        await readProjectFile(file, (completed, total) =>
+          this.projectProgressListener?.({ stage: "scanning", completed, total }),
+        )
+      ).bytes;
+    if (compiledCache) {
+      return this.worker.callWithTransfer<T>(
+        "loadProjectFileWithCompiledCacheBytes",
+        [bytes, compiledCache],
+        [bytes.buffer, compiledCache.buffer],
+      );
+    }
+    return this.worker.callWithTransfer<T>("loadProjectFileBytes", [bytes], [bytes.buffer]);
+  }
+
+  private async loadSelectedProjectSource(file: File): Promise<void> {
+    if (this.memoryConstrained) {
+      await this.worker.call("loadProjectFileSource", file, {
+        chunkBytes: CONSTRAINED_PROJECT_FILE_READ_CHUNK_BYTES,
+      });
+      return;
+    }
+    const { bytes } = await readProjectFile(file, (completed, total) =>
       this.projectProgressListener?.({ stage: "scanning", completed, total }),
     );
-    return this.worker.callWithTransfer<T>("loadProjectFileBytes", [bytes], [bytes.buffer]);
+    await this.worker.callWithTransfer("loadProjectFileSourceBytes", [bytes], [bytes.buffer]);
   }
 }
 
@@ -830,17 +918,24 @@ function sessionPackagedProjectStorage(storageKey: string): PackagedProjectStora
 async function readProjectFile(
   file: File,
   progress: (completed: number, total: number) => void,
-): Promise<Uint8Array> {
+): Promise<{ bytes: Uint8Array; storageKey: string }> {
   validateBrowserProjectFileSize(file.size);
-  if (file.size === 0) return new Uint8Array(await readBlobAsArrayBuffer(file));
+  const hasher = blake3.create();
+  if (file.size === 0) {
+    const bytes = new Uint8Array(await readBlobAsArrayBuffer(file));
+    hasher.update(bytes);
+    return { bytes, storageKey: hex(hasher.digest()) };
+  }
   const output = new Uint8Array(file.size);
   for (let offset = 0; offset < file.size; offset += UNCONSTRAINED_PROJECT_FILE_READ_CHUNK_BYTES) {
     const end = Math.min(file.size, offset + UNCONSTRAINED_PROJECT_FILE_READ_CHUNK_BYTES);
-    output.set(new Uint8Array(await readBlobAsArrayBuffer(file.slice(offset, end))), offset);
+    const chunk = new Uint8Array(await readBlobAsArrayBuffer(file.slice(offset, end)));
+    output.set(chunk, offset);
+    hasher.update(chunk);
     progress(end, file.size);
     await yieldToMainThread();
   }
-  return output;
+  return { bytes: output, storageKey: hex(hasher.digest()) };
 }
 
 async function materializePackagedProjectFile(

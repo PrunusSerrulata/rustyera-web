@@ -351,20 +351,33 @@ async fn open_project_file(
             fs::read(&path).map_err(|error| format!("cannot read project file: {error}"))?;
         let host = ProjectHost::from_project_file(&path, &bytes)?;
         let identity = host.identity();
-        with_session(&state, |session| {
-            session.load_project_with_compiled_cache(identity, bytes)
-        })?;
+        let sidecar = match host.compiled_cache() {
+            Ok(cache) => cache,
+            Err(error) => {
+                eprintln!("ignoring unreadable packaged-project cache: {error}");
+                None
+            }
+        };
+        if let Some(sidecar) = sidecar {
+            if let Err(error) = with_session(&state, |session| {
+                session.load_project_with_compiled_cache(identity.clone(), sidecar)
+            }) {
+                eprintln!("ignoring unusable packaged-project cache: {error}");
+                with_session(&state, |session| {
+                    session.load_project_with_compiled_cache(identity, bytes)
+                })?;
+            }
+        } else {
+            with_session(&state, |session| {
+                session.load_project_with_compiled_cache(identity, bytes)
+            })?;
+        }
         let submit_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let storage_key = blake3::hash(path.to_string_lossy().as_bytes()).to_hex();
-        let storage_root = host
-            .root()
-            .join(".rustyera/packaged-projects")
-            .join(storage_key.as_str());
+        let storage_root = host.runtime_storage_root();
         *state.storage.lock().map_err(lock_error)? = Some(StorageHost::new(storage_root));
-        // Keep the embedded manifest until the runtime accepts the compiled snapshot. A project
-        // file exported after legacy-configuration migration can legitimately require a source
-        // fallback because its embedded source identity differs from the cached build identity.
-        // `submit_project_source` clones this retained manifest when the runtime requests it.
+        // Keep the portable manifest/resources while the cache candidate is pending. If both a
+        // refreshed sidecar and the embedded legacy cache are incompatible, `submit_project_source`
+        // lazily decodes the authoritative package and submits its complete source manifest.
         *state.project.lock().map_err(lock_error)? = Some(host);
         *state.project_preferences.lock().map_err(lock_error)? =
             Some(preferences::ProjectPreferenceLocation {

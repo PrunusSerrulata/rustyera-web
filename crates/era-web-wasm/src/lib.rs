@@ -281,6 +281,50 @@ fn stage_project_file_bytes(runtime: &mut WasmRuntime, bytes: &[u8]) -> Result<J
     })
 }
 
+fn stage_project_file_with_compiled_cache(
+    runtime: &mut WasmRuntime,
+    project_file: &[u8],
+    compiled_cache: &[u8],
+) -> Result<JsValue, JsValue> {
+    let storage_key = blake3::hash(project_file).to_hex().to_string();
+    // Decode only the portable manifest here. The sidecar owns the compiled artifact, so parsing
+    // the obsolete artifact embedded in an older project file would erase the warm-start win.
+    let mut decoded =
+        era_runtime::decode_project_file_frontend_manifest(project_file, project_file.len())
+            .map_err(js_error)?;
+    let resources = take_project_file_resources(&mut decoded.manifest);
+    let message_id = runtime
+        .inner
+        .load_project_with_compiled_cache(decoded.identity, compiled_cache.to_vec())
+        .map_err(js_error)?;
+    runtime
+        .project_file_resources
+        .stage_packaged(message_id, resources);
+    to_js(LoadedProjectFile {
+        manifest: decoded.manifest,
+        storage_key,
+        cache_imported: true,
+    })
+}
+
+fn stage_project_file_source(runtime: &mut WasmRuntime, bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let storage_key = blake3::hash(bytes).to_hex().to_string();
+    let decoded = era_runtime::decode_project_file(bytes, bytes.len()).map_err(js_error)?;
+    let (message_id, mut manifest) = runtime
+        .inner
+        .load_decoded_project_file_with_message(decoded)
+        .map_err(js_error)?;
+    let resources = take_project_file_resources(&mut manifest);
+    runtime
+        .project_file_resources
+        .stage_packaged(message_id, resources);
+    to_js(LoadedProjectFile {
+        manifest,
+        storage_key,
+        cache_imported: false,
+    })
+}
+
 #[derive(Default)]
 struct ProjectFileResources {
     active: BTreeMap<String, Vec<u8>>,
@@ -601,6 +645,17 @@ impl WasmRuntime {
         stage_project_file_bytes(self, &bytes)
     }
 
+    /// Decode and submit the completed project-file upload as authoritative source.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error when the upload is incomplete or its source cannot be decoded.
+    #[wasm_bindgen(js_name = finishProjectFileSource)]
+    pub fn finish_project_file_source(&mut self) -> Result<JsValue, JsValue> {
+        let bytes = self.project_file_upload.finish().map_err(js_error)?;
+        stage_project_file_source(self, &bytes)
+    }
+
     /// Load one complete transferred project-file buffer on unconstrained browsers.
     ///
     /// Unconstrained engines can read the selected file efficiently and transfer the JavaScript
@@ -617,6 +672,40 @@ impl WasmRuntime {
         bytes: &js_sys::Uint8Array,
     ) -> Result<JsValue, JsValue> {
         stage_project_file_bytes(self, &bytes.to_vec())
+    }
+
+    /// Decode and submit a complete project file as authoritative source after cache rejection.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error when the project file is invalid or cannot be submitted.
+    #[wasm_bindgen(js_name = loadProjectFileSourceBytes)]
+    pub fn load_project_file_source_bytes(
+        &mut self,
+        bytes: &js_sys::Uint8Array,
+    ) -> Result<JsValue, JsValue> {
+        stage_project_file_source(self, &bytes.to_vec())
+    }
+
+    /// Load a portable project's source/resource identity with a separately persisted cache.
+    ///
+    /// The project file remains authoritative for identity and resources. Runtime validates the
+    /// opaque sidecar against that identity and its current cache contract before accepting it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error when the project file or sidecar cannot be staged.
+    #[wasm_bindgen(js_name = loadProjectFileWithCompiledCacheBytes)]
+    pub fn load_project_file_with_compiled_cache_bytes(
+        &mut self,
+        project_file: &js_sys::Uint8Array,
+        compiled_cache: &js_sys::Uint8Array,
+    ) -> Result<JsValue, JsValue> {
+        stage_project_file_with_compiled_cache(
+            self,
+            &project_file.to_vec(),
+            &compiled_cache.to_vec(),
+        )
     }
 
     /// Copy one embedded project resource (or a bounded prefix) to JavaScript on demand.

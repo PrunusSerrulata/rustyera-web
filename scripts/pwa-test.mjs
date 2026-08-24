@@ -187,7 +187,9 @@ try {
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByRole("heading", { name: "RustyEra" }).waitFor({ state: "visible" });
   const offline = await page.evaluate(async () => {
-    const response = await fetch(new URL("wasm/era_web_wasm_bg.wasm", location.href));
+    const response = await fetch(
+      new URL("wasm/era_web_wasm_bg.wasm?v=offline-runtime-fingerprint", location.href),
+    );
     return {
       controlled: navigator.serviceWorker.controller != null,
       wasmAvailable: response.ok,

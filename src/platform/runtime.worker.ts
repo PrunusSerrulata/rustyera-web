@@ -26,7 +26,10 @@ type WasmModule = {
     beginProjectFile(totalBytes: number): void;
     appendProjectFile(bytes: Uint8Array): void;
     finishProjectFile(): unknown;
+    finishProjectFileSource(): unknown;
     loadProjectFileBytes(bytes: Uint8Array): unknown;
+    loadProjectFileSourceBytes(bytes: Uint8Array): unknown;
+    loadProjectFileWithCompiledCacheBytes(projectFile: Uint8Array, cache: Uint8Array): unknown;
     cancelProjectFile(): void;
     readProjectFileResource(relativePath: string, maximumBytes?: number): Uint8Array;
     prepareProjectConfigurationUpdate(
@@ -106,8 +109,31 @@ self.onmessage = async (event: MessageEvent) => {
             args[1] as import("@/platform/projectFileWorker").ProjectFileReadOptions | undefined,
           );
           break;
+        case "loadProjectFileSource":
+          result = await loadProjectFileInWorker(
+            runtime,
+            args[0] as File,
+            (value) => {
+              self.postMessage({ type: "project_progress", value });
+            },
+            {
+              ...(args[1] as
+                import("@/platform/projectFileWorker").ProjectFileReadOptions | undefined),
+              sourceFallback: true,
+            },
+          );
+          break;
         case "loadProjectFileBytes":
           result = runtime.loadProjectFileBytes(args[0] as Uint8Array);
+          break;
+        case "loadProjectFileSourceBytes":
+          result = runtime.loadProjectFileSourceBytes(args[0] as Uint8Array);
+          break;
+        case "loadProjectFileWithCompiledCacheBytes":
+          result = runtime.loadProjectFileWithCompiledCacheBytes(
+            args[0] as Uint8Array,
+            args[1] as Uint8Array,
+          );
           break;
         case "prepareProjectConfigurationUpdate":
           result = runtime.prepareProjectConfigurationUpdate(

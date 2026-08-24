@@ -11,6 +11,7 @@ function uploadRuntime() {
     beginProjectFile: vi.fn(),
     appendProjectFile: vi.fn((bytes) => chunks.push(new Uint8Array(bytes))),
     finishProjectFile: vi.fn(() => ({ cacheImported: true })),
+    finishProjectFileSource: vi.fn(() => ({ cacheImported: false })),
     cancelProjectFile: vi.fn(),
   };
   return { chunks, runtime };
@@ -53,6 +54,23 @@ describe("packaged project worker reader", () => {
       "项目文件大小超出浏览器可处理范围。",
     );
     expect(runtime.beginProjectFile).not.toHaveBeenCalled();
+  });
+
+  it("finishes an explicit source fallback without retrying the embedded cache", async () => {
+    const { runtime } = uploadRuntime();
+
+    await expect(
+      loadProjectFileInWorker(
+        runtime,
+        new File([Uint8Array.of(1, 2, 3)], "legacy.reraproj"),
+        () => undefined,
+        { sourceFallback: true },
+        async () => undefined,
+      ),
+    ).resolves.toEqual({ cacheImported: false });
+
+    expect(runtime.finishProjectFileSource).toHaveBeenCalledOnce();
+    expect(runtime.finishProjectFile).not.toHaveBeenCalled();
   });
 
   it("cancels after a Blob read failure, preserves it, and permits a retry", async () => {

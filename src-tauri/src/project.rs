@@ -172,10 +172,15 @@ pub struct ProjectHost {
     indexed_files: Vec<IndexedFile>,
     revision: u64,
     embedded_resources: BTreeMap<String, Vec<u8>>,
-    project_file: Option<PathBuf>,
+    packaged_project: Option<PackagedProjectFile>,
     runtime_manifest_sparse: bool,
     pending_reload: Option<PendingProjectReload>,
     source_index_stats: (usize, usize),
+}
+
+struct PackagedProjectFile {
+    path: PathBuf,
+    storage_key: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -355,7 +360,7 @@ impl ProjectHost {
             }),
             revision,
             embedded_resources: BTreeMap::new(),
-            project_file: None,
+            packaged_project: None,
             runtime_manifest_sparse: false,
             pending_reload: None,
             source_index_stats: (0, file_count),
@@ -481,7 +486,7 @@ impl ProjectHost {
             indexed_files,
             revision,
             embedded_resources: BTreeMap::new(),
-            project_file: None,
+            packaged_project: None,
             runtime_manifest_sparse: false,
             pending_reload: None,
             source_index_stats,
@@ -489,6 +494,9 @@ impl ProjectHost {
     }
 
     pub fn from_project_file(path: &Path, bytes: &[u8]) -> Result<Self, String> {
+        // Match the storage partition used by earlier releases, which hashed the path returned by
+        // the native picker before canonicalizing it for filesystem access.
+        let packaged_storage_key = packaged_project_storage_key(path);
         let path = path
             .canonicalize()
             .map_err(|error| format!("cannot open project file: {error}"))?;
@@ -500,7 +508,7 @@ impl ProjectHost {
         {
             return Err("selected path is not a .reraproj file".into());
         }
-        let decoded = era_runtime::decode_project_file(bytes, bytes.len())
+        let decoded = era_runtime::decode_project_file_frontend_manifest(bytes, bytes.len())
             .map_err(|error| error.to_string())?;
         let indexed_files = decoded
             .manifest
@@ -525,7 +533,10 @@ impl ProjectHost {
             indexed_files,
             revision: decoded.identity.project_revision,
             embedded_resources,
-            project_file: Some(path),
+            packaged_project: Some(PackagedProjectFile {
+                path,
+                storage_key: packaged_storage_key,
+            }),
             runtime_manifest_sparse: false,
             pending_reload: None,
             source_index_stats: (0, 0),
@@ -534,6 +545,27 @@ impl ProjectHost {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn runtime_storage_root(&self) -> PathBuf {
+        self.packaged_project.as_ref().map_or_else(
+            || self.root.clone(),
+            |project| {
+                self.root
+                    .join(".rustyera/packaged-projects")
+                    .join(&project.storage_key)
+            },
+        )
+    }
+
+    pub(super) fn compiled_cache_path(&self) -> PathBuf {
+        if self.packaged_project.is_some() {
+            self.runtime_storage_root()
+                .join("cache")
+                .join(COMPILED_CACHE_NAME)
+        } else {
+            self.root.join(".rustyera/cache").join(COMPILED_CACHE_NAME)
+        }
     }
 
     pub fn source_index_stats(&self) -> (usize, usize) {
@@ -583,7 +615,8 @@ impl ProjectHost {
         expected_digest: &[u8],
         contents: &str,
     ) -> Result<(), String> {
-        if let Some(project_file) = &self.project_file {
+        if let Some(project) = &self.packaged_project {
+            let project_file = &project.path;
             let project_bytes = fs::read(project_file)
                 .map_err(|error| format!("cannot read project file: {error}"))?;
             let update = era_runtime::prepare_project_configuration_update(
@@ -619,6 +652,7 @@ impl ProjectHost {
             target
                 .sync_all()
                 .map_err(|error| format!("cannot sync project configuration: {error}"))?;
+            self.invalidate_compiled_cache();
             return Ok(());
         }
         let relative_path = self
@@ -715,9 +749,7 @@ impl ProjectHost {
     }
 
     pub fn invalidate_compiled_cache(&self) {
-        if self.project_file.is_none() {
-            let _ = fs::remove_file(self.root.join(".rustyera/cache").join(COMPILED_CACHE_NAME));
-        }
+        let _ = fs::remove_file(self.compiled_cache_path());
     }
 
     pub fn identity(&self) -> ProjectIdentity {
@@ -911,6 +943,14 @@ impl ProjectHost {
         &mut self,
         progress: Option<&dyn Fn(usize, usize)>,
     ) -> Result<ProjectManifest, String> {
+        if let Some(project) = &self.packaged_project {
+            let project_file = &project.path;
+            let bytes = fs::read(project_file)
+                .map_err(|error| format!("cannot read project file: {error}"))?;
+            return era_runtime::decode_project_file(&bytes, bytes.len())
+                .map(|decoded| decoded.manifest)
+                .map_err(|error| error.to_string());
+        }
         self.materialize_with_progress(progress)?;
         self.manifest
             .clone()
@@ -918,8 +958,7 @@ impl ProjectHost {
     }
 
     pub fn compiled_cache(&self) -> Result<Option<Vec<u8>>, String> {
-        let path = self.root.join(".rustyera/cache").join(COMPILED_CACHE_NAME);
-        match fs::read(path) {
+        match fs::read(self.compiled_cache_path()) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(format!("cannot read compiled project cache: {error}")),
@@ -927,7 +966,7 @@ impl ProjectHost {
     }
 
     pub fn project_reload_targets(&self) -> Result<ProjectReloadTargets, String> {
-        if self.project_file.is_some() {
+        if self.packaged_project.is_some() {
             return Ok(ProjectReloadTargets {
                 folders: Vec::new(),
                 scripts: Vec::new(),
@@ -962,7 +1001,7 @@ impl ProjectHost {
         scope: &ProjectReloadScope,
         progress: Option<&dyn Fn(usize, usize)>,
     ) -> Result<ReloadProject, String> {
-        if self.project_file.is_some() {
+        if self.packaged_project.is_some() {
             return Err("a packaged project cannot reload source files".into());
         }
         if self.pending_reload.is_some() {
@@ -1255,6 +1294,12 @@ impl ProjectHost {
         }
         Ok(canonical)
     }
+}
+
+fn packaged_project_storage_key(path: &Path) -> String {
+    blake3::hash(path.to_string_lossy().as_bytes())
+        .to_hex()
+        .to_string()
 }
 
 mod scan;

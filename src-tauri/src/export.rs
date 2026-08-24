@@ -72,19 +72,19 @@ pub(super) fn write_compiled_cache_chunk_inner(
     complete: bool,
 ) -> Result<(), String> {
     if reset {
-        let root = state
+        let target = state
             .project
             .lock()
             .map_err(lock_error)?
             .as_ref()
             .ok_or_else(|| "no project is open".to_owned())?
-            .root()
-            .to_owned();
-        let directory = root.join(".rustyera/cache");
-        fs::create_dir_all(&directory)
+            .compiled_cache_path();
+        let directory = target
+            .parent()
+            .ok_or_else(|| "compiled cache path has no parent".to_owned())?;
+        fs::create_dir_all(directory)
             .map_err(|error| format!("cannot create compiled cache directory: {error}"))?;
-        let target = directory.join("compiled-project.reracache");
-        let temporary = tempfile::NamedTempFile::new_in(&directory)
+        let temporary = tempfile::NamedTempFile::new_in(directory)
             .map_err(|error| format!("cannot create temporary compiled cache: {error}"))?;
         *state.cache_writer.lock().map_err(lock_error)? =
             Some(AtomicFileWriter { temporary, target });
@@ -98,15 +98,15 @@ pub(super) fn write_compiled_cache_chunk_inner(
         "compiled cache",
     )?;
     if complete {
-        let root = state
+        let legacy = state
             .project
             .lock()
             .map_err(lock_error)?
             .as_ref()
             .ok_or_else(|| "no project is open".to_owned())?
-            .root()
-            .to_owned();
-        let _ = fs::remove_file(root.join(".rustyera/cache/compiled-project.reraproj"));
+            .compiled_cache_path()
+            .with_file_name("compiled-project.reraproj");
+        let _ = fs::remove_file(legacy);
     }
     Ok(())
 }
