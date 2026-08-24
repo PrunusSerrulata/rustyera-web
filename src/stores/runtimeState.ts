@@ -147,7 +147,7 @@ export interface PendingGameInput {
   retryPending?: boolean;
   retryError?: string;
   staleRetries: number;
-  retiredButtonTokens: string[];
+  previousRetiredInteractionSequence: number;
 }
 
 export interface PendingInputUndo {

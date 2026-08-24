@@ -21,6 +21,7 @@ const store = reactive({
   continueFromViewport,
   projectViewport,
   skip: vi.fn(),
+  interactionEnabled: (interaction: any) => interaction.enabled === true,
   effectivePreferences: { imageScale: 1 },
   gameTextStyle: { fontFamily: "sans-serif", fontSize: "12px", fontSizePx: 12 },
   gameLineHeightPx: 13,
@@ -500,6 +501,27 @@ describe("game viewport", () => {
     await nextTick();
 
     expect(lineIdReads).toBe(0);
+    wrapper.unmount();
+  });
+
+  it("does not revisit media payloads after a line ID key is cached", () => {
+    let runReads = 0;
+    store.presentation.lines = [
+      {
+        line_id: 1,
+        alignment: "left",
+        get runs() {
+          runReads += 1;
+          return [];
+        },
+      },
+    ];
+    const wrapper = shallowMount(GameViewport);
+
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1");
+    runReads = 0;
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1");
+    expect(runReads).toBe(0);
     wrapper.unmount();
   });
 

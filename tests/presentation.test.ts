@@ -7,8 +7,8 @@ import {
   hasEnabledButton,
   plainLine,
   printedHtmlLine,
-  restoreButtons,
-  retireEnabledButtons,
+  restoreButtonBoundary,
+  retirePresentedButtons,
 } from "@/core/presentation";
 import type { DisplayLine } from "@/core/types";
 
@@ -218,26 +218,62 @@ describe("presentation projection", () => {
       history: { logical_lines: [line(1, 1)] },
     });
 
-    const retired = retireEnabledButtons(state);
+    const retired = retirePresentedButtons(state);
     applyDelta(state, {
       base_revision: 1,
       new_revision: 2,
-      operations: [{ type: "append_line", line: line(2, 2) }],
+      operations: [{ type: "append_line", line: line(2, 0) }],
     });
 
     expect(hasEnabledButton(state, { epoch: 1, id: 1 })).toBe(false);
-    expect(hasEnabledButton(state, { epoch: 1, id: 2 })).toBe(true);
+    expect(hasEnabledButton(state, { epoch: 1, id: 0 })).toBe(true);
 
     applySnapshot(state, {
       revision: 3,
       title: "resynchronized",
-      history: { logical_lines: [line(1, 1), line(2, 2)] },
+      history: { logical_lines: [line(1, 1), line(2, 0)] },
     });
     expect(hasEnabledButton(state, { epoch: 1, id: 1 })).toBe(false);
-    expect(hasEnabledButton(state, { epoch: 1, id: 2 })).toBe(true);
+    expect(hasEnabledButton(state, { epoch: 1, id: 0 })).toBe(true);
 
-    restoreButtons(state, retired);
+    restoreButtonBoundary(state, retired);
     expect(hasEnabledButton(state, { epoch: 1, id: 1 })).toBe(true);
+  });
+
+  it("validates and retires the current tail without revisiting accumulated history", () => {
+    const state = emptyPresentation();
+    const line = (lineId: number, id: number) => ({
+      line_id: lineId,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs: [
+        {
+          type: "button",
+          runs: [{ type: "text", text: String(id), style: {} }],
+          token: { epoch: 3, id },
+          enabled: true,
+          generation: 0,
+        },
+      ],
+    });
+    const history = Array.from({ length: 5_000 }, (_, index) => line(index, index + 1));
+    applySnapshot(state, {
+      revision: 1,
+      title: "long history",
+      history: { logical_lines: history },
+    });
+    for (const old of state.lines.slice(0, -1))
+      Object.defineProperty(old, "runs", {
+        get() {
+          throw new Error("current-tail input must not revisit old history");
+        },
+      });
+
+    expect(hasEnabledButton(state, { epoch: 3, id: 5_000 })).toBe(true);
+    retirePresentedButtons(state);
+    expect(hasEnabledButton(state, { epoch: 3, id: 5_000 })).toBe(false);
   });
 
   it("validates, retires, restores, and generation-filters HTML island interactions", () => {
@@ -263,10 +299,10 @@ describe("presentation projection", () => {
     });
     expect(hasEnabledButton(state, { epoch: 2, id: 9 })).toBe(true);
 
-    const retired = retireEnabledButtons(state);
-    expect(retired).toEqual(["2:9"]);
+    const retired = retirePresentedButtons(state);
+    expect(retired).toBe(0);
     expect(hasEnabledButton(state, { epoch: 2, id: 9 })).toBe(false);
-    restoreButtons(state, retired);
+    restoreButtonBoundary(state, retired);
     expect(hasEnabledButton(state, { epoch: 2, id: 9 })).toBe(true);
 
     applyDelta(state, {

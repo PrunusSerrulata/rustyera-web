@@ -5,6 +5,7 @@ vi.mock("@/stores/runtime", () => ({
   useRuntimeStore: () => ({
     activate: vi.fn(),
     canInteract: true,
+    interactionEnabled: (interaction: any) => interaction.enabled === true,
     effectivePreferences: { fontFamilyOverride: null, fontSizeOverridePx: null },
     gameTextStyle: { fontSizePx: 16 },
   }),

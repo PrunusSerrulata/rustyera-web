@@ -1,7 +1,11 @@
 import { ref } from "vue";
 
 import { isMessageSkipWait, messageWaitIntent } from "@/core/messageSkip";
-import { restoreButtons, retireEnabledButtons, type PresentationState } from "@/core/presentation";
+import {
+  restoreButtonBoundary,
+  retirePresentedButtons,
+  type PresentationState,
+} from "@/core/presentation";
 import type { InteractionToken, RuntimeMessage } from "@/core/types";
 import type { PendingGameInput, PendingInputUndo, RuntimeInputIntent } from "@/stores/runtimeState";
 
@@ -26,7 +30,9 @@ export class RuntimeInputState {
     const wait = this.context.presentation().inputWait;
     if (!wait) return false;
     const waitIdentity = inputWaitIdentity(wait);
-    const retiredButtonTokens = retireEnabledButtons(this.context.mutableInteractions());
+    const previousRetiredInteractionSequence = retirePresentedButtons(
+      this.context.mutableInteractions(),
+    );
     this.pending.value = {
       waitIdentity,
       waitId: String(wait.wait_id),
@@ -34,7 +40,7 @@ export class RuntimeInputState {
       intent,
       messageSkip,
       staleRetries: 0,
-      retiredButtonTokens,
+      previousRetiredInteractionSequence,
     };
     try {
       const messageId = await this.sendInput(wait, intent, messageSkip);
@@ -42,7 +48,10 @@ export class RuntimeInputState {
         this.pending.value.messageId = String(messageId);
     } catch (error) {
       if (this.pending.value?.waitIdentity === waitIdentity) {
-        restoreButtons(this.context.mutableInteractions(), retiredButtonTokens);
+        restoreButtonBoundary(
+          this.context.mutableInteractions(),
+          previousRetiredInteractionSequence,
+        );
         this.pending.value = undefined;
       }
       throw error;
@@ -126,7 +135,10 @@ export class RuntimeInputState {
 
   rejectInput(rejected: PendingGameInput | undefined, willRetry: boolean): void {
     if (!rejected || willRetry) return;
-    restoreButtons(this.context.mutableInteractions(), rejected.retiredButtonTokens);
+    restoreButtonBoundary(
+      this.context.mutableInteractions(),
+      rejected.previousRetiredInteractionSequence,
+    );
     if (this.pending.value === rejected) this.pending.value = undefined;
   }
 

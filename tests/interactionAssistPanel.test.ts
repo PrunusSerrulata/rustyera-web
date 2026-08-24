@@ -145,6 +145,34 @@ describe("interaction assist panel", () => {
     expect(wrapper.findAll(".interaction-assist-action")).toHaveLength(0);
   });
 
+  it("does not traverse presentation history while automatic mode is ineligible", async () => {
+    store.effectivePreferences.interactionAssistMode = "auto";
+    store.presentation.lines = [
+      {
+        line_id: 8,
+        runs: [
+          {
+            type: "button",
+            get enabled() {
+              throw new Error("hidden assist must not inspect history interactions");
+            },
+            token: { epoch: 1, id: 3 },
+            runs: [{ type: "text", text: "hidden" }],
+          },
+        ],
+      },
+    ];
+    const area = document.createElement("div");
+    area.className = "game-area";
+    document.body.append(area);
+
+    const wrapper = mount(InteractionAssistPanel, { attachTo: area });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.get("section").attributes("aria-hidden")).toBe("true");
+    expect(wrapper.findAll(".interaction-assist-action")).toHaveLength(0);
+  });
+
   it("does not consume the game area when the remaining viewport is too short", async () => {
     areaHeight = 100;
     const area = document.createElement("div");

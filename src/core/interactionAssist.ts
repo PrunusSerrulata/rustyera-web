@@ -1,4 +1,8 @@
-import { visitPresentationInteractions, type PresentationState } from "@/core/presentation";
+import {
+  presentationInteractionEnabled,
+  visitPresentationInteractions,
+  type PresentationState,
+} from "@/core/presentation";
 import { isDefaultForeground } from "@/core/presentation/htmlFormat";
 import type { InteractionAssistMode, InteractionToken } from "@/core/types";
 
@@ -25,7 +29,7 @@ export function assistedInteractionRows(state: PresentationState): AssistedInter
   const seen = new Set<string>();
   const rows = new Map<string, AssistedInteraction[]>();
   visitPresentationInteractions(state, ({ rowKey, interaction, source }) => {
-    if (interaction.enabled !== true) return;
+    if (!presentationInteractionEnabled(state, interaction)) return;
     const description =
       source.kind === "run"
         ? describeRuns(source.run.runs ?? [])

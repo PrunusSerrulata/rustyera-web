@@ -46,7 +46,12 @@ export class RuntimePumpCoordinator {
   }
 
   schedule(delay = 16): void {
-    if (!this.ready || this.transitioning || this.#timer != null) return;
+    if (!this.ready || this.transitioning) return;
+    if (this.#timer != null) {
+      if (delay !== 0) return;
+      window.clearTimeout(this.#timer);
+      this.#timer = undefined;
+    }
     this.#timer = window.setTimeout(() => {
       this.#timer = undefined;
       void this.#pumpOnce();

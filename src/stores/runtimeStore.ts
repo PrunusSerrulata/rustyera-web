@@ -30,7 +30,7 @@ import {
   snapshotFileName,
 } from "@/core/runtimeSupport";
 import { formatRuntimeFault } from "@/core/runtimeFault";
-import { hasEnabledButton } from "@/core/presentation";
+import { hasEnabledButton, presentationInteractionEnabled } from "@/core/presentation";
 import {
   defaultPreferences,
   defaultProjectPreferences,
@@ -1285,6 +1285,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function activate(token: InteractionToken): Promise<void> {
     if (!canInteract.value || !hasEnabledButton(currentPresentation(), token)) return;
     await submitIntent({ type: "activate", value: token }, false);
+  }
+
+  function interactionEnabled(interaction: any): boolean {
+    return presentationInteractionEnabled(currentPresentation(), interaction);
   }
 
   async function skip(): Promise<void> {
@@ -2811,6 +2815,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     canOpenProject,
     canStepDebug,
     canInteract,
+    interactionEnabled,
     promptPlaceholder,
     openPreferencesFromUser,
     openProjectSettingsFromUser,

@@ -47,9 +47,9 @@ function lineRenderKey(index: number): string {
   // ensuring ordinary replacement rows never inherit the previous screen's measured height.
   const line = store.presentation.lines[index];
   const id = String(line?.line_id ?? index);
-  const mediaLayout = mediaLayoutIdentity(line);
   const cached = keyedLines.get(index);
   if (cached?.id === id) return cached.key;
+  const mediaLayout = mediaLayoutIdentity(line);
   const key =
     mediaLayout != null && mediaLayout === cached?.mediaLayout
       ? cached.key

@@ -14,14 +14,12 @@ export class RuntimePresentationProjection {
   private stagedPresentation?: PresentationState;
   private stagedReady = false;
   private stagedCanFlushWhenIdle = false;
-  private stagedOwnsInteractions = false;
 
   current(): PresentationState {
     return this.stagedPresentation ?? this.presentation;
   }
 
   mutableInteractions(): PresentationState {
-    this.ownStagedInteractions();
     return this.current();
   }
 
@@ -89,16 +87,11 @@ export class RuntimePresentationProjection {
       );
     const shouldStage =
       this.stagedPresentation != null ||
-      (this.presentation.redraw?.enabled === false && this.presentation.inputWait == null) ||
-      disablesRedraw ||
-      startsTransientReplacement;
+      (!completesFrame &&
+        ((this.presentation.redraw?.enabled === false && this.presentation.inputWait == null) ||
+          disablesRedraw ||
+          startsTransientReplacement));
     const target = shouldStage ? this.stage() : this.presentation;
-    if (
-      target === this.stagedPresentation &&
-      operations.some((operation: any) => operation.type === "set_button_generation")
-    ) {
-      this.ownStagedInteractions();
-    }
     applyDelta(target, delta);
     if (target !== this.stagedPresentation) return true;
     if (disablesRedraw || target.redraw?.enabled === false) this.stagedCanFlushWhenIdle = false;
@@ -111,7 +104,6 @@ export class RuntimePresentationProjection {
     this.stagedPresentation = undefined;
     this.stagedReady = false;
     this.stagedCanFlushWhenIdle = false;
-    this.stagedOwnsInteractions = false;
     this.staged.value = false;
   }
 
@@ -125,7 +117,6 @@ export class RuntimePresentationProjection {
       this.stagedPresentation = this.clone(this.presentation);
       this.stagedReady = false;
       this.stagedCanFlushWhenIdle = false;
-      this.stagedOwnsInteractions = false;
       this.staged.value = true;
     }
     return this.stagedPresentation;
@@ -139,17 +130,8 @@ export class RuntimePresentationProjection {
     return {
       ...raw,
       lines: [...raw.lines],
-      retiredButtonTokens: new Set(raw.retiredButtonTokens),
+      nextInteractionSequence: raw.nextInteractionSequence,
+      retiredInteractionSequence: raw.retiredInteractionSequence,
     };
-  }
-
-  private ownStagedInteractions(): void {
-    if (!this.stagedPresentation || this.stagedOwnsInteractions) return;
-    // BREAKBUTTON is the exceptional delta that mutates interactions throughout existing
-    // history. Detach those payloads only when that operation occurs so an unpublished frame
-    // cannot alter the currently visible one.
-    this.stagedPresentation.lines = structuredClone(toRaw(this.stagedPresentation.lines));
-    this.stagedPresentation.htmlIsland = structuredClone(toRaw(this.stagedPresentation.htmlIsland));
-    this.stagedOwnsInteractions = true;
   }
 }

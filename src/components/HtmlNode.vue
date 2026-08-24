@@ -129,7 +129,7 @@ const tooltipTitle = computed(() => {
 
 function activate(): void {
   const interaction = props.node.interaction;
-  if (interaction?.enabled && store.canInteract)
+  if (interaction && store.interactionEnabled(interaction) && store.canInteract)
     void store.activate({ epoch: interaction.epoch, id: interaction.id });
 }
 
@@ -248,7 +248,9 @@ function textSegments(value: unknown): Array<{ text: string; space: boolean; wid
   <component
     :is="tag"
     v-else
-    :disabled="node.interaction && (!node.interaction.enabled || !store.canInteract)"
+    :disabled="
+      node.interaction && (!store.interactionEnabled(node.interaction) || !store.canInteract)
+    "
     :aria-description="tooltipTitle"
     class="html-node"
     :class="{

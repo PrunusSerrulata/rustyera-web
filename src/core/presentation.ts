@@ -21,7 +21,8 @@ export interface PresentationState {
   htmlIsland: any[];
   redraw: any;
   buttonGeneration: number | null;
-  retiredButtonTokens: Set<string>;
+  nextInteractionSequence: number;
+  retiredInteractionSequence: number;
 }
 
 export type PresentationInteractionSource =
@@ -48,11 +49,13 @@ export function emptyPresentation(): PresentationState {
     htmlIsland: [],
     redraw: { enabled: true },
     buttonGeneration: null,
-    retiredButtonTokens: new Set(),
+    nextInteractionSequence: 1,
+    retiredInteractionSequence: 0,
   };
 }
 
 export function applySnapshot(state: PresentationState, snapshot: any): void {
+  const previousSequences = collectInteractionSequences(state.lines, state.htmlIsland);
   const nextLines = [...(snapshot.history?.logical_lines ?? [])] as DisplayLine[];
   // A resynchronization snapshot can carry an equal-length dynamic-map tail with new line IDs.
   // Emuera replaces that tail in place, so only actual history growth should request bottom follow.
@@ -72,8 +75,7 @@ export function applySnapshot(state: PresentationState, snapshot: any): void {
   // current BREAKBUTTON generation. Do not filter later partial updates with
   // generation knowledge from before this authoritative resynchronization.
   state.buttonGeneration = null;
-  for (const line of state.lines) disableRetiredButtonsInLine(line, state.retiredButtonTokens);
-  disableRetiredButtonsInHtmlIsland(state.htmlIsland, state.retiredButtonTokens);
+  assignPresentationSequences(state, previousSequences);
 }
 
 export function defaultTooltipSettings(): TooltipSettings {
@@ -99,7 +101,7 @@ export function applyDelta(state: PresentationState, delta: any): void {
   for (const operation of delta.operations ?? []) {
     switch (operation.type) {
       case "append_line":
-        prepareLine(state, operation.line);
+        assignLineSequences(state, operation.line);
         state.lines.push(operation.line);
         break;
       case "delete_lines":
@@ -124,9 +126,10 @@ export function applyDelta(state: PresentationState, delta: any): void {
         state.inputWait = operation.input_wait ?? null;
         break;
       case "replace_line": {
-        const index = state.lines.findIndex((line) => line.line_id === operation.line_id);
+        const index = findLineIndexFromEnd(state.lines, operation.line_id);
         if (index >= 0) {
-          prepareLine(state, operation.line);
+          const previousSequences = collectLineSequences(state.lines[index]);
+          assignLineSequences(state, operation.line, previousSequences);
           existingLineChanged ||= lineContentChanged(state.lines[index], operation.line);
           state.lines[index] = operation.line;
         }
@@ -141,16 +144,17 @@ export function applyDelta(state: PresentationState, delta: any): void {
       case "set_resources":
         state.resources = operation.resources;
         break;
-      case "set_html_island":
+      case "set_html_island": {
+        const previousSequences = collectHtmlIslandSequences(state.htmlIsland);
         state.htmlIsland = operation.html_island;
-        prepareHtmlIsland(state, state.htmlIsland);
+        assignHtmlIslandSequences(state, state.htmlIsland, previousSequences);
         break;
+      }
       case "set_redraw":
         state.redraw = operation.redraw;
         break;
       case "set_button_generation":
         state.buttonGeneration = operation.generation;
-        disableOldButtons(state, operation.generation);
         break;
       case "trim_lines":
         state.lines.splice(0, Math.min(Number(operation.count), state.lines.length));
@@ -162,6 +166,12 @@ export function applyDelta(state: PresentationState, delta: any): void {
   // (or an in-place line whose dimensions may change) should request another bottom follow.
   if (state.lines.length > previousLineCount || existingLineChanged) state.historyRevision += 1;
   state.revision = delta.new_revision;
+}
+
+function findLineIndexFromEnd(lines: DisplayLine[], lineId: number): number {
+  for (let index = lines.length - 1; index >= 0; index -= 1)
+    if (lines[index]?.line_id === lineId) return index;
+  return -1;
 }
 
 function lineContentChanged(
@@ -203,39 +213,6 @@ function stableContent(value: any): string {
       typeof child === "bigint" ? child.toString() : child,
     ) ?? ""
   );
-}
-
-function disableOldButtons(state: PresentationState, generation: number): void {
-  visitPresentationInteractions(state, ({ interaction }) => {
-    if (interaction.enabled && interaction.generation !== generation) interaction.enabled = false;
-  });
-}
-
-function prepareLine(state: PresentationState, line: DisplayLine): void {
-  disableOldButtonsInLine(line, state.buttonGeneration);
-  disableRetiredButtonsInLine(line, state.retiredButtonTokens);
-}
-
-function prepareHtmlIsland(state: PresentationState, documents: any[]): void {
-  for (const [index, document] of documents.entries()) {
-    visitHtmlNodes(document?.nodes ?? [], `island:${index}`, ({ interaction }) => {
-      if (
-        interaction.enabled &&
-        state.buttonGeneration != null &&
-        interaction.generation !== state.buttonGeneration
-      )
-        interaction.enabled = false;
-      if (interaction.enabled && state.retiredButtonTokens.has(interactionIdentity(interaction)))
-        interaction.enabled = false;
-    });
-  }
-}
-
-function disableOldButtonsInLine(line: DisplayLine, generation: number | null): void {
-  if (generation == null) return;
-  visitRuns(line.runs, `line:${String(line.line_id)}`, ({ interaction }) => {
-    if (interaction.enabled && interaction.generation !== generation) interaction.enabled = false;
-  });
 }
 
 function visitRuns(
@@ -286,64 +263,153 @@ export function visitPresentationInteractions(
     visitHtmlNodes(document?.nodes ?? [], `island:${index}`, visitInteraction);
 }
 
+export function retirePresentedButtons(state: PresentationState): number {
+  const previous = state.retiredInteractionSequence;
+  state.retiredInteractionSequence = state.nextInteractionSequence - 1;
+  return previous;
+}
+
+export function restoreButtonBoundary(state: PresentationState, boundary: number): void {
+  state.retiredInteractionSequence = boundary;
+}
+
+export function presentationInteractionEnabled(
+  state: PresentationState,
+  interaction: any,
+): boolean {
+  if (interaction?.enabled !== true) return false;
+  if (state.buttonGeneration != null && interaction.generation !== state.buttonGeneration)
+    return false;
+  const sequence = interaction[INTERACTION_SEQUENCE];
+  return sequence == null || sequence > state.retiredInteractionSequence;
+}
+
+export function hasEnabledButton(state: PresentationState, token: InteractionToken): boolean {
+  const interaction = findPresentationInteraction(state, token);
+  return interaction != null && presentationInteractionEnabled(state, interaction);
+}
+
+const INTERACTION_SEQUENCE = Symbol("runtime-interaction-sequence");
+
 function interactionIdentity(interaction: any): string {
   const token = interaction.token ?? interaction;
   return `${String(token.epoch)}:${String(token.id)}`;
 }
 
-function disableRetiredButtonsInLine(line: DisplayLine, tokens: Set<string>): void {
-  if (!tokens.size) return;
+function collectInteractionSequences(lines: DisplayLine[], htmlIsland: any[]): Map<string, number> {
+  const sequences = new Map<string, number>();
+  for (const line of lines) collectLineSequences(line, sequences);
+  collectHtmlIslandSequences(htmlIsland, sequences);
+  return sequences;
+}
+
+function collectLineSequences(
+  line: DisplayLine,
+  sequences = new Map<string, number>(),
+): Map<string, number> {
   visitRuns(line.runs, `line:${String(line.line_id)}`, ({ interaction }) => {
-    if (interaction.enabled && tokens.has(interactionIdentity(interaction)))
-      interaction.enabled = false;
+    const sequence = interaction[INTERACTION_SEQUENCE];
+    if (sequence != null) sequences.set(interactionIdentity(interaction), sequence);
+  });
+  return sequences;
+}
+
+function collectHtmlIslandSequences(
+  documents: any[],
+  sequences = new Map<string, number>(),
+): Map<string, number> {
+  for (const [index, document] of documents.entries())
+    visitHtmlNodes(document?.nodes ?? [], `island:${index}`, ({ interaction }) => {
+      const sequence = interaction[INTERACTION_SEQUENCE];
+      if (sequence != null) sequences.set(interactionIdentity(interaction), sequence);
+    });
+  return sequences;
+}
+
+function assignPresentationSequences(
+  state: PresentationState,
+  previous: Map<string, number>,
+): void {
+  for (const line of state.lines) assignLineSequences(state, line, previous);
+  assignHtmlIslandSequences(state, state.htmlIsland, previous);
+}
+
+function assignLineSequences(
+  state: PresentationState,
+  line: DisplayLine,
+  previous = new Map<string, number>(),
+): void {
+  visitRuns(line.runs, `line:${String(line.line_id)}`, ({ interaction }) => {
+    assignInteractionSequence(state, interaction, previous);
   });
 }
 
-function disableRetiredButtonsInHtmlIsland(documents: any[], tokens: Set<string>): void {
-  if (!tokens.size) return;
+function assignHtmlIslandSequences(
+  state: PresentationState,
+  documents: any[],
+  previous = new Map<string, number>(),
+): void {
   for (const [index, document] of documents.entries())
     visitHtmlNodes(document?.nodes ?? [], `island:${index}`, ({ interaction }) => {
-      if (interaction.enabled && tokens.has(interactionIdentity(interaction)))
-        interaction.enabled = false;
+      assignInteractionSequence(state, interaction, previous);
     });
 }
 
-export function retireEnabledButtons(state: PresentationState): string[] {
-  const retired: string[] = [];
-  visitPresentationInteractions(state, ({ interaction }) => {
-    if (!interaction.enabled) return;
-    const identity = interactionIdentity(interaction);
-    state.retiredButtonTokens.add(identity);
-    interaction.enabled = false;
-    retired.push(identity);
-  });
-  return retired;
+function assignInteractionSequence(
+  state: PresentationState,
+  interaction: any,
+  previous: Map<string, number>,
+): void {
+  if (interaction[INTERACTION_SEQUENCE] != null) return;
+  const restored = previous.get(interactionIdentity(interaction));
+  if (restored != null) {
+    interaction[INTERACTION_SEQUENCE] = restored;
+    return;
+  }
+  interaction[INTERACTION_SEQUENCE] = state.nextInteractionSequence;
+  state.nextInteractionSequence += 1;
 }
 
-export function restoreButtons(state: PresentationState, tokens: string[]): void {
-  if (!tokens.length) return;
-  const restored = new Set(tokens);
-  for (const token of restored) state.retiredButtonTokens.delete(token);
-  visitPresentationInteractions(state, ({ interaction }) => {
-    if (
-      !interaction.enabled &&
-      restored.has(interactionIdentity(interaction)) &&
-      (state.buttonGeneration == null || interaction.generation === state.buttonGeneration)
-    )
-      interaction.enabled = true;
-  });
+function findPresentationInteraction(state: PresentationState, token: InteractionToken): any {
+  for (let index = state.htmlIsland.length - 1; index >= 0; index -= 1) {
+    const found = findHtmlInteraction(state.htmlIsland[index]?.nodes ?? [], token);
+    if (found) return found;
+  }
+  for (let index = state.lines.length - 1; index >= 0; index -= 1) {
+    const found = findRunInteraction(state.lines[index]?.runs ?? [], token);
+    if (found) return found;
+  }
+  return undefined;
 }
 
-export function hasEnabledButton(state: PresentationState, token: InteractionToken): boolean {
-  let found = false;
-  visitPresentationInteractions(state, ({ interaction }) => {
-    const interactionToken = interaction.token ?? interaction;
-    found ||=
-      interaction.enabled === true &&
-      interactionToken.epoch === token.epoch &&
-      interactionToken.id === token.id;
-  });
-  return found;
+function findRunInteraction(runs: any[], token: InteractionToken): any {
+  for (let index = runs.length - 1; index >= 0; index -= 1) {
+    const run = runs[index];
+    if (run.type === "button") {
+      const interactionToken = run.token ?? run;
+      if (interactionToken.epoch === token.epoch && interactionToken.id === token.id) return run;
+      const nested = findRunInteraction(run.runs ?? [], token);
+      if (nested) return nested;
+    } else if (run.type === "column_cell") {
+      const nested = findRunInteraction(run.content ?? [], token);
+      if (nested) return nested;
+    } else if (run.type === "html_document") {
+      const nested = findHtmlInteraction(run.document?.nodes ?? [], token);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
+function findHtmlInteraction(nodes: any[], token: InteractionToken): any {
+  for (let index = nodes.length - 1; index >= 0; index -= 1) {
+    const node = nodes[index];
+    const interaction = node.interaction;
+    if (interaction?.epoch === token.epoch && interaction.id === token.id) return interaction;
+    const nested = findHtmlInteraction(node.children ?? [], token);
+    if (nested) return nested;
+  }
+  return undefined;
 }
 
 export function plainRun(run: any): string {

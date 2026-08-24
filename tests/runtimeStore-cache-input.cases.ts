@@ -495,7 +495,8 @@ describe("runtime store cache-input", () => {
       }),
       undefined,
     );
-    expect(interaction.enabled).toBe(false);
+    expect(interaction.enabled).toBe(true);
+    expect(store.interactionEnabled(interaction)).toBe(false);
   });
 
   it("restores HTML-island interactions when input submission fails", async () => {
@@ -533,6 +534,7 @@ describe("runtime store cache-input", () => {
     await expect(store.activate({ epoch: 2, id: 8 })).rejects.toThrow("input transport failed");
 
     expect(interaction.enabled).toBe(true);
+    expect(store.interactionEnabled(interaction)).toBe(true);
   });
 
   it("shares the active-wait lock across text, buttons, left click, and right click", async () => {

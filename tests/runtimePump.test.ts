@@ -58,6 +58,19 @@ describe("runtime pump coordinator", () => {
     coordinator.clearTimer();
   });
 
+  it("lets urgent input preempt an already scheduled idle pump", async () => {
+    const pump = vi.fn(async () => batch());
+    const coordinator = createCoordinator({ pump });
+    coordinator.setReady(true);
+
+    coordinator.schedule(16);
+    coordinator.schedule(0);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(pump).toHaveBeenCalledOnce();
+    coordinator.clearTimer();
+  });
+
   it("reports bridge failures without leaving a pump in flight", async () => {
     const failure = new Error("pump failed");
     const handleError = vi.fn();

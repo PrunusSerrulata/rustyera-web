@@ -18,8 +18,6 @@ let areaObserver: ResizeObserver | undefined;
 let panelObserver: ResizeObserver | undefined;
 let mobileQuery: MediaQueryList | undefined;
 
-const rows = computed(() => assistedInteractionRows(store.presentation));
-const flatItems = computed(() => rows.value.flatMap((row) => row.items));
 const modeEligible = computed(() =>
   interactionAssistModeVisible(
     store.effectivePreferences.interactionAssistMode,
@@ -27,6 +25,10 @@ const modeEligible = computed(() =>
     mobileBrowser.value,
   ),
 );
+const rows = computed(() =>
+  modeEligible.value ? assistedInteractionRows(store.presentation) : [],
+);
+const flatItems = computed(() => rows.value.flatMap((row) => row.items));
 const geometry = computed(() => {
   const collapsed = collapsedHeight.value;
   const projectedViewport = Math.max(0, gameAreaHeight.value - collapsed);
