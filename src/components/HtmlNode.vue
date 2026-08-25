@@ -5,6 +5,7 @@ import MediaImage from "@/components/MediaImage.vue";
 import {
   htmlTextSegments,
   lastRenderableTextNodeIndex,
+  nextRenderableTextCharacter,
   type HtmlTextSegment,
 } from "@/core/htmlBoxLayout";
 import {
@@ -20,6 +21,7 @@ const props = defineProps<{
   node: any;
   alignTrailingBoxEdge?: boolean;
   trailingBoxFill?: { character: string; columns: number };
+  followingTextCharacter?: string;
 }>();
 const store = useRuntimeStore();
 const tags: Record<string, string> = {
@@ -218,6 +220,7 @@ function textSegments(value: unknown): HtmlTextSegment[] {
     store.replaceFullWidthSpaces,
     props.alignTrailingBoxEdge === true,
     props.trailingBoxFill,
+    props.followingTextCharacter,
   );
 }
 
@@ -300,6 +303,9 @@ const trailingTextChildIndex = computed(() =>
       :align-trailing-box-edge="alignTrailingBoxEdge && index === trailingTextChildIndex"
       :trailing-box-fill="
         alignTrailingBoxEdge && index === trailingTextChildIndex ? trailingBoxFill : undefined
+      "
+      :following-text-character="
+        nextRenderableTextCharacter(node.children ?? [], index, followingTextCharacter)
       "
     />
   </component>

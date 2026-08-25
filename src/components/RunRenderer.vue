@@ -12,7 +12,7 @@ import {
   type TextDisplayRun,
 } from "@/components/textRunPresentation";
 import { projectRectangleShape, projectSpaceShape } from "@/core/shapeProjection";
-import { lastRenderableTextNodeIndex } from "@/core/htmlBoxLayout";
+import { lastRenderableTextNodeIndex, nextRenderableTextCharacter } from "@/core/htmlBoxLayout";
 import type { DisplayRun } from "@/core/types";
 import { useRuntimeStore } from "@/stores/runtime";
 
@@ -135,6 +135,7 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
       :trailing-box-fill="
         alignTrailingBoxEdge && index === trailingHtmlNodeIndex ? trailingBoxFill : undefined
       "
+      :following-text-character="nextRenderableTextCharacter(run.document.nodes, index)"
     />
   </template>
   <MediaImage v-else-if="run.type === 'image'" :placement="run.placement" :alt="run.alt_text" />

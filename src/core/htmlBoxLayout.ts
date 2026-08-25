@@ -24,6 +24,11 @@ const HORIZONTAL_CONTINUATION = new Map([
   ...Array.from("━┏┗┣┳┻╋", (character) => [character, "━"] as const),
   ...Array.from("═╔╚╠╦╩╬", (character) => [character, "═"] as const),
 ]);
+const LEFT_HORIZONTAL_CONNECTION = new Set([
+  ...Array.from("─┐┘┤┬┴┼"),
+  ...Array.from("━┓┛┫┳┻╋"),
+  ...Array.from("═╗╝╣╦╩╬"),
+]);
 
 interface HtmlLineInfo {
   columns: number;
@@ -100,6 +105,7 @@ export function htmlTextSegments(
   replaceFullWidthSpaces: boolean,
   alignTrailingEdge: boolean,
   trailingFill?: { character: string; columns: number },
+  followingCharacter?: string,
 ): HtmlTextSegment[] {
   let text = String(value ?? "");
   if (replaceFullWidthSpaces) text = text.replaceAll("　", "  ");
@@ -110,15 +116,22 @@ export function htmlTextSegments(
     text = text.slice(0, -last.length);
   }
   const segments: HtmlTextSegment[] = [];
-  for (const part of text.split(/( +|[\u2500-\u257f])/u).filter(Boolean)) {
+  const parts = text.split(/( +|[\u2500-\u257f])/u).filter(Boolean);
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index];
     if (part[0] === " ") {
       segments.push({ text: part, kind: "space", width: `${part.length}ch` });
     } else if (/^[\u2500-\u257f]$/u.test(part)) {
+      const nextCharacter = Array.from(parts[index + 1] ?? followingCharacter ?? "")[0];
       segments.push({
         text: part,
         kind: "box",
         width: "2ch",
-        continuation: boxContinuation(part),
+        // The second half-cell is a stroke only when the following glyph continues the border.
+        // Labeled corners deliberately leave it empty so the stroke cannot cover the title.
+        continuation: LEFT_HORIZONTAL_CONNECTION.has(nextCharacter)
+          ? boxContinuation(part)
+          : undefined,
       });
     } else {
       segments.push({ text: part, kind: "text" });
@@ -140,6 +153,20 @@ export function lastRenderableTextNodeIndex(nodes: readonly any[]): number {
     if (htmlNodeText(nodes[index])) return index;
   }
   return -1;
+}
+
+export function nextRenderableTextCharacter(
+  nodes: readonly any[],
+  index: number | string,
+  fallback?: string,
+): string | undefined {
+  for (let candidate = Number(index) + 1; candidate < nodes.length; candidate += 1) {
+    const text = htmlNodeText(nodes[candidate]);
+    if (text == null) return undefined;
+    const first = Array.from(text)[0];
+    if (first) return first;
+  }
+  return fallback;
 }
 
 export function boxContinuation(character: string): string | undefined {

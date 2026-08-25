@@ -114,6 +114,41 @@ describe("Era HTML box layout", () => {
     ]);
   });
 
+  it("does not continue a labeled corner into following text or a nested tag", () => {
+    for (const label of ["工房", "亚兰德", "系统"]) {
+      const direct = mount(HtmlNode, {
+        props: { node: { type: "text", text: `┌${label}──┐` } },
+      });
+      expect(direct.findAll(".html-box-cell")[0].attributes("data-continuation")).toBeUndefined();
+    }
+
+    const wrapper = mount(HtmlNode, {
+      props: {
+        node: {
+          kind: "no_break",
+          children: [
+            { type: "text", text: "┌" },
+            {
+              kind: "font",
+              semantic: { type: "font", color: null, button_color: null, face: null },
+              children: [{ type: "text", text: "[/] 奴隶" }],
+            },
+            { type: "text", text: "──┐" },
+          ],
+        },
+      },
+    });
+
+    const cells = wrapper.findAll(".html-box-cell");
+    expect(cells.map((cell) => cell.text())).toEqual(["┌", "─", "─", "┐"]);
+    expect(cells.map((cell) => cell.attributes("data-continuation"))).toEqual([
+      undefined,
+      "─",
+      "─",
+      undefined,
+    ]);
+  });
+
   it("does not inspect the full retained history for a tail virtual range", () => {
     let accesses = 0;
     const ordinary = Array.from({ length: 4_990 }, (_, index) => ({

@@ -10,6 +10,42 @@
   "clock": "2026-01-01T00:00:00Z",
   "viewport": { "width": 1415, "height": 1056 },
   "actions": [
+    { "type": "reveal_text", "text": "\u5de5\u623f" },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".game-line:has-text(\"\u5de5\u623f\") .html-box-cell:text-is(\"┌\"):not([data-continuation])"
+      },
+      "fields": ["count", "visible"],
+      "expect": { "count": 2, "visible": true }
+    },
+    { "type": "reveal_text", "text": "\u4e9a\u5170\u5fb7" },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".game-line:has-text(\"\u4e9a\u5170\u5fb7\") .html-box-cell:text-is(\"┌\"):not([data-continuation])"
+      },
+      "fields": ["count", "visible"],
+      "expect": { "count": 1, "visible": true }
+    },
+    { "type": "reveal_text", "text": "\u7cfb\u7edf" },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".game-line:has-text(\"\u7cfb\u7edf\") .html-box-cell:text-is(\"┌\"):not([data-continuation])"
+      },
+      "fields": ["count", "visible"],
+      "expect": { "count": 1, "visible": true }
+    },
+    { "type": "reveal_text", "text": "[/] \u5974\u96b6" },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".game-line:has-text(\"[/] \u5974\u96b6\") .html-box-cell:text-is(\"┌\"):not([data-continuation])"
+      },
+      "fields": ["count", "visible"],
+      "expect": { "count": 2, "visible": true }
+    },
     { "type": "input", "value": 11 },
     {
       "type": "advance_enter_waits_until",

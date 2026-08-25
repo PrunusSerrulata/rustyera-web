@@ -389,7 +389,15 @@ describe("browser game runner progress policy", () => {
     );
     const february = JSON.parse(
       readFileSync(resolve("tools/runtime-tester/scenarios/erarorona-february-first.json"), "utf8"),
-    );
+    ) as {
+      start: { path: string };
+      actions: Array<{
+        type: string;
+        value?: unknown;
+        locator?: { css?: string };
+        expect?: { count?: number; visible?: boolean };
+      }>;
+    };
 
     expect(opening.actions).toEqual(
       expect.arrayContaining([
@@ -401,6 +409,17 @@ describe("browser game runner progress policy", () => {
       ]),
     );
     expect(february.start.path).toContain("save05.sav");
+    const cornerAssertions = february.actions.filter(
+      (action) => action.type === "assert_dom" && action.locator?.css?.includes(':text-is("┌")'),
+    );
+    expect(cornerAssertions).toHaveLength(4);
+    expect(cornerAssertions.map((action) => action.expect?.count)).toEqual([2, 1, 1, 2]);
+    expect(cornerAssertions.every((action) => action.expect?.visible === true)).toBe(true);
+    const cornerSelectors = cornerAssertions.map((action) => action.locator?.css ?? "").join("\n");
+    expect(cornerSelectors).toContain("工房");
+    expect(cornerSelectors).toContain("亚兰德");
+    expect(cornerSelectors).toContain("系统");
+    expect(cornerSelectors).toContain("[/] 奴隶");
     expect(february.actions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: "input", value: 11 }),
