@@ -24,10 +24,12 @@ import {
   overlayBrowserDirectory,
   type PortableBrowserFile,
 } from "@/platform/browserDirectoryOverlay";
+import { createBrowserSessionDirectory } from "@/platform/browserSessionFilesystem";
 
 export interface PickedBrowserDirectory {
   handle: FileSystemDirectoryHandle;
   persistHandle: boolean;
+  storagePersistent: boolean;
   projectName?: string;
   manifest?: BrowserManifest;
   scanMetrics?: BrowserProjectScanMetrics;
@@ -72,6 +74,7 @@ export async function pickBrowserDirectory(
     return {
       handle,
       persistHandle: true,
+      storagePersistent: true,
     };
   }
   if (!navigator.storage.getDirectory) {
@@ -84,9 +87,13 @@ export async function pickBrowserDirectory(
     submitted?.();
     await prepareAfterSelection?.();
     progress?.("importing", 0, 0);
-    const storageRoot = await navigator.storage.getDirectory();
+    const persistentRoot = await navigator.storage.getDirectory();
+    const storagePersistent = await hasWritableFileHandles(persistentRoot);
+    const storageRoot = storagePersistent
+      ? persistentRoot
+      : createBrowserSessionDirectory("directory-import");
     return {
-      ...(await importBrowserDirectory(selection.files, storageRoot, progress)),
+      ...(await importBrowserDirectory(selection.files, storageRoot, progress, storagePersistent)),
       release: selection.release,
     };
   } catch (error) {
@@ -137,6 +144,7 @@ export async function importBrowserDirectory(
   selectedFiles: Iterable<File>,
   storageRoot: FileSystemDirectoryHandle,
   progress?: BrowserDirectoryProgress,
+  storagePersistent = true,
 ): Promise<PickedBrowserDirectory> {
   const enumerateStarted = performance.now();
   progress?.("importing", 0, 0);
@@ -225,6 +233,7 @@ export async function importBrowserDirectory(
   return {
     handle: overlayBrowserDirectory(project, portableFiles),
     persistHandle: false,
+    storagePersistent,
     projectName,
     manifest,
     scanMetrics: {
@@ -247,6 +256,21 @@ async function fileBytes(file: File): Promise<Uint8Array> {
 
 async function pickDirectoryFiles() {
   return pickRetainedFiles({ directory: true, multiple: true });
+}
+
+async function hasWritableFileHandles(root: FileSystemDirectoryHandle): Promise<boolean> {
+  const probeName = ".rustyera-write-capability";
+  let created = false;
+  try {
+    const handle = await root.getFileHandle(probeName, { create: true });
+    created = true;
+    return typeof handle.createWritable === "function";
+  } catch (error) {
+    console.warn("Persistent browser project storage is unavailable", error);
+    return false;
+  } finally {
+    if (created) await root.removeEntry(probeName).catch(() => undefined);
+  }
 }
 
 async function rejectIncompleteAndroidFirefoxSelection(
@@ -297,15 +321,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 async function readSourceManifest(directory: FileSystemDirectoryHandle): Promise<string[]> {
+  let text: string;
   try {
     const handle = await directory.getFileHandle(SOURCE_MANIFEST);
-    const value = JSON.parse(await (await handle.getFile()).text());
-    return Array.isArray(value)
-      ? value.filter((item): item is string => typeof item === "string")
-      : [];
+    text = await (await handle.getFile()).text();
   } catch (error) {
     if (error instanceof DOMException && error.name === "NotFoundError") return [];
     throw error;
+  }
+  try {
+    const value = JSON.parse(text);
+    return Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    // This manifest only tracks obsolete imported copies and is replaced after every import. A
+    // browser interrupted while creating it may leave an empty or partial file behind.
+    return [];
   }
 }
 

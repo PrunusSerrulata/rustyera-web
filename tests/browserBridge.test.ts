@@ -528,10 +528,12 @@ describe("browser startup bridge", () => {
   it("releases only a portable candidate whose runtime submission fails", async () => {
     const firstRelease = vi.fn();
     const candidateRelease = vi.fn();
+    const activeRoot = new MemoryDirectoryHandle("active");
     pickBrowserDirectory
       .mockResolvedValueOnce({
-        handle: new MemoryDirectoryHandle("active"),
+        handle: activeRoot,
         persistHandle: false,
+        storagePersistent: true,
         projectName: "active",
         manifest: { project_revision: 1, files: [] },
         release: firstRelease,
@@ -539,6 +541,7 @@ describe("browser startup bridge", () => {
       .mockResolvedValueOnce({
         handle: new MemoryDirectoryHandle("candidate"),
         persistHandle: false,
+        storagePersistent: false,
         projectName: "candidate",
         manifest: { project_revision: 1, files: [] },
         release: candidateRelease,
@@ -555,6 +558,12 @@ describe("browser startup bridge", () => {
     expect(bridge.projectName()).toBe("active");
     expect(candidateRelease).toHaveBeenCalledOnce();
     expect(firstRelease).not.toHaveBeenCalled();
+    await bridge.writeCompiledCacheChunk(Uint8Array.of(1, 2, 3), true, false);
+    const cache = await (
+      await activeRoot.getDirectoryHandle(".rustyera")
+    ).getDirectoryHandle("cache");
+    await expect(cache.getFileHandle("compiled-project.reracache")).resolves.toBeDefined();
+    await bridge.cancelCompiledCacheExport();
     await bridge.close();
     expect(firstRelease).toHaveBeenCalledOnce();
   });
@@ -1047,6 +1056,26 @@ describe("browser startup bridge", () => {
     await bridge.cancelCompiledCacheExport();
 
     expect(file.abort).toHaveBeenCalledOnce();
+  });
+
+  it("discards compiled-cache writes for a project using session storage", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    pickBrowserDirectory.mockResolvedValue({
+      handle: root,
+      persistHandle: false,
+      storagePersistent: false,
+      projectName: "game",
+      manifest: { project_revision: 1, files: [] },
+    });
+    const bridge = new BrowserBridge();
+    await bridge.openProject();
+
+    await bridge.writeCompiledCacheChunk(Uint8Array.of(1, 2, 3), true, false);
+    await bridge.writeCompiledCacheChunk(Uint8Array.of(4, 5, 6), false, true);
+
+    await expect(root.getDirectoryHandle(".rustyera")).rejects.toMatchObject({
+      name: "NotFoundError",
+    });
   });
 
   it("reports diagnosis completion only after the browser writer closes", async () => {

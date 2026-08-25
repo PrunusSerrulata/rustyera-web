@@ -141,7 +141,11 @@ describe("portable browser directory selection", () => {
     Object.defineProperty(input, "files", { value: [projectFile("game/ERB/main.erb")] });
     input!.dispatchEvent(new Event("change"));
 
-    await expect(selection).resolves.toMatchObject({ projectName: "game", persistHandle: false });
+    await expect(selection).resolves.toMatchObject({
+      projectName: "game",
+      persistHandle: false,
+      storagePersistent: true,
+    });
     expect(prepareAfterSelection).toHaveBeenCalledOnce();
     expect(submitted).toHaveBeenCalledOnce();
     expect(submitted.mock.invocationCallOrder[0]).toBeLessThan(
@@ -153,6 +157,41 @@ describe("portable browser directory selection", () => {
     expect(progress.mock.calls[0]).toEqual(["importing", 0, 0]);
     expect(progress).toHaveBeenCalledWith("importing", 1, 1);
     expect(progress.mock.calls.at(-1)).toEqual(["scanning", 1, 1]);
+  });
+
+  it("uses session storage when iOS exposes OPFS file handles without createWritable", async () => {
+    const storage = new MemoryDirectoryHandle("root");
+    vi.spyOn(storage, "getFileHandle").mockResolvedValueOnce({
+      kind: "file",
+      name: ".rustyera-write-capability",
+      getFile: async () => new File([], ".rustyera-write-capability"),
+    } as unknown as MemoryFileHandle);
+    vi.stubGlobal("showDirectoryPicker", undefined);
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    const selection = pickBrowserDirectory();
+    const input = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", {
+      value: [projectFile("game/ERB/main.erb", "@MAIN\nRETURN\n")],
+    });
+
+    input.dispatchEvent(new Event("change"));
+
+    const picked = await selection;
+    expect(picked).toMatchObject({
+      projectName: "game",
+      persistHandle: false,
+      storagePersistent: false,
+    });
+    await expect(
+      picked!.handle
+        .getDirectoryHandle(".rustyera")
+        .then(async (directory) =>
+          (await directory.getFileHandle("imported-sources.json")).getFile(),
+        ),
+    ).resolves.toBeDefined();
+    await expect(storage.getDirectoryHandle(".rustyera-imports")).rejects.toMatchObject({
+      name: "NotFoundError",
+    });
   });
 
   it("starts progress only after a native directory handle is provided", async () => {
@@ -377,6 +416,23 @@ describe("portable browser directory selection", () => {
       value: "@NEW\nRETURN\n",
     });
     await expect(erb.getFileHandle("main.erb")).rejects.toMatchObject({ name: "NotFoundError" });
+  });
+
+  it("rebuilds an empty imported-source manifest left by an interrupted write", async () => {
+    const storage = new MemoryDirectoryHandle("root");
+    const selected = [projectFile("game/ERB/main.erb", "@MAIN\nRETURN\n")];
+    await importBrowserDirectory(selected, storage as unknown as FileSystemDirectoryHandle);
+    const stored = await importedStorageProject(storage);
+    const privateDirectory = await stored.getDirectoryHandle(".rustyera");
+    const sourceManifest = await privateDirectory.getFileHandle("imported-sources.json");
+    const writer = await sourceManifest.createWritable();
+    await writer.write(new Uint8Array());
+    await writer.close();
+
+    await expect(
+      importBrowserDirectory(selected, storage as unknown as FileSystemDirectoryHandle),
+    ).resolves.toMatchObject({ projectName: "game" });
+    await expect((await sourceManifest.getFile()).text()).resolves.toBe("[]");
   });
 
   it("reads selected resources lazily and copies configuration writes into OPFS", async () => {

@@ -167,7 +167,6 @@ export class BrowserBridge implements FrontendBridge {
       // structured-cloned into IndexedDB. Production handles continue to be persisted normally.
       if (picked.persistHandle && import.meta.env.VITE_RUSTYERA_TEST !== "1")
         await database.handles.put({ key: "last-project", handle });
-      this.projectStoragePersistent = true;
       this.projectPreferenceStore = await BrowserProjectPreferenceStore.source(handle);
       const projectPreferences = this.projectPreferenceStore.values();
       const project = new BrowserProject(
@@ -193,6 +192,7 @@ export class BrowserBridge implements FrontendBridge {
       const quickScanMs = quickScanRequired ? performance.now() - started : 0;
       const loaded = await this.loadSourceProject(project, manifest, sourcesReady);
       const previousRelease = this.projectDirectorySelectionRelease;
+      this.projectStoragePersistent = picked.storagePersistent ?? true;
       this.project = project;
       this.projectDirectorySelectionRelease = picked.release;
       projectCommitted = true;
