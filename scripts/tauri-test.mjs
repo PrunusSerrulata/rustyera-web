@@ -84,6 +84,11 @@ const specProfiles = {
   "rorona-log-inputs.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_RORONA_LOG_INPUTS",
   },
+  "rorona-ability-box-layout.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_RORONA_ABILITY_BOX_LAYOUT",
+    defaultState: "../games/erarorona/runtime_20260825-100940.snapshot",
+    defaultStateType: "vm_snapshot",
+  },
   "eratw-character-images.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_ERATW_CHARACTER_IMAGES",
     defaultState: "tests/fixtures/eratw/save18.sav",

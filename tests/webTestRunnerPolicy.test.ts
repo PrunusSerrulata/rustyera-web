@@ -437,6 +437,11 @@ describe("browser game runner progress policy", () => {
       resolve("tools/runtime-tester/scenarios/erarorona-character-layout.json"),
       "utf8",
     );
+    const abilityScenario = readFileSync(
+      resolve("tools/runtime-tester/scenarios/erarorona-ability-box-layout.json"),
+      "utf8",
+    );
+    const tauriRunner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
     const titleScenario = readFileSync(
       resolve("tools/runtime-tester/scenarios/erafl-title-layout.json"),
       "utf8",
@@ -445,6 +450,8 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain('fields.includes("square_grid")');
     expect(runner).toContain('const SHRINE_INTERIOR_EDGE = "║"');
     expect(runner).toContain('fields.includes("dialog_border")');
+    expect(runner).toContain("const boundedTable =");
+    expect(runner).toContain("lines.slice(tableStart, tableEnd + 1)");
     expect(runner).toContain('fields.includes("footer_corner")');
     expect(runner).toContain('action.type === "click_until_text"');
     expect(mapScenario).toContain('"square_grid"');
@@ -458,6 +465,31 @@ describe("browser game runner progress policy", () => {
     expect(characterScenario).toContain('"font_family": "\\"等距时代黑体 SC\\""');
     expect(characterScenario).toContain('"value": "Explex"');
     expect(characterScenario).toContain('"font_family": "Explex"');
+    expect(abilityScenario).toContain('"width": 800');
+    expect(abilityScenario).toContain('"compiled_cache": true');
+    expect(abilityScenario).toContain('"width": 1440');
+    expect(runner).toContain('action.type === "set_game_text_style"');
+    expect(runner).toContain('action.type === "reveal_text"');
+    expect(runner).toContain("--game-font");
+    expect(runner).toContain("--game-size");
+    expect(abilityScenario).toContain('"font_family": "等距时代黑体 SC"');
+    expect(abilityScenario).toContain('"font_family": "monospace"');
+    expect(abilityScenario).toContain('"font_size": 12');
+    expect(abilityScenario).toContain('"font_size": 18');
+    expect(abilityScenario).toContain('"font_size": 24');
+    expect(abilityScenario).toContain('"dialog_border": { "aligned": true }');
+    const tauriAbilitySpec = readFileSync(
+      resolve("tests/tauri/rorona-ability-box-layout.spec.mjs"),
+      "utf8",
+    );
+    expect(tauriAbilitySpec).toContain('["等距时代黑体 SC", "monospace"]');
+    expect(tauriAbilitySpec).toContain("[12, 16, 18, 24]");
+    expect(tauriAbilitySpec).toContain('const LABELS = ["烙印", "经验", "宝珠"');
+    expect(tauriAbilitySpec).toContain("browser.setWindowSize(width, height)");
+    expect(tauriAbilitySpec).toContain("const boundedTable =");
+    expect(tauriRunner).toContain(
+      'defaultState: "../games/erarorona/runtime_20260825-100940.snapshot"',
+    );
     expect(runner).toContain("expected.horizontal_centered_within");
     expect(titleScenario).toContain('"image_loaded": true');
     expect(titleScenario).toContain('"horizontal_centered_within": 16');

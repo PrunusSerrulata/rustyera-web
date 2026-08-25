@@ -8,6 +8,7 @@ import HtmlNode from "@/components/HtmlNode.vue";
 import MediaImage from "@/components/MediaImage.vue";
 import { useTouchSecondaryAction } from "@/components/useTouchSecondaryAction";
 import { isViewportContinuationClick } from "@/core/viewportInteraction";
+import { htmlBoxRowLayoutsForRange } from "@/core/htmlBoxLayout";
 import type { DisplayLine as PresentationLine, DisplayRun, MediaPlacement } from "@/core/types";
 import { measureGameViewport } from "@/platform/viewportMeasurement";
 import { useRuntimeStore } from "@/stores/runtime";
@@ -117,6 +118,15 @@ const virtualizer = useVirtualizer(
   }),
 );
 const items = computed(() => virtualizer.value.getVirtualItems());
+const visibleBoxRowLayouts = computed(() => {
+  const visibleItems = items.value;
+  if (visibleItems.length === 0) return new Map();
+  return htmlBoxRowLayoutsForRange(
+    store.presentation.lines,
+    visibleItems[0].index,
+    visibleItems.at(-1)?.index ?? visibleItems[0].index,
+  );
+});
 const measuredHistoryHeight = computed(() => {
   // Reading the virtual items keeps this projection in step with row measurements.
   void items.value;
@@ -331,6 +341,7 @@ watch(
         <DisplayLine
           :line="store.presentation.lines[item.index]"
           :viewport-columns="viewportColumns"
+          :box-row-layout="visibleBoxRowLayouts.get(item.index)"
         />
       </div>
     </div>

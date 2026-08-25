@@ -859,6 +859,70 @@ export async function runAction(page, action) {
     );
     return { query: { viewport: { width, height } } };
   }
+  if (action.type === "set_game_text_style") {
+    const family = String(action.font_family ?? "").trim();
+    const size = Number(action.font_size);
+    if (!family || !Number.isFinite(size) || size <= 0)
+      throw new Error("set_game_text_style requires a font family and positive font size");
+    await page.evaluate(
+      ({ family, size }) => {
+        const application = document.querySelector(".app-shell");
+        if (!(application instanceof globalThis.HTMLElement))
+          throw new Error("app shell is not available");
+        let sheet = document.querySelector("#rustyera-test-game-text-style");
+        if (!(sheet instanceof globalThis.HTMLStyleElement)) {
+          sheet = document.createElement("style");
+          sheet.id = "rustyera-test-game-text-style";
+          document.head.append(sheet);
+        }
+        sheet.textContent = "[data-rustyera-test-game-text-style] {}";
+        const rule = sheet.sheet?.cssRules[0];
+        if (!(rule instanceof globalThis.CSSStyleRule))
+          throw new Error("test style rule is not available");
+        rule.style.setProperty("--game-font", family, "important");
+        rule.style.setProperty("--game-size", `${size}px`, "important");
+        rule.style.setProperty("--game-line-height", `${size + 1}px`, "important");
+        application.dataset.rustyeraTestGameTextStyle = "";
+      },
+      { family, size },
+    );
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
+        ),
+    );
+    return { query: { game_text_style: { font_family: family, font_size: `${size}px` } } };
+  }
+  if (action.type === "reveal_text") {
+    const expected = String(action.text ?? "");
+    if (!expected) throw new Error("reveal_text requires text");
+    const revealed = await page.evaluate(async (text) => {
+      const viewport = document.querySelector(".game-viewport");
+      if (!(viewport instanceof globalThis.HTMLElement)) return false;
+      const settle = () =>
+        new Promise((resolve) =>
+          window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
+        );
+      const step = Math.max(1, Math.floor(viewport.clientHeight / 2));
+      viewport.scrollTop = 0;
+      for (let position = 0; position <= viewport.scrollHeight + step; position += step) {
+        await settle();
+        const target = [...document.querySelectorAll(".game-line")].find((line) =>
+          line.textContent?.includes(text),
+        );
+        if (target instanceof globalThis.HTMLElement) {
+          target.scrollIntoView({ block: "center" });
+          await settle();
+          return true;
+        }
+        viewport.scrollTop = position + step;
+      }
+      return false;
+    }, expected);
+    if (!revealed) throw new Error(`reveal_text could not find ${JSON.stringify(expected)}`);
+    return { query: { revealed_text: expected } };
+  }
   const locator = action.locator ? resolveLocator(page, action.locator) : undefined;
   if (action.type === "touch_gesture") {
     const gesture = String(action.gesture ?? "");
@@ -1395,7 +1459,25 @@ async function queryLocator(locator, fields = ["count", "text", "visible", "enab
         const parent = target.parentElement;
         const lines = parent ? [...parent.querySelectorAll(":scope > .game-line")] : [target];
         const index = Math.max(0, lines.indexOf(target));
-        const nearby = lines.slice(Math.max(0, index - 5), index + 6);
+        const lineText = (line) => line.textContent?.trim() ?? "";
+        const isTopBorder = (line) =>
+          /^[┌┏╔]/u.test(lineText(line)) && /[┐┓╗]$/u.test(lineText(line));
+        const isBottomBorder = (line) =>
+          /^[└┗╚]/u.test(lineText(line)) && /[┘┛╝]$/u.test(lineText(line));
+        let tableStart = index;
+        while (tableStart > 0 && !isTopBorder(lines[tableStart])) {
+          tableStart -= 1;
+          if (isBottomBorder(lines[tableStart])) break;
+        }
+        let tableEnd = index;
+        while (tableEnd + 1 < lines.length && !isBottomBorder(lines[tableEnd])) {
+          tableEnd += 1;
+          if (isTopBorder(lines[tableEnd])) break;
+        }
+        const boundedTable = isTopBorder(lines[tableStart]) && isBottomBorder(lines[tableEnd]);
+        const nearby = boundedTable
+          ? lines.slice(tableStart, tableEnd + 1)
+          : lines.slice(Math.max(0, index - 5), index + 6);
         const borderCharacters = new Set(["│", "┃", "┐", "┘", "┤", "┓", "┛"]);
         const rightEdges = nearby
           .map((line) =>
@@ -1415,6 +1497,7 @@ async function queryLocator(locator, fields = ["count", "text", "visible", "enab
         return {
           aligned: spread <= 1,
           count: rightEdges.length,
+          rows: nearby.length,
           right: Math.round(targetEdge * 100) / 100,
           spread: Math.round(spread * 100) / 100,
         };

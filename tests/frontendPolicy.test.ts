@@ -656,14 +656,14 @@ describe("frontend host and image-line policy", () => {
     expect(positioned.findAll(":scope > br")).toHaveLength(2);
   });
 
-  it("projects HTML ASCII spaces onto Emuera half-width font cells", () => {
+  it("projects HTML ASCII spaces onto the active console cells", () => {
     const wrapper = mount(HtmlNode, {
       props: { node: { type: "text", text: "  image" } },
     });
 
     const space = wrapper.get<HTMLElement>(".html-ascii-space");
     expect(space.element.textContent).toBe("  ");
-    expect(space.attributes("style")).toContain("width: 12px");
+    expect(space.attributes("style")).toContain("width: 2ch");
     expect(wrapper.element.textContent).toBe("  image");
   });
 

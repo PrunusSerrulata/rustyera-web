@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/erarorona",
+  "mode": "fixed",
+  "compiled_cache": true,
+  "start": { "type": "vm_snapshot" },
+  "viewport": { "width": 1080, "height": 760 },
+  "actions": [
+    {
+      "type": "assert_dom",
+      "locator": { "text": "烙印", "exact": false, "nth": -1 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "请选择要提升的能力", "exact": false, "nth": -1 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    { "type": "set_viewport", "width": 800, "height": 700 },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "请选择要提升的能力", "exact": false, "nth": -1 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    { "type": "set_viewport", "width": 1440, "height": 900 },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "请选择要提升的能力", "exact": false, "nth": -1 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "烙印", "exact": false, "nth": -1 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "经验", "exact": false, "nth": -1 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-line:has(.html-box-row):has-text(\"宝珠\")", "nth": 0 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    { "type": "set_game_text_style", "font_family": "等距时代黑体 SC", "font_size": 12 },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-viewport" },
+      "fields": ["computed_style"],
+      "expect": {
+        "computed_style": { "font_family": "\"等距时代黑体 SC\"", "font_size": "12px" }
+      }
+    },
+    { "type": "reveal_text", "text": "请选择要提升的能力" },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "请选择要提升的能力", "exact": false, "nth": -1 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "烙印", "exact": false, "nth": -1 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "经验", "exact": false, "nth": -1 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-line:has(.html-box-row):has-text(\"宝珠\")", "nth": 0 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    { "type": "set_game_text_style", "font_family": "monospace", "font_size": 18 },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-viewport" },
+      "fields": ["computed_style"],
+      "expect": { "computed_style": { "font_family": "monospace", "font_size": "18px" } }
+    },
+    { "type": "reveal_text", "text": "请选择要提升的能力" },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "请选择要提升的能力", "exact": false, "nth": -1 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "烙印", "exact": false, "nth": -1 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "经验", "exact": false, "nth": -1 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-line:has(.html-box-row):has-text(\"宝珠\")", "nth": 0 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    { "type": "set_game_text_style", "font_family": "monospace", "font_size": 24 },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-viewport" },
+      "fields": ["computed_style"],
+      "expect": { "computed_style": { "font_family": "monospace", "font_size": "24px" } }
+    },
+    { "type": "reveal_text", "text": "请选择要提升的能力" },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "请选择要提升的能力", "exact": false, "nth": -1 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "烙印", "exact": false, "nth": -1 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "经验", "exact": false, "nth": -1 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-line:has(.html-box-row):has-text(\"宝珠\")", "nth": 0 },
+      "fields": ["visible", "dialog_border"],
+      "expect": { "visible": true, "dialog_border": { "aligned": true } }
+    },
+    { "type": "set_game_text_style", "font_family": "sans-serif", "font_size": 16 },
+    { "type": "reveal_text", "text": "请选择要提升的能力" },
+    {
+      "type": "assert_dom",
+      "locator": { "text": "请选择要提升的能力", "exact": false, "nth": -1 },
+      "fields": ["visible"],
+      "expect": { "visible": true }
+    }
+  ],
+  "limits": { "max_steps": 60, "timeout_seconds": 900 }
+}

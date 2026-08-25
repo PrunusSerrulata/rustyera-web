@@ -12,11 +12,17 @@ import {
   type TextDisplayRun,
 } from "@/components/textRunPresentation";
 import { projectRectangleShape, projectSpaceShape } from "@/core/shapeProjection";
+import { lastRenderableTextNodeIndex } from "@/core/htmlBoxLayout";
 import type { DisplayRun } from "@/core/types";
 import { useRuntimeStore } from "@/stores/runtime";
 
 defineOptions({ name: "RunRenderer" });
-const props = defineProps<{ run: any; viewportColumns?: number }>();
+const props = defineProps<{
+  run: any;
+  viewportColumns?: number;
+  alignTrailingBoxEdge?: boolean;
+  trailingBoxFill?: { character: string; columns: number };
+}>();
 const store = useRuntimeStore();
 
 type NestedFragment =
@@ -59,6 +65,11 @@ const separatorText = computed(() =>
   props.run.type === "separator"
     ? String(props.run.pattern ?? "").repeat(separatorColumns.value)
     : "",
+);
+const trailingHtmlNodeIndex = computed(() =>
+  props.run.type === "html_document"
+    ? lastRenderableTextNodeIndex(props.run.document.nodes ?? [])
+    : -1,
 );
 const directRectangleShapeStyle = computed(() => {
   const run = props.run;
@@ -116,7 +127,15 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
     </template>
   </button>
   <template v-else-if="run.type === 'html_document'">
-    <HtmlNode v-for="(node, index) in run.document.nodes" :key="index" :node="node" />
+    <HtmlNode
+      v-for="(node, index) in run.document.nodes"
+      :key="index"
+      :node="node"
+      :align-trailing-box-edge="alignTrailingBoxEdge && index === trailingHtmlNodeIndex"
+      :trailing-box-fill="
+        alignTrailingBoxEdge && index === trailingHtmlNodeIndex ? trailingBoxFill : undefined
+      "
+    />
   </template>
   <MediaImage v-else-if="run.type === 'image'" :placement="run.placement" :alt="run.alt_text" />
   <span

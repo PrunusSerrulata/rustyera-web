@@ -679,8 +679,35 @@ select {
 .html-ascii-space {
   display: inline-block;
   overflow: hidden;
-  font-size: 0;
   vertical-align: top;
+}
+.display-line {
+  display: contents;
+}
+.html-box-cell {
+  display: inline-block;
+  position: relative;
+  overflow: visible;
+  vertical-align: top;
+}
+.html-box-cell[data-continuation]::after {
+  position: absolute;
+  left: 1ch;
+  content: attr(data-continuation);
+}
+.html-box-row {
+  display: inline-block;
+  position: relative;
+  vertical-align: top;
+}
+.html-box-fill {
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: top;
+}
+.html-trailing-box-edge {
+  position: absolute;
+  right: 0;
 }
 .html-division {
   display: inline-block;

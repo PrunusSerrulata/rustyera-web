@@ -3,6 +3,11 @@ import { computed } from "vue";
 
 import MediaImage from "@/components/MediaImage.vue";
 import {
+  htmlTextSegments,
+  lastRenderableTextNodeIndex,
+  type HtmlTextSegment,
+} from "@/core/htmlBoxLayout";
+import {
   projectPresentationLength,
   projectRectangleShape,
   projectSpaceShape,
@@ -11,7 +16,11 @@ import type { PresentationLength } from "@/core/types";
 import { useRuntimeStore } from "@/stores/runtime";
 
 defineOptions({ name: "HtmlNode" });
-const props = defineProps<{ node: any }>();
+const props = defineProps<{
+  node: any;
+  alignTrailingBoxEdge?: boolean;
+  trailingBoxFill?: { character: string; columns: number };
+}>();
 const store = useRuntimeStore();
 const tags: Record<string, string> = {
   bold: "strong",
@@ -203,26 +212,48 @@ function positionedMediaHeight(node: any): number | undefined {
     : undefined;
 }
 
-function textSegments(value: unknown): Array<{ text: string; space: boolean; width?: string }> {
-  const text = String(value ?? "");
-  return (store.replaceFullWidthSpaces ? text.replaceAll("　", "  ") : text)
-    .split(/( +)/)
-    .filter(Boolean)
-    .map((text) => ({
-      text,
-      space: text[0] === " ",
-      width:
-        text[0] === " " ? `${(text.length * store.gameTextStyle.fontSizePx) / 2}px` : undefined,
-    }));
+function textSegments(value: unknown): HtmlTextSegment[] {
+  return htmlTextSegments(
+    value,
+    store.replaceFullWidthSpaces,
+    props.alignTrailingBoxEdge === true,
+    props.trailingBoxFill,
+  );
 }
+
+const trailingTextChildIndex = computed(() =>
+  lastRenderableTextNodeIndex(props.node.children ?? []),
+);
 </script>
 
 <template>
   <template v-if="node.type === 'text'">
     <template v-for="(segment, index) in textSegments(node.text)" :key="index">
-      <span v-if="segment.space" class="html-ascii-space" :style="{ width: segment.width }">{{
-        segment.text
-      }}</span>
+      <span
+        v-if="segment.kind === 'space'"
+        class="html-ascii-space"
+        :style="{ width: segment.width }"
+        >{{ segment.text }}</span
+      >
+      <span
+        v-else-if="segment.kind === 'box'"
+        class="html-box-cell"
+        :data-continuation="segment.continuation"
+        :style="{ width: segment.width }"
+        >{{ segment.text }}</span
+      >
+      <span
+        v-else-if="segment.kind === 'fill'"
+        class="html-box-fill"
+        :style="{ width: segment.width }"
+        >{{ segment.text }}</span
+      >
+      <span
+        v-else-if="segment.kind === 'edge'"
+        class="html-box-cell html-trailing-box-edge"
+        :style="{ width: segment.width }"
+        >{{ segment.text }}</span
+      >
       <template v-else>{{ segment.text }}</template>
     </template>
   </template>
@@ -262,6 +293,14 @@ function textSegments(value: unknown): Array<{ text: string; space: boolean; wid
     :data-era-tooltip="tooltipTitle"
     @click="activate"
   >
-    <HtmlNode v-for="(child, index) in node.children ?? []" :key="index" :node="child" />
+    <HtmlNode
+      v-for="(child, index) in node.children ?? []"
+      :key="index"
+      :node="child"
+      :align-trailing-box-edge="alignTrailingBoxEdge && index === trailingTextChildIndex"
+      :trailing-box-fill="
+        alignTrailingBoxEdge && index === trailingTextChildIndex ? trailingBoxFill : undefined
+      "
+    />
   </component>
 </template>

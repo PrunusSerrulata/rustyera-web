@@ -5,9 +5,14 @@ import RunRenderer from "@/components/RunRenderer.vue";
 import TextRunGroup from "@/components/TextRunGroup.vue";
 import { collectTextRunGroup, type TextDisplayRun } from "@/components/textRunPresentation";
 import { responsiveColumnGroupLayout } from "@/core/columnLayout";
+import type { HtmlBoxRowLayout } from "@/core/htmlBoxLayout";
 import type { DisplayLine, DisplayRun } from "@/core/types";
 
-const props = defineProps<{ line: DisplayLine; viewportColumns: number }>();
+const props = defineProps<{
+  line: DisplayLine;
+  viewportColumns: number;
+  boxRowLayout?: HtmlBoxRowLayout;
+}>();
 
 interface SingleRun {
   type: "run";
@@ -64,7 +69,39 @@ const fragments = computed<DisplayFragment[]>(() => {
 </script>
 
 <template>
-  <template v-for="fragment in fragments" :key="fragment.key">
+  <span
+    v-if="boxRowLayout"
+    class="display-line html-box-row"
+    :style="{ width: `${boxRowLayout.columns}ch` }"
+  >
+    <template v-for="fragment in fragments" :key="fragment.key">
+      <TextRunGroup v-if="fragment.type === 'text_group'" :runs="fragment.runs" />
+      <RunRenderer
+        v-else-if="fragment.type === 'run'"
+        :run="fragment.run"
+        :viewport-columns="viewportColumns"
+        :align-trailing-box-edge="boxRowLayout?.trailingRunIndex === fragment.key"
+        :trailing-box-fill="
+          boxRowLayout?.trailingRunIndex === fragment.key ? boxRowLayout.trailingFill : undefined
+        "
+      />
+      <span
+        v-else
+        class="column-group"
+        :style="{
+          gridTemplateColumns: `repeat(${fragment.columns}, ${fragment.columnWidth}ch)`,
+        }"
+      >
+        <RunRenderer
+          v-for="(cell, index) in fragment.cells"
+          :key="index"
+          :run="cell"
+          :viewport-columns="viewportColumns"
+        />
+      </span>
+    </template>
+  </span>
+  <template v-for="fragment in fragments" v-else :key="fragment.key">
     <TextRunGroup v-if="fragment.type === 'text_group'" :runs="fragment.runs" />
     <RunRenderer
       v-else-if="fragment.type === 'run'"
