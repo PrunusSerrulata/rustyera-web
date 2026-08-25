@@ -1,4 +1,4 @@
-import { reactive, ref, toRaw, type Ref } from "vue";
+import { markRaw, reactive, ref, toRaw, type Ref } from "vue";
 
 import {
   applyDelta,
@@ -51,6 +51,7 @@ export class RuntimePresentationProjection {
   }
 
   projectSnapshot(snapshot: any): boolean {
+    markSnapshotPayloadsRaw(snapshot);
     const next = this.clone(this.current());
     applySnapshot(next, snapshot);
     if (next.redraw?.enabled === false && next.inputWait == null) {
@@ -66,6 +67,7 @@ export class RuntimePresentationProjection {
   }
 
   projectDelta(delta: any): boolean {
+    markDeltaPayloadsRaw(delta);
     const operations = delta.operations ?? [];
     const disablesRedraw = operations.some(
       (operation: any) => operation.type === "set_redraw" && operation.redraw?.enabled === false,
@@ -134,4 +136,26 @@ export class RuntimePresentationProjection {
       retiredInteractionSequence: raw.retiredInteractionSequence,
     };
   }
+}
+
+function markSnapshotPayloadsRaw(snapshot: any): void {
+  for (const line of snapshot.history?.logical_lines ?? []) markObjectRaw(line);
+  for (const document of snapshot.html_island ?? []) markObjectRaw(document);
+  markObjectRaw(snapshot.resources);
+}
+
+function markDeltaPayloadsRaw(delta: any): void {
+  for (const operation of delta.operations ?? []) {
+    if (["append_line", "replace_line"].includes(operation.type)) {
+      markObjectRaw(operation.line);
+    } else if (operation.type === "set_html_island") {
+      for (const document of operation.html_island ?? []) markObjectRaw(document);
+    } else if (operation.type === "set_resources") {
+      markObjectRaw(operation.resources);
+    }
+  }
+}
+
+function markObjectRaw(value: unknown): void {
+  if (value != null && typeof value === "object") markRaw(value);
 }

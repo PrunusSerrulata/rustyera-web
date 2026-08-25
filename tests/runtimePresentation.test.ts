@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toRaw } from "vue";
+import { isReactive, toRaw } from "vue";
 
 import {
   presentationInteractionEnabled,
@@ -27,6 +27,51 @@ function line(lineId: number, enabled = false): any {
 }
 
 describe("runtime presentation staging", () => {
+  it("keeps immutable runtime payloads out of the retained Vue proxy graph", () => {
+    const projection = new RuntimePresentationProjection();
+    const first = line(1, true);
+    const island = { nodes: [{ type: "text", text: "island" }] };
+    const resources = { sprites: [{ name: "sprite" }], canvases: [] };
+
+    projection.projectSnapshot({
+      revision: 1,
+      title: "raw payloads",
+      history: { logical_lines: [first] },
+      html_island: [island],
+      resources,
+    });
+
+    expect(isReactive(projection.presentation.lines)).toBe(true);
+    expect(isReactive(projection.presentation.lines[0])).toBe(false);
+    expect(isReactive((projection.presentation.lines[0] as any).runs[0])).toBe(false);
+    expect(isReactive(projection.presentation.htmlIsland)).toBe(true);
+    expect(isReactive(projection.presentation.htmlIsland[0])).toBe(false);
+    expect(isReactive(projection.presentation.resources)).toBe(false);
+
+    const appended = line(2, true);
+    const replacement = line(2, false);
+    const nextIsland = { nodes: [{ type: "text", text: "next" }] };
+    const nextResources = { sprites: [], canvases: [{ canvas_id: 1 }] };
+    projection.projectDelta({
+      base_revision: 1,
+      new_revision: 2,
+      operations: [
+        { type: "append_line", line: appended },
+        { type: "replace_line", line_id: 2, line: replacement },
+        { type: "set_html_island", html_island: [nextIsland] },
+        { type: "set_resources", resources: nextResources },
+      ],
+    });
+
+    expect(projection.presentation.lines).toHaveLength(2);
+    expect(isReactive(projection.presentation.lines[1])).toBe(false);
+    expect(toRaw(projection.presentation.lines[1])).toBe(replacement);
+    expect(isReactive(projection.presentation.htmlIsland[0])).toBe(false);
+    expect(toRaw(projection.presentation.htmlIsland[0])).toBe(nextIsland);
+    expect(isReactive(projection.presentation.resources)).toBe(false);
+    expect(toRaw(projection.presentation.resources)).toBe(nextResources);
+  });
+
   it("shares unchanged accumulated lines while staging an automatic tail refresh", () => {
     const projection = new RuntimePresentationProjection();
     projection.presentation.revision = 1;
