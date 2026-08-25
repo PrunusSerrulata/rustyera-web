@@ -82,6 +82,12 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", documentClick)
         <hr />
         <button
           :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
+          @click="action(store.exportInputReplay)"
+        >
+          导出操作序列…
+        </button>
+        <button
+          :disabled="!store.runtimeReady || store.gameInteractionsBlocked"
           @click="action(() => store.exportSnapshot(store.debugEnabled ? 'debug' : 'normal'))"
         >
           导出 VM 快照…

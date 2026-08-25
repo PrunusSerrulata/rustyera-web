@@ -35,6 +35,7 @@ export interface ExportState {
   name: string;
   kind:
     | "download"
+    | "input_replay_download"
     | "project_file"
     | "compiled_cache"
     | "diagnosis_replay"
@@ -60,6 +61,7 @@ export const diagnosisStateExportRequest = {
 export function runtimeExportKind(state: ExportState): string {
   switch (state.kind) {
     case "diagnosis_replay":
+    case "input_replay_download":
       return "input_replay";
     case "download":
     case "diagnosis_snapshot":

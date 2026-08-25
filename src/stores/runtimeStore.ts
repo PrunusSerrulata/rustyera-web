@@ -24,6 +24,7 @@ import {
   formatDiagnosisLogs,
   formatDiagnosisProgress,
   formatProjectProgress,
+  inputReplayFileName,
   isRecoverableStaleDebugLog,
   projectGameInformation,
   safeNumber,
@@ -1566,22 +1567,50 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function exportSnapshot(purpose: "normal" | "debug" = "normal"): Promise<void> {
+    await startDownloadStateExport(
+      snapshotFileName(),
+      "download",
+      { kind: "vm_snapshot", snapshot_purpose: purpose },
+      "VM 快照",
+    );
+  }
+
+  async function exportInputReplay(): Promise<void> {
+    await startDownloadStateExport(
+      inputReplayFileName(testEnvironment.clock ?? new Date()),
+      "input_replay_download",
+      { kind: "input_replay", snapshot_purpose: "normal" },
+      "操作序列",
+    );
+  }
+
+  async function startDownloadStateExport(
+    name: string,
+    kind: "download" | "input_replay_download",
+    request: { kind: "vm_snapshot" | "input_replay"; snapshot_purpose: "normal" | "debug" },
+    label: string,
+  ): Promise<void> {
     if (diagnosisExporting.value) return;
     if (exportState) {
       baseStatus.value = "另一项状态导出仍在进行，请稍后重试";
       return;
     }
-    exportState = {
-      name: snapshotFileName(),
-      kind: "download",
+    const activeExport: ExportState = {
+      name,
+      kind,
       chunks: [],
       received: 0,
     };
-    const messageId = await send({
-      type: "state_export_request",
-      value: { kind: "vm_snapshot", snapshot_purpose: purpose },
-    });
-    if (exportState?.kind === "download") exportState.requestMessageId = String(messageId);
+    exportState = activeExport;
+    try {
+      const messageId = await send({ type: "state_export_request", value: request });
+      if (exportState === activeExport) activeExport.requestMessageId = String(messageId);
+    } catch (error) {
+      if (exportState === activeExport) exportState = undefined;
+      const message = `${label}导出失败：${String(error)}`;
+      baseStatus.value = message;
+      log("error", message);
+    }
   }
 
   async function exportTraditionalSaveForTest(): Promise<void> {
@@ -2027,9 +2056,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
     completed.buffer = undefined;
     completed.chunks.length = 0;
     try {
-      if (completed.kind === "download") {
+      if (completed.kind === "download" || completed.kind === "input_replay_download") {
         const saved = await bridge.saveDownload(completed.name, result);
-        baseStatus.value = saved ? `已导出 ${completed.name}` : "已取消导出 VM 快照";
+        const cancelled =
+          completed.kind === "input_replay_download" ? "已取消导出操作序列" : "已取消导出 VM 快照";
+        baseStatus.value = saved ? `已导出 ${completed.name}` : cancelled;
         exportState = undefined;
         if (diagnosisExporting.value) await startDiagnosisStateExport("diagnosis_replay");
       } else if (completed.kind === "project_file") {
@@ -2850,6 +2881,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     exportDiagnosis,
     dismissLogNotification,
     exportSnapshot,
+    exportInputReplay,
     exportProjectFile,
     cancelProjectFileExport,
     exportTraditionalSaveForTest,

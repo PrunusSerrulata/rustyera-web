@@ -52,7 +52,8 @@ export class RuntimeExportTransferState {
     }
     activeExport.requestMessageId = undefined;
     if (ready.result.type !== "ready") {
-      const message = `当前状态不能导出快照：${(ready.result.reasons ?? []).join(", ")}`;
+      const label = expectedKind === "input_replay" ? "操作序列" : "快照";
+      const message = `当前状态不能导出${label}：${(ready.result.reasons ?? []).join(", ")}`;
       const failedKind = activeExport.kind;
       if (failedKind !== "compiled_cache") this.context.logWarning(message);
       if (failedKind.startsWith("diagnosis_")) {

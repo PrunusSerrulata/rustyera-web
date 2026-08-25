@@ -79,6 +79,7 @@ const store = vi.hoisted(() => ({
   closeProjectReloadDialog: vi.fn(),
   confirmProjectReload: vi.fn(),
   exportSnapshot: vi.fn(),
+  exportInputReplay: vi.fn(),
   exportProjectFile: vi.fn(),
   cancelProjectFileExport: vi.fn(),
   restoreSnapshot: vi.fn(),
@@ -128,6 +129,7 @@ const controlledLabels = [
   "重新加载文件夹…",
   "重新加载单个脚本…",
   "导出全量项目文件…",
+  "导出操作序列…",
   "导出 VM 快照…",
   "恢复 VM 快照…",
   "导出存档…",
@@ -274,6 +276,20 @@ describe("application menus", () => {
       .trigger("click");
     expect(store.openProjectReloadDialog).toHaveBeenCalledWith("script");
 
+    wrapper.unmount();
+  });
+
+  it("exports the operation sequence from the file menu", async () => {
+    store.runtimeReady = true;
+    const wrapper = mountApp();
+
+    await wrapper.get("nav > .menu > button").trigger("click");
+    await wrapper
+      .findAll(".menu-popup button")
+      .find((item) => item.text() === "导出操作序列…")!
+      .trigger("click");
+
+    expect(store.exportInputReplay).toHaveBeenCalledOnce();
     wrapper.unmount();
   });
 

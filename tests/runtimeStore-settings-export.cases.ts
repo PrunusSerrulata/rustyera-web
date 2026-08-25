@@ -798,6 +798,54 @@ describe("runtime store settings-export", () => {
     );
   });
 
+  it("exports the core operation sequence as a timestamped JSONL download", async () => {
+    vi.setSystemTime(new Date(2026, 6, 30, 0, 30, 7));
+    const store = useRuntimeStore();
+    await store.enableDebug();
+
+    await store.exportInputReplay();
+
+    expect(store.testTransferState()).toMatchObject({
+      export: { name: "input-replay_20260730-003007.jsonl" },
+    });
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      {
+        type: "state_export_request",
+        value: { kind: "input_replay", snapshot_purpose: "normal" },
+      },
+      undefined,
+    );
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        stateExportReadyEvent("input_replay", 17, [1, 2, 3]),
+        stateExportChunkEvent(17, [1, 2, 3]),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(bridge.saveDownload).toHaveBeenCalledWith(
+      "input-replay_20260730-003007.jsonl",
+      Uint8Array.of(1, 2, 3),
+    );
+    expect(store.testTransferState().export).toBeNull();
+    expect(store.status).toBe("已导出 input-replay_20260730-003007.jsonl");
+  });
+
+  it("releases a failed operation-sequence request so it can be retried", async () => {
+    bridge.submitRuntime.mockRejectedValueOnce(new Error("transport unavailable"));
+    const store = useRuntimeStore();
+
+    await store.exportInputReplay();
+
+    expect(store.testTransferState().export).toBeNull();
+    expect(store.status).toBe("操作序列导出失败：Error: transport unavailable");
+
+    await store.exportInputReplay();
+    expect(store.testTransferState().export).not.toBeNull();
+  });
+
   it.each([
     {
       label: "suppresses the exact state-export warning mirror",

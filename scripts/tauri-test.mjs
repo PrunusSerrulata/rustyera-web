@@ -73,6 +73,10 @@ const specProfiles = {
     environmentFlag: "VITE_RUSTYERA_TAURI_DIAGNOSIS",
     copyProject: true,
   },
+  "input-replay-export.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_INPUT_REPLAY_EXPORT",
+    copyProject: true,
+  },
   "project-fonts.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_PROJECT_FONTS",
     copyProject: true,
@@ -163,7 +167,9 @@ const environment = {
       ? path.join(project, ".rustyera", "full-export.reraproj")
       : specName === "diagnosis.spec.mjs"
         ? path.join(path.dirname(project), "diagnosis.tar.zst")
-        : "",
+        : specName === "input-replay-export.spec.mjs"
+          ? path.join(project, ".rustyera", "input-replay.jsonl")
+          : "",
   VITE_RUSTYERA_TEST_STATE: state ?? "",
   VITE_RUSTYERA_TEST_STATE_TYPE: configuredStateType,
   ...Object.fromEntries(

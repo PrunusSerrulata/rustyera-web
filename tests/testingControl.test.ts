@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isStableObservationCandidate } from "@/testing/control";
+import { inputReplaySummary, isStableObservationCandidate } from "@/testing/control";
 
 describe("Web test observation boundaries", () => {
   it("keeps waiting while the runtime is running without an input boundary", () => {
@@ -20,5 +20,14 @@ describe("Web test observation boundaries", () => {
     expect(isStableObservationCandidate("faulted", false, { message: "fault" }, false, true)).toBe(
       false,
     );
+  });
+
+  it("reports malformed operation-sequence downloads without breaking snapshots", () => {
+    expect(inputReplaySummary(new TextEncoder().encode("not-json\n"))).toEqual({
+      replayParseError: "input replay line 1 is not valid JSON",
+    });
+    expect(inputReplaySummary(Uint8Array.of(0xff))).toEqual({
+      replayParseError: "input replay is not valid UTF-8",
+    });
   });
 });

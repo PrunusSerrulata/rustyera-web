@@ -381,7 +381,11 @@ export class TauriBridge implements FrontendBridge {
   }
 
   async saveDownload(name: string, bytes: Uint8Array): Promise<boolean> {
-    const path = await save({ defaultPath: name });
+    const testPath =
+      import.meta.env.VITE_RUSTYERA_TEST === "1"
+        ? import.meta.env.VITE_RUSTYERA_TAURI_EXPORT_PATH
+        : undefined;
+    const path = testPath || (await save({ defaultPath: name }));
     if (!path) return false;
     await invoke("write_export", { path, bytes: encodeIpcBytes(bytes) });
     return true;

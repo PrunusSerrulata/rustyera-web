@@ -138,8 +138,16 @@ export function formatDiagnostic(value: any): string {
 }
 
 export function snapshotFileName(now = new Date()): string {
+  return timestampedFileName("runtime", "snapshot", now);
+}
+
+export function inputReplayFileName(now = new Date()): string {
+  return timestampedFileName("input-replay", "jsonl", now);
+}
+
+function timestampedFileName(prefix: string, extension: string, now: Date): string {
   const part = (value: number) => String(value).padStart(2, "0");
   const date = `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}`;
   const time = `${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`;
-  return `runtime_${date}-${time}.snapshot`;
+  return `${prefix}_${date}-${time}.${extension}`;
 }

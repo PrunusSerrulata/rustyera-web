@@ -211,13 +211,10 @@ function downloadSummary(download?: {
   inputReplay?: Uint8Array;
 }): unknown {
   if (!download) return null;
-  const replayRecords = download.inputReplay
-    ? new TextDecoder()
-        .decode(download.inputReplay)
-        .trimEnd()
-        .split("\n")
-        .map((line) => JSON.parse(line) as Record<string, unknown>)
-    : undefined;
+  const inputReplay =
+    download.inputReplay ??
+    (/^input-replay_\d{8}-\d{6}\.jsonl$/.test(download.name) ? download.bytes : undefined);
+  const replay = inputReplay ? inputReplaySummary(inputReplay) : undefined;
   return {
     name: download.name,
     size: download.size ?? download.bytes.length,
@@ -233,10 +230,31 @@ function downloadSummary(download?: {
           projectRevision: download.projectManifest.project_revision,
         }
       : {}),
-    ...(replayRecords
-      ? { replayHeader: replayRecords[0], replaySteps: replayRecords.slice(1) }
-      : {}),
+    ...replay,
   };
+}
+
+export function inputReplaySummary(bytes: Uint8Array): Record<string, unknown> {
+  let lines: string[];
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes).trimEnd();
+    if (!text) return { replayParseError: "input replay is empty" };
+    lines = text.split("\n");
+  } catch {
+    return { replayParseError: "input replay is not valid UTF-8" };
+  }
+  const records: Record<string, unknown>[] = [];
+  for (const [index, line] of lines.entries()) {
+    try {
+      const record = JSON.parse(line) as unknown;
+      if (record == null || typeof record !== "object" || Array.isArray(record))
+        return { replayParseError: `input replay line ${index + 1} is not an object` };
+      records.push(record as Record<string, unknown>);
+    } catch {
+      return { replayParseError: `input replay line ${index + 1} is not valid JSON` };
+    }
+  }
+  return { replayHeader: records[0], replaySteps: records.slice(1) };
 }
 
 function serialize(value: unknown): any {

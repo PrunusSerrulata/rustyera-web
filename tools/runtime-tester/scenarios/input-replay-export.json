@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/diagnosis-project",
+  "mode": "fixed",
+  "seed": 123456,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [
+    { "type": "input", "value": "7" },
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "导出操作序列…", "exact": true }
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "canInteract": true,
+        "lastDownload": {
+          "replayHeader": {
+            "record": "header",
+            "schema_version": 1,
+            "fidelity": "manual_path",
+            "status": "available",
+            "step_count": 1,
+            "origin": { "kind": "new_game", "seed": "123456", "trigger": "start" }
+          },
+          "replaySteps": [
+            {
+              "record": "step",
+              "sequence": 1,
+              "action": "text",
+              "wait_kind": "integer_value",
+              "result": { "kind": "integer", "value": "7" },
+              "message_skip": false,
+              "text": "7"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "limits": { "max_steps": 8, "timeout_seconds": 60 }
+}

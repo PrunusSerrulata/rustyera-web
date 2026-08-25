@@ -559,6 +559,53 @@ try {
         ),
       { timeout: 30_000, interval: 100, timeoutMsg: "in-game save did not complete" },
     );
+    await clickFileMenuAction(browser, "导出操作序列…");
+    compatibilityStage = "receiving exported operation sequence";
+    await browser.waitUntil(
+      () =>
+        browser.execute(() =>
+          Boolean(
+            window.__RUSTYERA_TEST_DOWNLOADS__?.some((download) =>
+              /^input-replay_\d{8}-\d{6}\.jsonl$/.test(download.name),
+            ),
+          ),
+        ),
+      {
+        timeout: 30_000,
+        interval: 100,
+        timeoutMsg: "operation sequence download was not produced",
+      },
+    );
+    const operationSequence = await browser.execute(() => {
+      const index = window.__RUSTYERA_TEST_DOWNLOADS__?.findIndex((download) =>
+        /^input-replay_\d{8}-\d{6}\.jsonl$/.test(download.name),
+      );
+      if (index == null || index < 0) return { ok: false, error: "download disappeared" };
+      const [download] = window.__RUSTYERA_TEST_DOWNLOADS__.splice(index, 1);
+      try {
+        const records = new TextDecoder()
+          .decode(download.bytes)
+          .trimEnd()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        return { ok: true, name: download.name, records };
+      } catch (error) {
+        return {
+          ok: false,
+          error: `${error?.name ?? "Error"}: ${error?.message ?? String(error)}`,
+        };
+      }
+    });
+    if (
+      !operationSequence.ok ||
+      !/^input-replay_\d{8}-\d{6}\.jsonl$/.test(operationSequence.name) ||
+      operationSequence.records?.[0]?.record !== "header" ||
+      operationSequence.records?.[0]?.fidelity !== "manual_path"
+    ) {
+      throw new Error(
+        `operation sequence export is malformed: ${JSON.stringify(operationSequence)}`,
+      );
+    }
     await clickFileMenuAction(browser, "导出存档…");
     await (await browser.$("section[aria-label='导出存档']")).waitForDisplayed({ timeout: 30_000 });
     await clickButton("导出");
@@ -727,6 +774,7 @@ try {
         startupGuidance,
         projectProgress,
         fontAccess,
+        operationSequence,
         saveTransfer,
         tooltip,
         ...observed,
