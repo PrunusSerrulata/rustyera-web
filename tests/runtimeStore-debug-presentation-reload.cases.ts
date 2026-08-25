@@ -1,11 +1,14 @@
 import { bridge } from "./runtimeStoreTestSupport";
+import { watch } from "vue";
 import { describe, expect, it, vi } from "vitest";
 import {
   installRuntimeStoreTestHarness,
   advanceUntil,
   debugEvent,
+  decodeServicePayload,
   deferred,
   emptyBatch,
+  encodeServicePayload,
   flushMicrotasks,
   plainLine,
   runningBrowserStore,
@@ -16,6 +19,169 @@ import {
 
 describe("runtime store debug-presentation-reload", () => {
   installRuntimeStoreTestHarness();
+
+  it("publishes one final Vue observation for a batch of synchronous runtime events", async () => {
+    const wait = {
+      kind: "enter_key",
+      wait_id: 31,
+      submission_token: { epoch: 4, id: 9 },
+    };
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("state_changed", { phase: "waiting_input", epoch: 4 }),
+        runtimeEvent("presentation_snapshot", {
+          revision: 1,
+          title: "batched",
+          history: { logical_lines: [] },
+          input_wait: null,
+        }),
+        runtimeEvent("presentation_delta", {
+          base_revision: 1,
+          new_revision: 2,
+          operations: [{ type: "set_input_wait", input_wait: wait }],
+        }),
+        runtimeEvent("wait_changed", { type: "opened", value: wait }),
+      ],
+    });
+    const store = useRuntimeStore();
+    const observations: unknown[] = [];
+    const stop = watch(
+      () => [store.phase, store.presentation.revision, store.presentation.inputWait?.wait_id],
+      (value) => observations.push([...value]),
+    );
+
+    await store.enableDebug();
+    await flushMicrotasks();
+
+    expect(observations).toEqual([["waiting_input", 2, 31]]);
+    stop();
+  });
+
+  it("keeps presentation services ordered between synchronous deltas", async () => {
+    const line = (lineId: number, text: string) => ({
+      line_id: lineId,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs: [{ type: "text", text, style: {} }],
+    });
+    const query = [
+      ...encodeServicePayload(
+        new Map<number, unknown>([
+          [0, "probe"],
+          [1, 0],
+        ]),
+      ),
+    ];
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("presentation_snapshot", {
+          revision: 1,
+          title: "service ordering",
+          history: { logical_lines: [line(1, "old")] },
+          input_wait: null,
+        }),
+        runtimeEvent(
+          "service_request",
+          {
+            request_id: 1,
+            kind: "presentation_query",
+            operation: "get_display_line",
+            payload: query,
+          },
+          41,
+        ),
+        runtimeEvent("presentation_delta", {
+          base_revision: 1,
+          new_revision: 2,
+          operations: [
+            { type: "delete_lines", count: 1 },
+            { type: "append_line", line: line(2, "new") },
+          ],
+        }),
+        runtimeEvent(
+          "service_request",
+          {
+            request_id: 2,
+            kind: "presentation_query",
+            operation: "get_display_line",
+            payload: query,
+          },
+          42,
+        ),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+
+    const responses = bridge.submitRuntime.mock.calls
+      .map((call) => call as unknown as [message: any, correlationId?: number])
+      .filter(([message]) => message.type === "service_response");
+    expect(responses.map(([, correlationId]) => correlationId)).toEqual([41, 42]);
+    expect(
+      responses.map(([message]) => decodeServicePayload(message.value.result.payload)),
+    ).toEqual([
+      new Map<number, unknown>([
+        [0, "probe"],
+        [1, "old"],
+      ]),
+      new Map<number, unknown>([
+        [0, "probe"],
+        [1, "new"],
+      ]),
+    ]);
+  });
+
+  it("waits for delta-gap resynchronization before handling later events", async () => {
+    const resynchronized = deferred<number>();
+    bridge.submitRuntime.mockImplementation(async (message: any) => {
+      if (message.type === "resynchronize") return resynchronized.promise;
+      return 1;
+    });
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("presentation_snapshot", {
+          revision: 1,
+          title: "before gap",
+          history: { logical_lines: [] },
+          input_wait: null,
+        }),
+        runtimeEvent("presentation_delta", {
+          base_revision: 9,
+          new_revision: 10,
+          operations: [],
+        }),
+        runtimeEvent("state_changed", { phase: "waiting_input", epoch: 7 }),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    const enabling = store.enableDebug();
+    await advanceUntil(() =>
+      bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) => (message as { type?: string }).type === "resynchronize",
+      ),
+    );
+
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      { type: "resynchronize", value: { after_sequence: null } },
+      undefined,
+    );
+    expect(store.phase).not.toBe("waiting_input");
+    expect(store.runtimeEpoch).not.toBe(7);
+
+    resynchronized.resolve(17);
+    await enabling;
+
+    expect(store.phase).toBe("waiting_input");
+    expect(store.runtimeEpoch).toBe(7);
+    expect(store.logs.some((entry) => entry.message.includes("展示 revision 不连续"))).toBe(true);
+  });
 
   it("attaches without pausing and retries a requested pause with a renewed grant", async () => {
     const oldToken = { grant_id: { high: 1, low: 1 }, program_generation: 1 };

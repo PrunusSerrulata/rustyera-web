@@ -98,6 +98,14 @@ export function applyDelta(state: PresentationState, delta: any): void {
   }
   const previousLineCount = state.lines.length;
   let existingLineChanged = false;
+  let pendingPrefixTrim = 0;
+  const flushPrefixTrim = () => {
+    if (pendingPrefixTrim === 0) return;
+    // Replacing the container avoids thousands of reactive index writes from Array.splice when
+    // MaxLog trims the oldest line after every append. Immutable line payloads remain shared.
+    state.lines = state.lines.slice(pendingPrefixTrim);
+    pendingPrefixTrim = 0;
+  };
   for (const operation of delta.operations ?? []) {
     switch (operation.type) {
       case "append_line":
@@ -105,6 +113,7 @@ export function applyDelta(state: PresentationState, delta: any): void {
         state.lines.push(operation.line);
         break;
       case "delete_lines":
+        flushPrefixTrim();
         state.lines.splice(
           Math.max(0, state.lines.length - Number(operation.count)),
           Number(operation.count),
@@ -112,6 +121,7 @@ export function applyDelta(state: PresentationState, delta: any): void {
         break;
       case "clear":
         state.lines = [];
+        pendingPrefixTrim = 0;
         break;
       case "set_title":
         state.title = operation.title;
@@ -126,6 +136,7 @@ export function applyDelta(state: PresentationState, delta: any): void {
         state.inputWait = operation.input_wait ?? null;
         break;
       case "replace_line": {
+        flushPrefixTrim();
         const index = findLineIndexFromEnd(state.lines, operation.line_id);
         if (index >= 0) {
           const previousSequences = collectLineSequences(state.lines[index]);
@@ -157,10 +168,14 @@ export function applyDelta(state: PresentationState, delta: any): void {
         state.buttonGeneration = operation.generation;
         break;
       case "trim_lines":
-        state.lines.splice(0, Math.min(Number(operation.count), state.lines.length));
+        pendingPrefixTrim += Math.min(
+          Math.max(0, Number(operation.count)),
+          state.lines.length - pendingPrefixTrim,
+        );
         break;
     }
   }
+  flushPrefixTrim();
   // Emuera's dynamic-map loop deletes and recreates the same tail rows. Its console keeps the
   // scrollbar unchanged when the final line count is unchanged, so only actual history growth
   // (or an in-place line whose dimensions may change) should request another bottom follow.

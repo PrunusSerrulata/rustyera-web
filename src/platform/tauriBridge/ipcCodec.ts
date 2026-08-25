@@ -1,19 +1,13 @@
 const IPC_INTEGER_TAG = "$rustyeraInteger";
 const IPC_BYTES_TAG = "$rustyeraBytes";
+const NOT_TAGGED = Symbol("not-tagged");
 
 export function decodeIpcValue<T>(value: unknown): T {
   if (Array.isArray(value)) return value.map((item) => decodeIpcValue(item)) as T;
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
-    if (Object.keys(record).length === 1 && typeof record[IPC_BYTES_TAG] === "string")
-      return decodeBase64(record[IPC_BYTES_TAG]) as T;
-    if (
-      Object.keys(record).length === 1 &&
-      typeof record[IPC_INTEGER_TAG] === "string" &&
-      /^-?\d+$/.test(record[IPC_INTEGER_TAG])
-    ) {
-      return BigInt(record[IPC_INTEGER_TAG]) as T;
-    }
+    const tagged = decodeTaggedRecord(record);
+    if (tagged !== NOT_TAGGED) return tagged as T;
     return Object.fromEntries(
       Object.entries(record).map(([key, item]) => [key, decodeIpcValue(item)]),
     ) as T;
@@ -40,6 +34,39 @@ function decodeBase64(encoded: string): Uint8Array {
   return bytes;
 }
 
+function decodeTaggedRecord(record: Record<string, unknown>): unknown | typeof NOT_TAGGED {
+  const hasBytes = Object.prototype.hasOwnProperty.call(record, IPC_BYTES_TAG);
+  const hasInteger = Object.prototype.hasOwnProperty.call(record, IPC_INTEGER_TAG);
+  if (!hasBytes && !hasInteger) return NOT_TAGGED;
+  if (Object.keys(record).length !== 1) return NOT_TAGGED;
+  if (hasBytes && typeof record[IPC_BYTES_TAG] === "string")
+    return decodeBase64(record[IPC_BYTES_TAG]);
+  if (
+    hasInteger &&
+    typeof record[IPC_INTEGER_TAG] === "string" &&
+    /^-?\d+$/.test(record[IPC_INTEGER_TAG])
+  )
+    return BigInt(record[IPC_INTEGER_TAG]);
+  return NOT_TAGGED;
+}
+
+function decodeParsedIpcValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1)
+      value[index] = decodeParsedIpcValue(value[index]);
+    return value;
+  }
+  if (!value || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  const tagged = decodeTaggedRecord(record);
+  if (tagged !== NOT_TAGGED) return tagged;
+  for (const key in record) {
+    if (Object.prototype.hasOwnProperty.call(record, key))
+      record[key] = decodeParsedIpcValue(record[key]);
+  }
+  return record;
+}
+
 export function decodeIpcResponse<T>(value: unknown): T {
   const isArrayBuffer = Object.prototype.toString.call(value) === "[object ArrayBuffer]";
   if (isArrayBuffer || ArrayBuffer.isView(value)) {
@@ -49,7 +76,9 @@ export function decodeIpcResponse<T>(value: unknown): T {
       const view = value as ArrayBufferView;
       bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
     }
-    return decodeIpcValue(JSON.parse(new TextDecoder().decode(bytes)));
+    // Binary IPC responses can contain large presentation deltas. Replace tagged leaves in the
+    // parser-owned tree without recursively cloning every array and object.
+    return decodeParsedIpcValue(JSON.parse(new TextDecoder().decode(bytes))) as T;
   }
   return decodeIpcValue(value);
 }

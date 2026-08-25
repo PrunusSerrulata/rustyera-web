@@ -816,14 +816,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
         }
         continue;
       }
-      if (event.channel === "runtime")
-        await handleRuntime(
+      if (event.channel === "runtime") {
+        const pending = handleRuntime(
           event.message as RuntimeMessage,
           event.correlationId,
           suppressedLogNotificationIndexes.has(index),
           event.dataBytes,
         );
-      else await handleDebug(event.message as any, event.correlationId);
+        if (pending) await pending;
+      } else await handleDebug(event.message as any, event.correlationId);
       index += 1;
     }
     if (presentationProjection.shouldPublish(batch.state))
@@ -838,10 +839,91 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await settlePendingGameInput();
   }
 
-  async function handleRuntime(
+  function handleRuntime(
     message: RuntimeMessage,
     correlationId?: number | bigint,
     suppressNotification = false,
+    dataBytes?: Uint8Array,
+  ): void | Promise<void> {
+    const value = message.value;
+    switch (message.type) {
+      case "state_changed":
+        handleRuntimeStateChanged(value);
+        return;
+      case "presentation_snapshot":
+        batchMediaDirty = presentationProjection.projectSnapshot(value) || batchMediaDirty;
+        return;
+      case "presentation_delta":
+        return handlePresentationDelta(value);
+      case "wait_changed":
+        handleRuntimeWaitChanged(value);
+        return;
+      case "input_undo_state_changed":
+        applyInputUndo(value);
+        return;
+      case "log":
+        if (!isRecoverableStaleDebugLog(value.message))
+          log(value.level ?? "info", value.message, true, suppressNotification ? "none" : "all");
+        return;
+      default:
+        return handleRuntimeAsync(message, correlationId, dataBytes);
+    }
+  }
+
+  function handleRuntimeStateChanged(value: any): void {
+    phase.value = value.phase;
+    if (value.phase === "faulted" || value.phase === "stopped") {
+      gameProgressLossConfirmation.value = null;
+      runtimeImport.reset();
+    }
+    if (
+      startupTelemetry.value?.milestones.startSubmittedMs != null &&
+      startupTelemetry.value.outcome === "loading" &&
+      startupTelemetry.value.milestones.firstGamePhaseMs == null &&
+      ["running", "waiting_input", "waiting_external"].includes(value.phase)
+    ) {
+      startupTelemetry.value.milestones.firstGamePhaseMs = startupTelemetryState.elapsedMs();
+      startupTelemetry.value.outcome = "success";
+      startupTelemetryState.startMessageId = undefined;
+      // Host-side work such as font registration may finish after Runtime has already
+      // entered the game. The first game phase is the authoritative load boundary.
+      finishProjectLoad();
+      baseStatus.value = GAME_RUNNING_STATUS;
+    }
+    runtimeEpoch.value = value.epoch ?? runtimeEpoch.value;
+    if (value.phase === "faulted" || value.phase === "stopped") {
+      const startupWasLoading = startupTelemetry.value?.outcome === "loading";
+      if (startupWasLoading) pendingStart = { type: "new_game" };
+      startupTelemetryState.fail(`Runtime entered ${value.phase} during startup`);
+      if (startupWasLoading) finishProjectLoad();
+    }
+    if (value.phase !== "debug_paused") debugStop.value = null;
+  }
+
+  function handlePresentationDelta(value: any): void | Promise<void> {
+    try {
+      batchMediaDirty = presentationProjection.projectDelta(value) || batchMediaDirty;
+    } catch (error) {
+      presentationProjection.discard();
+      log("warning", String(error));
+      return send({ type: "resynchronize", value: { after_sequence: null } }).then(() => undefined);
+    }
+  }
+
+  function handleRuntimeWaitChanged(value: any): void {
+    if (value.type === "opened" || value.type === "updated") {
+      runtimeInput.updateWait(value.value);
+      currentPresentation().inputWait = value.value;
+      presentationProjection.markStagedReady();
+    } else if (value.type === "closed") {
+      currentPresentation().inputWait = null;
+      runtimeInput.closeWait();
+    }
+  }
+
+  async function handleRuntimeAsync(
+    message: RuntimeMessage,
+    correlationId?: number | bigint,
     dataBytes?: Uint8Array,
   ): Promise<void> {
     const value = message.value;
@@ -914,47 +996,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
         }
         break;
       }
-      case "state_changed":
-        phase.value = value.phase;
-        if (value.phase === "faulted" || value.phase === "stopped") {
-          gameProgressLossConfirmation.value = null;
-          runtimeImport.reset();
-        }
-        if (
-          startupTelemetry.value?.milestones.startSubmittedMs != null &&
-          startupTelemetry.value.outcome === "loading" &&
-          startupTelemetry.value.milestones.firstGamePhaseMs == null &&
-          ["running", "waiting_input", "waiting_external"].includes(value.phase)
-        ) {
-          startupTelemetry.value.milestones.firstGamePhaseMs = startupTelemetryState.elapsedMs();
-          startupTelemetry.value.outcome = "success";
-          startupTelemetryState.startMessageId = undefined;
-          // Host-side work such as font registration may finish after Runtime has already
-          // entered the game. The first game phase is the authoritative load boundary.
-          finishProjectLoad();
-          baseStatus.value = GAME_RUNNING_STATUS;
-        }
-        runtimeEpoch.value = value.epoch ?? runtimeEpoch.value;
-        if (value.phase === "faulted" || value.phase === "stopped") {
-          const startupWasLoading = startupTelemetry.value?.outcome === "loading";
-          if (startupWasLoading) pendingStart = { type: "new_game" };
-          startupTelemetryState.fail(`Runtime entered ${value.phase} during startup`);
-          if (startupWasLoading) finishProjectLoad();
-        }
-        if (value.phase !== "debug_paused") debugStop.value = null;
-        break;
-      case "presentation_snapshot":
-        batchMediaDirty = presentationProjection.projectSnapshot(value) || batchMediaDirty;
-        break;
-      case "presentation_delta":
-        try {
-          batchMediaDirty = presentationProjection.projectDelta(value) || batchMediaDirty;
-        } catch (error) {
-          presentationProjection.discard();
-          log("warning", String(error));
-          await send({ type: "resynchronize", value: { after_sequence: null } });
-        }
-        break;
       case "runtime_resynchronized":
         phase.value = value.phase;
         runtimeEpoch.value = value.epoch ?? runtimeEpoch.value;
@@ -973,19 +1014,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
       case "client_preferences_applied":
         if (!(await runtimeClientPreferences.handleApplied(value, correlationId)))
           log("warning", "忽略了非预期的客户端偏好响应");
-        break;
-      case "wait_changed":
-        if (value.type === "opened" || value.type === "updated") {
-          runtimeInput.updateWait(value.value);
-          currentPresentation().inputWait = value.value;
-          presentationProjection.markStagedReady();
-        } else if (value.type === "closed") {
-          currentPresentation().inputWait = null;
-          runtimeInput.closeWait();
-        }
-        break;
-      case "input_undo_state_changed":
-        applyInputUndo(value);
         break;
       case "effect_batch":
         await handleEffects(value.effects ?? []);
@@ -1070,10 +1098,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
             "none",
           );
         }
-        break;
-      case "log":
-        if (!isRecoverableStaleDebugLog(value.message))
-          log(value.level ?? "info", value.message, true, suppressNotification ? "none" : "all");
         break;
       case "command_rejected": {
         const correlation = String(correlationId);

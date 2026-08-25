@@ -137,17 +137,29 @@ const historyBottomInset = computed(() =>
   Math.max(0, viewportHeight.value - measuredHistoryHeight.value),
 );
 
+const bottomFollowSource = () =>
+  [store.presentation.historyRevision, store.presentation.lines.at(-1)?.line_id] as const;
+let followAfterRender = false;
 watch(
-  () => [store.presentation.historyRevision, store.presentation.lines.at(-1)?.line_id] as const,
-  async ([historyRevision], [previousHistoryRevision]) => {
+  bottomFollowSource,
+  ([historyRevision], [previousHistoryRevision]) => {
     // Equal-length dynamic-map refreshes replace the tail with new line IDs without
     // counting as new history. Keep following them only when the old frame was at bottom;
     // an intentionally scrolled-back viewport must remain untouched.
-    if (historyRevision === previousHistoryRevision && !followingBottom && !isAtBottom()) return;
+    followAfterRender =
+      historyRevision !== previousHistoryRevision || followingBottom || isAtBottom();
+  },
+  { flush: "pre" },
+);
+watch(
+  bottomFollowSource,
+  async () => {
+    if (!followAfterRender) return;
+    followAfterRender = false;
     const followRevision = ++bottomFollowRevision;
     followingBottom = true;
-    await nextTick();
-    if (followRevision !== bottomFollowRevision) return;
+    // Run after Vue has committed the current history window, then select the new tail before the
+    // browser paints. An extra nextTick here makes the virtualizer defer the input row by a frame.
     goBottom();
     // Dynamic rows are measured only after the first scroll makes the tail
     // visible. Follow the corrected size on the next frame, then clamp to the
@@ -160,6 +172,7 @@ watch(
     if (viewport.value) viewport.value.scrollTop = viewport.value.scrollHeight;
     followingBottom = false;
   },
+  { flush: "post" },
 );
 
 function isAtBottom(): boolean {

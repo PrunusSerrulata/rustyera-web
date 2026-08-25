@@ -2,6 +2,8 @@ import { ref } from "vue";
 
 import type { FrontendBridge, PumpBatch } from "@/core/types";
 
+const MAXIMUM_CONTIGUOUS_COMPUTE_PUMPS = 8;
+
 interface RuntimePumpCallbacks {
   handleBatch(batch: PumpBatch): Promise<void>;
   advanceTimedWait(): Promise<void>;
@@ -67,12 +69,24 @@ export class RuntimePumpCoordinator {
     if (this.pumping || this.transitioning) return;
     this.#pumping.value = true;
     try {
-      // Queue the timer at the next drive boundary. Input already submitted for the visible
-      // wait is therefore ordered first, and input submitted while this request is in flight is
-      // present for the runtime's timer/input arbitration in the same pump.
-      await this.callbacks.advanceTimedWait();
-      const batch = await this.bridge.pump();
-      await this.callbacks.handleBatch(batch);
+      let batch: PumpBatch;
+      let pumps = 0;
+      do {
+        // Sample timers at every drive boundary. Input already submitted for the visible wait is
+        // therefore ordered first, and input submitted while a bridge request is in flight is
+        // present for the runtime's timer/input arbitration in the next pump.
+        await this.callbacks.advanceTimedWait();
+        batch = await this.bridge.pump();
+        await this.callbacks.handleBatch(batch);
+        pumps += 1;
+        // Compute-only slices have no frame for the browser to present. Continue them without a
+        // zero-delay timer (and its nested-timer clamp), but retain a hard fairness boundary.
+      } while (
+        batch.state === "more_work" &&
+        pumps < MAXIMUM_CONTIGUOUS_COMPUTE_PUMPS &&
+        this.ready &&
+        !this.transitioning
+      );
       this.schedule(batch.state === "more_work" || batch.state === "output_ready" ? 0 : 16);
     } catch (error) {
       this.callbacks.handleError(error);

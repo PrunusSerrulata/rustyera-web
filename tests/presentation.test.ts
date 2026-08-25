@@ -56,6 +56,45 @@ describe("presentation projection", () => {
     expect(state.lines.map(plainLine)).toEqual(["new", "next"]);
   });
 
+  it("batches ordered history prefix trims without changing later line operations", () => {
+    const state = emptyPresentation();
+    const line = (lineId: number, text: string): DisplayLine => ({
+      line_id: lineId,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs: [
+        {
+          type: "text",
+          text,
+          style: {
+            foreground: { red: 255, green: 255, blue: 255, alpha: 255 },
+            bold: false,
+            italic: false,
+            underline: false,
+            strikeout: false,
+            font_millipixels: 16_000,
+          },
+        },
+      ],
+    });
+    state.lines = [line(1, "one"), line(2, "two"), line(3, "three")];
+
+    applyDelta(state, {
+      base_revision: 0,
+      new_revision: 1,
+      operations: [
+        { type: "trim_lines", count: 1 },
+        { type: "append_line", line: line(4, "four") },
+        { type: "trim_lines", count: 1 },
+        { type: "replace_line", line_id: 3, line: line(3, "THREE") },
+      ],
+    });
+
+    expect(state.lines.map(plainLine)).toEqual(["THREE", "four"]);
+  });
+
   it("keeps runtime text advances out of plain and HTML service text", () => {
     const line = {
       line_id: 1,

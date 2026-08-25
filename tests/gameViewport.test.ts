@@ -156,6 +156,28 @@ describe("game viewport", () => {
     wrapper.unmount();
   });
 
+  it("selects the committed history tail before the first measurement frame", async () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    virtualState.items = [{ index: 0, key: "1:1", start: 0 }];
+    const wrapper = shallowMount(GameViewport);
+    scrollToIndex.mockClear();
+
+    store.presentation.lines[0] = { line_id: 2, alignment: "left", runs: [] };
+    store.presentation.revision += 1;
+    store.presentation.historyRevision += 1;
+    await nextTick();
+
+    expect(wrapper.findComponent(DisplayLine).props("line").line_id).toBe(2);
+    expect(scrollToIndex).toHaveBeenCalledOnce();
+    expect(scrollToIndex).toHaveBeenLastCalledWith(0, { align: "end" });
+    expect(callbacks).toHaveLength(1);
+    wrapper.unmount();
+  });
+
   it("updates an equal-length dynamic tail without moving the viewport", async () => {
     store.presentation.lines = [
       { line_id: 1, alignment: "left", runs: [] },
@@ -167,10 +189,13 @@ describe("game viewport", () => {
     const setScrollTop = vi.fn();
     Object.defineProperties(viewport, {
       clientHeight: { configurable: true, value: 50 },
-      scrollHeight: { configurable: true, value: 100 },
+      scrollHeight: {
+        configurable: true,
+        get: () => (wrapper.findComponent(DisplayLine).props("line").line_id === 2 ? 100 : 90),
+      },
       scrollTop: {
         configurable: true,
-        get: () => 25,
+        get: () => 40,
         set: setScrollTop,
       },
     });
@@ -201,7 +226,7 @@ describe("game viewport", () => {
       clientHeight: { configurable: true, value: 50 },
       scrollHeight: {
         configurable: true,
-        get: () => (scrollToIndex.mock.calls.length ? 106.5 : 100),
+        get: () => (wrapper.findComponent(DisplayLine).props("line").line_id === 2 ? 100 : 106.5),
       },
       scrollTop: {
         configurable: true,

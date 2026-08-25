@@ -71,6 +71,38 @@ describe("runtime pump coordinator", () => {
     coordinator.clearTimer();
   });
 
+  it("continues bounded compute-only work without another timer", async () => {
+    const pump = vi
+      .fn<() => Promise<PumpBatch>>()
+      .mockResolvedValueOnce(batch("more_work"))
+      .mockResolvedValueOnce(batch("more_work"))
+      .mockResolvedValueOnce(batch("idle"));
+    const advanceTimedWait = vi.fn(async () => {});
+    const coordinator = createCoordinator({ pump, advanceTimedWait });
+    coordinator.setReady(true);
+
+    coordinator.schedule(0);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(pump).toHaveBeenCalledTimes(3);
+    expect(advanceTimedWait).toHaveBeenCalledTimes(3);
+    expect(vi.getTimerCount()).toBe(1);
+    coordinator.clearTimer();
+  });
+
+  it("yields compute-only work at the contiguous fairness boundary", async () => {
+    const pump = vi.fn(async () => batch("more_work"));
+    const coordinator = createCoordinator({ pump });
+    coordinator.setReady(true);
+
+    coordinator.schedule(0);
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(pump).toHaveBeenCalledTimes(8);
+    expect(vi.getTimerCount()).toBe(1);
+    coordinator.clearTimer();
+  });
+
   it("reports bridge failures without leaving a pump in flight", async () => {
     const failure = new Error("pump failed");
     const handleError = vi.fn();

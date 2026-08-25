@@ -607,9 +607,42 @@ describe("runtime store cache-input", () => {
     );
   });
 
-  it("starts continuous message skipping from an AnyKey viewport right click", async () => {
+  it.each<[string, string, { type: string; value?: string }]>([
+    ["AnyKey", "any_key", { type: "any_key", value: "\n" }],
+    ["EnterKey", "enter_key", { type: "enter" }],
+  ])(
+    "submits %s message skipping directly from a viewport right click",
+    async (_, kind, intent) => {
+      const store = await storeWithInputWait({
+        kind,
+        wait_id: 22,
+        submission_token: { epoch: 2, id: 9 },
+      });
+      bridge.submitRuntime.mockClear();
+
+      await store.skip();
+
+      expect(bridge.submitRuntime).toHaveBeenCalledOnce();
+      expect(bridge.submitRuntime).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          type: "input",
+          value: expect.objectContaining({
+            wait_id: 22,
+            intent,
+            message_skip: true,
+          }),
+        }),
+        undefined,
+      );
+    },
+  );
+
+  it.each<[string, { kind: string; stop_message_skip?: boolean }]>([
+    ["a stop-message-skip wait", { kind: "enter_key", stop_message_skip: true }],
+    ["a non-message wait", { kind: "integer_value" }],
+  ])("keeps the mouse device event for %s", async (_, wait) => {
     const store = await storeWithInputWait({
-      kind: "any_key",
+      ...wait,
       wait_id: 22,
       submission_token: { epoch: 2, id: 9 },
     });
@@ -617,23 +650,11 @@ describe("runtime store cache-input", () => {
 
     await store.skip();
 
-    expect(bridge.submitRuntime).toHaveBeenCalledTimes(2);
-    expect(bridge.submitRuntime).toHaveBeenNthCalledWith(
-      1,
+    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "device_state_changed",
         value: expect.objectContaining({ device: "mouse", code: 2, pressed: true }),
-      }),
-      undefined,
-    );
-    expect(bridge.submitRuntime).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "input",
-        value: expect.objectContaining({
-          wait_id: 22,
-          intent: { type: "any_key", value: "\n" },
-          message_skip: true,
-        }),
       }),
       undefined,
     );
