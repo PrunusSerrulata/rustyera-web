@@ -14,6 +14,7 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod export;
 mod image_metadata;
 mod ipc;
+mod memory;
 mod preferences;
 mod project;
 mod services;
@@ -103,8 +104,8 @@ async fn create_session(
 ) -> Result<tauri::ipc::Response, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        retire_runtime_state(&state)?;
         let mut session = WebSession::new(options)?;
-        *state.full_manifest_spool.lock().map_err(lock_error)? = None;
         let progress_app = app.clone();
         session.set_project_progress_reporter(Some(ProjectProgressReporter::new(
             move |progress| {
@@ -112,11 +113,20 @@ async fn create_session(
             },
         )));
         let initial = session.pump(RuntimeDriveBudget::default())?;
+        let response = encode_ipc_response(&initial)?;
         *state.session.lock().map_err(lock_error)? = Some(session);
-        encode_ipc_response(&initial)
+        Ok(response)
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn destroy_session(state: State<'_, AppState>) -> Result<(), String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || retire_runtime_state(&state))
+        .await
+        .map_err(|error| format!("frontend background task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -277,6 +287,7 @@ async fn open_project(
 ) -> Result<ProjectOpenMetrics, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        retire_project_state(&state)?;
         let scan_progress = |completed, total| emit_scanning_progress(&app, completed, total);
         let started = Instant::now();
         let source_index_trusted = preferences::effective_source_metadata_trust(&app, &path)?;
@@ -304,26 +315,29 @@ async fn open_project(
                 true
             } else {
                 let source_started = Instant::now();
-                let manifest = host.retained_manifest_with_progress(Some(&scan_progress))?;
+                let manifest = host.take_manifest_with_progress(Some(&scan_progress))?;
                 source_read_ms = source_started.elapsed().as_secs_f64() * 1000.0;
                 with_session(&state, |session| session.load_project(manifest))?;
                 false
             }
         } else {
             let source_started = Instant::now();
-            let manifest = host.retained_manifest_with_progress(Some(&scan_progress))?;
+            let manifest = host.take_manifest_with_progress(Some(&scan_progress))?;
             source_read_ms = source_started.elapsed().as_secs_f64() * 1000.0;
             with_session(&state, |session| session.load_project(manifest))?;
             false
         };
         let submit_ms = submit_started.elapsed().as_secs_f64() * 1000.0 - source_read_ms;
-        *state.storage.lock().map_err(lock_error)? = Some(StorageHost::new(host.root().to_owned()));
-        *state.project.lock().map_err(lock_error)? = Some(host);
-        *state.project_preferences.lock().map_err(lock_error)? =
-            Some(preferences::ProjectPreferenceLocation {
+        let storage_root = host.root().to_owned();
+        install_project_state(
+            &state,
+            host,
+            StorageHost::new(storage_root),
+            preferences::ProjectPreferenceLocation {
                 path: path.clone(),
                 project_file: false,
-            });
+            },
+        )?;
         Ok(ProjectOpenMetrics {
             quick_scan_ms,
             cache_read_ms,
@@ -346,6 +360,7 @@ async fn open_project_file(
 ) -> Result<ProjectOpenMetrics, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        retire_project_state(&state)?;
         let started = Instant::now();
         let bytes =
             fs::read(&path).map_err(|error| format!("cannot read project file: {error}"))?;
@@ -374,16 +389,18 @@ async fn open_project_file(
         }
         let submit_ms = started.elapsed().as_secs_f64() * 1000.0;
         let storage_root = host.runtime_storage_root();
-        *state.storage.lock().map_err(lock_error)? = Some(StorageHost::new(storage_root));
-        // Keep the portable manifest/resources while the cache candidate is pending. If both a
+        // Keep only packaged resource lookup data while the cache candidate is pending. If both a
         // refreshed sidecar and the embedded legacy cache are incompatible, `submit_project_source`
-        // lazily decodes the authoritative package and submits its complete source manifest.
-        *state.project.lock().map_err(lock_error)? = Some(host);
-        *state.project_preferences.lock().map_err(lock_error)? =
-            Some(preferences::ProjectPreferenceLocation {
+        // lazily decodes the authoritative package and transfers ownership of its source manifest.
+        install_project_state(
+            &state,
+            host,
+            StorageHost::new(storage_root),
+            preferences::ProjectPreferenceLocation {
                 path,
                 project_file: true,
-            });
+            },
+        )?;
         Ok(ProjectOpenMetrics {
             quick_scan_ms: 0.0,
             cache_read_ms: 0.0,
@@ -404,14 +421,22 @@ async fn submit_project_source(app: AppHandle, state: State<'_, AppState>) -> Re
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let scan_progress = |completed, total| emit_scanning_progress(&app, completed, total);
-        let manifest = state
+        let manifest = {
+            let mut project = state.project.lock().map_err(lock_error)?;
+            project
+                .as_mut()
+                .ok_or_else(|| "no project is open".to_owned())?
+                .take_manifest_with_progress(Some(&scan_progress))?
+        };
+        let message_id = with_session(&state, |session| session.load_project(manifest))?;
+        state
             .project
             .lock()
             .map_err(lock_error)?
             .as_mut()
             .ok_or_else(|| "no project is open".to_owned())?
-            .retained_manifest_with_progress(Some(&scan_progress))?;
-        with_session(&state, |session| session.load_project(manifest))
+            .mark_runtime_manifest_complete();
+        Ok(message_id)
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
@@ -436,20 +461,18 @@ async fn project_reload_targets(
 }
 
 #[tauri::command]
-async fn prepare_project_reload_baseline(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+async fn prepare_project_reload_baseline(state: State<'_, AppState>) -> Result<(), String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let scan_progress = |completed, total| emit_scanning_progress(&app, completed, total);
         state
             .project
             .lock()
             .map_err(lock_error)?
-            .as_mut()
-            .ok_or_else(|| "no project is open".to_owned())?
-            .materialize_with_progress(Some(&scan_progress))?;
+            .as_ref()
+            .ok_or_else(|| "no project is open".to_owned())?;
+        // Sparse reloads hydrate lazily inside `reload_scoped_with_progress`. Retaining a fully
+        // materialized baseline from cache acceptance until a possible future reload defeats the
+        // native host's single-owner source policy.
         Ok(())
     })
     .await
@@ -629,6 +652,44 @@ fn with_session<T>(
     operation(session)
 }
 
+fn retire_runtime_state(state: &AppState) -> Result<(), String> {
+    let session = state.session.lock().map_err(lock_error)?.take();
+    drop(session);
+    retire_project_state(state)
+}
+
+fn retire_project_state(state: &AppState) -> Result<(), String> {
+    state.full_project_cancelled.store(true, Ordering::Relaxed);
+    let spool = state.full_manifest_spool.lock().map_err(lock_error)?.take();
+    drop(spool);
+    let cache_writer = state.cache_writer.lock().map_err(lock_error)?.take();
+    drop(cache_writer);
+    let storage = state.storage.lock().map_err(lock_error)?.take();
+    drop(storage);
+    let project = state.project.lock().map_err(lock_error)?.take();
+    drop(project);
+    let preferences = state.project_preferences.lock().map_err(lock_error)?.take();
+    drop(preferences);
+    Ok(())
+}
+
+fn install_project_state(
+    state: &AppState,
+    project: ProjectHost,
+    storage: StorageHost,
+    preferences: preferences::ProjectPreferenceLocation,
+) -> Result<(), String> {
+    // Match the pump's storage -> project lock order and acquire every destination before
+    // publishing any owner, so a poisoned lock cannot leave a half-installed project.
+    let mut storage_slot = state.storage.lock().map_err(lock_error)?;
+    let mut project_slot = state.project.lock().map_err(lock_error)?;
+    let mut preference_slot = state.project_preferences.lock().map_err(lock_error)?;
+    *storage_slot = Some(storage);
+    *project_slot = Some(project);
+    *preference_slot = Some(preferences);
+    Ok(())
+}
+
 fn lock_error<T>(error: std::sync::PoisonError<T>) -> String {
     format!("frontend state lock was poisoned: {error}")
 }
@@ -650,6 +711,7 @@ pub fn run() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             create_session,
+            destroy_session,
             submit_runtime,
             stage_full_project_manifest,
             read_full_project_manifest_chunk,
@@ -670,6 +732,7 @@ pub fn run() {
             write_project_configuration,
             storage_request,
             list_fonts,
+            memory::memory_snapshot,
             preferences::load_preferences,
             preferences::save_preferences,
             preferences::load_project_preferences,

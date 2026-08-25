@@ -181,6 +181,7 @@ fn resource_scan_uses_external_descriptor_and_full_export_restores_bytes() {
     let size = project
         .write_full_manifest_with_progress_and_cancel(&mut full, None, None)
         .unwrap();
+    assert!(project.manifest.is_none());
     assert_eq!(usize::try_from(size).unwrap(), full.len());
     let decoded: ProjectManifest = era_protocol::decode_canonical(&full).unwrap();
     assert!(matches!(
@@ -629,7 +630,7 @@ fn indexed_materialization_preserves_order_and_reports_each_file() {
     let progress = |completed, total| observed.borrow_mut().push((completed, total));
 
     let manifest = indexed
-        .retained_manifest_with_progress(Some(&progress))
+        .take_manifest_with_progress(Some(&progress))
         .unwrap();
 
     let paths = manifest
@@ -643,6 +644,7 @@ fn indexed_materialization_preserves_order_and_reports_each_file() {
         era_web_bridge::project_identity(&manifest).unwrap(),
         indexed.identity()
     );
+    assert!(indexed.manifest.is_none());
 }
 
 #[test]
@@ -705,8 +707,9 @@ fn scoped_reload_retains_unselected_disk_changes_for_a_later_reload() {
     .unwrap();
     fs::write(other.join("command.erb"), "@COM1\nPRINTL OLD\nRETURN 1\n").unwrap();
     let mut project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
-    let submitted = project.retained_manifest_with_progress(None).unwrap();
+    let submitted = project.take_manifest_with_progress(None).unwrap();
     assert_eq!(submitted.project_revision, 1);
+    assert!(project.manifest.is_none());
 
     fs::write(
         selected.join("command.erb"),
@@ -730,18 +733,9 @@ fn scoped_reload_retains_unselected_disk_changes_for_a_later_reload() {
             if file.relative_path == "ERB/selected/command.erb"
                 && matches!(&file.payload, FilePayload::Utf8(text) if text.contains("PRINTL SELECTED"))
     )));
-    assert_eq!(project.materialize().unwrap().project_revision, 1);
     project.finalize_reload(true);
-    let active = project.materialize().unwrap();
-    assert_eq!(active.project_revision, 2);
-    assert!(active.files.iter().any(|file| {
-        file.relative_path == "ERB/selected/command.erb"
-            && matches!(&file.payload, FilePayload::Utf8(text) if text.contains("PRINTL SELECTED"))
-    }));
-    assert!(active.files.iter().any(|file| {
-        file.relative_path == "ERB/other/command.erb"
-            && matches!(&file.payload, FilePayload::Utf8(text) if text.contains("PRINTL OLD"))
-    }));
+    assert_eq!(project.revision, 2);
+    assert!(project.manifest.is_none());
 
     let remaining_reload = project
         .reload_scoped_with_progress(
@@ -760,7 +754,7 @@ fn scoped_reload_retains_unselected_disk_changes_for_a_later_reload() {
 }
 
 #[test]
-fn sparse_scoped_reload_hydrates_the_active_baseline_and_commits_only_on_success() {
+fn sparse_scoped_reload_hydrates_from_current_sources_and_commits_only_on_success() {
     let directory = tempfile::tempdir().unwrap();
     let selected = directory.path().join("ERB/selected");
     let other = directory.path().join("ERB/other");
@@ -773,7 +767,7 @@ fn sparse_scoped_reload_hydrates_the_active_baseline_and_commits_only_on_success
     .unwrap();
     fs::write(other.join("command.erb"), "@COM1\nPRINTL OLD\nRETURN 1\n").unwrap();
     let mut project = ProjectHost::scan_quick(directory.path(), 1).unwrap();
-    project.retained_manifest_with_progress(None).unwrap();
+    project.take_manifest_with_progress(None).unwrap();
     project.mark_runtime_manifest_sparse();
 
     fs::write(
@@ -782,6 +776,17 @@ fn sparse_scoped_reload_hydrates_the_active_baseline_and_commits_only_on_success
     )
     .unwrap();
     fs::write(other.join("command.erb"), "@COM1\nPRINTL OTHER\nRETURN 1\n").unwrap();
+    let error = project
+        .reload_scoped_with_progress(
+            &ProjectReloadScope::Folder {
+                path: "ERB/selected".into(),
+            },
+            None,
+        )
+        .unwrap_err();
+    assert!(error.contains("请改用全部重载"));
+
+    fs::write(other.join("command.erb"), "@COM1\nPRINTL OLD\nRETURN 1\n").unwrap();
     let request = project
         .reload_scoped_with_progress(
             &ProjectReloadScope::Folder {
@@ -807,12 +812,9 @@ fn sparse_scoped_reload_hydrates_the_active_baseline_and_commits_only_on_success
                 && matches!(&file.payload, FilePayload::Utf8(text) if text.contains("PRINTL OLD"))
     )));
     project.finalize_reload(false);
-    let rolled_back = project.materialize().unwrap();
-    assert_eq!(rolled_back.project_revision, 1);
-    assert!(rolled_back.files.iter().any(|file| {
-        file.relative_path == "ERB/selected/command.erb"
-            && matches!(&file.payload, FilePayload::Utf8(text) if text.contains("PRINTL OLD"))
-    }));
+    assert_eq!(project.revision, 1);
+    assert!(project.manifest.is_none());
+    assert!(project.runtime_manifest_sparse);
 
     project
         .reload_scoped_with_progress(
@@ -823,6 +825,8 @@ fn sparse_scoped_reload_hydrates_the_active_baseline_and_commits_only_on_success
         )
         .unwrap();
     project.finalize_reload(true);
+    assert!(!project.runtime_manifest_sparse);
+    assert!(project.manifest.is_none());
     let active = project.materialize().unwrap();
     assert_eq!(active.project_revision, 2);
     assert!(active.files.iter().any(|file| {

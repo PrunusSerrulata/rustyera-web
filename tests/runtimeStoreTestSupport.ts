@@ -75,6 +75,17 @@ export function installRuntimeStoreTestHarness(): void {
     bridge.automaticCompiledCacheExport = true;
     bridge.fullProjectExportSupported.mockReturnValue(true);
     bridge.createSession.mockResolvedValue(emptyBatch());
+    bridge.prepareSessionReplacement.mockResolvedValue(undefined);
+    bridge.runtimeMemoryCounters.mockReturnValue({
+      workerGeneration: null,
+      wasmLinearMemoryBytes: null,
+      residentBytes: null,
+      physicalFootprintBytes: null,
+      virtualBytes: null,
+      privateBytes: null,
+      committedBytes: null,
+      anonymousBytes: null,
+    });
     bridge.submitRuntime.mockResolvedValue(1);
     bridge.prepareProjectReloadBaseline.mockResolvedValue(undefined);
     let nextDebugMessageId = 1;

@@ -70,11 +70,13 @@ it("terminates the old worker and accepts requests on a fresh worker after resta
   vi.stubGlobal("Worker", ControlledWorker);
   const client = new WorkerClient();
   const first = ControlledWorker.current;
+  expect(client.generation).toBe(1);
   const active = client.call("pump");
   const activeRejection = expect(active).rejects.toThrow("Worker 已重启");
 
   await client.restart();
   const second = ControlledWorker.current;
+  expect(client.generation).toBe(2);
 
   await activeRejection;
   expect(second).not.toBe(first);

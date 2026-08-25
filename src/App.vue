@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
 import AboutDialog from "@/components/AboutDialog.vue";
 import BrowserFileSaveDialog from "@/components/BrowserFileSaveDialog.vue";
@@ -37,6 +37,7 @@ function cssColor(color: any, fallback: string): string {
 }
 
 onMounted(() => void store.initialize());
+onBeforeUnmount(() => store.teardown());
 </script>
 
 <template>

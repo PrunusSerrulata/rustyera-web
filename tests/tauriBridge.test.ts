@@ -65,6 +65,16 @@ describe("Tauri project restart", () => {
     const bridge = new TauriBridge();
 
     expect(bridge.snapshotRestoreMode).toBe("in_place");
+    expect(bridge.runtimeMemoryCounters()).toEqual({
+      workerGeneration: null,
+      wasmLinearMemoryBytes: null,
+      residentBytes: null,
+      physicalFootprintBytes: null,
+      virtualBytes: null,
+      privateBytes: null,
+      committedBytes: null,
+      anonymousBytes: null,
+    });
     expect(bridge.automaticCompiledCacheExport).toBe(true);
     await bridge.openProject();
     expect(bridge.fullProjectExportSupported()).toBe(true);

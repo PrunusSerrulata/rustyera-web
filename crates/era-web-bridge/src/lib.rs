@@ -22,6 +22,7 @@ use erabasic_vm::VmConfig;
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_ENVELOPE_BYTES: u64 = 512 * 1024 * 1024;
+const DEFAULT_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAXIMUM_TRANSFER_BYTES: u64 = 1024 * 1024 * 1024;
 const DEBUG_SCOPE_ALL: u64 = (1 << 10) - 1;
 pub const FRONTEND_PUMP_MAXIMUM_QUIET_SLICES: usize = 16;
@@ -146,6 +147,7 @@ impl WebSession {
             maximum_payload_bytes,
             maximum_pending_requests: 128,
             maximum_journal_entries: 4096,
+            maximum_journal_bytes: DEFAULT_JOURNAL_BYTES,
             maximum_drive_instructions: 1_000_000,
             maximum_transfer_bytes: MAXIMUM_TRANSFER_BYTES,
         };

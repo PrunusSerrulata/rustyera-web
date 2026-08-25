@@ -247,7 +247,13 @@ describe("runtime store startup-save", () => {
       "monospace",
     ]);
     expect(bridge.restartProject).toHaveBeenCalledOnce();
-    expect(bridge.prepareSnapshotRestore).not.toHaveBeenCalled();
+    expect(bridge.prepareSessionReplacement).toHaveBeenCalledOnce();
+    expect(bridge.prepareSessionReplacement.mock.invocationCallOrder[0]).toBeLessThan(
+      bridge.createSession.mock.invocationCallOrder[0]!,
+    );
+    expect(bridge.createSession.mock.invocationCallOrder[0]).toBeLessThan(
+      bridge.restartProject.mock.invocationCallOrder[0]!,
+    );
     expect(store.projectSource).toBe("file");
     expect(bridge.submitRuntime).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "start" }),
@@ -270,10 +276,10 @@ describe("runtime store startup-save", () => {
 
     await store.restoreSnapshot();
 
-    expect(bridge.prepareSnapshotRestore).toHaveBeenCalledOnce();
+    expect(bridge.prepareSessionReplacement).toHaveBeenCalledOnce();
     expect(bridge.createSession).toHaveBeenCalledOnce();
     expect(bridge.restartProject).toHaveBeenCalledOnce();
-    expect(bridge.prepareSnapshotRestore.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(bridge.prepareSessionReplacement.mock.invocationCallOrder[0]).toBeLessThan(
       bridge.createSession.mock.invocationCallOrder[0]!,
     );
     expect(bridge.createSession.mock.invocationCallOrder[0]).toBeLessThan(
@@ -308,7 +314,7 @@ describe("runtime store startup-save", () => {
 
     await store.restoreSnapshot();
 
-    expect(bridge.prepareSnapshotRestore).not.toHaveBeenCalled();
+    expect(bridge.prepareSessionReplacement).not.toHaveBeenCalled();
     expect(bridge.createSession).not.toHaveBeenCalled();
     expect(bridge.restartProject).not.toHaveBeenCalled();
     expect(bridge.submitRuntime).toHaveBeenCalledWith(

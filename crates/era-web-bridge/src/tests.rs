@@ -62,6 +62,7 @@ fn client_advertises_canvas_image_decode() {
             maximum_payload_bytes: DEFAULT_ENVELOPE_BYTES - 1024 * 1024,
             maximum_pending_requests: 128,
             maximum_journal_entries: 4096,
+            maximum_journal_bytes: 64 * 1024 * 1024,
             maximum_drive_instructions: 1_000_000,
             maximum_transfer_bytes: DEFAULT_ENVELOPE_BYTES - 1024 * 1024,
         },

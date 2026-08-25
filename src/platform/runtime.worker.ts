@@ -8,6 +8,7 @@ type WasmModule = {
     options: unknown,
     progress?: (value: unknown) => void,
   ) => {
+    free(): void;
     submitRuntime(message: unknown, correlationId?: bigint): bigint;
     submitDebug(message: unknown, correlationId?: bigint): bigint;
     loadProject(manifest: unknown): bigint;
@@ -52,6 +53,9 @@ self.onmessage = async (event: MessageEvent) => {
   try {
     let result: unknown;
     if (method === "create") {
+      const previousRuntime = runtime;
+      runtime = undefined;
+      previousRuntime?.free();
       const wasmUrls = runtimeWasmAssetUrls(
         import.meta.env.DEV,
         import.meta.env.BASE_URL,

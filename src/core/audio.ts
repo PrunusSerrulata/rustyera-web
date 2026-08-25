@@ -8,20 +8,38 @@ import {
 
 export type AudioPlaybackEvent = "started" | "ended";
 
+const DEFAULT_AUDIO_BUFFER_BUDGET_BYTES = 128 * 1024 * 1024;
+
+interface AudioBufferEntry {
+  readonly generation: number;
+  readonly resourceId: string;
+  readonly promise: Promise<AudioBuffer>;
+  bytes: number;
+  lastUsed: number;
+}
+
+export interface AudioMemoryCounters {
+  count: number;
+  estimatedBytes: number;
+}
+
 export class AudioEngine {
   private context?: AudioContext;
   private master?: GainNode;
   private readonly channels = new Map<number, ActiveAudioChannel>();
   private readonly pending = new Map<number, PendingAudioChannel>();
-  private readonly buffers = new Map<string, Promise<AudioBuffer>>();
+  private readonly buffers = new Map<string, AudioBufferEntry>();
   private readonly groupVolumes = new Map<number, number>();
   private gameVolume = 1;
+  private resourceGeneration = 0;
+  private bufferClock = 0;
 
   constructor(
     private readonly bridge: FrontendBridge,
     private preferences: Preferences,
     private readonly reportError: (error: unknown) => void = () => undefined,
     private readonly observePlayback?: (event: AudioPlaybackEvent, resourceId: string) => void,
+    private readonly bufferBudgetBytes = DEFAULT_AUDIO_BUFFER_BUDGET_BYTES,
   ) {}
 
   async unlock(): Promise<boolean> {
@@ -77,9 +95,26 @@ export class AudioEngine {
   }
 
   close(): void {
-    for (const channel of this.channels.keys()) this.stop(channel);
+    this.resetResources(this.resourceGeneration + 1);
+  }
+
+  resetResources(generation: number): void {
+    for (const channel of [...this.channels.keys()]) this.stop(channel);
     this.pending.clear();
-    void this.context?.close();
+    this.buffers.clear();
+    this.groupVolumes.clear();
+    this.resourceGeneration = generation;
+    this.bufferClock = 0;
+    const context = this.context;
+    this.context = undefined;
+    this.master = undefined;
+    if (typeof context?.close === "function") void context.close().catch(this.reportError);
+  }
+
+  memoryCounters(): AudioMemoryCounters {
+    let estimatedBytes = 0;
+    for (const entry of this.buffers.values()) estimatedBytes += entry.bytes;
+    return { count: this.buffers.size, estimatedBytes };
   }
 
   private audioContext(): AudioContext {
@@ -160,6 +195,7 @@ export class AudioEngine {
       .catch((error) => {
         if (this.pending.get(playbackId)?.token !== token) return;
         this.pending.delete(playbackId);
+        this.evictBuffers();
         this.reportError(error);
       });
   }
@@ -204,6 +240,7 @@ export class AudioEngine {
     active.source.onended = null;
     active.source.disconnect();
     active.gain.disconnect();
+    this.evictBuffers();
     return active;
   }
 
@@ -225,17 +262,70 @@ export class AudioEngine {
   }
 
   private load(resourceId: string): Promise<AudioBuffer> {
-    const cached = this.buffers.get(resourceId);
-    if (cached) return cached;
+    const generation = this.resourceGeneration;
+    const key = this.bufferKey(resourceId, generation);
+    const cached = this.buffers.get(key);
+    if (cached) {
+      cached.lastUsed = ++this.bufferClock;
+      return cached.promise;
+    }
     const promise = this.bridge.readResource(resourceId).then((bytes) => {
+      if (generation !== this.resourceGeneration) throw new Error("音频资源 generation 已失效");
       const buffer = new ArrayBuffer(bytes.byteLength);
       new Uint8Array(buffer).set(bytes);
       return this.audioContext().decodeAudioData(buffer);
     });
-    this.buffers.set(resourceId, promise);
-    void promise.catch(() => {
-      if (this.buffers.get(resourceId) === promise) this.buffers.delete(resourceId);
-    });
+    const entry: AudioBufferEntry = {
+      generation,
+      resourceId,
+      promise,
+      bytes: 0,
+      lastUsed: ++this.bufferClock,
+    };
+    this.buffers.set(key, entry);
+    void promise.then(
+      (buffer) => {
+        if (this.buffers.get(key) !== entry) return;
+        entry.bytes = estimatedAudioBufferBytes(buffer);
+        entry.lastUsed = ++this.bufferClock;
+        this.evictBuffers();
+      },
+      () => {
+        if (this.buffers.get(key) === entry) this.buffers.delete(key);
+      },
+    );
     return promise;
   }
+
+  private bufferKey(resourceId: string, generation = this.resourceGeneration): string {
+    return `${generation}\0${resourceId}`;
+  }
+
+  private evictBuffers(): void {
+    let total = this.memoryCounters().estimatedBytes;
+    if (total <= this.bufferBudgetBytes) return;
+    const retained = new Set<string>();
+    for (const active of this.channels.values()) retained.add(this.bufferKey(active.resourceId));
+    for (const pending of this.pending.values())
+      retained.add(this.bufferKey(String(pending.state.resource_id)));
+    const candidates = [...this.buffers.entries()]
+      .filter(([key, entry]) => entry.bytes > 0 && !retained.has(key))
+      .sort((left, right) => left[1].lastUsed - right[1].lastUsed);
+    for (const [key, entry] of candidates) {
+      if (total <= this.bufferBudgetBytes) break;
+      if (!this.buffers.delete(key)) continue;
+      total -= entry.bytes;
+    }
+  }
+}
+
+function estimatedAudioBufferBytes(buffer: AudioBuffer): number {
+  const frames = Number(buffer.length);
+  const channels = Number(buffer.numberOfChannels);
+  if (!Number.isFinite(frames) || !Number.isFinite(channels) || frames < 0 || channels < 0)
+    return 0;
+  return Math.min(
+    Number.MAX_SAFE_INTEGER,
+    Math.ceil(frames * channels * Float32Array.BYTES_PER_ELEMENT),
+  );
 }

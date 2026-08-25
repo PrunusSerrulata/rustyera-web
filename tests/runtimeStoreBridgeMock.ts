@@ -11,7 +11,17 @@ import {
 export const bridge = {
   kind: "tauri" as "tauri" | "browser",
   snapshotRestoreMode: "in_place" as "in_place" | "fresh_session",
-  prepareSnapshotRestore: vi.fn(),
+  prepareSessionReplacement: vi.fn(),
+  runtimeMemoryCounters: vi.fn(() => ({
+    workerGeneration: null,
+    wasmLinearMemoryBytes: null,
+    residentBytes: null,
+    physicalFootprintBytes: null,
+    virtualBytes: null,
+    privateBytes: null,
+    committedBytes: null,
+    anonymousBytes: null,
+  })),
   prewarmRuntimeOnInitialize: false,
   automaticCompiledCacheExport: true,
   createSession: vi.fn(),

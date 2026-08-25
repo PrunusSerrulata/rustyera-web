@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { blake3 } from "@noble/hashes/blake3.js";
 
 import { AudioEngine } from "@/core/audio";
+import { resourceUrlRegistry } from "@/core/resources";
 import { diagnosisProjectName, diagnosisProjectTitle } from "@/core/diagnosis";
 import {
   debugStopToken,
@@ -36,6 +37,7 @@ import {
   defaultPreferences,
   defaultProjectPreferences,
   type InteractionToken,
+  type LiveMemoryCounters,
   type Preferences,
   type ProjectPreferences,
   type ProjectConfigurationChange,
@@ -211,6 +213,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     (error) => log("warning", `音频播放失败：${String(error)}`),
     import.meta.env.VITE_RUSTYERA_TEST === "1" ? recordTestAudioPlayback : undefined,
   );
+  let initialized = false;
+  let initialization: Promise<void> | undefined;
+  let lifecycleGeneration = 0;
   const runtimeConfiguration = new RuntimeConfigurationState({
     bridge,
     send,
@@ -485,21 +490,38 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimeProjectSettings.resetStatus();
   }
 
-  async function initialize(): Promise<void> {
+  function initialize(): Promise<void> {
+    if (initialized) return Promise.resolve();
+    if (initialization) return initialization;
+    const generation = lifecycleGeneration;
+    const operation = performInitialize(generation);
+    initialization = operation;
+    const clear = () => {
+      if (initialization === operation) initialization = undefined;
+    };
+    void operation.then(clear, clear);
+    return operation;
+  }
+
+  async function performInitialize(generation: number): Promise<void> {
     // Host end-to-end tests must not inherit a developer's persisted font/image
     // preferences. Those values change Emuera geometry and made identical test
     // binaries report different image positions on different machines.
     if (import.meta.env.VITE_RUSTYERA_TEST === "1") {
-      preferences.value = {
+      let loadedPreferences: Preferences = {
         ...defaultPreferences(),
         trustProjectFileMetadata:
           bridge.kind === "browser" && import.meta.env.VITE_RUSTYERA_TEST_TRUST_METADATA === "1",
       };
-      if (preferences.value.trustProjectFileMetadata) {
-        preferences.value = await bridge.savePreferences(preferences.value);
+      if (loadedPreferences.trustProjectFileMetadata) {
+        loadedPreferences = await bridge.savePreferences(loadedPreferences);
       }
+      if (generation !== lifecycleGeneration) return;
+      preferences.value = loadedPreferences;
     } else {
-      preferences.value = await bridge.loadPreferences();
+      const loadedPreferences = await bridge.loadPreferences();
+      if (generation !== lifecycleGeneration) return;
+      preferences.value = loadedPreferences;
     }
     audio.setPreferences(preferences.value);
     document.addEventListener("keydown", onKeyDown);
@@ -507,12 +529,31 @@ export const useRuntimeStore = defineStore("runtime", () => {
     document.addEventListener("visibilitychange", sendClientState);
     window.addEventListener("focus", sendClientState);
     window.addEventListener("blur", sendClientState);
-    window.addEventListener("resize", () => void projectViewport());
+    window.addEventListener("resize", onResize);
+    initialized = true;
     if (bridge.prewarmRuntimeOnInitialize) {
       void ensureSession().catch((error) =>
         log("warning", `Runtime 后台初始化失败，将在打开项目时重试：${String(error)}`),
       );
     }
+  }
+
+  function teardown(): void {
+    lifecycleGeneration += 1;
+    initialization = undefined;
+    if (!initialized) return;
+    initialized = false;
+    document.removeEventListener("keydown", onKeyDown);
+    document.removeEventListener("keyup", onKeyUp);
+    document.removeEventListener("visibilitychange", sendClientState);
+    window.removeEventListener("focus", sendClientState);
+    window.removeEventListener("blur", sendClientState);
+    window.removeEventListener("resize", onResize);
+    heldKeys.clear();
+  }
+
+  function onResize(): void {
+    void projectViewport();
   }
 
   function configureTestRun(configuration: RuntimeTestConfiguration): void {
@@ -717,19 +758,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimePump.setTransitioning(true);
     try {
       if (fullManifestImport) await cleanupFullManifestImport(true);
-      clearSessionTimers();
-      resetSessionState(true);
       baseStatus.value = "正在创建新的 Runtime session…";
       unlockAudioFromUserGesture();
-      await audio
-        .synchronize([])
-        .catch((error) => log("warning", `更换项目时停止音频失败：${String(error)}`));
-      await runtimePump.waitUntilIdle();
-      await compiledCacheExport.cancel();
-      resetSessionState();
-      const batch = await bridge.createSession(sessionOptions());
-      runtimePump.setReady(true);
-      await handleBatch(batch);
+      await replaceRuntimeSession();
     } catch (error) {
       runtimePump.setTransitioning(false);
       throw error;
@@ -1180,7 +1211,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       return;
     }
     refreshProjectFontFamilies(committedFonts);
-    projectResourceGeneration.value += 1;
+    advanceProjectResourceGeneration();
     runtimeConfiguration.refreshWritable();
     runtimeConfiguration.update(value.configuration);
     await runtimeConfiguration.persistGenerated();
@@ -1361,19 +1392,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimePump.setTransitioning(true);
     pendingStart = start;
     try {
-      clearSessionTimers();
-      resetSessionState(true);
-      await runtimePump.waitUntilIdle();
-      await compiledCacheExport.cancel();
-      await audio
-        .synchronize([])
-        .catch((error) => log("warning", `${action}时停止音频失败：${String(error)}`));
-      resetSessionState();
-      if (start.type === "vm_snapshot" && bridge.snapshotRestoreMode === "fresh_session")
-        await bridge.prepareSnapshotRestore();
-      const batch = await bridge.createSession(sessionOptions());
-      runtimePump.setReady(true);
-      await handleBatch(batch);
+      await replaceRuntimeSession();
       const metrics = await bridge.restartProject();
       runtimeConfiguration.refreshWritable();
       await runtimeConfiguration.persistGenerated();
@@ -1397,6 +1416,28 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } finally {
       runtimePump.setTransitioning(false);
       schedulePump(0);
+    }
+  }
+
+  async function replaceRuntimeSession(): Promise<void> {
+    clearSessionTimers();
+    resetSessionState(true);
+    try {
+      await runtimePump.waitUntilIdle();
+      await compiledCacheExport.cancel();
+      await bridge.prepareSessionReplacement();
+      resetSessionState(false, false);
+      const batch = await bridge.createSession(sessionOptions());
+      runtimePump.setReady(true);
+      await handleBatch(batch);
+    } catch (error) {
+      await bridge
+        .prepareSessionReplacement()
+        .catch((cleanupError) =>
+          log("warning", `清理失败的 Runtime session 时出错：${String(cleanupError)}`),
+        );
+      resetSessionState(false, false);
+      throw error;
     }
   }
 
@@ -1430,7 +1471,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     else await returnToTitle();
   }
 
-  function resetSessionState(preserveCompiledCacheExport = false): void {
+  function resetSessionState(preserveCompiledCacheExport = false, advanceResources = true): void {
     gameProgressLossConfirmation.value = null;
     projectReload.reset();
     resetTransientStatuses();
@@ -1443,12 +1484,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
     fullManifestImport = undefined;
     fullManifestImports.clear();
     presentationProjection.reset();
-    void audio.synchronize([]);
+    if (advanceResources) advanceProjectResourceGeneration();
     testAudioPlayback.clear();
     runtimePump.setReady(false);
     phase.value = "negotiating";
     runtimeEpoch.value = 0;
-    projectResourceGeneration.value += 1;
     testEnvironment.resetTimeAdvance();
     inputUndo.value = null;
     fault.value = null;
@@ -1467,6 +1507,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
     projectPreferencesWritable.value = false;
     gameInformation.value = null;
     runtimeManifestSparse = false;
+  }
+
+  function advanceProjectResourceGeneration(): void {
+    projectResourceGeneration.value += 1;
+    resourceUrlRegistry.releaseBeforeGeneration(projectResourceGeneration.value);
+    audio.resetResources(projectResourceGeneration.value);
   }
 
   async function openProjectReloadDialog(mode: "folder" | "script"): Promise<void> {
@@ -2761,6 +2807,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
     heldKeys.delete(event.keyCode);
   }
 
+  function liveMemoryCounters(): LiveMemoryCounters {
+    return {
+      ...bridge.runtimeMemoryCounters(),
+      blobUrls: resourceUrlRegistry.memoryCounters(),
+      audioBuffers: audio.memoryCounters(),
+    };
+  }
+
   return {
     bridgeKind: bridge.kind,
     directProjectDirectoryAccess: bridge.directProjectDirectoryAccess === true,
@@ -2857,6 +2911,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     openProjectSettingsFromUser,
     requestSystemFonts,
     initialize,
+    teardown,
     openProject,
     openProjectFile,
     cancelOpenProject,
@@ -2908,5 +2963,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
     restoreState,
     testTransferState,
     testAudioPlaybackState,
+    liveMemoryCounters,
   };
 });

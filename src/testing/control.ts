@@ -48,6 +48,7 @@ export function installWebTestControl(pinia: Pinia): void {
       projectOpen: store.projectOpen,
       projectLoading: store.projectLoading,
       startupTelemetry: store.startupTelemetry,
+      memory: store.liveMemoryCounters(),
       canInteract: store.canInteract,
       wait: store.presentation.inputWait,
       presentationRevision: store.presentation.revision,

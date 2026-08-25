@@ -48,7 +48,7 @@ struct IndexedFile {
 
 struct PendingProjectReload {
     indexed_files: Vec<IndexedFile>,
-    manifest: ProjectManifest,
+    revision: u64,
     runtime_manifest_sparse: bool,
 }
 
@@ -519,17 +519,17 @@ impl ProjectHost {
         let embedded_resources = decoded
             .manifest
             .files
-            .iter()
-            .filter_map(|file| match (&file.category, &file.payload) {
+            .into_iter()
+            .filter_map(|file| match (file.category, file.payload) {
                 (FileCategory::Resource, FilePayload::Bytes(bytes)) => {
-                    Some((file.relative_path.to_lowercase(), bytes.as_slice().to_vec()))
+                    Some((file.relative_path.to_lowercase(), bytes.into_inner()))
                 }
                 _ => None,
             })
             .collect();
         Ok(Self {
             root: path.parent().unwrap_or_else(|| Path::new(".")).to_owned(),
-            manifest: Some(decoded.manifest),
+            manifest: None,
             indexed_files,
             revision: decoded.identity.project_revision,
             embedded_resources,
@@ -537,7 +537,7 @@ impl ProjectHost {
                 path,
                 storage_key: packaged_storage_key,
             }),
-            runtime_manifest_sparse: false,
+            runtime_manifest_sparse: true,
             pending_reload: None,
             source_index_stats: (0, 0),
         })
@@ -607,7 +607,13 @@ impl ProjectHost {
     }
 
     pub fn mark_runtime_manifest_sparse(&mut self) {
+        self.manifest = None;
         self.runtime_manifest_sparse = true;
+    }
+
+    pub fn mark_runtime_manifest_complete(&mut self) {
+        self.manifest = None;
+        self.runtime_manifest_sparse = false;
     }
 
     pub fn write_configuration(
@@ -816,9 +822,11 @@ impl ProjectHost {
         progress: Option<&dyn Fn(usize, usize)>,
         cancelled: Option<&AtomicBool>,
     ) -> Result<u64, String> {
+        self.materialize_with_progress_and_cancel(progress, cancelled)?;
         let manifest = self
-            .materialize_with_progress_and_cancel(progress, cancelled)?
-            .clone();
+            .manifest
+            .take()
+            .ok_or_else(|| "project manifest was not materialized".to_owned())?;
         let mut written = 0_u64;
         write_counted(output, &mut written, &[0xa2, 0x00])?;
         write_cbor_head(output, &mut written, 0, manifest.project_revision)?;
@@ -939,11 +947,14 @@ impl ProjectHost {
         Ok(())
     }
 
-    pub fn retained_manifest_with_progress(
+    pub fn take_manifest_with_progress(
         &mut self,
         progress: Option<&dyn Fn(usize, usize)>,
     ) -> Result<ProjectManifest, String> {
         if let Some(project) = &self.packaged_project {
+            if let Some(manifest) = self.manifest.take() {
+                return Ok(manifest);
+            }
             let project_file = &project.path;
             let bytes = fs::read(project_file)
                 .map_err(|error| format!("cannot read project file: {error}"))?;
@@ -953,7 +964,7 @@ impl ProjectHost {
         }
         self.materialize_with_progress(progress)?;
         self.manifest
-            .clone()
+            .take()
             .ok_or_else(|| "project manifest was not materialized".to_owned())
     }
 
@@ -1010,7 +1021,10 @@ impl ProjectHost {
         let selector = ProjectReloadSelector::new(scope)?;
         let candidate =
             Self::scan_with_progress(&self.root, self.revision.saturating_add(1), progress)?;
-        if self.runtime_manifest_sparse && !matches!(&selector, ProjectReloadSelector::All) {
+        if self.runtime_manifest_sparse {
+            // A cache-backed runtime owns identities but not source payloads. Send one complete
+            // current source set (plus removals) so the runtime becomes a full delta baseline;
+            // keeping that baseline in ProjectHost would reintroduce a second long-lived owner.
             return self.hydrate_sparse_reload(&selector, candidate);
         }
         let new_manifest = candidate
@@ -1025,66 +1039,49 @@ impl ProjectHost {
             .chain(new.keys())
             .copied()
             .collect::<BTreeSet<_>>();
-        let changes =
-            if self.runtime_manifest_sparse && matches!(&selector, ProjectReloadSelector::All) {
-                new_manifest
-                    .files
-                    .iter()
-                    .cloned()
-                    .map(|file| FileChange::Upsert { file })
-                    .collect()
-            } else {
-                paths
-                    .into_iter()
-                    .filter(|path| {
-                        new.get(path)
-                            .or_else(|| old.get(path))
-                            .is_some_and(|file| selector.matches(path, file.category))
-                    })
-                    .filter_map(|path| match (old.get(path), new.get(path)) {
-                        (Some(previous), Some(current))
-                            if previous.category == current.category
-                                && previous.content_hash == current.content_hash =>
-                        {
-                            None
-                        }
-                        (_, Some(_)) => Some(FileChange::Upsert {
-                            file: (*new_files
-                                .get(path)
-                                .expect("candidate index must match its manifest"))
-                            .clone(),
-                        }),
-                        (Some(previous), None) => Some(FileChange::Remove {
-                            category: previous.category,
-                            relative_path: path.to_owned(),
-                        }),
-                        (None, None) => None,
-                    })
-                    .collect()
-            };
+        let changes = paths
+            .into_iter()
+            .filter(|path| {
+                new.get(path)
+                    .or_else(|| old.get(path))
+                    .is_some_and(|file| selector.matches(path, file.category))
+            })
+            .filter_map(|path| match (old.get(path), new.get(path)) {
+                (Some(previous), Some(current))
+                    if previous.category == current.category
+                        && previous.content_hash == current.content_hash =>
+                {
+                    None
+                }
+                (_, Some(_)) => Some(FileChange::Upsert {
+                    file: (*new_files
+                        .get(path)
+                        .expect("candidate index must match its manifest"))
+                    .clone(),
+                }),
+                (Some(previous), None) => Some(FileChange::Remove {
+                    category: previous.category,
+                    relative_path: path.to_owned(),
+                }),
+                (None, None) => None,
+            })
+            .collect();
         let request = ReloadProject {
             base_revision: self.revision,
             target_revision: candidate.revision,
             changes,
         };
-        let (indexed_files, manifest, runtime_manifest_sparse) =
-            if matches!(&selector, ProjectReloadSelector::All) {
-                (candidate.indexed_files.clone(), new_manifest.clone(), false)
-            } else {
-                (
-                    self.merged_scoped_index(&selector, &candidate),
-                    ProjectManifest {
-                        project_revision: candidate.revision,
-                        files: self.merged_scoped_files(&selector, &candidate)?,
-                    },
-                    false,
-                )
-            };
+        let indexed_files = if matches!(&selector, ProjectReloadSelector::All) {
+            candidate.indexed_files.clone()
+        } else {
+            self.merged_scoped_index(&selector, &candidate)
+        };
         self.pending_reload = Some(PendingProjectReload {
             indexed_files,
-            manifest,
-            runtime_manifest_sparse,
+            revision: candidate.revision,
+            runtime_manifest_sparse: false,
         });
+        self.manifest = None;
         Ok(request)
     }
 
@@ -1093,25 +1090,50 @@ impl ProjectHost {
         selector: &ProjectReloadSelector,
         candidate: Self,
     ) -> Result<ReloadProject, String> {
-        let baseline = self.active_manifest()?;
-        let files = self.merged_scoped_files(selector, &candidate)?;
-        let hydrated_paths = files
+        let manifest = candidate
+            .manifest
+            .as_ref()
+            .ok_or_else(|| "candidate manifest was not materialized".to_owned())?;
+        let old = indexed_by_path(&self.indexed_files);
+        let new = indexed_by_path(&candidate.indexed_files);
+        let unselected_changed = old
+            .keys()
+            .chain(new.keys())
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .any(|path| {
+                let indexed = new.get(path).or_else(|| old.get(path));
+                if indexed.is_some_and(|file| selector.matches(path, file.category)) {
+                    return false;
+                }
+                match (old.get(path), new.get(path)) {
+                    (Some(previous), Some(current)) => {
+                        previous.category != current.category
+                            || previous.content_hash != current.content_hash
+                    }
+                    (None, None) => false,
+                    _ => true,
+                }
+            });
+        if unselected_changed {
+            return Err("缓存项目无法在保留其他磁盘改动的同时执行局部重载，请改用全部重载".into());
+        }
+        let hydrated_paths = manifest
+            .files
             .iter()
             .map(|file| file.relative_path.as_str())
             .collect::<BTreeSet<_>>();
-        let mut changes = files
+        let mut changes = manifest
+            .files
             .iter()
             .cloned()
             .map(|file| FileChange::Upsert { file })
             .collect::<Vec<_>>();
         changes.extend(
-            baseline
-                .files
+            self.indexed_files
                 .iter()
-                .filter(|file| {
-                    selector.matches(&file.relative_path, file.category)
-                        && !hydrated_paths.contains(file.relative_path.as_str())
-                })
+                .filter(|file| !hydrated_paths.contains(file.relative_path.as_str()))
                 .map(|file| FileChange::Remove {
                     category: file.category,
                     relative_path: file.relative_path.clone(),
@@ -1122,54 +1144,13 @@ impl ProjectHost {
             target_revision: candidate.revision,
             changes,
         };
-        let manifest = ProjectManifest {
-            project_revision: candidate.revision,
-            files,
-        };
         self.pending_reload = Some(PendingProjectReload {
             indexed_files: self.merged_scoped_index(selector, &candidate),
-            manifest,
+            revision: candidate.revision,
             runtime_manifest_sparse: false,
         });
+        self.manifest = None;
         Ok(request)
-    }
-
-    fn active_manifest(&self) -> Result<&ProjectManifest, String> {
-        self.manifest
-            .as_ref()
-            .ok_or_else(|| "active project manifest was not retained".to_owned())
-    }
-
-    fn merged_scoped_files(
-        &self,
-        selector: &ProjectReloadSelector,
-        candidate: &Self,
-    ) -> Result<Vec<SubmittedFile>, String> {
-        let baseline = self.active_manifest()?;
-        let candidate_manifest = candidate
-            .manifest
-            .as_ref()
-            .ok_or_else(|| "candidate manifest was not materialized".to_owned())?;
-        let mut files = baseline
-            .files
-            .iter()
-            .filter(|file| !selector.matches(&file.relative_path, file.category))
-            .cloned()
-            .chain(
-                candidate_manifest
-                    .files
-                    .iter()
-                    .filter(|file| selector.matches(&file.relative_path, file.category))
-                    .cloned(),
-            )
-            .collect::<Vec<_>>();
-        files.sort_by(|left, right| {
-            left.relative_path
-                .to_lowercase()
-                .cmp(&right.relative_path.to_lowercase())
-                .then_with(|| left.relative_path.cmp(&right.relative_path))
-        });
-        Ok(files)
     }
 
     fn merged_scoped_index(
@@ -1204,11 +1185,12 @@ impl ProjectHost {
             return;
         };
         if !success {
+            self.manifest = None;
             return;
         }
         self.indexed_files = pending.indexed_files;
-        self.revision = pending.manifest.project_revision;
-        self.manifest = Some(pending.manifest);
+        self.revision = pending.revision;
+        self.manifest = None;
         self.runtime_manifest_sparse = pending.runtime_manifest_sparse;
     }
 

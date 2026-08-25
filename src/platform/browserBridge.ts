@@ -11,6 +11,7 @@ import {
   type ProjectSelectionPreparation,
   type ProjectSubmittedListener,
   type PumpBatch,
+  type RuntimeHostMemoryCounters,
   type RuntimeMessage,
   type SessionOptions,
   type SystemFontQueryResult,
@@ -50,9 +51,7 @@ export class BrowserBridge implements FrontendBridge {
   readonly kind = "browser" as const;
   readonly directProjectDirectoryAccess = typeof window.showDirectoryPicker === "function";
   readonly memoryConstrained = isMemoryConstrainedBrowserHost();
-  readonly snapshotRestoreMode = this.memoryConstrained
-    ? ("fresh_session" as const)
-    : ("in_place" as const);
+  readonly snapshotRestoreMode = "fresh_session" as const;
   readonly prewarmRuntimeOnInitialize = true;
   // The cooperative WASM encoder retains the compiled artifact while growing another project-sized
   // buffer. That speculative peak can terminate and reload an otherwise healthy constrained
@@ -84,6 +83,7 @@ export class BrowserBridge implements FrontendBridge {
   private preferences = defaultPreferences();
   private projectPreferenceStore?: BrowserProjectPreferenceStore;
   private projectStoragePersistent = true;
+  private wasmLinearMemoryBytes: number | null = null;
   private readonly prepareProjectConfigurationUpdate = (
     projectFile: Uint8Array,
     expectedDigest: Uint8Array,
@@ -96,22 +96,48 @@ export class BrowserBridge implements FrontendBridge {
     );
 
   setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void {
-    this.worker.setProjectProgressListener(listener);
     this.projectProgressListener = listener;
+    this.worker.setProjectProgressListener(
+      listener
+        ? (progress) => {
+            if (progress.memoryBytes != null) this.wasmLinearMemoryBytes = progress.memoryBytes;
+            listener(progress);
+          }
+        : undefined,
+    );
   }
 
-  createSession(options: SessionOptions): Promise<PumpBatch> {
-    return this.worker.call("create", {
-      ...options,
-      retainProjectSourcePayloads: !this.memoryConstrained,
-    });
+  async createSession(options: SessionOptions): Promise<PumpBatch> {
+    return this.recordRuntimeMemory(
+      await this.worker.call("create", {
+        ...options,
+        retainProjectSourcePayloads: !this.memoryConstrained,
+      }),
+    );
   }
 
-  async prepareSnapshotRestore(): Promise<void> {
+  async prepareSessionReplacement(): Promise<void> {
     // WebAssembly linear memory can grow but cannot shrink. Replacing the Rust session inside the
-    // same instance therefore cannot return a large old VM's pages before snapshot restore. A
-    // fresh dedicated worker gives constrained browser processes a new linear memory instead.
-    if (this.snapshotRestoreMode === "fresh_session") await this.worker.restart(yieldToMainThread);
+    // same instance therefore cannot return a large old VM's pages. Every whole-session replacement
+    // uses a fresh dedicated worker so the old instance and its linear memory are released together.
+    try {
+      await this.worker.restart(yieldToMainThread);
+    } finally {
+      this.wasmLinearMemoryBytes = null;
+    }
+  }
+
+  runtimeMemoryCounters(): RuntimeHostMemoryCounters {
+    return {
+      workerGeneration: this.worker.generation,
+      wasmLinearMemoryBytes: this.wasmLinearMemoryBytes,
+      residentBytes: null,
+      physicalFootprintBytes: null,
+      virtualBytes: null,
+      privateBytes: null,
+      committedBytes: null,
+      anonymousBytes: null,
+    };
   }
 
   submitRuntime(message: RuntimeMessage, correlationId?: number | bigint): Promise<bigint> {
@@ -137,8 +163,8 @@ export class BrowserBridge implements FrontendBridge {
     );
   }
 
-  pump(): Promise<PumpBatch> {
-    return this.worker.call("pump");
+  async pump(): Promise<PumpBatch> {
+    return this.recordRuntimeMemory(await this.worker.call("pump"));
   }
 
   async openProject(
@@ -147,13 +173,18 @@ export class BrowserBridge implements FrontendBridge {
   ): Promise<ProjectOpenMetrics | undefined> {
     this.project?.finalizeReload(false);
     let submittedAtMs = 0;
+    let selectionPrepared = false;
     const picked = await pickBrowserDirectory(
       (stage, completed, total) => this.projectProgressListener?.({ stage, completed, total }),
       () => {
         submittedAtMs = performance.now();
         onSubmitted?.(submittedAtMs);
       },
-      prepareAfterSelection,
+      async () => {
+        selectionPrepared = true;
+        this.retireCommittedProject();
+        await prepareAfterSelection?.();
+      },
     );
     if (!picked) return undefined;
     let projectCommitted = false;
@@ -162,13 +193,17 @@ export class BrowserBridge implements FrontendBridge {
         submittedAtMs = performance.now();
         onSubmitted?.(submittedAtMs);
       }
+      if (!selectionPrepared) {
+        this.retireCommittedProject();
+        await prepareAfterSelection?.();
+      }
       const handle = picked.handle;
       // Playwright supplies an RPC-backed FileSystemDirectoryHandle which intentionally cannot be
       // structured-cloned into IndexedDB. Production handles continue to be persisted normally.
       if (picked.persistHandle && import.meta.env.VITE_RUSTYERA_TEST !== "1")
         await database.handles.put({ key: "last-project", handle });
-      this.projectPreferenceStore = await BrowserProjectPreferenceStore.source(handle);
-      const projectPreferences = this.projectPreferenceStore.values();
+      const projectPreferenceStore = await BrowserProjectPreferenceStore.source(handle);
+      const projectPreferences = projectPreferenceStore.values();
       const project = new BrowserProject(
         handle,
         1,
@@ -193,6 +228,7 @@ export class BrowserBridge implements FrontendBridge {
       const loaded = await this.loadSourceProject(project, manifest, sourcesReady);
       const previousRelease = this.projectDirectorySelectionRelease;
       this.projectStoragePersistent = picked.storagePersistent ?? true;
+      this.projectPreferenceStore = projectPreferenceStore;
       this.project = project;
       this.projectDirectorySelectionRelease = picked.release;
       projectCommitted = true;
@@ -237,6 +273,7 @@ export class BrowserBridge implements FrontendBridge {
     const { file } = picked;
     const submittedAtMs = performance.now();
     onSubmitted?.(submittedAtMs);
+    this.retireCommittedProject();
     await yieldToPaint();
     await prepareAfterSelection?.();
     this.projectProgressListener?.({ stage: "scanning", completed: 0, total: file.size });
@@ -290,8 +327,6 @@ export class BrowserBridge implements FrontendBridge {
       }
     }
     const manifest = normalizeProjectFileManifest(loaded.manifest);
-    this.projectPreferenceStore = storage.preferences;
-    this.projectStoragePersistent = storage.persistent;
     const root = storage.projectRoot;
     project.usePackagedFile(
       file,
@@ -305,6 +340,8 @@ export class BrowserBridge implements FrontendBridge {
       this.worker.call("readProjectFileResource", relativePath, maximumBytes),
     );
     const previousRelease = this.projectDirectorySelectionRelease;
+    this.projectPreferenceStore = storage.preferences;
+    this.projectStoragePersistent = storage.persistent;
     this.project = project;
     this.projectDirectorySelectionRelease = undefined;
     previousRelease?.();
@@ -836,11 +873,23 @@ export class BrowserBridge implements FrontendBridge {
   }
 
   async close(): Promise<void> {
+    this.retireCommittedProject();
+    this.worker.close();
+  }
+
+  private retireCommittedProject(): void {
     this.project?.finalizeReload(false);
+    this.project = undefined;
+    this.projectPreferenceStore = undefined;
+    this.projectStoragePersistent = true;
     this.projectDirectorySelectionRelease?.();
     this.projectDirectorySelectionRelease = undefined;
     this.projectFontRegistry.clear();
-    this.worker.close();
+  }
+
+  private recordRuntimeMemory(batch: PumpBatch): PumpBatch {
+    if (batch.memoryBytes != null) this.wasmLinearMemoryBytes = batch.memoryBytes;
+    return batch;
   }
 
   private async loadSelectedProjectFile<T>(

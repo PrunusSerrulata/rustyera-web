@@ -7,6 +7,9 @@ import {
   selectedDebugFiber,
 } from "@/core/debug";
 
+export const MAXIMUM_DEBUG_CONSOLE_ENTRIES = 2_000;
+export const MAXIMUM_DEBUG_CONSOLE_BYTES = 2 * 1024 * 1024;
+
 export class RuntimeDebugState {
   readonly consoleOpen = ref(false);
   readonly variablesOpen = ref(false);
@@ -21,6 +24,7 @@ export class RuntimeDebugState {
   readonly fibers = ref<any[]>([]);
   readonly frames = ref<any[]>([]);
   readonly variableValues = ref<Record<string, string>>({});
+  private outputBytes = 0;
 
   acceptGrant(value: any): void {
     this.grant.value = value;
@@ -75,12 +79,12 @@ export class RuntimeDebugState {
     } else if (response.type === "call_stack") {
       this.frames.value = response.value.frames ?? [];
     } else if (response.type === "console") {
-      this.output.value.push(...(response.value.output ?? []));
-      if (response.value.value != null)
-        this.output.value.push(`=> ${formatDebugValue(response.value.value)}`);
+      const output = [...(response.value.output ?? [])].map(String);
+      if (response.value.value != null) output.push(`=> ${formatDebugValue(response.value.value)}`);
       for (const diagnostic of response.value.diagnostics ?? []) {
-        this.output.value.push(`[${diagnostic.code}] ${diagnostic.message}`);
+        output.push(`[${diagnostic.code}] ${diagnostic.message}`);
       }
+      this.appendOutput(output);
       for (const changed of response.value.changed_variables ?? []) {
         this.variableValues.value[debugVariableKey(changed)] = formatDebugValue(changed.value);
       }
@@ -94,9 +98,37 @@ export class RuntimeDebugState {
     this.grant.value = null;
     this.stop.value = null;
     this.output.value = [];
+    this.outputBytes = 0;
     this.variables.value = [];
     this.fibers.value = [];
     this.frames.value = [];
     this.variableValues.value = {};
   }
+
+  private appendOutput(lines: string[]): void {
+    for (const line of lines) {
+      const bounded = trimDebugLine(line);
+      this.output.value.push(bounded);
+      this.outputBytes += debugTextBytes(bounded);
+    }
+    let remove = 0;
+    while (
+      remove < this.output.value.length &&
+      (this.output.value.length - remove > MAXIMUM_DEBUG_CONSOLE_ENTRIES ||
+        this.outputBytes > MAXIMUM_DEBUG_CONSOLE_BYTES)
+    ) {
+      this.outputBytes -= debugTextBytes(this.output.value[remove]);
+      remove += 1;
+    }
+    if (remove > 0) this.output.value.splice(0, remove);
+  }
+}
+
+function debugTextBytes(value: string): number {
+  return value.length * Uint16Array.BYTES_PER_ELEMENT;
+}
+
+function trimDebugLine(value: string): string {
+  const maximumCodeUnits = MAXIMUM_DEBUG_CONSOLE_BYTES / Uint16Array.BYTES_PER_ELEMENT;
+  return value.length <= maximumCodeUnits ? value : value.slice(-maximumCodeUnits);
 }

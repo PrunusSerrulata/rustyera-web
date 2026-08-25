@@ -400,7 +400,7 @@ describe("browser startup bridge", () => {
     await bridge.openProjectFile();
     const first = runtimeWorkers[0]!;
 
-    await bridge.prepareSnapshotRestore();
+    await bridge.prepareSessionReplacement();
     await bridge.createSession(SESSION_OPTIONS);
     await bridge.restartProject();
     await bridge.submitRuntime({
@@ -483,7 +483,7 @@ describe("browser startup bridge", () => {
     await bridge.createSession(SESSION_OPTIONS);
     await expect(bridge.openProject()).resolves.toMatchObject({ memoryConstrained: true });
     const firstWorker = runtimeWorkers[0]!;
-    await bridge.prepareSnapshotRestore();
+    await bridge.prepareSessionReplacement();
 
     expect(requests[0]?.message.args[0]).toMatchObject({ retainProjectSourcePayloads: false });
     expect(requests.map((request) => request.message.method)).toEqual([
@@ -525,7 +525,7 @@ describe("browser startup bridge", () => {
     expect(secondRelease).toHaveBeenCalledOnce();
   });
 
-  it("releases only a portable candidate whose runtime submission fails", async () => {
+  it("retires the active portable project when replacement submission fails", async () => {
     const firstRelease = vi.fn();
     const candidateRelease = vi.fn();
     const activeRoot = new MemoryDirectoryHandle("active");
@@ -555,15 +555,9 @@ describe("browser startup bridge", () => {
 
     await expect(bridge.openProject()).rejects.toThrow("candidate submission failed");
 
-    expect(bridge.projectName()).toBe("active");
+    expect(bridge.projectName()).toBeUndefined();
     expect(candidateRelease).toHaveBeenCalledOnce();
-    expect(firstRelease).not.toHaveBeenCalled();
-    await bridge.writeCompiledCacheChunk(Uint8Array.of(1, 2, 3), true, false);
-    const cache = await (
-      await activeRoot.getDirectoryHandle(".rustyera")
-    ).getDirectoryHandle("cache");
-    await expect(cache.getFileHandle("compiled-project.reracache")).resolves.toBeDefined();
-    await bridge.cancelCompiledCacheExport();
+    expect(firstRelease).toHaveBeenCalledOnce();
     await bridge.close();
     expect(firstRelease).toHaveBeenCalledOnce();
   });
@@ -672,7 +666,7 @@ describe("browser startup bridge", () => {
     expect(requests[0]!.transfer).toEqual([data.buffer]);
   });
 
-  it("keeps desktop snapshot restore in the active worker", async () => {
+  it("replaces the desktop worker before a whole-session restart", async () => {
     vi.stubGlobal("navigator", {
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/147.0.0.0 Safari/537.36",
@@ -682,14 +676,98 @@ describe("browser startup bridge", () => {
     });
     const bridge = new BrowserBridge();
 
-    expect(bridge.snapshotRestoreMode).toBe("in_place");
+    expect(bridge.snapshotRestoreMode).toBe("fresh_session");
     expect(bridge.automaticCompiledCacheExport).toBe(true);
     await bridge.createSession(SESSION_OPTIONS);
-    await bridge.prepareSnapshotRestore();
+    const firstWorker = runtimeWorkers[0]!;
+    await bridge.prepareSessionReplacement();
 
-    expect(runtimeWorkers).toHaveLength(1);
-    expect(runtimeWorkers[0]!.terminate).not.toHaveBeenCalled();
+    expect(runtimeWorkers).toHaveLength(2);
+    expect(firstWorker.terminate).toHaveBeenCalledOnce();
     expect(requests[0]?.message.args[0]).toMatchObject({ retainProjectSourcePayloads: true });
+  });
+
+  it("reports the live worker generation and current WASM linear memory", async () => {
+    respond = (method) => {
+      if (method === "create")
+        return {
+          state: "idle",
+          vmInstructions: 0,
+          runtimeTransitions: 0,
+          memoryBytes: runtimeWorkers.length * 64,
+          events: [],
+        };
+      return 1n;
+    };
+    const bridge = new BrowserBridge();
+
+    expect(bridge.runtimeMemoryCounters()).toEqual({
+      workerGeneration: 1,
+      wasmLinearMemoryBytes: null,
+      residentBytes: null,
+      physicalFootprintBytes: null,
+      virtualBytes: null,
+      privateBytes: null,
+      committedBytes: null,
+      anonymousBytes: null,
+    });
+    await bridge.createSession(SESSION_OPTIONS);
+    expect(bridge.runtimeMemoryCounters()).toEqual({
+      workerGeneration: 1,
+      wasmLinearMemoryBytes: 64,
+      residentBytes: null,
+      physicalFootprintBytes: null,
+      virtualBytes: null,
+      privateBytes: null,
+      committedBytes: null,
+      anonymousBytes: null,
+    });
+
+    await bridge.prepareSessionReplacement();
+    expect(bridge.runtimeMemoryCounters()).toEqual({
+      workerGeneration: 2,
+      wasmLinearMemoryBytes: null,
+      residentBytes: null,
+      physicalFootprintBytes: null,
+      virtualBytes: null,
+      privateBytes: null,
+      committedBytes: null,
+      anonymousBytes: null,
+    });
+    await bridge.createSession(SESSION_OPTIONS);
+    expect(bridge.runtimeMemoryCounters()).toEqual({
+      workerGeneration: 2,
+      wasmLinearMemoryBytes: 128,
+      residentBytes: null,
+      physicalFootprintBytes: null,
+      virtualBytes: null,
+      privateBytes: null,
+      committedBytes: null,
+      anonymousBytes: null,
+    });
+  });
+
+  it("retires all committed browser-project owners as one state transition", () => {
+    const bridge = new BrowserBridge();
+    const project = { finalizeReload: vi.fn() };
+    const release = vi.fn();
+    const owned = bridge as unknown as {
+      project?: typeof project;
+      projectPreferenceStore?: object;
+      projectDirectorySelectionRelease?: () => void;
+      retireCommittedProject(): void;
+    };
+    owned.project = project;
+    owned.projectPreferenceStore = {};
+    owned.projectDirectorySelectionRelease = release;
+
+    owned.retireCommittedProject();
+
+    expect(project.finalizeReload).toHaveBeenCalledWith(false);
+    expect(release).toHaveBeenCalledOnce();
+    expect(owned.project).toBeUndefined();
+    expect(owned.projectPreferenceStore).toBeUndefined();
+    expect(owned.projectDirectorySelectionRelease).toBeUndefined();
   });
 
   it("releases submitted constrained-browser sources and rescans them for a restart", async () => {
@@ -826,7 +904,7 @@ describe("browser startup bridge", () => {
     expect(manifest.files.map((file) => file.payload.value)).toEqual(["", ""]);
   });
 
-  it("keeps the active constrained project when a replacement manifest stream fails", async () => {
+  it("leaves constrained project ownership empty when replacement streaming fails", async () => {
     const oldRoot = new MemoryDirectoryHandle("old-game");
     const oldSource = await oldRoot.getFileHandle("old.erb", { create: true });
     const oldText = "@OLD\nPRINTL ACTIVE\nRETURN\n";
@@ -883,7 +961,7 @@ describe("browser startup bridge", () => {
 
     await expect(bridge.openProject()).rejects.toThrow("replacement failed");
     respond = () => 1n;
-    await bridge.restartProject();
+    await expect(bridge.restartProject()).rejects.toThrow("没有打开的项目");
 
     const submissions: string[] = [];
     let streamed = "";
@@ -896,10 +974,10 @@ describe("browser startup bridge", () => {
     expect(
       requests.filter((request) => request.message.method === "cancelProjectManifest"),
     ).toHaveLength(1);
-    expect(submissions).toHaveLength(3);
+    expect(submissions).toHaveLength(2);
     expect(submissions[0]).toContain("PRINTL ACTIVE");
     expect(submissions[1]).toContain("@TWO");
-    expect(submissions[2]).toContain("PRINTL ACTIVE");
+    expect(bridge.projectName()).toBeUndefined();
   });
 
   afterEach(() => {
@@ -1787,7 +1865,7 @@ describe("browser startup bridge", () => {
     expect(requests).toEqual([]);
   });
 
-  it("keeps the active packaged project when a replacement fails validation", async () => {
+  it("retires the active packaged project when replacement validation fails", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
     const active = new File([Uint8Array.of(1)], "active.reraproj");
@@ -1814,11 +1892,11 @@ describe("browser startup bridge", () => {
     await bridge.openProjectFile();
     await expect(bridge.openProjectFile()).rejects.toThrow("invalid project file");
 
-    expect(bridge.projectName()).toBe("active");
+    expect(bridge.projectName()).toBeUndefined();
     expect(requests.at(-1)?.message.method).toBe("loadProjectFileBytes");
   });
 
-  it("keeps the active portable project when a replacement fails submission", async () => {
+  it("retires the active portable project when replacement submission fails", async () => {
     const active = new MemoryDirectoryHandle("active-storage");
     const broken = new MemoryDirectoryHandle("broken-storage");
     const manifest = { project_revision: 1, files: [] };
@@ -1847,7 +1925,7 @@ describe("browser startup bridge", () => {
     await bridge.openProject();
     await expect(bridge.openProject()).rejects.toThrow("project submission failed");
 
-    expect(bridge.projectName()).toBe("active");
+    expect(bridge.projectName()).toBeUndefined();
   });
 
   it("restarts a portable project from its copy-on-write configuration overlay", async () => {

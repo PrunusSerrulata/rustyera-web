@@ -12,6 +12,26 @@ use crate::export::{
 use crate::preferences::{Preferences, default_preferences};
 
 #[test]
+fn retiring_native_owners_drops_project_before_runtime_session() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("main.erb"), "@MAIN\nRETURN\n").unwrap();
+    let state = AppState::default();
+    *state.session.lock().unwrap() = Some(WebSession::new(WebSessionOptions::default()).unwrap());
+    *state.project.lock().unwrap() =
+        Some(ProjectHost::scan_with_progress(directory.path(), 1, None).unwrap());
+
+    retire_project_state(&state).unwrap();
+
+    assert!(state.project.lock().unwrap().is_none());
+    assert!(state.session.lock().unwrap().is_some());
+
+    retire_runtime_state(&state).unwrap();
+
+    assert!(state.session.lock().unwrap().is_none());
+    assert!(state.project.lock().unwrap().is_none());
+}
+
+#[test]
 fn native_canvas_service_reads_png_dimensions() {
     let mut png = vec![0; 24];
     png[..8].copy_from_slice(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);

@@ -175,6 +175,31 @@ export interface ProjectFontLoadResult {
   errors: string[];
 }
 
+/** Platform-neutral live counters for memory retained by the active frontend session. */
+export interface RuntimeHostMemoryCounters {
+  /** Dedicated runtime generation, or null when the host does not use a Worker. */
+  workerGeneration: number | null;
+  /** Current WASM linear-memory size, or null for native hosts and before the first pump. */
+  wasmLinearMemoryBytes: number | null;
+  /** Native-process resident set, when the host can obtain it. */
+  residentBytes: number | null;
+  /** Platform-specific physical footprint, currently exposed by macOS. */
+  physicalFootprintBytes: number | null;
+  /** Process virtual address-space size, when available. */
+  virtualBytes: number | null;
+  /** Private process bytes, when available. */
+  privateBytes: number | null;
+  /** Committed process bytes, when available. */
+  committedBytes: number | null;
+  /** Anonymous resident bytes, when available. */
+  anonymousBytes: number | null;
+}
+
+export interface LiveMemoryCounters extends RuntimeHostMemoryCounters {
+  blobUrls: { count: number; bytes: number };
+  audioBuffers: { count: number; estimatedBytes: number };
+}
+
 export type ProjectReloadScope =
   { type: "all" } | { type: "folder"; path: string } | { type: "script"; path: string };
 
@@ -193,10 +218,12 @@ export interface FrontendBridge {
   readonly directProjectDirectoryAccess?: boolean;
   /** Whether the host selected the constrained-memory browser strategy. */
   readonly memoryConstrained?: boolean;
-  /** How this host bounds memory while replacing the active VM from a snapshot. */
+  /** Whether snapshot import replaces the whole host session or mutates it in place. */
   readonly snapshotRestoreMode: "in_place" | "fresh_session";
-  /** Release host runtime resources before creating a fresh snapshot-restore session. */
-  prepareSnapshotRestore(): Promise<void>;
+  /** Release the previous host runtime before creating any replacement session. */
+  prepareSessionReplacement(): Promise<void>;
+  /** Return counters using the same schema on browser/WASM and native hosts. */
+  runtimeMemoryCounters(): RuntimeHostMemoryCounters;
   /** Whether this host benefits from preparing its Runtime before the first project selection. */
   readonly prewarmRuntimeOnInitialize?: boolean;
   /** Whether this host can safely build and persist a speculative compiled cache. */

@@ -27,6 +27,7 @@ import type {
   ProjectSubmittedListener,
   ProjectConfigurationEntry,
   PumpBatch,
+  RuntimeHostMemoryCounters,
   RuntimeMessage,
   SessionOptions,
   SystemFontQueryResult,
@@ -40,6 +41,12 @@ export class TauriBridge implements FrontendBridge {
   readonly kind = "tauri" as const;
   readonly snapshotRestoreMode = "in_place" as const;
   readonly automaticCompiledCacheExport = true;
+  private processMemory: Omit<
+    RuntimeHostMemoryCounters,
+    "workerGeneration" | "wasmLinearMemoryBytes"
+  > = emptyNativeMemoryCounters();
+  private memorySnapshotPending?: Promise<void>;
+  private lastMemorySnapshotRequestedAt = Number.NEGATIVE_INFINITY;
   private projectPath?: string;
   private projectIsFile = false;
   private projectPreferences?: ProjectPreferences;
@@ -59,12 +66,41 @@ export class TauriBridge implements FrontendBridge {
   }
 
   async createSession(options: SessionOptions): Promise<PumpBatch> {
-    return decodeIpcResponse(await invoke("create_session", { options }));
+    try {
+      return decodeIpcResponse(await invoke("create_session", { options }));
+    } finally {
+      this.refreshMemorySnapshot();
+    }
   }
 
-  prepareSnapshotRestore(): Promise<void> {
-    // Native sessions replace ordinary heap allocations without retaining a WASM linear memory.
-    return Promise.resolve();
+  prepareSessionReplacement(): Promise<void> {
+    return invoke<void>("destroy_session");
+  }
+
+  runtimeMemoryCounters(): RuntimeHostMemoryCounters {
+    return {
+      workerGeneration: null,
+      wasmLinearMemoryBytes: null,
+      ...this.processMemory,
+    };
+  }
+
+  private refreshMemorySnapshot(): void {
+    const requestedAt = Date.now();
+    if (this.memorySnapshotPending || requestedAt - this.lastMemorySnapshotRequestedAt < 5_000)
+      return;
+    this.lastMemorySnapshotRequestedAt = requestedAt;
+    const operation = invoke<
+      Omit<RuntimeHostMemoryCounters, "workerGeneration" | "wasmLinearMemoryBytes">
+    >("memory_snapshot")
+      .then((snapshot) => {
+        this.processMemory = normalizeNativeMemoryCounters(snapshot);
+      })
+      .catch(() => undefined);
+    this.memorySnapshotPending = operation;
+    void operation.finally(() => {
+      if (this.memorySnapshotPending === operation) this.memorySnapshotPending = undefined;
+    });
   }
 
   async submitRuntime(
@@ -92,7 +128,11 @@ export class TauriBridge implements FrontendBridge {
   }
 
   async pump(): Promise<PumpBatch> {
-    return decodeIpcResponse(await invoke("pump"));
+    try {
+      return decodeIpcResponse(await invoke("pump"));
+    } finally {
+      this.refreshMemorySnapshot();
+    }
   }
 
   async openProject(
@@ -505,4 +545,38 @@ export class TauriBridge implements FrontendBridge {
     if (this.progressUnlisten) (await this.progressUnlisten)();
     await getCurrentWindow().close();
   }
+}
+
+function emptyNativeMemoryCounters(): Omit<
+  RuntimeHostMemoryCounters,
+  "workerGeneration" | "wasmLinearMemoryBytes"
+> {
+  return {
+    residentBytes: null,
+    physicalFootprintBytes: null,
+    virtualBytes: null,
+    privateBytes: null,
+    committedBytes: null,
+    anonymousBytes: null,
+  };
+}
+
+function normalizeNativeMemoryCounters(
+  value:
+    | Partial<Omit<RuntimeHostMemoryCounters, "workerGeneration" | "wasmLinearMemoryBytes">>
+    | null
+    | undefined,
+): Omit<RuntimeHostMemoryCounters, "workerGeneration" | "wasmLinearMemoryBytes"> {
+  const counter = (candidate: unknown): number | null =>
+    typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0
+      ? candidate
+      : null;
+  return {
+    residentBytes: counter(value?.residentBytes),
+    physicalFootprintBytes: counter(value?.physicalFootprintBytes),
+    virtualBytes: counter(value?.virtualBytes),
+    privateBytes: counter(value?.privateBytes),
+    committedBytes: counter(value?.committedBytes),
+    anonymousBytes: counter(value?.anonymousBytes),
+  };
 }

@@ -18,6 +18,28 @@ import {
 describe("runtime store cache-input", () => {
   installRuntimeStoreTestHarness();
 
+  it("initializes global listeners once and removes them during teardown", async () => {
+    const documentAdd = vi.spyOn(document, "addEventListener");
+    const documentRemove = vi.spyOn(document, "removeEventListener");
+    const windowAdd = vi.spyOn(window, "addEventListener");
+    const windowRemove = vi.spyOn(window, "removeEventListener");
+    const store = useRuntimeStore();
+
+    await Promise.all([store.initialize(), store.initialize()]);
+
+    expect(documentAdd.mock.calls.filter(([type]) => type === "keydown")).toHaveLength(1);
+    expect(windowAdd.mock.calls.filter(([type]) => type === "resize")).toHaveLength(1);
+
+    store.teardown();
+
+    expect(documentRemove.mock.calls.filter(([type]) => type === "keydown")).toHaveLength(1);
+    expect(windowRemove.mock.calls.filter(([type]) => type === "resize")).toHaveLength(1);
+    documentAdd.mockRestore();
+    documentRemove.mockRestore();
+    windowAdd.mockRestore();
+    windowRemove.mockRestore();
+  });
+
   it("leaves a background cache export running when the project-file picker is cancelled", async () => {
     const cacheWrite = deferred<void>();
     const store = await storeWithPendingCompiledCacheWrite(cacheWrite.promise);

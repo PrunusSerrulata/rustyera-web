@@ -398,6 +398,74 @@ describe("audio engine scheduling", () => {
     expect(gains[1].disconnect).toHaveBeenCalledOnce();
     expect(observePlayback).not.toHaveBeenCalled();
   });
+
+  it("evicts least-recently-used decoded PCM buffers by estimated byte size", async () => {
+    const sources = Array.from({ length: 4 }, () => sourceNode());
+    const audio = stubAudioContext(...sources);
+    audio.decodeAudioData.mockResolvedValue({ length: 2, numberOfChannels: 1 } as AudioBuffer);
+    const bridge = {
+      readResource: vi.fn(async () => Uint8Array.of(1, 2, 3)),
+    } as unknown as FrontendBridge;
+    const engine = new AudioEngine(bridge, defaultPreferences(), () => undefined, undefined, 16);
+
+    for (const [index, resourceId] of ["a.wav", "b.wav", "c.wav"].entries()) {
+      await engine.applyEffect(soundEffect(resourceId));
+      await vi.waitFor(() => expect(sources[index].start).toHaveBeenCalledOnce());
+      sources[index].onended?.();
+    }
+
+    expect(engine.memoryCounters()).toEqual({ count: 2, estimatedBytes: 16 });
+    await engine.applyEffect(soundEffect("a.wav"));
+    await vi.waitFor(() => expect(sources[3].start).toHaveBeenCalledOnce());
+    expect(bridge.readResource).toHaveBeenCalledTimes(4);
+  });
+
+  it("drops pending and decoded audio resources when the project generation resets", async () => {
+    const first = sourceNode();
+    const second = sourceNode();
+    const audio = stubAudioContext(first, second);
+    audio.decodeAudioData.mockResolvedValue({ length: 2, numberOfChannels: 1 } as AudioBuffer);
+    const bridge = {
+      readResource: vi.fn(async () => Uint8Array.of(1, 2, 3)),
+    } as unknown as FrontendBridge;
+    const engine = new AudioEngine(bridge, defaultPreferences());
+
+    await engine.applyEffect(soundEffect("theme.wav"));
+    await vi.waitFor(() => expect(first.start).toHaveBeenCalledOnce());
+    expect(engine.memoryCounters()).toEqual({ count: 1, estimatedBytes: 8 });
+
+    engine.resetResources(7);
+
+    expect(audio.close).toHaveBeenCalledOnce();
+    expect(engine.memoryCounters()).toEqual({ count: 0, estimatedBytes: 0 });
+    await engine.applyEffect(soundEffect("theme.wav"));
+    await vi.waitFor(() => expect(second.start).toHaveBeenCalledOnce());
+    expect(bridge.readResource).toHaveBeenCalledTimes(2);
+  });
+
+  it("enforces the decoded-buffer budget after repeated source start failures", async () => {
+    const sources = Array.from({ length: 3 }, () => {
+      const source = sourceNode();
+      source.start.mockImplementation(() => {
+        throw new Error("start failed");
+      });
+      return source;
+    });
+    const audio = stubAudioContext(...sources);
+    audio.decodeAudioData.mockResolvedValue({ length: 2, numberOfChannels: 1 } as AudioBuffer);
+    const bridge = {
+      readResource: vi.fn(async () => Uint8Array.of(1, 2, 3)),
+    } as unknown as FrontendBridge;
+    const reportError = vi.fn();
+    const engine = new AudioEngine(bridge, defaultPreferences(), reportError, undefined, 16);
+
+    for (const [index, resourceId] of ["a.wav", "b.wav", "c.wav"].entries()) {
+      await engine.applyEffect(soundEffect(resourceId));
+      await vi.waitFor(() => expect(reportError).toHaveBeenCalledTimes(index + 1));
+    }
+
+    expect(engine.memoryCounters()).toEqual({ count: 2, estimatedBytes: 16 });
+  });
 });
 
 function soundEffect(resourceId: string) {
@@ -451,6 +519,7 @@ function sourceNode() {
 function stubAudioContext(...sources: ReturnType<typeof sourceNode>[]) {
   const gains: Array<ReturnType<typeof gainNode>> = [];
   const decode = vi.fn(async () => ({ duration: 1 }) as AudioBuffer);
+  const closeContext = vi.fn(async () => undefined);
   let sourceIndex = 0;
   vi.stubGlobal(
     "AudioContext",
@@ -458,7 +527,7 @@ function stubAudioContext(...sources: ReturnType<typeof sourceNode>[]) {
       state = "running";
       destination = {};
       resume = vi.fn(async () => undefined);
-      close = vi.fn(async () => undefined);
+      close = closeContext;
       createGain = vi.fn(() => {
         const gain = gainNode();
         gains.push(gain);
@@ -468,7 +537,7 @@ function stubAudioContext(...sources: ReturnType<typeof sourceNode>[]) {
       decodeAudioData = decode;
     },
   );
-  return { gains, decodeAudioData: decode };
+  return { gains, decodeAudioData: decode, close: closeContext };
 }
 
 function gainNode() {

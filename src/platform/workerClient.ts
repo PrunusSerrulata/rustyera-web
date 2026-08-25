@@ -11,6 +11,7 @@ export class WorkerClient {
   >();
   private projectProgressListener?: (progress: ProjectProgress) => void;
   private terminalError?: Error;
+  private workerGeneration = 0;
 
   constructor() {
     this.worker = this.createWorker();
@@ -20,6 +21,7 @@ export class WorkerClient {
     const worker = new Worker(new URL("./runtime.worker.ts", import.meta.url), {
       type: "module",
     });
+    this.workerGeneration += 1;
     worker.onmessage = (event) => {
       if (this.worker !== worker || this.lifecycle !== "running") return;
       const { id, result, error, type, value } = event.data;
@@ -38,6 +40,10 @@ export class WorkerClient {
       this.fail(new Error(event.message || "Worker 运行失败"));
     };
     return worker;
+  }
+
+  get generation(): number {
+    return this.workerGeneration;
   }
 
   setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void {
