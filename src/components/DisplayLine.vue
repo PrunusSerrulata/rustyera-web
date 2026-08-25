@@ -7,11 +7,7 @@ import { collectTextRunGroup, type TextDisplayRun } from "@/components/textRunPr
 import { responsiveColumnGroupLayout } from "@/core/columnLayout";
 import type { DisplayLine, DisplayRun } from "@/core/types";
 
-const props = defineProps<{
-  line: DisplayLine;
-  viewportColumns: number;
-  separatorWidthPx?: number;
-}>();
+const props = defineProps<{ line: DisplayLine; viewportColumns: number }>();
 
 interface SingleRun {
   type: "run";
@@ -74,7 +70,6 @@ const fragments = computed<DisplayFragment[]>(() => {
       v-else-if="fragment.type === 'run'"
       :run="fragment.run"
       :viewport-columns="viewportColumns"
-      :separator-width-px="separatorWidthPx"
     />
     <span
       v-else
@@ -88,7 +83,6 @@ const fragments = computed<DisplayFragment[]>(() => {
         :key="index"
         :run="cell"
         :viewport-columns="viewportColumns"
-        :separator-width-px="separatorWidthPx"
       />
     </span>
   </template>

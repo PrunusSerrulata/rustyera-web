@@ -16,11 +16,7 @@ import type { DisplayRun } from "@/core/types";
 import { useRuntimeStore } from "@/stores/runtime";
 
 defineOptions({ name: "RunRenderer" });
-const props = defineProps<{
-  run: any;
-  viewportColumns?: number;
-  separatorWidthPx?: number;
-}>();
+const props = defineProps<{ run: any; viewportColumns?: number }>();
 const store = useRuntimeStore();
 
 type NestedFragment =
@@ -57,8 +53,8 @@ const separatorColumns = computed(() => {
   const columns = Number(props.viewportColumns);
   return Number.isFinite(columns) ? Math.max(1, Math.floor(columns)) : 1;
 });
-// Generate enough complete pattern units for every viewport column, then let the element clip
-// wide glyphs and multi-character patterns at the configured drawable width.
+// Generate enough complete pattern units for every viewport column, then let
+// the `ch`-sized element clip wide glyphs and multi-character patterns.
 const separatorText = computed(() =>
   props.run.type === "separator"
     ? String(props.run.pattern ?? "").repeat(separatorColumns.value)
@@ -116,12 +112,7 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
   >
     <template v-for="fragment in nestedFragments" :key="fragment.key">
       <TextRunGroup v-if="fragment.type === 'text_group'" :runs="fragment.runs" />
-      <RunRenderer
-        v-else
-        :run="fragment.run"
-        :viewport-columns="viewportColumns"
-        :separator-width-px="separatorWidthPx"
-      />
+      <RunRenderer v-else :run="fragment.run" :viewport-columns="viewportColumns" />
     </template>
   </button>
   <template v-else-if="run.type === 'html_document'">
@@ -148,22 +139,14 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
   >
     <template v-for="fragment in nestedFragments" :key="fragment.key">
       <TextRunGroup v-if="fragment.type === 'text_group'" :runs="fragment.runs" />
-      <RunRenderer
-        v-else
-        :run="fragment.run"
-        :viewport-columns="viewportColumns"
-        :separator-width-px="separatorWidthPx"
-      />
+      <RunRenderer v-else :run="fragment.run" :viewport-columns="viewportColumns" />
     </template>
   </span>
   <span
     v-else-if="run.type === 'separator'"
     class="separator"
     :data-pattern="run.pattern"
-    :style="[
-      textStyle,
-      { width: separatorWidthPx == null ? `${separatorColumns}ch` : `${separatorWidthPx}px` },
-    ]"
+    :style="[textStyle, { width: `${separatorColumns}ch` }]"
     >{{ separatorText }}</span
   >
   <span v-else-if="run.type === 'space'" class="space" :style="directSpaceStyle" />

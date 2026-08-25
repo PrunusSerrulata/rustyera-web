@@ -20,13 +20,6 @@ const touchSecondaryAction = useTouchSecondaryAction(
   () => void store.skip(),
 );
 const viewportColumns = ref(100);
-const viewportContentWidth = ref(0);
-const separatorWidthPx = computed(() => {
-  // Emuera prepares DRAWLINE against the configured drawable width, not a wider host window.
-  const width = Number(store.presentation.settings?.drawable_width) / 1000;
-  if (!Number.isFinite(width) || width <= 0) return undefined;
-  return viewportContentWidth.value > 0 ? Math.min(width, viewportContentWidth.value) : width;
-});
 const viewportHeight = ref(0);
 let viewportObserver: ResizeObserver | undefined;
 let viewportFrame: number | undefined;
@@ -255,7 +248,6 @@ function synchronizeViewport(): void {
   const measurement = measureGameViewport(viewport.value, history.value);
   viewportHeight.value = measurement.height;
   viewportColumns.value = measurement.lineColumns;
-  viewportContentWidth.value = history.value?.clientWidth || measurement.width;
   if (
     measurement.width === projectedWidth &&
     measurement.height === projectedHeight &&
@@ -339,7 +331,6 @@ watch(
         <DisplayLine
           :line="store.presentation.lines[item.index]"
           :viewport-columns="viewportColumns"
-          :separator-width-px="separatorWidthPx"
         />
       </div>
     </div>

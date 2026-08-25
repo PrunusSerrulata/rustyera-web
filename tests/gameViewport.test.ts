@@ -17,7 +17,6 @@ const store = reactive({
     resources: { sprites: [], canvases: [] },
     htmlIsland: [],
     tooltip: {},
-    settings: { drawable_width: undefined as number | undefined },
   },
   continueFromViewport,
   projectViewport,
@@ -53,7 +52,6 @@ describe("game viewport", () => {
     store.presentation.revision = 1;
     store.presentation.historyRevision = 1;
     store.presentation.lines = [{ line_id: 1, alignment: "left", runs: [] }];
-    store.presentation.settings.drawable_width = undefined;
     store.useMouse = true;
     store.scrollHeight = 1;
     virtualState.items = [];
@@ -138,40 +136,6 @@ describe("game viewport", () => {
       delete (HTMLElement.prototype as any).clientWidth;
       delete (HTMLElement.prototype as any).clientHeight;
       store.gameTextStyle.fontSize = "12px";
-    }
-  });
-
-  it("projects the runtime drawable width into a viewport-capped separator width", async () => {
-    const originalWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
-    const originalHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-    Object.defineProperties(HTMLElement.prototype, {
-      clientWidth: {
-        configurable: true,
-        get() {
-          return this.classList.contains("virtual-history") ? 700 : 800;
-        },
-      },
-      clientHeight: { configurable: true, get: () => 600 },
-    });
-    store.presentation.settings.drawable_width = 1_080_000;
-    virtualState.items = [{ index: 0, key: "line-1", start: 0 }];
-
-    let wrapper: ReturnType<typeof shallowMount> | undefined;
-    try {
-      wrapper = shallowMount(GameViewport);
-      await nextTick();
-      expect(wrapper.findComponent(DisplayLine).props("separatorWidthPx")).toBe(700);
-
-      store.presentation.settings.drawable_width = 600_000;
-      await nextTick();
-      expect(wrapper.findComponent(DisplayLine).props("separatorWidthPx")).toBe(600);
-    } finally {
-      wrapper?.unmount();
-      if (originalWidth) Object.defineProperty(HTMLElement.prototype, "clientWidth", originalWidth);
-      else delete (HTMLElement.prototype as any).clientWidth;
-      if (originalHeight)
-        Object.defineProperty(HTMLElement.prototype, "clientHeight", originalHeight);
-      else delete (HTMLElement.prototype as any).clientHeight;
     }
   });
 
