@@ -14,6 +14,7 @@ import {
   encodeIpcBytes,
   encodeIpcValue,
 } from "@/platform/tauriBridge/ipcCodec";
+import { ipcBytes } from "@/platform/tauriBridge/ipcBytes";
 import type {
   DebugMessage,
   FrontendBridge,
@@ -36,11 +37,11 @@ import type {
 import { defaultProjectPreferences } from "@/core/types";
 
 type HostProjectOpenMetrics = Omit<ProjectOpenMetrics, "submittedAtMs" | "projectFonts">;
-type HostProjectFontSource = { relativePath: string; contentHash: number[] };
+type HostProjectFontSource = { relativePath: string; contentHash: number[]; byteLength: number };
 
 export class TauriBridge implements FrontendBridge {
   readonly kind = "tauri" as const;
-  readonly snapshotRestoreMode = "in_place" as const;
+  readonly snapshotRestoreMode = "fresh_session" as const;
   readonly automaticCompiledCacheExport = true;
   private processMemory: Omit<
     RuntimeHostMemoryCounters,
@@ -55,6 +56,7 @@ export class TauriBridge implements FrontendBridge {
   private projectProgressListener?: (progress: ProjectProgress) => void;
   private progressUnlisten?: Promise<UnlistenFn>;
   private projectFileExportPath?: string;
+  private stateExportPath?: string;
   private readonly projectFontRegistry = new ProjectFontRegistry();
 
   setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void {
@@ -270,9 +272,12 @@ export class TauriBridge implements FrontendBridge {
       const projectSources: ProjectFontSource[] = sources.map((source) => ({
         relativePath: source.relativePath,
         contentHash: new Uint8Array(source.contentHash),
+        byteLength: source.byteLength,
         read: async () =>
-          new Uint8Array(
-            await invoke<number[]>("read_project_font", { relativePath: source.relativePath }),
+          ipcBytes(
+            await invoke<Uint8Array>("read_project_font", {
+              relativePath: source.relativePath,
+            }),
           ),
       }));
       return await this.projectFontRegistry.replace(projectSources);
@@ -312,19 +317,31 @@ export class TauriBridge implements FrontendBridge {
   }
 
   async readResource(relativePath: string): Promise<Uint8Array> {
-    return new Uint8Array(await invoke<number[]>("read_resource", { relativePath }));
+    return ipcBytes(await invoke<Uint8Array>("read_resource", { relativePath }));
   }
 
   async readImageMetadata(relativePath: string): Promise<ReturnType<typeof decodeImageMetadata>> {
-    const prefix = await invoke<number[]>("read_resource_prefix", {
+    const prefix = await invoke<Uint8Array>("read_resource_prefix", {
       relativePath,
       maximumBytes: 1024 * 1024,
     });
-    return decodeImageMetadata(new Uint8Array(prefix));
+    return decodeImageMetadata(ipcBytes(prefix));
   }
 
-  handleStorage(request: any): Promise<any> {
-    return invoke("storage_request", { request });
+  async handleStorage(request: any): Promise<any> {
+    const encoded = encodeIpcValue(request) as Record<string, unknown>;
+    const operation = request?.operation;
+    if (operation?.type === "write") {
+      if (!ArrayBuffer.isView(operation.data))
+        throw new TypeError("storage write data must be a byte view");
+      const view = operation.data as ArrayBufferView;
+      const data = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+      encoded.operation = {
+        ...(encoded.operation as Record<string, unknown>),
+        data: encodeIpcBytes(data),
+      };
+    }
+    return decodeIpcResponse(await invoke("storage_request", { request: encoded }));
   }
 
   async listFonts(): Promise<SystemFontQueryResult> {
@@ -436,7 +453,7 @@ export class TauriBridge implements FrontendBridge {
   async openUpload(): Promise<Uint8Array | undefined> {
     const path = await open({ directory: false, multiple: false, title: "选择 VM 快照" });
     if (typeof path !== "string") return undefined;
-    return new Uint8Array(await invoke<number[]>("read_import", { path }));
+    return ipcBytes(await invoke<Uint8Array>("read_import", { path }));
   }
 
   async saveDownload(name: string, bytes: Uint8Array): Promise<boolean> {
@@ -448,6 +465,38 @@ export class TauriBridge implements FrontendBridge {
     if (!path) return false;
     await invoke("write_export", { path, bytes: encodeIpcBytes(bytes) });
     return true;
+  }
+
+  async beginStateExport(name: string, totalBytes: number): Promise<boolean> {
+    if (!Number.isSafeInteger(totalBytes) || totalBytes < 0)
+      throw new Error("Runtime 返回了无效的状态导出长度");
+    await this.cancelStateExport();
+    const testPath =
+      import.meta.env.VITE_RUSTYERA_TEST === "1"
+        ? import.meta.env.VITE_RUSTYERA_TAURI_EXPORT_PATH
+        : undefined;
+    const path = testPath || (await save({ defaultPath: name }));
+    if (!path) return false;
+    this.stateExportPath = path;
+    return true;
+  }
+
+  async writeStateExportChunk(bytes: Uint8Array, reset: boolean, complete: boolean): Promise<void> {
+    const path = this.stateExportPath;
+    if (!path) throw new Error("状态导出尚未开始");
+    await invoke("write_export_chunk", {
+      path,
+      bytes: encodeIpcBytes(bytes),
+      reset,
+      complete,
+    });
+    if (complete) this.stateExportPath = undefined;
+  }
+
+  async cancelStateExport(): Promise<void> {
+    if (!this.stateExportPath) return;
+    await invoke("cancel_export").catch(() => undefined);
+    this.stateExportPath = undefined;
   }
 
   async beginProjectFileExport(name: string): Promise<boolean> {
@@ -473,8 +522,8 @@ export class TauriBridge implements FrontendBridge {
   }
 
   async readFullProjectManifestChunk(offset: number, maximumBytes: number): Promise<Uint8Array> {
-    return new Uint8Array(
-      await invoke<number[]>("read_full_project_manifest_chunk", { offset, maximumBytes }),
+    return ipcBytes(
+      await invoke<Uint8Array>("read_full_project_manifest_chunk", { offset, maximumBytes }),
     );
   }
 
@@ -559,10 +608,19 @@ export class TauriBridge implements FrontendBridge {
   }
 
   async close(): Promise<void> {
+    await this.dispose();
+    await getCurrentWindow().close();
+  }
+
+  async dispose(): Promise<void> {
+    await this.cancelStateExport().catch(() => undefined);
     await invoke("finalize_project_reload", { success: false }).catch(() => undefined);
     this.projectFontRegistry.clear();
-    if (this.progressUnlisten) (await this.progressUnlisten)();
-    await getCurrentWindow().close();
+    const progressUnlisten = this.progressUnlisten;
+    this.progressUnlisten = undefined;
+    if (progressUnlisten) (await progressUnlisten)();
+    this.projectProgressListener = undefined;
+    await invoke("destroy_session").catch(() => undefined);
   }
 }
 

@@ -4,6 +4,7 @@ import { registerSW } from "virtual:pwa-register";
 
 import App from "./App.vue";
 import "./styles.css";
+import { ipcBytes } from "@/platform/tauriBridge/ipcBytes";
 
 registerSW({ immediate: true });
 
@@ -15,15 +16,17 @@ if (import.meta.env.VITE_RUSTYERA_TEST === "1" && import.meta.env.VITE_RUSTYERA_
     import("@tauri-apps/api/core"),
     import("@/stores/runtime"),
   ]);
-  const bytes = await invoke<number[]>("read_import", {
-    path: import.meta.env.VITE_RUSTYERA_TEST_STATE,
-  });
+  const bytes = ipcBytes(
+    await invoke("read_import", {
+      path: import.meta.env.VITE_RUSTYERA_TEST_STATE,
+    }),
+  );
   const stateType =
     import.meta.env.VITE_RUSTYERA_TEST_STATE_TYPE === "traditional_save"
       ? "traditional_save"
       : "vm_snapshot";
   useRuntimeStore(pinia).configureTestRun({
-    start: { type: stateType, bytes: new Uint8Array(bytes) },
+    start: { type: stateType, bytes },
   });
 }
 createApp(App).use(pinia).mount("#app");

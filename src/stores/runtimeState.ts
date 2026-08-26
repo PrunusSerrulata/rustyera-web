@@ -48,6 +48,10 @@ export interface ExportState {
   requestMessageId?: string;
   hostWrite?: Promise<void>;
   hostWriteFailure?: { error: unknown };
+  digestHasher?: {
+    update(bytes: Uint8Array): unknown;
+    digest(): Uint8Array;
+  };
   statusToken?: number;
 }
 
@@ -267,7 +271,10 @@ export const DEBUG_VARIABLE_PAGE_LIMIT = 256;
 export const DEBUG_VARIABLE_MAX_PAGES = 16;
 export const TIME_ADVANCE_INTERVAL_NS = 16_000_000;
 export const MAXIMUM_LOG_ENTRIES = 10_000;
+export const MAXIMUM_LOG_ENTRY_BYTES = 64 * 1024;
+export const MAXIMUM_LOG_TOTAL_BYTES = 4 * 1024 * 1024;
 // Bound memory while amortizing runtime and native-host round trips for large exports.
 export const STATE_EXPORT_CHUNK_BYTES = 16 * 1024 * 1024;
+export const TAURI_STATE_EXPORT_CHUNK_BYTES = 1024 * 1024;
 export const PROJECT_STARTING_STATUS = "项目加载完成，正在启动游戏…";
 export const GAME_RUNNING_STATUS = "游戏运行中";

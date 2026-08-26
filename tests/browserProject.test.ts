@@ -143,6 +143,7 @@ describe("browser project font resources", () => {
     expect(font).toMatchObject({
       relativePath: "font/Project.ttf",
       contentHash: blake3(Uint8Array.of(1, 2, 3)),
+      byteLength: 3,
     });
     await expect(font?.read()).resolves.toEqual(Uint8Array.of(1, 2, 3));
     await expect(project.materialize()).resolves.toMatchObject({

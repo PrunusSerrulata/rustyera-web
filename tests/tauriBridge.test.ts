@@ -64,7 +64,7 @@ describe("Tauri project restart", () => {
     mockNativeProject(metrics);
     const bridge = new TauriBridge();
 
-    expect(bridge.snapshotRestoreMode).toBe("in_place");
+    expect(bridge.snapshotRestoreMode).toBe("fresh_session");
     expect(bridge.runtimeMemoryCounters()).toEqual({
       workerGeneration: null,
       wasmLinearMemoryBytes: null,
@@ -121,9 +121,10 @@ describe("Tauri project restart", () => {
           {
             relativePath: "font/Project.ttf",
             contentHash: [...blake3(bytes)],
+            byteLength: bytes.byteLength,
           },
         ];
-      if (command === "read_project_font") return [...bytes];
+      if (command === "read_project_font") return bytes;
       return undefined;
     });
     const bridge = new TauriBridge();
@@ -132,6 +133,72 @@ describe("Tauri project restart", () => {
 
     expect(metrics?.projectFonts).toEqual({ fonts: ["Project Font"], errors: [] });
     expect(added.map((face) => face.family)).toEqual(["Project Font"]);
+  });
+
+  it("returns native raw response bytes without rebuilding number arrays", async () => {
+    const resource = Uint8Array.of(0, 0x80, 0xff);
+    open.mockResolvedValue("/tmp/state.rerasnap");
+    invoke.mockImplementation(async (command) => {
+      if (command === "read_resource" || command === "read_import") return resource;
+      return undefined;
+    });
+    const bridge = new TauriBridge();
+
+    await expect(bridge.readResource("resources/image.png")).resolves.toBe(resource);
+    await expect(bridge.openUpload()).resolves.toBe(resource);
+  });
+
+  it("tags storage write bytes and decodes the raw storage response", async () => {
+    const response = new TextEncoder().encode(
+      JSON.stringify({
+        request_id: { $rustyeraInteger: "9007199254740992" },
+        result: {
+          type: "read",
+          data: { $rustyeraBytes: "AID/" },
+          revision: "digest",
+        },
+      }),
+    );
+    invoke.mockResolvedValueOnce(response.buffer);
+    const bridge = new TauriBridge();
+
+    await expect(
+      bridge.handleStorage({
+        request_id: 9_007_199_254_740_992n,
+        namespace: "save",
+        relative_path: "save01.sav",
+        operation: {
+          type: "write",
+          data: Uint8Array.of(0, 0x80, 0xff),
+          atomic_replace: true,
+          precondition: { type: "revision", revision: "previous" },
+        },
+        idempotency_key: "write-save01",
+        deadline_ns: 9_007_199_254_740_993n,
+      }),
+    ).resolves.toEqual({
+      request_id: 9_007_199_254_740_992n,
+      result: {
+        type: "read",
+        data: Uint8Array.of(0, 0x80, 0xff),
+        revision: "digest",
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith("storage_request", {
+      request: {
+        request_id: { $rustyeraInteger: "9007199254740992" },
+        namespace: "save",
+        relative_path: "save01.sav",
+        operation: {
+          type: "write",
+          data: { $rustyeraBytes: "AID/" },
+          atomic_replace: true,
+          precondition: { type: "revision", revision: "previous" },
+        },
+        idempotency_key: "write-save01",
+        deadline_ns: { $rustyeraInteger: "9007199254740993" },
+      },
+    });
   });
 
   it("rejects restart before a project has been selected", async () => {
@@ -144,6 +211,21 @@ describe("Tauri project restart", () => {
     await new TauriBridge().cancelCompiledCacheExport();
 
     expect(invoke).toHaveBeenCalledWith("cancel_compiled_cache_export");
+  });
+
+  it("disposes native owners and listeners without closing the containing window", async () => {
+    const unlisten = vi.fn();
+    listen.mockResolvedValueOnce(unlisten);
+    invoke.mockResolvedValue(undefined);
+    const bridge = new TauriBridge();
+    bridge.setProjectProgressListener(vi.fn());
+    await Promise.resolve();
+
+    await bridge.dispose();
+
+    expect(unlisten).toHaveBeenCalledOnce();
+    expect(invoke).toHaveBeenCalledWith("destroy_session");
+    expect(currentWindow.close).not.toHaveBeenCalled();
   });
 
   it("tags project export chunks, including the empty completion write", async () => {
@@ -169,6 +251,37 @@ describe("Tauri project restart", () => {
         "write_export_chunk",
         {
           path: "/tmp/project.reraproj",
+          bytes: { $rustyeraBytes: "" },
+          reset: false,
+          complete: true,
+        },
+      ],
+    ]);
+  });
+
+  it("streams state exports through the native atomic writer", async () => {
+    save.mockResolvedValue("/tmp/state.snapshot");
+    invoke.mockResolvedValue(undefined);
+    const bridge = new TauriBridge();
+
+    await expect(bridge.beginStateExport("state.snapshot", 3)).resolves.toBe(true);
+    await bridge.writeStateExportChunk(Uint8Array.of(1, 2, 3), true, false);
+    await bridge.writeStateExportChunk(new Uint8Array(), false, true);
+
+    expect(commandCalls("write_export_chunk")).toEqual([
+      [
+        "write_export_chunk",
+        {
+          path: "/tmp/state.snapshot",
+          bytes: { $rustyeraBytes: "AQID" },
+          reset: true,
+          complete: false,
+        },
+      ],
+      [
+        "write_export_chunk",
+        {
+          path: "/tmp/state.snapshot",
           bytes: { $rustyeraBytes: "" },
           reset: false,
           complete: true,

@@ -34,6 +34,8 @@ describe("runtime store cache-input", () => {
 
     expect(documentRemove.mock.calls.filter(([type]) => type === "keydown")).toHaveLength(1);
     expect(windowRemove.mock.calls.filter(([type]) => type === "resize")).toHaveLength(1);
+    expect(bridge.setProjectProgressListener).toHaveBeenLastCalledWith(undefined);
+    expect(bridge.dispose).toHaveBeenCalledOnce();
     documentAdd.mockRestore();
     documentRemove.mockRestore();
     windowAdd.mockRestore();
@@ -104,7 +106,7 @@ describe("runtime store cache-input", () => {
         )
         .filter((message) => message.type === "state_export_chunk_request")
         .map((message) => message.value?.maximum_bytes),
-    ).toEqual([16 * 1024 * 1024, 16 * 1024 * 1024]);
+    ).toEqual([1024 * 1024, 1024 * 1024]);
   });
 
   it("restores the stable status after compiled-cache success feedback", async () => {

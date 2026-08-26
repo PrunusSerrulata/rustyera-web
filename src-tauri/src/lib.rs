@@ -31,11 +31,11 @@ use era_debug_protocol::DebugMessage;
 use era_runtime::{
     ProjectProgress, ProjectProgressReporter, ProjectProgressStage, RuntimeDriveBudget,
 };
-use era_runtime_protocol::{RuntimeMessage, StorageRequest, StorageResponse};
+use era_runtime_protocol::RuntimeMessage;
 use era_web_bridge::{FRONTEND_PUMP_MAXIMUM_QUIET_SLICES, WebSession, WebSessionOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, ipc::Response};
 
 use crate::export::AtomicFileWriter;
 use crate::ipc::{
@@ -227,7 +227,7 @@ async fn read_full_project_manifest_chunk(
     state: State<'_, AppState>,
     offset: u64,
     maximum_bytes: u32,
-) -> Result<Vec<u8>, String> {
+) -> Result<Response, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         if maximum_bytes == 0 || maximum_bytes > 4 * 1024 * 1024 {
@@ -249,7 +249,7 @@ async fn read_full_project_manifest_chunk(
             .seek(SeekFrom::Start(offset))
             .and_then(|_| spool.file.as_file_mut().read_exact(&mut bytes))
             .map_err(|error| format!("cannot read full manifest spool: {error}"))?;
-        Ok(bytes)
+        Ok(Response::new(bytes))
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
@@ -426,9 +426,7 @@ async fn open_project_file(
     tauri::async_runtime::spawn_blocking(move || {
         retire_project_state(&state)?;
         let started = Instant::now();
-        let bytes =
-            fs::read(&path).map_err(|error| format!("cannot read project file: {error}"))?;
-        let host = ProjectHost::from_project_file(&path, &bytes)?;
+        let host = ProjectHost::from_project_file(&path)?;
         let identity = host.identity();
         let sidecar = match host.compiled_cache() {
             Ok(cache) => cache,
@@ -442,11 +440,15 @@ async fn open_project_file(
                 session.load_project_with_compiled_cache(identity.clone(), sidecar)
             }) {
                 eprintln!("ignoring unusable packaged-project cache: {error}");
+                let bytes = fs::read(&path)
+                    .map_err(|error| format!("cannot read project file: {error}"))?;
                 with_session(&state, |session| {
                     session.load_project_with_compiled_cache(identity, bytes)
                 })?;
             }
         } else {
+            let bytes =
+                fs::read(&path).map_err(|error| format!("cannot read project file: {error}"))?;
             with_session(&state, |session| {
                 session.load_project_with_compiled_cache(identity, bytes)
             })?;
@@ -593,7 +595,7 @@ async fn finalize_project_reload(state: State<'_, AppState>, success: bool) -> R
 async fn read_resource(
     state: State<'_, AppState>,
     relative_path: String,
-) -> Result<Vec<u8>, String> {
+) -> Result<Response, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         state
@@ -603,6 +605,7 @@ async fn read_resource(
             .as_ref()
             .ok_or_else(|| "no project is open".to_owned())?
             .read_resource(&relative_path)
+            .map(Response::new)
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
@@ -613,7 +616,7 @@ async fn read_resource_prefix(
     state: State<'_, AppState>,
     relative_path: String,
     maximum_bytes: u32,
-) -> Result<Vec<u8>, String> {
+) -> Result<Response, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         state
@@ -623,6 +626,7 @@ async fn read_resource_prefix(
             .as_ref()
             .ok_or_else(|| "no project is open".to_owned())?
             .read_resource_prefix(&relative_path, maximum_bytes.min(4 * 1024 * 1024))
+            .map(Response::new)
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
@@ -643,7 +647,7 @@ fn project_font_sources(state: State<'_, AppState>) -> Result<Vec<ProjectFontSou
 async fn read_project_font(
     state: State<'_, AppState>,
     relative_path: String,
-) -> Result<Vec<u8>, String> {
+) -> Result<Response, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         state
@@ -653,6 +657,7 @@ async fn read_project_font(
             .as_ref()
             .ok_or_else(|| "no project is open".to_owned())?
             .read_font(&relative_path)
+            .map(Response::new)
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
@@ -679,10 +684,8 @@ async fn write_project_configuration(
 }
 
 #[tauri::command]
-async fn storage_request(
-    state: State<'_, AppState>,
-    request: StorageRequest,
-) -> Result<StorageResponse, String> {
+async fn storage_request(state: State<'_, AppState>, request: Value) -> Result<Response, String> {
+    let request = storage::decode_request(request)?;
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let response = state
@@ -692,7 +695,7 @@ async fn storage_request(
             .as_mut()
             .ok_or_else(|| "no project storage is open".to_owned())?
             .handle(request);
-        Ok(response)
+        storage::encode_response(&response)
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
@@ -734,6 +737,8 @@ fn retire_project_state(state: &AppState) -> Result<(), String> {
     drop(spool);
     let cache_writer = state.cache_writer.lock().map_err(lock_error)?.take();
     drop(cache_writer);
+    let export_writer = state.export_writer.lock().map_err(lock_error)?.take();
+    drop(export_writer);
     let storage = state.storage.lock().map_err(lock_error)?.take();
     drop(storage);
     let project = state.project.lock().map_err(lock_error)?.take();

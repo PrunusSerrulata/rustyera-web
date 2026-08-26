@@ -763,6 +763,8 @@ describe("runtime store configuration", () => {
   it("does not notify when fault recovery opens another fatal dialog", async () => {
     bridge.submitRuntime.mockRejectedValueOnce(new Error("recovery failed"));
     const store = useRuntimeStore();
+    store.projectOpen = true;
+    store.phase = "faulted";
     store.fault = { code: "vm_fault", message: "original fault" };
 
     await store.recoverFromFault("title");
@@ -777,6 +779,8 @@ describe("runtime store configuration", () => {
 
   it("clears the returning-to-title status after fault recovery is accepted", async () => {
     const store = useRuntimeStore();
+    store.projectOpen = true;
+    store.phase = "faulted";
     store.fault = { code: "vm_fault", message: "original fault" };
 
     await store.recoverFromFault("title");

@@ -12,6 +12,7 @@ import {
   stubRunningAudioContext,
   useRuntimeStore,
   runtimeEvent,
+  stateExportReadyEvent,
 } from "./runtimeStoreTestSupport";
 
 describe("runtime store startup-save", () => {
@@ -305,23 +306,21 @@ describe("runtime store startup-save", () => {
     );
   });
 
-  it("keeps Tauri VM snapshot restore in the active session", async () => {
+  it("recreates the Tauri session before restoring a VM snapshot", async () => {
     const bytes = Uint8Array.of(5, 6, 7);
     bridge.kind = "tauri";
-    bridge.snapshotRestoreMode = "in_place";
+    bridge.snapshotRestoreMode = "fresh_session";
     bridge.openUpload.mockResolvedValueOnce(bytes);
     const store = useRuntimeStore();
+    store.projectOpen = true;
 
     await store.restoreSnapshot();
 
-    expect(bridge.prepareSessionReplacement).not.toHaveBeenCalled();
-    expect(bridge.createSession).not.toHaveBeenCalled();
-    expect(bridge.restartProject).not.toHaveBeenCalled();
-    expect(bridge.submitRuntime).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "state_import_begin",
-        value: expect.objectContaining({ kind: "vm_snapshot", total_bytes: bytes.length }),
-      }),
+    expect(bridge.prepareSessionReplacement).toHaveBeenCalledOnce();
+    expect(bridge.createSession).toHaveBeenCalledOnce();
+    expect(bridge.restartProject).toHaveBeenCalledOnce();
+    expect(bridge.submitRuntime).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "state_import_begin" }),
       undefined,
     );
   });
@@ -451,6 +450,7 @@ describe("runtime store startup-save", () => {
 
     const replacement = store.confirmOpenProject();
     expect(store.openProjectConfirmationOpen).toBe(false);
+    await flushMicrotasks();
     expect(store.presentation.lines).toHaveLength(0);
     expect(store.projectLoading).toBe(false);
     expect(store.canOpenProject).toBe(false);
@@ -549,6 +549,72 @@ describe("runtime store startup-save", () => {
     ).toHaveLength(0);
     expect(store.testTransferState().export).toBeNull();
     expect(store.status).toBe("游戏运行中");
+  });
+
+  it("releases the old title timeline before pumping and resynchronizes a rejected transition", async () => {
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+    bridge.submitRuntime.mockClear();
+    bridge.pump.mockClear();
+    bridge.submitRuntime.mockResolvedValueOnce(41).mockResolvedValueOnce(42);
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("command_rejected", { message: "title unavailable" }, 41)],
+    });
+    store.projectOpen = true;
+    store.phase = "waiting_input";
+    store.presentation.lines.push({ id: "old-line", runs: [] } as any);
+    store.prompt = "old prompt";
+    const resourceGeneration = store.projectResourceGeneration;
+
+    await store.returnToTitle();
+
+    expect(store.presentation.lines).toEqual([]);
+    expect(store.prompt).toBe("");
+    expect(store.projectResourceGeneration).toBe(resourceGeneration + 1);
+    expect(bridge.pump).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(bridge.submitRuntime).toHaveBeenNthCalledWith(
+      2,
+      { type: "resynchronize", value: { after_sequence: null } },
+      undefined,
+    );
+    expect(store.status).toContain("返回标题被 Runtime 拒绝");
+  });
+
+  it("retires an active state-export sink only after ReturnToTitle is accepted", async () => {
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+    bridge.submitRuntime.mockClear();
+    bridge.submitRuntime.mockResolvedValue(1);
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [stateExportReadyEvent("input_replay", 17, [1, 2, 3], 1)],
+    });
+    store.projectOpen = true;
+    store.phase = "waiting_input";
+
+    await store.exportInputReplay();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(bridge.beginStateExport).toHaveBeenCalledOnce();
+    const pumpCount = bridge.pump.mock.calls.length;
+
+    await store.returnToTitle();
+
+    const returnCall = bridge.submitRuntime.mock.calls.findIndex(
+      ([message]: unknown[]) => (message as { type?: string }).type === "return_to_title",
+    );
+    expect(returnCall).toBeGreaterThanOrEqual(0);
+    expect(bridge.submitRuntime.mock.invocationCallOrder[returnCall]!).toBeLessThan(
+      bridge.cancelStateExport.mock.invocationCallOrder[0]!,
+    );
+    expect(bridge.cancelStateExport).toHaveBeenCalledOnce();
+    expect(store.testTransferState().export).toBeNull();
+    expect(bridge.pump).toHaveBeenCalledTimes(pumpCount);
   });
 
   it("terminates startup telemetry when a bridge fails after submission", async () => {

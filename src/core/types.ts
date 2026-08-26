@@ -202,6 +202,7 @@ export interface RuntimeHostMemoryCounters {
 export interface LiveMemoryCounters extends RuntimeHostMemoryCounters {
   blobUrls: { count: number; bytes: number };
   audioBuffers: { count: number; estimatedBytes: number };
+  imagePixelSurfaces: { count: number; pixels: number; estimatedBytes: number; inflight: number };
 }
 
 export type ProjectReloadScope =
@@ -281,6 +282,9 @@ export interface FrontendBridge {
   projectName(): string | undefined;
   openUpload(): Promise<Uint8Array | undefined>;
   saveDownload(name: string, bytes: Uint8Array): Promise<boolean>;
+  beginStateExport(name: string, totalBytes: number): Promise<boolean>;
+  writeStateExportChunk(bytes: Uint8Array, reset: boolean, complete: boolean): Promise<void>;
+  cancelStateExport(): Promise<void>;
   fullProjectExportSupported(): boolean;
   stageFullProjectManifest(): Promise<{ totalBytes: number } | undefined>;
   readFullProjectManifestChunk(offset: number, maximumBytes: number): Promise<Uint8Array>;
@@ -295,6 +299,8 @@ export interface FrontendBridge {
   ): Promise<boolean>;
   writeCompiledCacheChunk(bytes: Uint8Array, reset: boolean, complete: boolean): Promise<void>;
   cancelCompiledCacheExport(): Promise<void>;
+  /** Release host resources without requesting that the containing window be closed. */
+  dispose(): Promise<void>;
   close(): Promise<void>;
 }
 

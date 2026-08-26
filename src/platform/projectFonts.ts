@@ -12,6 +12,7 @@ import type { ProjectFontLoadResult } from "@/core/types";
 export interface ProjectFontSource {
   relativePath: string;
   contentHash: Uint8Array;
+  byteLength: number;
   read(): Promise<Uint8Array>;
 }
 
@@ -31,30 +32,47 @@ const SFNT_SIGNATURES = new Set([0x0001_0000, 0x4f54_544f, 0x7472_7565, 0x7479_7
 const MAXIMUM_PROJECT_FONT_FILES = 32;
 const MAXIMUM_FONT_ALIASES = 8;
 const MAXIMUM_REGISTERED_FACES = 64;
+const MAXIMUM_PROJECT_FONT_FILE_BYTES = 16 * 1024 * 1024;
+const MAXIMUM_PROJECT_FONT_TOTAL_BYTES = 64 * 1024 * 1024;
 const NAME_TAG = 0x6e61_6d65;
 const OS2_TAG = 0x4f53_2f32;
 
 export class ProjectFontRegistry {
   private active = new Set<FontFace>();
+  private activeIdentity = "";
+  private activeResult: ProjectFontLoadResult = { fonts: [], errors: [] };
 
   async replace(sources: ProjectFontSource[]): Promise<ProjectFontLoadResult> {
+    const selected = sources.slice(0, MAXIMUM_PROJECT_FONT_FILES);
+    const identity = selected.map(sourceIdentity).join("\0");
+    if (identity && identity === this.activeIdentity)
+      return { fonts: [...this.activeResult.fonts], errors: [...this.activeResult.errors] };
     const errors: string[] = [];
     const candidates: Array<{ face: FontFace; family: string; relativePath: string }> = [];
+    const budget = { remainingBytes: MAXIMUM_PROJECT_FONT_TOTAL_BYTES };
     if (sources.length > MAXIMUM_PROJECT_FONT_FILES) {
       errors.push(
         `项目字体文件超过 ${MAXIMUM_PROJECT_FONT_FILES} 个，仅加载排序后的前 ${MAXIMUM_PROJECT_FONT_FILES} 个`,
       );
     }
-    if (sources.length > 0 && (typeof FontFace !== "function" || !document.fonts)) {
-      errors.push("当前 WebView 不支持加载项目字体");
-    } else {
-      for (const source of sources.slice(0, MAXIMUM_PROJECT_FONT_FILES)) {
-        if (candidates.length >= MAXIMUM_REGISTERED_FACES) {
-          errors.push(`项目字体别名超过 ${MAXIMUM_REGISTERED_FACES} 个，其余别名未加载`);
-          break;
-        }
-        await prepareSource(source, candidates, errors);
+    const fontApiAvailable = typeof FontFace === "function" && Boolean(document.fonts);
+    let fontApiErrorReported = false;
+    for (const source of selected) {
+      if (candidates.length >= MAXIMUM_REGISTERED_FACES) {
+        errors.push(`项目字体别名超过 ${MAXIMUM_REGISTERED_FACES} 个，其余别名未加载`);
+        break;
       }
+      const preflightError = sourcePreflightError(source);
+      if (preflightError) {
+        errors.push(preflightError);
+        continue;
+      }
+      if (!fontApiAvailable) {
+        if (!fontApiErrorReported) errors.push("当前 WebView 不支持加载项目字体");
+        fontApiErrorReported = true;
+        continue;
+      }
+      await prepareSource(source, candidates, errors, budget);
     }
 
     for (const face of this.active) {
@@ -79,12 +97,15 @@ export class ProjectFontRegistry {
       }
     }
     this.active = active;
-    return {
+    // A transient read/decode/FontFace failure must be retried on the next replacement.
+    this.activeIdentity = errors.length === 0 ? identity : "";
+    this.activeResult = {
       fonts: [...families.values()].sort((left, right) =>
         left.localeCompare(right, undefined, { sensitivity: "base" }),
       ),
       errors,
     };
+    return { fonts: [...this.activeResult.fonts], errors: [...this.activeResult.errors] };
   }
 
   clear(): void {
@@ -96,6 +117,8 @@ export class ProjectFontRegistry {
       }
     }
     this.active.clear();
+    this.activeIdentity = "";
+    this.activeResult = { fonts: [], errors: [] };
   }
 }
 
@@ -123,14 +146,14 @@ async function prepareSource(
   source: ProjectFontSource,
   candidates: Array<{ face: FontFace; family: string; relativePath: string }>,
   errors: string[],
+  budget: { remainingBytes: number },
 ): Promise<void> {
   try {
-    const suffix = source.relativePath.split(".").at(-1)?.toLowerCase() ?? "";
-    if (!REGISTERED_FONT_SUFFIXES.has(suffix)) {
-      errors.push(`${source.relativePath}：该字体格式会打包，但当前 WebView 暂不支持项目内加载`);
+    const bytes = await source.read();
+    if (bytes.byteLength !== source.byteLength) {
+      errors.push(`${source.relativePath}：字体文件长度在项目扫描后发生变化，未加载`);
       return;
     }
-    const bytes = await source.read();
     if (!equalBytes(blake3(bytes), source.contentHash)) {
       errors.push(`${source.relativePath}：字体在项目扫描后发生变化，未加载`);
       return;
@@ -141,6 +164,14 @@ async function prepareSource(
       errors.push(
         `${source.relativePath}：字体别名超过 ${MAXIMUM_FONT_ALIASES} 个，其余别名未加载`,
       );
+    const chargedBytes = checkedMultiply(bytes.byteLength, aliases.length);
+    if (chargedBytes > budget.remainingBytes) {
+      errors.push(
+        `${source.relativePath}：项目字体最坏驻留量超过 ${MAXIMUM_PROJECT_FONT_TOTAL_BYTES / 1024 / 1024} MiB，未加载`,
+      );
+      return;
+    }
+    budget.remainingBytes -= chargedBytes;
     const buffer = exactArrayBuffer(bytes);
     for (const family of aliases) {
       if (candidates.length >= MAXIMUM_REGISTERED_FACES) return;
@@ -155,6 +186,24 @@ async function prepareSource(
   } catch (error) {
     errors.push(`${source.relativePath}：${errorMessage(error)}`);
   }
+}
+
+function sourcePreflightError(source: ProjectFontSource): string | undefined {
+  const suffix = source.relativePath.split(".").at(-1)?.toLowerCase() ?? "";
+  if (!REGISTERED_FONT_SUFFIXES.has(suffix))
+    return `${source.relativePath}：该字体格式会打包，但当前 WebView 暂不支持项目内加载`;
+  if (!Number.isSafeInteger(source.byteLength) || source.byteLength < 0)
+    return `${source.relativePath}：字体文件长度无效，未加载`;
+  if (source.byteLength > MAXIMUM_PROJECT_FONT_FILE_BYTES)
+    return `${source.relativePath}：字体文件超过 ${MAXIMUM_PROJECT_FONT_FILE_BYTES / 1024 / 1024} MiB，未加载`;
+  return undefined;
+}
+
+function sourceIdentity(source: ProjectFontSource): string {
+  const hash = Array.from(source.contentHash, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+  return `${source.relativePath.replaceAll("\\", "/")}\0${hash}`;
 }
 
 function sfntTables(view: DataView): Map<number, TableRange> {
@@ -237,7 +286,13 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
 }
 
 function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  if (
+    bytes.buffer instanceof ArrayBuffer &&
+    bytes.byteOffset === 0 &&
+    bytes.byteLength === bytes.buffer.byteLength
+  )
+    return bytes.buffer;
+  return bytes.slice().buffer as ArrayBuffer;
 }
 
 function errorMessage(error: unknown): string {

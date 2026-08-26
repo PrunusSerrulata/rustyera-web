@@ -10,6 +10,7 @@ type ResourceUrl = (
 ) => Promise<string>;
 
 const resourceUrl = vi.hoisted(() => vi.fn<ResourceUrl>(async () => "blob:era-image"));
+const releaseResourceUrl = vi.hoisted(() => vi.fn());
 const store = reactive({
   projectResourceGeneration: 0,
   presentation: {
@@ -33,7 +34,12 @@ const store = reactive({
   gameTextStyle: { fontSizePx: 12 },
 });
 
-vi.mock("@/core/resources", () => ({ resourceUrl }));
+vi.mock("@/core/resources", () => ({
+  acquireResourceUrl: (...parameters: Parameters<ResourceUrl>) => ({
+    url: resourceUrl(...parameters),
+    release: releaseResourceUrl,
+  }),
+}));
 vi.mock("@/platform", () => ({ platformBridge: () => ({}) }));
 vi.mock("@/stores/runtime", () => ({ useRuntimeStore: () => store }));
 
@@ -46,6 +52,7 @@ const canvasReplayStub = {
 
 describe("Era sprite images", () => {
   beforeEach(() => {
+    releaseResourceUrl.mockClear();
     store.projectResourceGeneration = 0;
     store.effectivePreferences.imageScale = 1;
     store.presentation.resources.sprites = [
@@ -89,7 +96,9 @@ describe("Era sprite images", () => {
 
     expect(resourceUrl).toHaveBeenNthCalledWith(1, {}, "resources/title.webp", 3, 0);
     expect(resourceUrl).toHaveBeenNthCalledWith(2, {}, "resources/title.webp", 3, 1);
+    expect(releaseResourceUrl).toHaveBeenCalledOnce();
     wrapper.unmount();
+    expect(releaseResourceUrl).toHaveBeenCalledTimes(2);
   });
 
   it("builds a stable resource identity from WebAssembly bigint coordinates", async () => {

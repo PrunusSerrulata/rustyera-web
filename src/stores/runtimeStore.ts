@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import { blake3 } from "@noble/hashes/blake3.js";
 
 import { AudioEngine } from "@/core/audio";
@@ -51,6 +51,7 @@ import {
 } from "@/core/types";
 import { platformBridge } from "@/platform";
 import { currentGameViewportMeasurement } from "@/platform/viewportMeasurement";
+import { yieldToPaint } from "@/platform/mainThread";
 import { RuntimePumpCoordinator } from "@/stores/runtimePump";
 import { RuntimePresentationProjection } from "@/stores/runtimePresentation";
 import { RuntimeConfigurationState } from "@/stores/runtimeConfiguration";
@@ -66,7 +67,7 @@ import { RuntimeImportState } from "@/stores/runtimeImport";
 import { RuntimeDebugRequestState } from "@/stores/runtimeDebugRequests";
 import { RuntimeDebugState } from "@/stores/runtimeDebugState";
 import { RuntimeDiagnosisState } from "@/stores/runtimeDiagnosis";
-import { handleRuntimeService } from "@/stores/runtimeServices";
+import { handleRuntimeService, RuntimeImagePixelCache } from "@/stores/runtimeServices";
 import { RuntimeProjectSettingsState } from "@/stores/runtimeProjectSettings";
 import { RuntimeClientPreferencesState } from "@/stores/runtimeClientPreferences";
 import { RuntimeStatusState } from "@/stores/runtimeStatus";
@@ -86,6 +87,10 @@ import {
   DEBUG_VARIABLE_MAX_PAGES,
   TIME_ADVANCE_INTERVAL_NS,
   MAXIMUM_LOG_ENTRIES,
+  MAXIMUM_LOG_ENTRY_BYTES,
+  MAXIMUM_LOG_TOTAL_BYTES,
+  STATE_EXPORT_CHUNK_BYTES,
+  TAURI_STATE_EXPORT_CHUNK_BYTES,
   PROJECT_STARTING_STATUS,
   GAME_RUNNING_STATUS,
 } from "@/stores/runtimeState";
@@ -170,7 +175,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const fault = ref<any>(null);
   const faultMessage = computed(() => formatRuntimeFault(fault.value));
   const faultActionBusy = ref(false);
-  const runtimeLogs = new RuntimeLogState(MAXIMUM_LOG_ENTRIES);
+  const runtimeLogs = new RuntimeLogState(
+    MAXIMUM_LOG_ENTRIES,
+    MAXIMUM_LOG_ENTRY_BYTES,
+    MAXIMUM_LOG_TOTAL_BYTES,
+  );
   const testEnvironment = new RuntimeTestEnvironment();
   const logs = runtimeLogs.entries;
   const projectSettingsOpen = ref(false);
@@ -213,6 +222,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     (error) => log("warning", `音频播放失败：${String(error)}`),
     import.meta.env.VITE_RUSTYERA_TEST === "1" ? recordTestAudioPlayback : undefined,
   );
+  const imagePixels = new RuntimeImagePixelCache();
   let initialized = false;
   let initialization: Promise<void> | undefined;
   let lifecycleGeneration = 0;
@@ -266,6 +276,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
       projectFileExportState.updatePackaging(completed, total),
     writeProjectFileChunk: (bytes, reset, complete) =>
       bridge.writeProjectFileChunk(bytes, reset, complete),
+    beginStateDownload: (name, totalBytes) => bridge.beginStateExport(name, totalBytes),
+    writeStateDownload: (bytes, reset, complete) =>
+      bridge.writeStateExportChunk(bytes, reset, complete),
+    cancelStateDownload: () => bridge.cancelStateExport(),
     failProjectFile: (message) => finishProjectFileExport("failed", message),
     enqueueCompiledCacheWrite: (activeExport, bytes, reset, complete) =>
       compiledCacheExport.enqueueHostWrite(activeExport, bytes, reset, complete),
@@ -273,13 +287,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
       compiledCacheExport.continue(activeExport, complete),
     failCompiledCache: (activeExport, error) => compiledCacheExport.fail(activeExport, error),
     finishExport: finishExportTransfer,
+    diagnosisRetainedBytes: () =>
+      (runtimeDiagnosis.active?.inputReplay?.byteLength ?? 0) +
+      (runtimeDiagnosis.active?.snapshot?.byteLength ?? 0),
     logWarning: (message) => log("warning", message),
+    exportChunkBytes: () =>
+      bridge.kind === "tauri" ? TAURI_STATE_EXPORT_CHUNK_BYTES : STATE_EXPORT_CHUNK_BYTES,
   });
   type PendingRuntimeStart =
     | { type: "new_game"; seed?: number | bigint }
     | { type: Exclude<RuntimeStartKind, "new_game">; bytes: Uint8Array };
   let pendingStart: PendingRuntimeStart = { type: "new_game" };
   let runtimeManifestSparse = false;
+  let pendingReturnToTitleMessageId: string | undefined;
   let batchMediaDirty = false;
   const debugRequests = new RuntimeDebugRequestState();
   const runtimeInput = new RuntimeInputState({
@@ -541,14 +561,23 @@ export const useRuntimeStore = defineStore("runtime", () => {
   function teardown(): void {
     lifecycleGeneration += 1;
     initialization = undefined;
-    if (!initialized) return;
-    initialized = false;
-    document.removeEventListener("keydown", onKeyDown);
-    document.removeEventListener("keyup", onKeyUp);
-    document.removeEventListener("visibilitychange", sendClientState);
-    window.removeEventListener("focus", sendClientState);
-    window.removeEventListener("blur", sendClientState);
-    window.removeEventListener("resize", onResize);
+    clearSessionTimers();
+    runtimePump.setTransitioning(true);
+    runtimePump.setReady(false);
+    retireFrontendOwners(true);
+    bridge.setProjectProgressListener(undefined);
+    void bridge
+      .dispose()
+      .catch((error) => log("warning", `释放 Runtime host 资源失败：${String(error)}`));
+    if (initialized) {
+      initialized = false;
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keyup", onKeyUp);
+      document.removeEventListener("visibilitychange", sendClientState);
+      window.removeEventListener("focus", sendClientState);
+      window.removeEventListener("blur", sendClientState);
+      window.removeEventListener("resize", onResize);
+    }
     heldKeys.clear();
   }
 
@@ -787,10 +816,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function handleBatch(batch: PumpBatch): Promise<void> {
+    const batchLifecycleGeneration = lifecycleGeneration;
     startupTelemetryState.recordWasmMemory(batch.memoryBytes);
     batchMediaDirty = false;
     const suppressedLogNotificationIndexes = suppressedMirroredLogNotificationIndexes(batch.events);
     for (let index = 0; index < batch.events.length;) {
+      if (batchLifecycleGeneration !== lifecycleGeneration) return;
       const event = batch.events[index];
       if (event.epoch != null) runtimeEpoch.value = event.epoch;
       if (event.channel === "runtime" && event.message.type === "service_request") {
@@ -813,6 +844,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
                 ),
               ),
           );
+          if (batchLifecycleGeneration !== lifecycleGeneration) return;
         }
         continue;
       }
@@ -827,6 +859,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       } else await handleDebug(event.message as any, event.correlationId);
       index += 1;
     }
+    if (batchLifecycleGeneration !== lifecycleGeneration) return;
     if (presentationProjection.shouldPublish(batch.state))
       batchMediaDirty = presentationProjection.publish() || batchMediaDirty;
     if (batchMediaDirty) await synchronizeMedia();
@@ -871,6 +904,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function handleRuntimeStateChanged(value: any): void {
+    pendingReturnToTitleMessageId = undefined;
     phase.value = value.phase;
     if (value.phase === "faulted" || value.phase === "stopped") {
       gameProgressLossConfirmation.value = null;
@@ -996,6 +1030,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       }
       case "runtime_resynchronized":
+        pendingReturnToTitleMessageId = undefined;
         phase.value = value.phase;
         runtimeEpoch.value = value.epoch ?? runtimeEpoch.value;
         batchMediaDirty =
@@ -1100,6 +1135,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "command_rejected": {
         const correlation = String(correlationId);
+        if (pendingReturnToTitleMessageId === correlation) {
+          pendingReturnToTitleMessageId = undefined;
+          const message = `返回标题被 Runtime 拒绝：${value.message ?? "未知原因"}`;
+          baseStatus.value = message;
+          log("warning", message, true);
+          await send({ type: "resynchronize", value: { after_sequence: null } });
+          break;
+        }
         if (retiredFullManifestCommandIds.delete(correlation)) break;
         const manifestImport = [...fullManifestImports].find((pending) =>
           pending.commandMessageIds.has(correlation),
@@ -1306,6 +1349,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
       clock: () => testEnvironment.clock,
       nextEntropy: () => testEnvironment.nextEntropy(),
       send,
+      resourceGeneration: projectResourceGeneration.value,
+      imagePixels,
     });
   }
 
@@ -1452,12 +1497,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function replaceRuntimeSession(): Promise<void> {
     clearSessionTimers();
-    resetSessionState(true);
     try {
       await runtimePump.waitUntilIdle();
-      await compiledCacheExport.cancel();
+      await cancelTimelineTransfers();
+      retireFrontendOwners(true, true);
+      await nextTick();
+      await yieldToPaint();
       await bridge.prepareSessionReplacement();
-      resetSessionState(false, false);
       const batch = await bridge.createSession(sessionOptions());
       runtimePump.setReady(true);
       await handleBatch(batch);
@@ -1467,14 +1513,75 @@ export const useRuntimeStore = defineStore("runtime", () => {
         .catch((cleanupError) =>
           log("warning", `清理失败的 Runtime session 时出错：${String(cleanupError)}`),
         );
-      resetSessionState(false, false);
+      retireFrontendOwners(true, true);
       throw error;
     }
   }
 
   async function returnToTitle(): Promise<void> {
-    if (diagnosisExporting.value) return;
-    await send({ type: "return_to_title", value: {} });
+    await transitionToTitle(true);
+  }
+
+  async function transitionToTitle(reportFailure: boolean): Promise<boolean> {
+    if (
+      !projectOpen.value ||
+      projectLoading.value ||
+      runtimePump.transitioning ||
+      diagnosisExporting.value ||
+      projectFileExporting.value
+    )
+      return false;
+    runtimePump.setTransitioning(true);
+    clearSessionTimers();
+    try {
+      await runtimePump.waitUntilIdle();
+      // The transition lock suppresses both browser and native pump scheduling. Once Runtime has
+      // accepted the command, release the old Vue/media timeline before it constructs the title VM.
+      const messageId = await send({ type: "return_to_title", value: {} });
+      pendingReturnToTitleMessageId = String(messageId);
+      await cancelTimelineTransfers();
+      retireFrontendOwners(false);
+      await nextTick();
+      await yieldToPaint();
+      return true;
+    } catch (error) {
+      pendingReturnToTitleMessageId = undefined;
+      if (reportFailure) {
+        const message = `返回标题失败：${String(error)}`;
+        baseStatus.value = message;
+        log("error", message);
+      }
+      throw error;
+    } finally {
+      runtimePump.setTransitioning(false);
+      schedulePump(0);
+    }
+  }
+
+  async function cancelTimelineTransfers(): Promise<void> {
+    if (fullManifestImport)
+      await cleanupFullManifestImport(true).catch((error) =>
+        log("warning", `清理状态导入传输失败：${String(error)}`),
+      );
+    const activeExport = exportState;
+    if (activeExport?.kind === "compiled_cache") {
+      await compiledCacheExport
+        .cancel()
+        .catch((error) => log("warning", `取消项目缓存导出失败：${String(error)}`));
+    } else if (activeExport) {
+      exportState = undefined;
+      activeExport.buffer = undefined;
+      activeExport.chunks.length = 0;
+      if (activeExport.kind === "project_file" || activeExport.kind === "diagnosis_project")
+        await bridge
+          .cancelProjectFileExport()
+          .catch((error) => log("warning", `清理全量项目导出临时文件失败：${String(error)}`));
+      else if (activeExport.kind === "download" || activeExport.kind === "input_replay_download")
+        await bridge
+          .cancelStateExport()
+          .catch((error) => log("warning", `清理状态导出临时文件失败：${String(error)}`));
+    }
+    runtimeImport.reset();
   }
 
   function requestRestart(): void {
@@ -1502,36 +1609,31 @@ export const useRuntimeStore = defineStore("runtime", () => {
     else await returnToTitle();
   }
 
-  function resetSessionState(preserveCompiledCacheExport = false, advanceResources = true): void {
+  function retireFrontendOwners(fullSession: boolean, preserveProjectLoad = false): void {
     gameProgressLossConfirmation.value = null;
     projectReload.reset();
     resetTransientStatuses();
-    const compiledCacheExport =
-      preserveCompiledCacheExport && exportState?.kind === "compiled_cache"
-        ? exportState
-        : undefined;
-    if (exportState?.kind === "project_file")
-      void finishProjectFileExport("failed", undefined, false);
+    for (const active of [exportState]) {
+      if (!active) continue;
+      active.buffer = undefined;
+      active.chunks.length = 0;
+      active.digestHasher = undefined;
+    }
+    exportState = undefined;
     fullManifestImport = undefined;
     fullManifestImports.clear();
-    presentationProjection.reset();
-    if (advanceResources) advanceProjectResourceGeneration();
-    testAudioPlayback.clear();
+    retiredFullManifestCommandIds.clear();
+    projectFileExportState.finish();
+    resetRuntimeTimelineState(true);
+    runtimeDiagnosis.reset();
+    traditionalSaves.reset();
+    runtimeLogs.clear();
+    if (!fullSession) return;
+    if (!preserveProjectLoad) finishProjectLoad();
     runtimePump.setReady(false);
     phase.value = "negotiating";
     runtimeEpoch.value = 0;
     testEnvironment.resetTimeAdvance();
-    inputUndo.value = null;
-    fault.value = null;
-    debugRequests.reset();
-    runtimeDebug.resetSession();
-    prompt.value = "";
-    runtimeInput.reset();
-    runtimeViewport.reset();
-    exportState = compiledCacheExport;
-    runtimeDiagnosis.reset();
-    traditionalSaves.reset();
-    runtimeImport.reset();
     runtimeConfiguration.reset();
     runtimeClientPreferences.reset();
     projectPreferences.value = defaultProjectPreferences();
@@ -1540,10 +1642,25 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimeManifestSparse = false;
   }
 
+  function resetRuntimeTimelineState(advanceResources = true): void {
+    presentationProjection.reset();
+    if (advanceResources) advanceProjectResourceGeneration();
+    testAudioPlayback.clear();
+    inputUndo.value = null;
+    fault.value = null;
+    debugRequests.reset();
+    runtimeDebug.resetSession();
+    prompt.value = "";
+    runtimeInput.reset();
+    runtimeViewport.reset();
+    runtimeImport.reset();
+  }
+
   function advanceProjectResourceGeneration(): void {
     projectResourceGeneration.value += 1;
     resourceUrlRegistry.releaseBeforeGeneration(projectResourceGeneration.value);
     audio.resetResources(projectResourceGeneration.value);
+    imagePixels.clear();
   }
 
   async function openProjectReloadDialog(mode: "folder" | "script"): Promise<void> {
@@ -1594,7 +1711,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     baseStatus.value = action === "title" ? "正在返回主菜单…" : "正在重启并重新编译…";
     try {
       if (action === "title") {
-        await returnToTitle();
+        // The recovery dialog owns failure reporting; avoid first emitting a normal action error
+        // notification and then replacing it with a second fatal recovery dialog.
+        if (!(await transitionToTitle(false)))
+          throw new Error("当前 Runtime 状态不能执行返回标题恢复");
         baseStatus.value = GAME_RUNNING_STATUS;
       } else await reloadProject();
     } catch (error) {
@@ -2127,17 +2247,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (exportState !== completed) return;
     if (completed.hostWriteFailure) throw completed.hostWriteFailure.error;
     const result =
-      completed.kind === "compiled_cache"
+      completed.kind === "compiled_cache" ||
+      completed.kind === "download" ||
+      completed.kind === "input_replay_download"
         ? new Uint8Array()
         : (completed.buffer ?? concatenateChunks(completed.chunks, completed.received));
     completed.buffer = undefined;
     completed.chunks.length = 0;
     try {
       if (completed.kind === "download" || completed.kind === "input_replay_download") {
-        const saved = await bridge.saveDownload(completed.name, result);
-        const cancelled =
-          completed.kind === "input_replay_download" ? "已取消导出操作序列" : "已取消导出 VM 快照";
-        baseStatus.value = saved ? `已导出 ${completed.name}` : cancelled;
+        baseStatus.value = `已导出 ${completed.name}`;
         exportState = undefined;
         if (diagnosisExporting.value) await startDiagnosisStateExport("diagnosis_replay");
       } else if (completed.kind === "project_file") {
@@ -2194,6 +2313,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
           await compiledCacheExport.fail(completed, error);
           return;
         } else {
+          if (completed.kind === "download" || completed.kind === "input_replay_download")
+            await bridge.cancelStateExport().catch(() => undefined);
           exportState = undefined;
         }
         const message = `状态导出失败：${String(error)}`;
@@ -2855,6 +2976,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       ...bridge.runtimeMemoryCounters(),
       blobUrls: resourceUrlRegistry.memoryCounters(),
       audioBuffers: audio.memoryCounters(),
+      imagePixelSurfaces: imagePixels.memoryCounters(),
     };
   }
 

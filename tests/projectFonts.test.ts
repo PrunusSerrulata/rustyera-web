@@ -71,6 +71,50 @@ describe("project font registration", () => {
     expect(deleted.map((face) => face.family)).toEqual(["Shared Font", "共享字体"]);
   });
 
+  it("reuses unchanged path-and-hash font registrations without rereading bytes", async () => {
+    vi.stubGlobal("FontFace", FontFaceMock);
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: { add: vi.fn(), delete: vi.fn(() => true) },
+    });
+    const bytes = sfntFont([{ nameId: 1, value: "Stable Font" }]);
+    const stable = source("font/Stable.ttf", bytes);
+    const registry = new ProjectFontRegistry();
+
+    const first = await registry.replace([stable]);
+    const second = await registry.replace([stable]);
+
+    expect(second).toEqual(first);
+    expect(stable.read).toHaveBeenCalledOnce();
+    expect(FontFaceMock.created).toHaveLength(1);
+  });
+
+  it("rejects an oversized authoritative length before reading the font", async () => {
+    const oversized = source("font/Huge.ttf", new Uint8Array());
+    oversized.byteLength = 16 * 1024 * 1024 + 1;
+
+    const result = await new ProjectFontRegistry().replace([oversized]);
+
+    expect(result.errors).toEqual([expect.stringContaining("字体文件超过 16 MiB")]);
+    expect(oversized.read).not.toHaveBeenCalled();
+  });
+
+  it("retries a path-and-hash identity after a transient read failure", async () => {
+    vi.stubGlobal("FontFace", FontFaceMock);
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: { add: vi.fn(), delete: vi.fn(() => true) },
+    });
+    const bytes = sfntFont([{ nameId: 1, value: "Retry Font" }]);
+    const font = source("font/Retry.ttf", bytes);
+    font.read.mockRejectedValueOnce(new Error("temporary failure"));
+    const registry = new ProjectFontRegistry();
+
+    expect((await registry.replace([font])).errors).toHaveLength(1);
+    expect((await registry.replace([font])).fonts).toEqual(["Retry Font"]);
+    expect(font.read).toHaveBeenCalledTimes(2);
+  });
+
   it("isolates malformed, changed, and unsupported files without retaining old faces", async () => {
     const added: FontFaceMock[] = [];
     const deleted: FontFaceMock[] = [];
@@ -124,6 +168,7 @@ function source(relativePath: string, bytes: Uint8Array) {
   return {
     relativePath,
     contentHash: blake3(bytes),
+    byteLength: bytes.byteLength,
     read: vi.fn(async () => new Uint8Array(bytes)),
   };
 }

@@ -1,8 +1,60 @@
-import { resourceUrl } from "@/core/resources";
+import { acquireResourceUrl } from "@/core/resources";
 import { platformBridge } from "@/platform";
 
-type ImageCache = Map<string, Promise<HTMLImageElement>>;
+interface CachedImage {
+  promise: Promise<HTMLImageElement>;
+  pixels: number;
+}
+type ImageCache = Map<string, CachedImage>;
 type CanvasDrawable = Parameters<CanvasRenderingContext2D["drawImage"]>[0];
+const MAXIMUM_CANVAS_SIDE = 8_192;
+const MAXIMUM_REPLAY_PIXELS = 64 * 1024 * 1024;
+const MAXIMUM_REPLAY_SURFACES = 32;
+const MAXIMUM_REPLAY_DEPTH = 16;
+const MAXIMUM_ENCODED_IMAGE_BYTES = 16 * 1024 * 1024;
+const MAXIMUM_DECODED_IMAGE_COUNT = 32;
+const MAXIMUM_DECODED_IMAGE_PIXELS = 64 * 1024 * 1024;
+const canvasReleases = new WeakMap<HTMLCanvasElement, () => void>();
+
+export class CanvasReplayBudget {
+  private pixels = 0;
+  private surfaces = 0;
+
+  reserve(width: number, height: number, depth = 0): () => void {
+    if (
+      !Number.isSafeInteger(width) ||
+      !Number.isSafeInteger(height) ||
+      width < 0 ||
+      height < 0 ||
+      width > MAXIMUM_CANVAS_SIDE ||
+      height > MAXIMUM_CANVAS_SIDE
+    )
+      throw new Error("canvas replay surface dimensions exceed the frontend budget");
+    if (depth > MAXIMUM_REPLAY_DEPTH)
+      throw new Error("canvas replay recursion exceeds the frontend budget");
+    const pixels = width * height;
+    if (
+      !Number.isSafeInteger(pixels) ||
+      this.pixels + pixels > MAXIMUM_REPLAY_PIXELS ||
+      this.surfaces + 1 > MAXIMUM_REPLAY_SURFACES
+    )
+      throw new Error("canvas replay surfaces exceed the frontend pixel budget");
+    this.pixels += pixels;
+    this.surfaces += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.pixels -= pixels;
+      this.surfaces -= 1;
+    };
+  }
+}
+
+export interface CanvasReplayRenderControl {
+  budget: CanvasReplayBudget;
+  active(): boolean;
+}
 
 interface WirePoint {
   x: unknown;
@@ -75,6 +127,7 @@ export interface CanvasReplayRenderer {
     ancestors: Set<number>,
     resources: CanvasReplayResources,
     resourceGeneration: number,
+    control?: CanvasReplayRenderControl,
   ): Promise<void>;
 }
 
@@ -82,7 +135,7 @@ export function createCanvasReplayRenderer(): CanvasReplayRenderer {
   const decodedImages: ImageCache = new Map();
   return {
     clear(): void {
-      decodedImages.clear();
+      releaseDecodedImages(decodedImages);
     },
     replay(
       context: CanvasRenderingContext2D,
@@ -90,6 +143,7 @@ export function createCanvasReplayRenderer(): CanvasReplayRenderer {
       ancestors: Set<number>,
       resources: CanvasReplayResources,
       resourceGeneration: number,
+      control = { budget: new CanvasReplayBudget(), active: () => true },
     ): Promise<void> {
       return replayCommands(
         context,
@@ -98,6 +152,8 @@ export function createCanvasReplayRenderer(): CanvasReplayRenderer {
         resources,
         resourceGeneration,
         decodedImages,
+        control,
+        0,
       );
     },
   };
@@ -110,12 +166,16 @@ async function replayCommands(
   resources: CanvasReplayResources,
   resourceGeneration: number,
   decodedImages: ImageCache,
+  control: CanvasReplayRenderControl,
+  depth: number,
 ): Promise<void> {
+  assertActive(control);
   let brush = "#000";
   let pen = "#000";
   let penWidth = 1;
   let font = "16px sans-serif";
   for (const command of replay.commands ?? []) {
+    assertActive(control);
     switch (command.type) {
       case "clear":
         context.save();
@@ -173,11 +233,18 @@ async function replayCommands(
         context.fillText(command.text, numeric(command.point.x), numeric(command.point.y));
         break;
       case "load_encoded_image": {
-        const bitmap = await createImageBitmap(
-          new Blob([new Uint8Array(command.encoded.map(Number))]),
-        );
-        context.drawImage(bitmap, 0, 0);
-        bitmap.close();
+        if (command.encoded.length > MAXIMUM_ENCODED_IMAGE_BYTES)
+          throw new Error("encoded canvas image exceeds the frontend budget");
+        const bitmap = await createImageBitmap(new Blob([new Uint8Array(command.encoded)]));
+        let release: (() => void) | undefined;
+        try {
+          release = control.budget.reserve(bitmap.width, bitmap.height, depth);
+          assertActive(control);
+          context.drawImage(bitmap, 0, 0);
+        } finally {
+          bitmap.close();
+          release?.();
+        }
         break;
       }
       case "draw_sprite": {
@@ -188,11 +255,24 @@ async function replayCommands(
           replay.revision,
           resourceGeneration,
           decodedImages,
+          control,
+          depth,
         );
-        if (source)
-          drawProjected(context, source.image, source.rectangle, rectangle(command.destination), {
-            colorMatrix: command.color_matrix,
-          });
+        if (source) {
+          try {
+            drawProjected(
+              context,
+              source.image,
+              source.rectangle,
+              rectangle(command.destination),
+              { colorMatrix: command.color_matrix },
+              control.budget,
+              depth,
+            );
+          } finally {
+            releaseCanvas(source.image);
+          }
+        }
         break;
       }
       case "draw_canvas": {
@@ -202,24 +282,42 @@ async function replayCommands(
           resources,
           resourceGeneration,
           decodedImages,
+          control,
+          depth + 1,
         );
         if (!source) break;
-        const mask =
-          command.mask_canvas_id == null
-            ? undefined
-            : await canvasSource(
-                Number(command.mask_canvas_id),
-                ancestors,
-                resources,
-                resourceGeneration,
-                decodedImages,
-              );
-        drawProjected(context, source, rectangle(command.source), rectangle(command.destination), {
-          colorMatrix: command.color_matrix,
-          mask,
-          rotationDegrees: Number(command.rotation_millidegrees ?? 0) / 1000,
-          rotationCenter: command.rotation_center ? point(command.rotation_center) : undefined,
-        });
+        let mask: HTMLCanvasElement | undefined;
+        try {
+          mask =
+            command.mask_canvas_id == null
+              ? undefined
+              : await canvasSource(
+                  Number(command.mask_canvas_id),
+                  ancestors,
+                  resources,
+                  resourceGeneration,
+                  decodedImages,
+                  control,
+                  depth + 1,
+                );
+          drawProjected(
+            context,
+            source,
+            rectangle(command.source),
+            rectangle(command.destination),
+            {
+              colorMatrix: command.color_matrix,
+              mask,
+              rotationDegrees: Number(command.rotation_millidegrees ?? 0) / 1000,
+              rotationCenter: command.rotation_center ? point(command.rotation_center) : undefined,
+            },
+            control.budget,
+            depth,
+          );
+        } finally {
+          releaseCanvas(source);
+          releaseCanvas(mask);
+        }
         break;
       }
     }
@@ -233,6 +331,8 @@ async function spriteSource(
   revision: unknown,
   resourceGeneration: number,
   decodedImages: ImageCache,
+  control: CanvasReplayRenderControl,
+  depth: number,
 ): Promise<{ image: CanvasDrawable; rectangle: Rectangle } | undefined> {
   const sprite = resources.sprites?.find(
     (item) => String(item.name).toUpperCase() === String(name).toUpperCase(),
@@ -244,6 +344,8 @@ async function spriteSource(
       resources,
       resourceGeneration,
       decodedImages,
+      control,
+      depth + 1,
     );
     if (!image) return undefined;
     return {
@@ -261,6 +363,8 @@ async function spriteSource(
       resources,
       resourceGeneration,
       decodedImages,
+      control,
+      depth + 1,
     );
     if (!image) return undefined;
     return { image, rectangle: tupleRectangle(frame.source_rectangle, image) };
@@ -273,6 +377,7 @@ async function spriteSource(
       resourceGeneration,
       decodedImages,
     );
+    assertActive(control);
     return { image, rectangle: tupleRectangle(frame?.source_rectangle, image) };
   } catch (error) {
     console.warn(`Unable to load canvas sprite resource: ${resourceId}`, error);
@@ -291,20 +396,71 @@ function decodedImage(
   // include the project generation so a hot reload cannot reuse an obsolete decoded file.
   const key = `${resourceGeneration}\0${resourceId}`;
   const cached = decodedImages.get(key);
-  if (cached) return cached;
-  const image = resourceUrl(platformBridge(), resourceId, revision, resourceGeneration)
+  if (cached) return cached.promise;
+  const lease = acquireResourceUrl(platformBridge(), resourceId, revision, resourceGeneration);
+  const entry: CachedImage = {
+    promise: undefined as unknown as Promise<HTMLImageElement>,
+    pixels: 0,
+  };
+  const image = lease.url
     .then(async (source) => {
       const image = new Image();
       image.src = source;
-      await image.decode();
-      return image;
+      try {
+        await image.decode();
+        const pixels = image.width * image.height;
+        if (!Number.isSafeInteger(pixels) || pixels > MAXIMUM_DECODED_IMAGE_PIXELS) {
+          image.src = "";
+          throw new Error("decoded canvas image exceeds the frontend pixel budget");
+        }
+        entry.pixels = pixels;
+        evictDecodedImages(decodedImages, key);
+        return image;
+      } finally {
+        lease.release();
+      }
     })
     .catch((error) => {
+      lease.release();
       decodedImages.delete(key);
       throw error;
     });
-  decodedImages.set(key, image);
+  entry.promise = image;
+  decodedImages.set(key, entry);
   return image;
+}
+
+function evictDecodedImages(decodedImages: ImageCache, protectedKey: string): void {
+  let retainedPixels = [...decodedImages.values()].reduce((sum, entry) => sum + entry.pixels, 0);
+  while (
+    decodedImages.size > MAXIMUM_DECODED_IMAGE_COUNT ||
+    retainedPixels > MAXIMUM_DECODED_IMAGE_PIXELS
+  ) {
+    let candidate: string | undefined;
+    for (const key of decodedImages.keys()) {
+      if (key !== protectedKey) {
+        candidate = key;
+        break;
+      }
+    }
+    if (!candidate) return;
+    const image = decodedImages.get(candidate);
+    decodedImages.delete(candidate);
+    retainedPixels -= image?.pixels ?? 0;
+    void image?.promise.then(
+      (decoded) => (decoded.src = ""),
+      () => undefined,
+    );
+  }
+}
+
+function releaseDecodedImages(decodedImages: ImageCache): void {
+  for (const image of decodedImages.values())
+    void image.promise.then(
+      (decoded) => (decoded.src = ""),
+      () => undefined,
+    );
+  decodedImages.clear();
 }
 
 async function canvasSource(
@@ -313,19 +469,44 @@ async function canvasSource(
   resources: CanvasReplayResources,
   resourceGeneration: number,
   decodedImages: ImageCache,
+  control: CanvasReplayRenderControl,
+  depth: number,
 ): Promise<HTMLCanvasElement | undefined> {
   if (ancestors.has(canvasId)) return undefined;
   const replay = resources.canvases?.find((item) => Number(item.canvas_id) === canvasId);
   if (!replay) return undefined;
+  assertActive(control);
+  const width = canvasDimension(replay.size.width);
+  const height = canvasDimension(replay.size.height);
+  const release = control.budget.reserve(width, height, depth);
   const element = document.createElement("canvas");
-  element.width = canvasDimension(replay.size.width);
-  element.height = canvasDimension(replay.size.height);
+  canvasReleases.set(element, release);
+  element.width = width;
+  element.height = height;
   const context = element.getContext("2d");
-  if (!context) return undefined;
+  if (!context) {
+    releaseCanvas(element);
+    return undefined;
+  }
   const next = new Set(ancestors);
   next.add(canvasId);
-  await replayCommands(context, replay, next, resources, resourceGeneration, decodedImages);
-  return element;
+  try {
+    await replayCommands(
+      context,
+      replay,
+      next,
+      resources,
+      resourceGeneration,
+      decodedImages,
+      control,
+      depth,
+    );
+    assertActive(control);
+    return element;
+  } catch (error) {
+    releaseCanvas(element);
+    throw error;
+  }
 }
 
 interface Rectangle {
@@ -379,51 +560,79 @@ function drawProjected(
     rotationDegrees?: number;
     rotationCenter?: { x: number; y: number };
   },
+  budget: CanvasReplayBudget,
+  depth: number,
 ): void {
+  if (!options.mask && !options.colorMatrix?.length && Number(options.rotationDegrees ?? 0) === 0) {
+    target.drawImage(
+      image,
+      Number(source.x),
+      Number(source.y),
+      Number(source.width),
+      Number(source.height),
+      Number(destination.x),
+      Number(destination.y),
+      Number(destination.width),
+      Number(destination.height),
+    );
+    return;
+  }
+  const projectedWidth = Math.max(1, Math.abs(Number(destination.width)));
+  const projectedHeight = Math.max(1, Math.abs(Number(destination.height)));
+  const release = budget.reserve(projectedWidth, projectedHeight, depth);
   const projected = document.createElement("canvas");
-  projected.width = Math.max(1, Math.abs(Number(destination.width)));
-  projected.height = Math.max(1, Math.abs(Number(destination.height)));
+  canvasReleases.set(projected, release);
+  projected.width = projectedWidth;
+  projected.height = projectedHeight;
   const opacity = simpleOpacity(options.colorMatrix);
   const readsPixels = opacity == null && options.colorMatrix?.length === 25;
   const context = projected.getContext(
     "2d",
     readsPixels ? { willReadFrequently: true } : undefined,
   );
-  if (!context) return;
-  if (opacity != null) {
-    context.save();
-    context.globalAlpha = opacity;
-  }
-  context.drawImage(
-    image,
-    Number(source.x),
-    Number(source.y),
-    Number(source.width),
-    Number(source.height),
-    0,
-    0,
-    projected.width,
-    projected.height,
-  );
-  if (opacity != null) context.restore();
-  else if (options.colorMatrix?.length === 25) applyColorMatrix(context, options.colorMatrix);
-  if (options.mask) applyMask(context, options.mask, source, projected.width, projected.height);
-
-  const rotation = Number(options.rotationDegrees ?? 0);
-  if (!rotation) {
-    target.drawImage(projected, Number(destination.x), Number(destination.y));
+  if (!context) {
+    releaseCanvas(projected);
     return;
   }
-  const center = options.rotationCenter ?? {
-    x: Number(destination.x) + projected.width / 2,
-    y: Number(destination.y) + projected.height / 2,
-  };
-  target.save();
-  target.translate(Number(center.x), Number(center.y));
-  target.rotate((rotation * Math.PI) / 180);
-  target.translate(-Number(center.x), -Number(center.y));
-  target.drawImage(projected, Number(destination.x), Number(destination.y));
-  target.restore();
+  try {
+    if (opacity != null) {
+      context.save();
+      context.globalAlpha = opacity;
+    }
+    context.drawImage(
+      image,
+      Number(source.x),
+      Number(source.y),
+      Number(source.width),
+      Number(source.height),
+      0,
+      0,
+      projected.width,
+      projected.height,
+    );
+    if (opacity != null) context.restore();
+    else if (options.colorMatrix?.length === 25) applyColorMatrix(context, options.colorMatrix);
+    if (options.mask)
+      applyMask(context, options.mask, source, projected.width, projected.height, budget, depth);
+
+    const rotation = Number(options.rotationDegrees ?? 0);
+    if (!rotation) {
+      target.drawImage(projected, Number(destination.x), Number(destination.y));
+      return;
+    }
+    const center = options.rotationCenter ?? {
+      x: Number(destination.x) + projected.width / 2,
+      y: Number(destination.y) + projected.height / 2,
+    };
+    target.save();
+    target.translate(Number(center.x), Number(center.y));
+    target.rotate((rotation * Math.PI) / 180);
+    target.translate(-Number(center.x), -Number(center.y));
+    target.drawImage(projected, Number(destination.x), Number(destination.y));
+    target.restore();
+  } finally {
+    releaseCanvas(projected);
+  }
 }
 
 function simpleOpacity(values: number[] | undefined): number | undefined {
@@ -446,27 +655,50 @@ function applyMask(
   source: Rectangle,
   width: number,
   height: number,
+  budget: CanvasReplayBudget,
+  depth: number,
 ): void {
+  const release = budget.reserve(width, height, depth);
   const projected = document.createElement("canvas");
+  canvasReleases.set(projected, release);
   projected.width = width;
   projected.height = height;
   const maskContext = projected.getContext("2d");
-  if (!maskContext) return;
-  maskContext.drawImage(
-    mask,
-    Number(source.x),
-    Number(source.y),
-    Number(source.width),
-    Number(source.height),
-    0,
-    0,
-    width,
-    height,
-  );
-  context.save();
-  context.globalCompositeOperation = "destination-in";
-  context.drawImage(projected, 0, 0);
-  context.restore();
+  if (!maskContext) {
+    releaseCanvas(projected);
+    return;
+  }
+  try {
+    maskContext.drawImage(
+      mask,
+      Number(source.x),
+      Number(source.y),
+      Number(source.width),
+      Number(source.height),
+      0,
+      0,
+      width,
+      height,
+    );
+    context.save();
+    context.globalCompositeOperation = "destination-in";
+    context.drawImage(projected, 0, 0);
+    context.restore();
+  } finally {
+    releaseCanvas(projected);
+  }
+}
+
+function releaseCanvas(value: CanvasDrawable | undefined): void {
+  if (!(value instanceof HTMLCanvasElement)) return;
+  value.width = 0;
+  value.height = 0;
+  canvasReleases.get(value)?.();
+  canvasReleases.delete(value);
+}
+
+function assertActive(control: CanvasReplayRenderControl): void {
+  if (!control.active()) throw new Error("canvas replay was cancelled");
 }
 
 function applyColorMatrix(context: CanvasRenderingContext2D, values: number[]): void {

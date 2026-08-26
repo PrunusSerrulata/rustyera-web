@@ -1222,6 +1222,60 @@ describe("browser startup bridge", () => {
     }
   });
 
+  it("rejects an oversized project export when no streaming sink is available", async () => {
+    vi.stubGlobal("navigator", {
+      storage: { getDirectory: vi.fn().mockRejectedValue(new Error("OPFS unavailable")) },
+    });
+    const bridge = new BrowserBridge();
+    await bridge.beginProjectFileExport("large.reraproj");
+    const oversized = { byteLength: 64 * 1024 * 1024 + 1 } as Uint8Array;
+
+    await expect(bridge.writeProjectFileChunk(oversized, true, false)).rejects.toThrow(
+      "没有可用的流式文件写入能力",
+    );
+    await expect(bridge.writeProjectFileChunk(Uint8Array.of(1), false, true)).rejects.toThrow(
+      "项目文件导出尚未开始",
+    );
+  });
+
+  it("streams state-export chunks into a Blob without concatenating a second byte array", async () => {
+    const originalUrl = globalThis.URL;
+    let exported: Blob | undefined;
+    class ExportUrl extends originalUrl {}
+    Object.assign(ExportUrl, {
+      createObjectURL: vi.fn((blob: Blob) => {
+        exported = blob;
+        return "blob:state";
+      }),
+      revokeObjectURL: vi.fn(),
+    });
+    vi.stubGlobal("URL", ExportUrl);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    try {
+      const bridge = new BrowserBridge();
+      await expect(bridge.beginStateExport("state.snapshot", 3)).resolves.toBe(true);
+      await bridge.writeStateExportChunk(Uint8Array.of(1, 2), true, false);
+      await bridge.writeStateExportChunk(Uint8Array.of(3), false, true);
+
+      expect(exported?.size).toBe(3);
+      expect(click).toHaveBeenCalledOnce();
+    } finally {
+      click.mockRestore();
+      vi.stubGlobal("URL", originalUrl);
+    }
+  });
+
+  it("rejects an oversized state export before allocating fallback chunks", async () => {
+    const bridge = new BrowserBridge();
+
+    await expect(bridge.beginStateExport("huge.snapshot", 64 * 1024 * 1024 + 1)).rejects.toThrow(
+      "64 MiB",
+    );
+    await expect(bridge.writeStateExportChunk(Uint8Array.of(1), true, false)).rejects.toThrow(
+      "状态导出尚未开始",
+    );
+  });
+
   it("retains an OPFS project export until the iOS Firefox share request releases it", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", {

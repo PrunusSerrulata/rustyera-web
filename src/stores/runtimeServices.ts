@@ -11,6 +11,188 @@ interface RuntimeServiceContext {
   clock(): Date | undefined;
   nextEntropy(): bigint | undefined;
   send(message: RuntimeMessage, correlationId?: number): Promise<unknown>;
+  resourceGeneration: number;
+  imagePixels: RuntimeImagePixelCache;
+}
+
+interface DecodedPixelSurface {
+  canvas: OffscreenCanvas;
+  context: OffscreenCanvasRenderingContext2D;
+  pixels: number;
+}
+
+interface PixelSurfaceEntry {
+  promise: Promise<DecodedPixelSurface>;
+  surface?: DecodedPixelSurface;
+  users: number;
+  pixels: number;
+  lastUsed: number;
+  retired: boolean;
+}
+
+const DEFAULT_IMAGE_PIXEL_CACHE_PIXELS = 16 * 1024 * 1024;
+
+/** Coalesce service image decoding and bound retained RGBA surfaces for one project generation. */
+export class RuntimeImagePixelCache {
+  private readonly entries = new Map<string, PixelSurfaceEntry>();
+  private generation = -1;
+  private retainedPixels = 0;
+  private clock = 0;
+  private loadTail = Promise.resolve();
+
+  constructor(private readonly maximumPixels = DEFAULT_IMAGE_PIXEL_CACHE_PIXELS) {}
+
+  async pixel(
+    bridge: Pick<FrontendBridge, "readImageMetadata" | "readResource">,
+    resourceId: string,
+    x: number,
+    y: number,
+    generation: number,
+  ): Promise<number> {
+    this.ensureGeneration(generation);
+    const key = `${generation}\0${resourceId}`;
+    let entry = this.entries.get(key);
+    if (!entry) {
+      entry = this.createEntry(bridge, resourceId, key);
+      this.entries.set(key, entry);
+    }
+    entry.users += 1;
+    entry.lastUsed = ++this.clock;
+    try {
+      const surface = await entry.promise;
+      const pixel = surface.context.getImageData(x, y, 1, 1).data;
+      return ((pixel[3] << 24) | (pixel[0] << 16) | (pixel[1] << 8) | pixel[2]) >>> 0;
+    } finally {
+      entry.users -= 1;
+      if ((entry.retired || entry.pixels > this.maximumPixels) && entry.users === 0)
+        this.releaseEntry(key, entry);
+      else this.evictBudget();
+    }
+  }
+
+  clear(): void {
+    for (const [key, entry] of this.entries) {
+      entry.retired = true;
+      if (entry.users === 0) this.releaseEntry(key, entry);
+    }
+    this.generation = -1;
+    this.clock = 0;
+  }
+
+  memoryCounters(): {
+    count: number;
+    pixels: number;
+    estimatedBytes: number;
+    inflight: number;
+  } {
+    return {
+      count: [...this.entries.values()].filter((entry) => entry.surface != null).length,
+      pixels: this.retainedPixels,
+      estimatedBytes: this.retainedPixels * 4,
+      inflight: [...this.entries.values()].filter((entry) => entry.surface == null).length,
+    };
+  }
+
+  private ensureGeneration(generation: number): void {
+    if (this.generation === generation) return;
+    this.clear();
+    this.generation = generation;
+  }
+
+  private createEntry(
+    bridge: Pick<FrontendBridge, "readImageMetadata" | "readResource">,
+    resourceId: string,
+    key: string,
+  ): PixelSurfaceEntry {
+    const entry: PixelSurfaceEntry = {
+      promise: undefined as unknown as Promise<DecodedPixelSurface>,
+      users: 0,
+      pixels: 0,
+      lastUsed: ++this.clock,
+      retired: false,
+    };
+    const load = this.loadTail.then(async () => {
+      const metadata = await bridge.readImageMetadata(resourceId);
+      const pixels = checkedPixels(metadata.width, metadata.height, resourceId);
+      if (pixels > this.maximumPixels) throw new Error(`图像像素数超过前端服务预算：${resourceId}`);
+      const bytes = await bridge.readResource(resourceId);
+      const bitmap = await createImageBitmap(new Blob([bytes as BlobPart]));
+      try {
+        if (bitmap.width !== metadata.width || bitmap.height !== metadata.height)
+          throw new Error(`图像尺寸在读取期间发生变化：${resourceId}`);
+        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (!context) {
+          canvas.width = 0;
+          canvas.height = 0;
+          throw new Error(`无法创建图像像素读取面：${resourceId}`);
+        }
+        try {
+          context.drawImage(bitmap, 0, 0);
+        } catch (error) {
+          canvas.width = 0;
+          canvas.height = 0;
+          throw error;
+        }
+        const surface = { canvas, context, pixels };
+        if (entry.retired) {
+          releasePixelSurface(surface);
+          throw new Error(`图像像素请求已过期：${resourceId}`);
+        }
+        entry.surface = surface;
+        entry.pixels = pixels;
+        this.retainedPixels += pixels;
+        this.evictBudget(entry);
+        return surface;
+      } finally {
+        bitmap.close();
+      }
+    });
+    this.loadTail = load.then(
+      () => undefined,
+      () => undefined,
+    );
+    entry.promise = load.catch((error) => {
+      if (this.entries.get(key) === entry) this.entries.delete(key);
+      throw error;
+    });
+    return entry;
+  }
+
+  private evictBudget(protectedEntry?: PixelSurfaceEntry): void {
+    while (this.retainedPixels > this.maximumPixels) {
+      const candidate = [...this.entries.entries()]
+        .filter(([, entry]) => entry !== protectedEntry && entry.users === 0 && entry.pixels > 0)
+        .sort((left, right) => left[1].lastUsed - right[1].lastUsed)[0];
+      if (!candidate) return;
+      this.releaseEntry(candidate[0], candidate[1]);
+    }
+  }
+
+  private releaseEntry(key: string, entry: PixelSurfaceEntry): void {
+    if (this.entries.get(key) === entry) this.entries.delete(key);
+    if (entry.pixels > 0) {
+      this.retainedPixels = Math.max(0, this.retainedPixels - entry.pixels);
+      entry.pixels = 0;
+    }
+    if (entry.surface) {
+      releasePixelSurface(entry.surface);
+      entry.surface = undefined;
+    }
+  }
+}
+
+function checkedPixels(width: number, height: number, resourceId: string): number {
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0)
+    throw new Error(`图像尺寸无效：${resourceId}`);
+  const pixels = width * height;
+  if (!Number.isSafeInteger(pixels)) throw new Error(`图像像素数溢出：${resourceId}`);
+  return pixels;
+}
+
+function releasePixelSurface(surface: DecodedPixelSurface): void {
+  surface.canvas.width = 0;
+  surface.canvas.height = 0;
 }
 
 export async function handleRuntimeService(
@@ -93,20 +275,14 @@ async function resolveRuntimeService(
     }
     case "image/image_pixel": {
       const resource = String(at(query, 0));
-      const bitmap = await createImageBitmap(
-        new Blob([(await context.bridge.readResource(resource)) as BlobPart]),
-      );
-      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-      const canvasContext = canvas.getContext("2d", { willReadFrequently: true })!;
-      canvasContext.drawImage(bitmap, 0, 0);
-      const pixel = canvasContext.getImageData(
+      const pixel = await context.imagePixels.pixel(
+        context.bridge,
+        resource,
         Number(at(query, 2)),
         Number(at(query, 3)),
-        1,
-        1,
-      ).data;
-      bitmap.close();
-      return mapOf([0, ((pixel[3] << 24) | (pixel[0] << 16) | (pixel[1] << 8) | pixel[2]) >>> 0]);
+        context.resourceGeneration,
+      );
+      return mapOf([0, pixel]);
     }
     case "canvas/decode_canvas_image": {
       const metadata = decodeImageMetadata(at(query, 0) as Uint8Array);

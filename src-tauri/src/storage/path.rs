@@ -2,9 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use era_runtime_protocol::{
-    FrontendIoError, FrontendIoErrorKind, StoragePrecondition, validate_relative_path,
-};
+use era_runtime_protocol::{FrontendIoError, FrontendIoErrorKind, validate_relative_path};
 
 pub(super) fn validate_read_path(
     root: &Path,
@@ -40,27 +38,6 @@ pub(super) fn ensure_inside(root: &Path, parent: &Path) -> Result<(), std::io::E
         Ok(())
     } else {
         Err(invalid_path())
-    }
-}
-
-pub(super) fn verify_precondition(
-    path: &Path,
-    precondition: &StoragePrecondition,
-) -> Result<(), std::io::Error> {
-    let current = match fs::read(path) {
-        Ok(bytes) => Some(revision(&bytes)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
-    };
-    let matches = match precondition {
-        StoragePrecondition::Any => true,
-        StoragePrecondition::Missing => current.is_none(),
-        StoragePrecondition::Revision(expected) => current.as_ref() == Some(expected),
-    };
-    if matches {
-        Ok(())
-    } else {
-        Err(conflict("storage precondition did not hold"))
     }
 }
 

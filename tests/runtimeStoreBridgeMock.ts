@@ -63,6 +63,9 @@ export const bridge = {
   projectName: vi.fn(() => "eraTW"),
   openUpload: vi.fn(),
   saveDownload: vi.fn(),
+  beginStateExport: vi.fn(async () => true),
+  writeStateExportChunk: vi.fn(),
+  cancelStateExport: vi.fn(),
   fullProjectExportSupported: vi.fn(() => true),
   stageFullProjectManifest: vi.fn(),
   readFullProjectManifestChunk: vi.fn(),
@@ -80,5 +83,6 @@ export const bridge = {
   saveDiagnosis: vi.fn(),
   writeCompiledCacheChunk: vi.fn(),
   cancelCompiledCacheExport: vi.fn(),
+  dispose: vi.fn(),
   close: vi.fn(),
 };

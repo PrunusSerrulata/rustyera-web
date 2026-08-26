@@ -106,8 +106,11 @@ export async function pickBrowserFile(accept?: string): Promise<File | undefined
   return (await pickFiles({ accept }))?.[0];
 }
 
-export function pickBrowserFileBytes(accept?: string): Promise<Uint8Array | undefined> {
-  return pickFileBytes(accept);
+export function pickBrowserFileBytes(
+  accept?: string,
+  maximumBytes?: number,
+): Promise<Uint8Array | undefined> {
+  return pickFileBytes(accept, maximumBytes);
 }
 
 export interface PickedBrowserProjectFile {

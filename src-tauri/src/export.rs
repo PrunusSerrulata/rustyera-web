@@ -175,6 +175,28 @@ pub(super) fn append_atomic_file_chunk(
 }
 
 #[tauri::command]
-pub(super) fn read_import(path: PathBuf) -> Result<Vec<u8>, String> {
-    fs::read(path).map_err(|error| format!("cannot read import file: {error}"))
+pub(super) fn read_import(path: PathBuf) -> Result<tauri::ipc::Response, String> {
+    const MAXIMUM_IMPORT_BYTES: u64 = 256 * 1024 * 1024;
+    let length = fs::metadata(&path)
+        .map_err(|error| format!("cannot stat import file: {error}"))?
+        .len();
+    if length > MAXIMUM_IMPORT_BYTES {
+        return Err("import file exceeds the 256 MiB safety limit".into());
+    }
+    fs::read(path)
+        .map(tauri::ipc::Response::new)
+        .map_err(|error| format!("cannot read import file: {error}"))
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_import_is_rejected_from_metadata_before_reading() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file().set_len(256 * 1024 * 1024 + 1).unwrap();
+
+        assert!(read_import(file.path().to_owned()).is_err());
+    }
 }

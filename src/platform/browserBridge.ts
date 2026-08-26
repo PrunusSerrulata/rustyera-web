@@ -46,6 +46,9 @@ import { hex } from "@/platform/browserProjectFilesystem";
 
 const UNCONSTRAINED_PROJECT_FILE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 const CONSTRAINED_PROJECT_FILE_READ_CHUNK_BYTES = 1024 * 1024;
+const MAXIMUM_IN_MEMORY_PROJECT_EXPORT_BYTES = 64 * 1024 * 1024;
+const MAXIMUM_IN_MEMORY_STATE_EXPORT_BYTES = 64 * 1024 * 1024;
+const MAXIMUM_STATE_IMPORT_BYTES = 256 * 1024 * 1024;
 
 export class BrowserBridge implements FrontendBridge {
   readonly kind = "browser" as const;
@@ -69,10 +72,19 @@ export class BrowserBridge implements FrontendBridge {
   private cacheWriter?: FileSystemWritableFileStream;
   private discardCompiledCacheExport = false;
   private projectFileWriter?: FileSystemWritableFileStream;
+  private stateExportWriter?: FileSystemWritableFileStream;
   private projectFileExportAbort?: AbortController;
   private fullManifestSpool?: import("@/platform/browserProject").BrowserFullManifestSpool;
   private projectFileFallback?:
-    | { name: string; chunks: Uint8Array[] }
+    | { name: string; chunks: ArrayBuffer[]; receivedBytes: number }
+    | {
+        name: string;
+        root: FileSystemDirectoryHandle;
+        temporaryName: string;
+        writer: FileSystemWritableFileStream;
+      };
+  private stateExportFallback?:
+    | { name: string; chunks: ArrayBuffer[]; receivedBytes: number }
     | {
         name: string;
         root: FileSystemDirectoryHandle;
@@ -675,7 +687,7 @@ export class BrowserBridge implements FrontendBridge {
   }
 
   async openUpload(): Promise<Uint8Array | undefined> {
-    return pickBrowserFileBytes(".snapshot,application/octet-stream");
+    return pickBrowserFileBytes(".snapshot,application/octet-stream", MAXIMUM_STATE_IMPORT_BYTES);
   }
 
   async saveDownload(name: string, bytes: Uint8Array): Promise<boolean> {
@@ -694,9 +706,106 @@ export class BrowserBridge implements FrontendBridge {
     return true;
   }
 
+  async beginStateExport(name: string, totalBytes: number): Promise<boolean> {
+    await this.cancelStateExport();
+    if (!Number.isSafeInteger(totalBytes) || totalBytes < 0)
+      throw new Error("Runtime 返回了无效的状态导出长度");
+    if (import.meta.env.VITE_RUSTYERA_TEST === "1") {
+      if (totalBytes > MAXIMUM_IN_MEMORY_STATE_EXPORT_BYTES)
+        throw new Error("测试环境的状态导出超过 64 MiB 安全限制");
+      this.stateExportFallback = { name, chunks: [], receivedBytes: 0 };
+      return true;
+    }
+    if (window.showSaveFilePicker) {
+      try {
+        const handle = await window.showSaveFilePicker({ suggestedName: name });
+        this.stateExportWriter = await handle.createWritable({ keepExistingData: false });
+        return true;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return false;
+        throw error;
+      }
+    }
+    try {
+      const root = await navigator.storage.getDirectory();
+      const temporaryName = `.rustyera-state-export-${crypto.randomUUID()}.tmp`;
+      const handle = await root.getFileHandle(temporaryName, { create: true });
+      const writer = await handle.createWritable({ keepExistingData: false });
+      this.stateExportFallback = { name, root, temporaryName, writer };
+    } catch {
+      if (totalBytes > MAXIMUM_IN_MEMORY_STATE_EXPORT_BYTES)
+        throw new Error(
+          `当前浏览器没有可用的流式文件写入能力，状态导出超过 ${MAXIMUM_IN_MEMORY_STATE_EXPORT_BYTES / 1024 / 1024} MiB，已拒绝以避免内存耗尽`,
+        );
+      this.stateExportFallback = { name, chunks: [], receivedBytes: 0 };
+    }
+    return true;
+  }
+
+  async writeStateExportChunk(
+    bytes: Uint8Array,
+    _reset: boolean,
+    complete: boolean,
+  ): Promise<void> {
+    if (this.stateExportWriter) {
+      await this.stateExportWriter.write(bytes as FileSystemWriteChunkType);
+      if (complete) {
+        await this.stateExportWriter.close();
+        this.stateExportWriter = undefined;
+      }
+      return;
+    }
+    const fallback = this.stateExportFallback;
+    if (!fallback) throw new Error("状态导出尚未开始");
+    if ("chunks" in fallback) {
+      const nextBytes = fallback.receivedBytes + bytes.byteLength;
+      if (nextBytes > MAXIMUM_IN_MEMORY_STATE_EXPORT_BYTES) {
+        this.stateExportFallback = undefined;
+        fallback.chunks.length = 0;
+        throw new Error("浏览器状态导出超过 64 MiB 内存安全限制");
+      }
+      fallback.receivedBytes = nextBytes;
+      if (bytes.byteLength > 0) fallback.chunks.push(exactBlobBuffer(bytes));
+      if (!complete) return;
+      const blob = new Blob(fallback.chunks, { type: "application/octet-stream" });
+      if (import.meta.env.VITE_RUSTYERA_TEST === "1") {
+        (window.__RUSTYERA_TEST_DOWNLOADS__ ??= []).push({
+          name: fallback.name,
+          bytes: new Uint8Array(await blob.arrayBuffer()),
+        });
+      } else downloadBrowserBlob(fallback.name, blob);
+      fallback.chunks.length = 0;
+      this.stateExportFallback = undefined;
+      return;
+    }
+    await fallback.writer.write(bytes as FileSystemWriteChunkType);
+    if (!complete) return;
+    await fallback.writer.close();
+    const file = await (await fallback.root.getFileHandle(fallback.temporaryName)).getFile();
+    downloadBrowserBlob(fallback.name, file, () => {
+      void fallback.root.removeEntry(fallback.temporaryName).catch(() => undefined);
+    });
+    this.stateExportFallback = undefined;
+  }
+
+  async cancelStateExport(): Promise<void> {
+    if (this.stateExportWriter) {
+      await this.stateExportWriter.abort().catch(() => undefined);
+      this.stateExportWriter = undefined;
+    }
+    const fallback = this.stateExportFallback;
+    this.stateExportFallback = undefined;
+    if (!fallback) return;
+    if ("chunks" in fallback) fallback.chunks.length = 0;
+    else {
+      await fallback.writer.abort().catch(() => undefined);
+      await fallback.root.removeEntry(fallback.temporaryName).catch(() => undefined);
+    }
+  }
+
   async beginProjectFileExport(name: string): Promise<boolean> {
     if (import.meta.env.VITE_RUSTYERA_TEST === "1") {
-      this.projectFileFallback = { name, chunks: [] };
+      this.projectFileFallback = { name, chunks: [], receivedBytes: 0 };
       return true;
     }
     if (window.showSaveFilePicker) {
@@ -725,7 +834,7 @@ export class BrowserBridge implements FrontendBridge {
       this.projectFileFallback = { name, root, temporaryName, writer };
     } catch {
       // Some browsers expose OPFS but deny it in private or constrained contexts.
-      this.projectFileFallback = { name, chunks: [] };
+      this.projectFileFallback = { name, chunks: [], receivedBytes: 0 };
     }
     return true;
   }
@@ -778,15 +887,22 @@ export class BrowserBridge implements FrontendBridge {
     const fallback = this.projectFileFallback;
     if (!fallback) throw new Error("项目文件导出尚未开始");
     if ("chunks" in fallback) {
-      fallback.chunks.push(new Uint8Array(bytes));
-      if (!complete) return;
-      const result = new Uint8Array(fallback.chunks.reduce((sum, chunk) => sum + chunk.length, 0));
-      let offset = 0;
-      for (const chunk of fallback.chunks) {
-        result.set(chunk, offset);
-        offset += chunk.length;
+      const nextBytes = fallback.receivedBytes + bytes.byteLength;
+      if (nextBytes > MAXIMUM_IN_MEMORY_PROJECT_EXPORT_BYTES) {
+        this.projectFileFallback = undefined;
+        fallback.chunks.length = 0;
+        throw new Error(
+          `当前浏览器没有可用的流式文件写入能力，项目导出超过 ${MAXIMUM_IN_MEMORY_PROJECT_EXPORT_BYTES / 1024 / 1024} MiB，已停止以避免内存耗尽`,
+        );
       }
-      downloadBrowserFile(fallback.name, result);
+      fallback.receivedBytes = nextBytes;
+      fallback.chunks.push(exactBlobBuffer(bytes));
+      if (!complete) return;
+      downloadBrowserBlob(
+        fallback.name,
+        new Blob(fallback.chunks, { type: "application/octet-stream" }),
+      );
+      fallback.chunks.length = 0;
       this.projectFileFallback = undefined;
       return;
     }
@@ -873,6 +989,13 @@ export class BrowserBridge implements FrontendBridge {
   }
 
   async close(): Promise<void> {
+    await this.dispose();
+  }
+
+  async dispose(): Promise<void> {
+    await this.cancelStateExport().catch(() => undefined);
+    await this.cancelProjectFileExport().catch(() => undefined);
+    await this.cancelCompiledCacheExport().catch(() => undefined);
     this.retireCommittedProject();
     this.worker.close();
   }
@@ -1058,6 +1181,16 @@ export async function queryBrowserSystemFonts(
     if (name === "NotAllowedError" || name === "SecurityError") return { kind: "denied" };
     return { kind: "error", message: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function exactBlobBuffer(bytes: Uint8Array): ArrayBuffer {
+  if (
+    bytes.buffer instanceof ArrayBuffer &&
+    bytes.byteOffset === 0 &&
+    bytes.byteLength === bytes.buffer.byteLength
+  )
+    return bytes.buffer;
+  return bytes.slice().buffer as ArrayBuffer;
 }
 
 function downloadBrowserFile(name: string, bytes: Uint8Array): void {

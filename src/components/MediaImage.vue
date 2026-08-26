@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, shallowRef, watch, watchEffect } from "vue";
 
 import CanvasReplay from "@/components/CanvasReplay.vue";
-import { resourceUrl } from "@/core/resources";
+import { acquireResourceUrl } from "@/core/resources";
 import type { PresentationLength } from "@/core/types";
 import { platformBridge } from "@/platform";
 import { useRuntimeStore } from "@/stores/runtime";
@@ -89,12 +89,13 @@ watchEffect((onCleanup) => {
   // Keep the current visual mounted while a hover replacement loads. Otherwise
   // the pointer leaves a positioned image as soon as its one-row slot is exposed.
   failed.value = false;
-  void resourceUrl(
+  const lease = acquireResourceUrl(
     platformBridge(),
     resourceId,
     props.placement.revision,
     Number(store.projectResourceGeneration ?? 0),
-  )
+  );
+  void lease.url
     .then((value) => {
       if (active) {
         source.value = value;
@@ -106,6 +107,7 @@ watchEffect((onCleanup) => {
     });
   onCleanup(() => {
     active = false;
+    lease.release();
   });
 });
 

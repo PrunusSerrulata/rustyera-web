@@ -34,6 +34,8 @@ const SOURCE_INDEX_VERSION: u32 = 3;
 const COMPILED_CACHE_NAME: &str = "compiled-project.reracache";
 const STABLE_SCAN_ATTEMPTS: usize = 3;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(34);
+const PACKAGED_PROJECT_READ_CHUNK_BYTES: usize = 1024 * 1024;
+const MAXIMUM_PROJECT_FONT_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Clone)]
 struct IndexedFile {
@@ -41,6 +43,7 @@ struct IndexedFile {
     source_path: Option<PathBuf>,
     category: FileCategory,
     content_hash: [u8; 32],
+    byte_length: u64,
     pending_file: Option<SubmittedFile>,
     source_signature: Option<[u64; 5]>,
     index_reused: bool,
@@ -181,6 +184,7 @@ pub struct ProjectHost {
 struct PackagedProjectFile {
     path: PathBuf,
     storage_key: String,
+    file_digest: [u8; 32],
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -188,6 +192,7 @@ struct PackagedProjectFile {
 pub struct ProjectFontSource {
     pub relative_path: String,
     pub content_hash: Vec<u8>,
+    pub byte_length: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -493,7 +498,7 @@ impl ProjectHost {
         })
     }
 
-    pub fn from_project_file(path: &Path, bytes: &[u8]) -> Result<Self, String> {
+    pub fn from_project_file(path: &Path) -> Result<Self, String> {
         // Match the storage partition used by earlier releases, which hashed the path returned by
         // the native picker before canonicalizing it for filesystem access.
         let packaged_storage_key = packaged_project_storage_key(path);
@@ -508,34 +513,24 @@ impl ProjectHost {
         {
             return Err("selected path is not a .reraproj file".into());
         }
-        let decoded = era_runtime::decode_project_file_frontend_manifest(bytes, bytes.len())
-            .map_err(|error| error.to_string())?;
+        let decoded = decode_packaged_project(&path, None)?;
         let indexed_files = decoded
+            .project
             .manifest
             .files
             .iter()
             .map(indexed_file)
             .collect::<Result<Vec<_>, _>>()?;
-        let embedded_resources = decoded
-            .manifest
-            .files
-            .into_iter()
-            .filter_map(|file| match (file.category, file.payload) {
-                (FileCategory::Resource, FilePayload::Bytes(bytes)) => {
-                    Some((file.relative_path.to_lowercase(), bytes.into_inner()))
-                }
-                _ => None,
-            })
-            .collect();
         Ok(Self {
             root: path.parent().unwrap_or_else(|| Path::new(".")).to_owned(),
             manifest: None,
             indexed_files,
-            revision: decoded.identity.project_revision,
-            embedded_resources,
+            revision: decoded.project.identity.project_revision,
+            embedded_resources: BTreeMap::new(),
             packaged_project: Some(PackagedProjectFile {
                 path,
                 storage_key: packaged_storage_key,
+                file_digest: decoded.file_digest,
             }),
             runtime_manifest_sparse: true,
             pending_reload: None,
@@ -579,6 +574,7 @@ impl ProjectHost {
             .map(|file| ProjectFontSource {
                 relative_path: file.relative_path.clone(),
                 content_hash: file.content_hash.to_vec(),
+                byte_length: file.byte_length,
             })
             .collect()
     }
@@ -592,6 +588,12 @@ impl ProjectHost {
                     && is_project_font_path(&file.relative_path)
             })
             .ok_or_else(|| "unknown project font".to_owned())?;
+        if file.byte_length > MAXIMUM_PROJECT_FONT_BYTES {
+            return Err("project font exceeds the native host memory budget".into());
+        }
+        if self.packaged_project.is_some() {
+            return self.read_packaged_resource(relative_path, None);
+        }
         if let Some(bytes) = self
             .embedded_resources
             .get(&file.relative_path.to_lowercase())
@@ -602,8 +604,32 @@ impl ProjectHost {
             .source_path
             .as_deref()
             .map_or_else(|| self.root.join(&file.relative_path), Path::to_owned);
-        fs::read(&path)
-            .map_err(|error| format!("cannot read project font {}: {error}", path.display()))
+        let metadata = fs::metadata(&path)
+            .map_err(|error| format!("cannot stat project font {}: {error}", path.display()))?;
+        if metadata.len() != file.byte_length || metadata.len() > MAXIMUM_PROJECT_FONT_BYTES {
+            return Err(format!(
+                "project font length changed after scan: {}",
+                file.relative_path
+            ));
+        }
+        if file
+            .source_signature
+            .is_some_and(|signature| metadata_signature(&metadata) != signature)
+        {
+            return Err(format!(
+                "project font changed after scan: {}",
+                file.relative_path
+            ));
+        }
+        let bytes = fs::read(&path)
+            .map_err(|error| format!("cannot read project font {}: {error}", path.display()))?;
+        if blake3::hash(&bytes).as_bytes() != &file.content_hash {
+            return Err(format!(
+                "project font changed after scan: {}",
+                file.relative_path
+            ));
+        }
+        Ok(bytes)
     }
 
     pub fn mark_runtime_manifest_sparse(&mut self) {
@@ -621,45 +647,12 @@ impl ProjectHost {
         expected_digest: &[u8],
         contents: &str,
     ) -> Result<(), String> {
-        if let Some(project) = &self.packaged_project {
-            let project_file = &project.path;
-            let project_bytes = fs::read(project_file)
-                .map_err(|error| format!("cannot read project file: {error}"))?;
-            let update = era_runtime::prepare_project_configuration_update(
-                &project_bytes,
-                project_bytes
-                    .len()
-                    .saturating_add(PROJECT_CONFIGURATION_UPDATE_HEADROOM),
-                expected_digest,
-                contents,
-            )
-            .map_err(|error| error.to_string())?;
-            let mut target = fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(project_file)
-                .map_err(|error| format!("cannot open project file for update: {error}"))?;
-            let mut current_bytes = Vec::with_capacity(project_bytes.len());
-            target
-                .read_to_end(&mut current_bytes)
-                .map_err(|error| format!("cannot verify project file: {error}"))?;
-            if blake3::hash(&current_bytes) != blake3::hash(&project_bytes) {
-                return Err("项目文件已被其他程序修改，请重新打开偏好设置".into());
-            }
-            target
-                .set_len(update.truncate_to)
-                .map_err(|error| format!("cannot recover project configuration tail: {error}"))?;
-            target
-                .seek(SeekFrom::Start(update.truncate_to))
-                .map_err(|error| format!("cannot seek project configuration tail: {error}"))?;
-            target
-                .write_all(&update.append)
-                .map_err(|error| format!("cannot append project configuration: {error}"))?;
-            target
-                .sync_all()
-                .map_err(|error| format!("cannot sync project configuration: {error}"))?;
-            self.invalidate_compiled_cache();
-            return Ok(());
+        if let Some(project_file) = self
+            .packaged_project
+            .as_ref()
+            .map(|project| project.path.clone())
+        {
+            return self.write_packaged_configuration(&project_file, expected_digest, contents);
         }
         let relative_path = self
             .indexed_files
@@ -711,6 +704,66 @@ impl ProjectHost {
         Ok(())
     }
 
+    fn write_packaged_configuration(
+        &mut self,
+        project_file: &Path,
+        expected_digest: &[u8],
+        contents: &str,
+    ) -> Result<(), String> {
+        let project_bytes =
+            fs::read(project_file).map_err(|error| format!("cannot read project file: {error}"))?;
+        let update = era_runtime::prepare_project_configuration_update(
+            &project_bytes,
+            project_bytes
+                .len()
+                .saturating_add(PROJECT_CONFIGURATION_UPDATE_HEADROOM),
+            expected_digest,
+            contents,
+        )
+        .map_err(|error| error.to_string())?;
+        let mut target = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(project_file)
+            .map_err(|error| format!("cannot open project file for update: {error}"))?;
+        let expected_file_hash = blake3::hash(&project_bytes);
+        let mut current_hasher = blake3::Hasher::new();
+        let mut hash_buffer = vec![0_u8; 64 * 1024];
+        loop {
+            let read = target
+                .read(&mut hash_buffer)
+                .map_err(|error| format!("cannot verify project file: {error}"))?;
+            if read == 0 {
+                break;
+            }
+            current_hasher.update(&hash_buffer[..read]);
+        }
+        if current_hasher.finalize() != expected_file_hash {
+            return Err("项目文件已被其他程序修改，请重新打开偏好设置".into());
+        }
+        target
+            .set_len(update.truncate_to)
+            .map_err(|error| format!("cannot recover project configuration tail: {error}"))?;
+        target
+            .seek(SeekFrom::Start(update.truncate_to))
+            .map_err(|error| format!("cannot seek project configuration tail: {error}"))?;
+        target
+            .write_all(&update.append)
+            .map_err(|error| format!("cannot append project configuration: {error}"))?;
+        target
+            .sync_all()
+            .map_err(|error| format!("cannot sync project configuration: {error}"))?;
+        drop(target);
+        drop(project_bytes);
+        let updated_file_digest = decode_packaged_project(project_file, None)?.file_digest;
+        self.packaged_project
+            .as_mut()
+            .expect("packaged project disappeared during configuration update")
+            .file_digest = updated_file_digest;
+        self.invalidate_compiled_cache();
+        Ok(())
+    }
+
     fn refresh_configuration_index(
         &mut self,
         relative_path: &str,
@@ -721,6 +774,7 @@ impl ProjectHost {
         let source_signature = fs::metadata(&source_path)
             .ok()
             .map(|metadata| metadata_signature(&metadata));
+        let byte_length = contents.len() as u64;
         let pending_file = SubmittedFile {
             relative_path: relative_path.to_owned(),
             category: FileCategory::Configuration,
@@ -732,6 +786,7 @@ impl ProjectHost {
             source_path: Some(source_path),
             category: FileCategory::Configuration,
             content_hash,
+            byte_length,
             pending_file: Some(pending_file),
             source_signature,
             index_reused: false,
@@ -955,12 +1010,8 @@ impl ProjectHost {
             if let Some(manifest) = self.manifest.take() {
                 return Ok(manifest);
             }
-            let project_file = &project.path;
-            let bytes = fs::read(project_file)
-                .map_err(|error| format!("cannot read project file: {error}"))?;
-            return era_runtime::decode_project_file(&bytes, bytes.len())
-                .map(|decoded| decoded.manifest)
-                .map_err(|error| error.to_string());
+            return decode_packaged_project(&project.path, progress)
+                .map(|decoded| decoded.project.manifest);
         }
         self.materialize_with_progress(progress)?;
         self.manifest
@@ -1195,6 +1246,9 @@ impl ProjectHost {
     }
 
     pub fn read_resource(&self, relative_path: &str) -> Result<Vec<u8>, String> {
+        if self.packaged_project.is_some() {
+            return self.read_packaged_resource(relative_path, None);
+        }
         if let Some(bytes) = self.embedded_resources.get(&relative_path.to_lowercase()) {
             return Ok(bytes.clone());
         }
@@ -1228,6 +1282,9 @@ impl ProjectHost {
         relative_path: &str,
         maximum_bytes: u32,
     ) -> Result<Vec<u8>, String> {
+        if self.packaged_project.is_some() {
+            return self.read_packaged_resource(relative_path, Some(maximum_bytes as usize));
+        }
         if let Some(bytes) = self.embedded_resources.get(&relative_path.to_lowercase()) {
             return Ok(bytes[..bytes.len().min(maximum_bytes as usize)].to_vec());
         }
@@ -1265,6 +1322,44 @@ impl ProjectHost {
         Ok(bytes)
     }
 
+    fn read_packaged_resource(
+        &self,
+        relative_path: &str,
+        maximum_bytes: Option<usize>,
+    ) -> Result<Vec<u8>, String> {
+        validate_relative_path(relative_path).map_err(|error| error.to_string())?;
+        let project = self
+            .packaged_project
+            .as_ref()
+            .ok_or_else(|| "project is not a packaged project".to_owned())?;
+        let decoded = decode_packaged_project(&project.path, None)?;
+        if decoded.file_digest != project.file_digest {
+            return Err("project file changed after it was opened".into());
+        }
+        let file = decoded
+            .project
+            .manifest
+            .files
+            .into_iter()
+            .find(|file| {
+                file.category == FileCategory::Resource
+                    && file.relative_path.eq_ignore_ascii_case(relative_path)
+            })
+            .ok_or_else(|| format!("unknown resource: {relative_path}"))?;
+        let bytes = match file.payload {
+            FilePayload::Bytes(bytes) => bytes.into_inner(),
+            _ => {
+                return Err(format!(
+                    "packaged resource has no embedded bytes: {relative_path}"
+                ));
+            }
+        };
+        Ok(match maximum_bytes {
+            Some(maximum) if bytes.len() > maximum => bytes[..maximum].to_vec(),
+            _ => bytes,
+        })
+    }
+
     fn resource_path(&self, relative_path: &str) -> Result<PathBuf, String> {
         let relative = validate_relative_path(relative_path).map_err(|error| error.to_string())?;
         let path = self.root.join(relative);
@@ -1276,6 +1371,41 @@ impl ProjectHost {
         }
         Ok(canonical)
     }
+}
+
+fn decode_packaged_project(
+    path: &Path,
+    progress: Option<&dyn Fn(usize, usize)>,
+) -> Result<era_runtime::DecodedProjectFileStream, String> {
+    let length = fs::metadata(path)
+        .map_err(|error| format!("cannot stat project file: {error}"))?
+        .len();
+    let length = usize::try_from(length).map_err(|_| "project file is too large".to_owned())?;
+    let mut decoder = era_runtime::ProjectFileStreamDecoder::new(length, length)
+        .map_err(|error| error.to_string())?;
+    let mut file =
+        fs::File::open(path).map_err(|error| format!("cannot open project file: {error}"))?;
+    let mut buffer = vec![0_u8; PACKAGED_PROJECT_READ_CHUNK_BYTES];
+    let mut completed = 0_usize;
+    if let Some(report) = progress {
+        report(0, length);
+    }
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("cannot read project file: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        decoder
+            .append(&buffer[..read])
+            .map_err(|error| error.to_string())?;
+        completed += read;
+        if let Some(report) = progress {
+            report(completed, length);
+        }
+    }
+    decoder.finish().map_err(|error| error.to_string())
 }
 
 fn packaged_project_storage_key(path: &Path) -> String {

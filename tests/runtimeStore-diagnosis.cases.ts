@@ -139,6 +139,42 @@ describe("runtime store diagnosis", () => {
     expect(store.diagnosisProgressValue).toBe(50);
   });
 
+  it("rejects an oversized diagnosis item before allocating its transfer buffer", async () => {
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 1,
+      submission_token: { epoch: 2, id: 3 },
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "state_export_ready",
+          {
+            kind: "input_replay",
+            result: {
+              type: "ready",
+              transfer: {
+                transfer_id: 11,
+                kind: "input_replay",
+                total_bytes: 128 * 1024 * 1024 + 1,
+                digest: [],
+              },
+            },
+          },
+          1,
+        ),
+      ],
+    });
+
+    await store.exportDiagnosis();
+    await advanceUntil(() => store.diagnosisExporting === false);
+
+    expect(store.diagnosisResult).toContain("128 MiB 安全限制");
+    expect(store.testTransferState().export).toBeNull();
+    expect(bridge.saveDiagnosis).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["user cancellation", async () => false, "已取消导出诊断信息"],
     [
@@ -457,7 +493,7 @@ describe("runtime store diagnosis", () => {
     });
 
     await store.exportSnapshot();
-    await advanceUntil(() => bridge.saveDownload.mock.calls.length === 1);
+    await advanceUntil(() => bridge.writeStateExportChunk.mock.calls.length === 2);
     await store.exportDiagnosis();
     await advanceUntil(() => fullProjectRequests === 2, 20);
     await advanceUntil(() => preparationStillRejected, 20);

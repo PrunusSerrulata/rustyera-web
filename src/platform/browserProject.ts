@@ -109,6 +109,7 @@ interface PendingBrowserReload {
 interface BrowserResourceIdentity {
   signature?: string;
   contentHash: Uint8Array;
+  byteLength: number;
 }
 
 export interface BrowserProjectScanMetrics {
@@ -229,7 +230,15 @@ export class BrowserProject {
       const key = file.relative_path.toLowerCase();
       this.canonicalPaths.set(key, file.relative_path);
       if (file.category === "resource") {
-        this.resourceIdentities.set(key, { contentHash: file.content_hash });
+        this.resourceIdentities.set(key, {
+          contentHash: file.content_hash,
+          byteLength:
+            file.payload.type === "external"
+              ? file.payload.byteLength
+              : file.payload.type === "bytes"
+                ? file.payload.value.byteLength
+                : new TextEncoder().encode(file.payload.value).byteLength,
+        });
       }
     }
     this.manifestValue = manifest;
@@ -413,6 +422,7 @@ export class BrowserProject {
       this.resourceIdentities.set(candidate.relativePath.toLowerCase(), {
         signature: `${file.size}:${file.lastModified}`,
         contentHash: files[index]!.content_hash,
+        byteLength: file.size,
       });
     }
     progress?.(requests.length, requests.length);
@@ -619,6 +629,7 @@ export class BrowserProject {
         this.resourceIdentities.set(candidate.relativePath.toLowerCase(), {
           signature,
           contentHash: scanned.content_hash,
+          byteLength: file.size,
         });
       }
       const prepared = reused[index] && candidate.category !== "resource" ? undefined : scanned;
@@ -1019,14 +1030,16 @@ export class BrowserProject {
       ));
     if (!handle) throw new Error(`未知资源：${relativePath}`);
     const current = await handle.getFile();
-    const bytes = new Uint8Array(await current.arrayBuffer());
     const identity = this.resourceIdentities.get(key);
     if (!identity) throw new Error(`资源不在活动项目清单中：${relativePath}`);
+    if (current.size !== identity.byteLength)
+      throw new Error(`资源长度在项目扫描后发生变化：${relativePath}`);
     if (
       identity.signature != null &&
       `${current.size}:${current.lastModified}` !== identity.signature
     )
       throw new Error(`资源签名在项目扫描后发生变化：${relativePath}`);
+    const bytes = new Uint8Array(await current.arrayBuffer());
     if (!equalBytes(blake3(bytes), identity.contentHash))
       throw new Error(`资源内容在项目扫描后发生变化：${relativePath}`);
     return bytes;
@@ -1050,6 +1063,8 @@ export class BrowserProject {
     const file = await handle.getFile();
     const identity = this.resourceIdentities.get(key);
     if (!identity) throw new Error(`资源不在活动项目清单中：${relativePath}`);
+    if (file.size !== identity.byteLength)
+      throw new Error(`资源长度在项目扫描后发生变化：${relativePath}`);
     const signature = `${file.size}:${file.lastModified}`;
     if (identity.signature && signature !== identity.signature)
       throw new Error(`资源在项目扫描后发生变化：${relativePath}`);
@@ -1069,6 +1084,12 @@ export class BrowserProject {
       .map((file) => ({
         relativePath: file.relative_path,
         contentHash: new Uint8Array(file.content_hash),
+        byteLength:
+          file.payload.type === "external"
+            ? file.payload.byteLength
+            : file.payload.type === "bytes"
+              ? file.payload.value.byteLength
+              : new TextEncoder().encode(file.payload.value).byteLength,
         read: () => this.readResource(file.relative_path),
       }));
   }

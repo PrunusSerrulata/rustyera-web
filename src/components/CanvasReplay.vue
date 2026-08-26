@@ -3,6 +3,7 @@ import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import {
   canvasDimension,
+  CanvasReplayBudget,
   createCanvasReplayRenderer,
   type CanvasReplayData,
   type CanvasReplayResources,
@@ -54,26 +55,45 @@ async function drainRenders(): Promise<void> {
       pendingRender = undefined;
       await nextTick();
       if (stopped || !firstSurface.value || !secondSurface.value) return;
-      const projected = document.createElement("canvas");
-      projected.width = canvasDimension(request.replay.size.width);
-      projected.height = canvasDimension(request.replay.size.height);
-      const context = projected.getContext("2d");
+      const targetIndex = activeSurface.value === 0 ? 1 : 0;
+      const target = targetIndex === 0 ? firstSurface.value : secondSurface.value;
+      const width = canvasDimension(request.replay.size.width);
+      const height = canvasDimension(request.replay.size.height);
+      const budget = new CanvasReplayBudget();
+      let releaseTarget: (() => void) | undefined;
+      const active = () =>
+        !stopped &&
+        request.token === latestRenderToken &&
+        request.resourceGeneration === Number(store.projectResourceGeneration ?? 0);
+      const context = target.getContext("2d");
       if (!context) continue;
       try {
+        releaseTarget = budget.reserve(width, height);
+        if (!active()) throw new Error("canvas replay was cancelled");
+        target.width = width;
+        target.height = height;
         await renderer.replay(
           context,
           request.replay,
           new Set([Number(request.replay.canvas_id)]),
           request.resources,
           request.resourceGeneration,
+          { budget, active },
         );
       } catch (error) {
-        console.warn("Unable to replay generated canvas", error);
+        target.width = 0;
+        target.height = 0;
+        if (active()) console.warn("Unable to replay generated canvas", error);
+        continue;
+      } finally {
+        releaseTarget?.();
+      }
+      if (!active()) {
+        target.width = 0;
+        target.height = 0;
         continue;
       }
-      if (stopped || request.resourceGeneration !== Number(store.projectResourceGeneration ?? 0))
-        continue;
-      await presentCanvas(projected, request);
+      await presentCanvas(target, targetIndex, request);
     }
   } finally {
     rendering = false;
@@ -81,33 +101,11 @@ async function drainRenders(): Promise<void> {
   }
 }
 
-function commitCanvas(element: HTMLCanvasElement, projected: HTMLCanvasElement): boolean {
-  // Only the hidden back surface is ever mutated. Resizing or replacing pixels on WebKit's
-  // currently composited canvas can expose an intermediate transparent surface.
-  try {
-    if (element.width !== projected.width) element.width = projected.width;
-    if (element.height !== projected.height) element.height = projected.height;
-    const context = element.getContext("2d");
-    if (!context) return false;
-    context.save();
-    try {
-      context.globalCompositeOperation = "copy";
-      context.drawImage(projected, 0, 0);
-    } finally {
-      context.restore();
-    }
-    return true;
-  } catch (error) {
-    console.warn("Unable to commit generated canvas", error);
-    return false;
-  }
-}
-
-async function presentCanvas(projected: HTMLCanvasElement, request: RenderRequest): Promise<void> {
-  const targetIndex = activeSurface.value === 0 ? 1 : 0;
-  const target = targetIndex === 0 ? firstSurface.value : secondSurface.value;
-  if (!target) return;
-  if (!commitCanvas(target, projected)) return;
+async function presentCanvas(
+  target: HTMLCanvasElement,
+  targetIndex: number,
+  request: RenderRequest,
+): Promise<void> {
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   if (
     stopped ||
@@ -126,16 +124,33 @@ watch(
   () => store.projectResourceGeneration,
   () => {
     renderer.clear();
+    releaseSurfaces();
     requestRender();
   },
   { flush: "sync" },
 );
-onMounted(requestRender);
+onMounted(() => {
+  // A newly-created <canvas> owns a browser-default 300x150 backing store. Retire both defaults
+  // before validating the first replay so an oversized/invalid frame cannot leave either surface
+  // allocated even though it is never presented.
+  releaseSurfaces();
+  requestRender();
+});
 onBeforeUnmount(() => {
   stopped = true;
   pendingRender = undefined;
   renderer.clear();
+  releaseSurfaces();
 });
+
+function releaseSurfaces(): void {
+  activeSurface.value = -1;
+  for (const surface of [firstSurface.value, secondSurface.value]) {
+    if (!surface) continue;
+    surface.width = 0;
+    surface.height = 0;
+  }
+}
 </script>
 
 <template>

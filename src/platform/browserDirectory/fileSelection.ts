@@ -93,7 +93,10 @@ export function pickRetainedFiles(options: {
   });
 }
 
-export function pickFileBytes(accept?: string): Promise<Uint8Array | undefined> {
+export function pickFileBytes(
+  accept?: string,
+  maximumBytes = Number.MAX_SAFE_INTEGER,
+): Promise<Uint8Array | undefined> {
   return new Promise((resolve, reject) => {
     const input = document.createElement("input");
     input.type = "file";
@@ -119,6 +122,14 @@ export function pickFileBytes(accept?: string): Promise<Uint8Array | undefined> 
       const file = input.files?.[0];
       if (!file) {
         finish(undefined);
+        return;
+      }
+      if (file.size > maximumBytes) {
+        fail(
+          new Error(
+            `所选文件超过 ${Math.floor(maximumBytes / 1024 / 1024)} MiB，已拒绝读取以避免内存耗尽`,
+          ),
+        );
         return;
       }
       state = "reading";

@@ -93,6 +93,9 @@ export function installRuntimeStoreTestHarness(): void {
     bridge.submitDebug.mockImplementation(async () => nextDebugMessageId++);
     bridge.pump.mockResolvedValue(emptyBatch());
     bridge.saveDownload.mockResolvedValue(true);
+    bridge.beginStateExport.mockResolvedValue(true);
+    bridge.writeStateExportChunk.mockResolvedValue(undefined);
+    bridge.cancelStateExport.mockResolvedValue(undefined);
     bridge.beginProjectFileExport.mockResolvedValue(true);
     bridge.traditionalSaves.listSlots.mockResolvedValue([
       { slot: 0, occupied: false },
@@ -108,6 +111,7 @@ export function installRuntimeStoreTestHarness(): void {
     });
     bridge.writeCompiledCacheChunk.mockResolvedValue(undefined);
     bridge.cancelCompiledCacheExport.mockResolvedValue(undefined);
+    bridge.dispose.mockResolvedValue(undefined);
     bridge.listFonts.mockResolvedValue({ kind: "ready", fonts: [] });
     bridge.reloadProject.mockResolvedValue({ fonts: [], errors: [], messageId: 77 });
     bridge.finalizeProjectReload.mockResolvedValue({ fonts: [], errors: [] });

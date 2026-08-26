@@ -6,49 +6,78 @@ interface ResourceUrlEntry {
   released: boolean;
   url?: string;
   bytes: number;
+  references: number;
+}
+
+export interface ResourceUrlLease {
+  readonly url: Promise<string>;
+  release(): void;
 }
 
 export interface ResourceUrlMemoryCounters {
   count: number;
   bytes: number;
+  active: { count: number; bytes: number };
+  idle: { count: number; bytes: number };
 }
 
 /** Own Blob URLs for project generations and revoke them deterministically. */
 export class ResourceUrlRegistry {
   private readonly entries = new Map<string, ResourceUrlEntry>();
 
-  resourceUrl(
+  acquire(
     bridge: FrontendBridge,
     resourceId: string,
-    revision = 0,
+    _revision = 0,
     generation = 0,
-  ): Promise<string> {
-    const key = `${resourceId}\0${generation}\0${revision}`;
-    const cached = this.entries.get(key);
-    if (cached) return cached.promise;
-    const entry: ResourceUrlEntry = {
-      generation,
-      promise: undefined as unknown as Promise<string>,
-      released: false,
-      bytes: 0,
+  ): ResourceUrlLease {
+    void _revision;
+    // A project resource is immutable for the lifetime of its project generation. Presentation
+    // revisions describe placements, not file revisions; including them here retained one Blob URL
+    // per animation frame until the next project reload.
+    const key = `${generation}\0${resourceId}`;
+    let entry = this.entries.get(key);
+    if (!entry)
+      entry = {
+        generation,
+        promise: undefined as unknown as Promise<string>,
+        released: false,
+        bytes: 0,
+        references: 0,
+      };
+    if (!entry.promise) {
+      const created = entry;
+      created.promise = bridge
+        .readResource(resourceId)
+        .then((bytes) => {
+          const url = URL.createObjectURL(
+            new Blob([bytes as BlobPart], { type: mediaType(resourceId) }),
+          );
+          created.url = url;
+          created.bytes = bytes.byteLength;
+          if (created.released) URL.revokeObjectURL(url);
+          return url;
+        })
+        .catch((error) => {
+          if (this.entries.get(key) === created) this.entries.delete(key);
+          throw error;
+        });
+      this.entries.set(key, created);
+    }
+    entry.references += 1;
+    let released = false;
+    return {
+      url: entry.promise,
+      release: () => {
+        if (released) return;
+        released = true;
+        entry!.references = Math.max(0, entry!.references - 1);
+        if (entry!.references === 0 && this.entries.get(key) === entry) {
+          this.entries.delete(key);
+          this.release(entry!);
+        }
+      },
     };
-    entry.promise = bridge
-      .readResource(resourceId)
-      .then((bytes) => {
-        const url = URL.createObjectURL(
-          new Blob([bytes as BlobPart], { type: mediaType(resourceId) }),
-        );
-        entry.url = url;
-        entry.bytes = bytes.byteLength;
-        if (entry.released) URL.revokeObjectURL(url);
-        return url;
-      })
-      .catch((error) => {
-        if (this.entries.get(key) === entry) this.entries.delete(key);
-        throw error;
-      });
-    this.entries.set(key, entry);
-    return entry.promise;
   }
 
   releaseBeforeGeneration(generation: number): void {
@@ -67,7 +96,8 @@ export class ResourceUrlRegistry {
   memoryCounters(): ResourceUrlMemoryCounters {
     let bytes = 0;
     for (const entry of this.entries.values()) bytes += entry.bytes;
-    return { count: this.entries.size, bytes };
+    const active = { count: this.entries.size, bytes };
+    return { count: active.count, bytes: active.bytes, active, idle: { count: 0, bytes: 0 } };
   }
 
   private release(entry: ResourceUrlEntry): void {
@@ -79,13 +109,13 @@ export class ResourceUrlRegistry {
 
 export const resourceUrlRegistry = new ResourceUrlRegistry();
 
-export function resourceUrl(
+export function acquireResourceUrl(
   bridge: FrontendBridge,
   resourceId: string,
   revision = 0,
   generation = 0,
-): Promise<string> {
-  return resourceUrlRegistry.resourceUrl(bridge, resourceId, revision, generation);
+): ResourceUrlLease {
+  return resourceUrlRegistry.acquire(bridge, resourceId, revision, generation);
 }
 
 function mediaType(path: string): string {

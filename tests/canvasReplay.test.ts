@@ -12,7 +12,17 @@ const { resourceUrl, store } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("@/core/resources", () => ({ resourceUrl }));
+vi.mock("@/core/resources", () => ({
+  acquireResourceUrl: (
+    bridge: unknown,
+    resourceId: string,
+    revision?: number,
+    generation?: number,
+  ) => ({
+    url: resourceUrl(bridge, resourceId, revision, generation),
+    release: vi.fn(),
+  }),
+}));
 vi.mock("@/platform", () => ({ platformBridge: () => ({}) }));
 vi.mock("@/stores/runtime", () => ({ useRuntimeStore: () => store }));
 
@@ -152,17 +162,13 @@ describe("canvas resource replay", () => {
       contexts.some((context) =>
         context.drawImage.mock.calls.some(
           (call: any[]) =>
-            call[0] instanceof Image && call.slice(1).join(",") === "10,20,30,40,0,0,60,80",
+            call[0] instanceof Image && call.slice(1).join(",") === "10,20,30,40,4,5,60,80",
         ),
       ),
     ).toBe(true);
-    expect(
-      contexts.some((context) =>
-        context.drawImage.mock.calls.some(
-          (call: any[]) => call[0] instanceof HTMLCanvasElement && call[1] === 4 && call[2] === 5,
-        ),
-      ),
-    ).toBe(true);
+    // The direct no-transform path paints into the hidden persistent surface without allocating
+    // a third full-size projection canvas.
+    expect(contexts).toHaveLength(1);
   });
 
   it("recursively composites GDRAWG source canvases", async () => {
@@ -204,7 +210,7 @@ describe("canvas resource replay", () => {
     expect(
       contexts.some((context) =>
         context.drawImage.mock.calls.some(
-          (call: any[]) => call[0] instanceof HTMLCanvasElement && call[1] === 6 && call[2] === 7,
+          (call: any[]) => call[0] instanceof HTMLCanvasElement && call[5] === 6 && call[6] === 7,
         ),
       ),
     ).toBe(true);
@@ -252,15 +258,16 @@ describe("canvas resource replay", () => {
     await settleReplay();
     const firstVisible = wrapper.get("canvas.canvas-replay").element;
     const firstContext = contexts.find((context) => context.canvas === firstVisible);
-    expect(firstContext.drawnImages).toHaveLength(1);
+    expect(firstContext.fillRect).toHaveBeenCalledOnce();
+    expect(firstContext.drawnImages).toHaveLength(0);
 
     await wrapper.setProps({ replay: replay(2) });
     await waitFor(() => animationFrames.length === 1);
     expect(wrapper.get("canvas.canvas-replay").element).toBe(firstVisible);
-    expect(firstContext.drawnImages).toHaveLength(1);
+    expect(firstContext.fillRect).toHaveBeenCalledOnce();
     const hidden = wrapper.findAll("canvas").find((surface) => surface.element !== firstVisible)!;
     const hiddenContext = contexts.find((context) => context.canvas === hidden.element);
-    expect(hiddenContext.drawnImages).toHaveLength(1);
+    expect(hiddenContext.fillRect).toHaveBeenCalledOnce();
 
     animationFrames.shift()?.(16);
     await settleReplay();
@@ -307,7 +314,7 @@ describe("canvas resource replay", () => {
     const firstVisible = wrapper.get("canvas.canvas-replay").element;
     const hidden = wrapper.findAll("canvas").find((surface) => surface.element !== firstVisible)!;
     const hiddenContext = hidden.element.getContext("2d") as any;
-    hiddenContext.drawImage.mockImplementationOnce(() => {
+    hiddenContext.fillRect.mockImplementationOnce(() => {
       throw new Error("commit failed");
     });
     vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -317,7 +324,13 @@ describe("canvas resource replay", () => {
         canvas_id: 1,
         revision: 2,
         size: { width: 40, height: 40 },
-        commands: [],
+        commands: [
+          {
+            type: "fill_rectangle",
+            brush_argb: 0xffff0000n,
+            rectangle: { x: 0, y: 0, width: 40, height: 40 },
+          },
+        ],
       },
     });
     await settleReplay();
@@ -379,25 +392,17 @@ describe("canvas resource replay", () => {
     const outputContexts = surfaces.map((surface) =>
       contexts.find((context) => context.canvas === surface),
     );
-    const committedDestinations = outputContexts.map((outputContext) =>
-      outputContext.drawnImages.map((draw: any) => {
-        const projected = contexts.find((context) => context.canvas === draw.source);
-        return projected.drawImage.mock.calls.find(
-          (call: any[]) => call[0] instanceof HTMLCanvasElement,
-        )[1];
-      }),
+    const committedDestinations = outputContexts.flatMap((outputContext) =>
+      outputContext.drawImage.mock.calls
+        .filter((call: any[]) => call[0] instanceof Image)
+        .map((call: any[]) => call[5]),
     );
-    expect(committedDestinations).toEqual([[1, 3], [4]]);
+    expect(committedDestinations.sort()).toEqual([3, 4]);
     expect(wrapper.get("canvas.canvas-replay").element).toBe(surfaces[1]);
     expect(surfaces[0].width).toBe(100);
     expect(decoders).toHaveLength(1);
     expect(resourceUrl).toHaveBeenCalledTimes(1);
-    expect(outputContexts.every((context) => context.dimensionWrites.length === 0)).toBe(true);
-    expect(
-      outputContexts.every((context) =>
-        context.drawnImages.every((draw: any) => draw.compositeOperation === "copy"),
-      ),
-    ).toBe(true);
+    expect(outputContexts.every((context) => context.dimensionWrites.length >= 2)).toBe(true);
   });
 
   it("uses native canvas opacity for generated fade frames", async () => {
@@ -543,9 +548,7 @@ describe("canvas resource replay", () => {
 
     decoders[0]();
     await waitFor(() => decoders.length === 2);
-    expect(contexts.some((context) => context.canvas === wrapper.find("canvas").element)).toBe(
-      false,
-    );
+    expect(wrapper.find("canvas.canvas-replay").exists()).toBe(false);
 
     decoders[1]();
     await settleReplay();
@@ -553,6 +556,103 @@ describe("canvas resource replay", () => {
       (context) => context.canvas === wrapper.find("canvas").element,
     );
     expect(outputContext.drawnImages).toHaveLength(1);
+  });
+
+  it("releases both persistent backing surfaces on unmount", async () => {
+    const wrapper = mount(CanvasReplay, {
+      props: {
+        replay: { canvas_id: 1, revision: 1, size: { width: 320, height: 200 }, commands: [] },
+      },
+    });
+    await settleReplay();
+    const surfaces = wrapper.findAll("canvas").map((canvas) => canvas.element);
+
+    wrapper.unmount();
+
+    expect(surfaces.every((surface) => surface.width === 0 && surface.height === 0)).toBe(true);
+  });
+
+  it("rejects oversized backing dimensions before assigning them", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const wrapper = mount(CanvasReplay, {
+      props: {
+        replay: { canvas_id: 1, revision: 1, size: { width: 8_193, height: 1 }, commands: [] },
+      },
+    });
+
+    await settleReplay();
+
+    expect(wrapper.find("canvas.canvas-replay").exists()).toBe(false);
+    expect(wrapper.findAll("canvas").every((surface) => surface.element.width === 0)).toBe(true);
+  });
+
+  it("closes an oversized decoded bitmap when its surface budget rejects it", async () => {
+    const close = vi.fn();
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn(async () => ({ width: 8_193, height: 1, close })),
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    mount(CanvasReplay, {
+      props: {
+        replay: {
+          canvas_id: 1,
+          revision: 1,
+          size: { width: 10, height: 10 },
+          commands: [{ type: "load_encoded_image", encoded: [1, 2, 3] }],
+        },
+      },
+    });
+
+    await settleReplay();
+
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("rejects deeply nested canvas replay before allocating unbounded temporary surfaces", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const nested = Array.from({ length: 18 }, (_, index) => ({
+      canvas_id: index + 2,
+      revision: 1,
+      size: { width: 10, height: 10 },
+      commands:
+        index === 17
+          ? []
+          : [
+              {
+                type: "draw_canvas" as const,
+                source_canvas_id: index + 3,
+                source: { x: 0, y: 0, width: 10, height: 10 },
+                destination: { x: 0, y: 0, width: 10, height: 10 },
+              },
+            ],
+    }));
+    store.presentation.resources.canvases = nested;
+    const wrapper = mount(CanvasReplay, {
+      props: {
+        replay: {
+          canvas_id: 1,
+          revision: 1,
+          size: { width: 10, height: 10 },
+          commands: [
+            {
+              type: "draw_canvas",
+              source_canvas_id: 2,
+              source: { x: 0, y: 0, width: 10, height: 10 },
+              destination: { x: 0, y: 0, width: 10, height: 10 },
+            },
+          ],
+        },
+      },
+    });
+
+    await settleReplay();
+
+    expect(wrapper.find("canvas.canvas-replay").exists()).toBe(false);
+    const temporary = contexts
+      .map((context) => context.canvas as HTMLCanvasElement)
+      .filter((surface) => !wrapper.findAll("canvas").some((item) => item.element === surface));
+    expect(temporary.every((surface) => surface.width === 0 && surface.height === 0)).toBe(true);
   });
 });
 

@@ -9,6 +9,7 @@ import {
 export type AudioPlaybackEvent = "started" | "ended";
 
 const DEFAULT_AUDIO_BUFFER_BUDGET_BYTES = 128 * 1024 * 1024;
+const MAXIMUM_ENCODED_AUDIO_BYTES = 64 * 1024 * 1024;
 
 interface AudioBufferEntry {
   readonly generation: number;
@@ -271,8 +272,14 @@ export class AudioEngine {
     }
     const promise = this.bridge.readResource(resourceId).then((bytes) => {
       if (generation !== this.resourceGeneration) throw new Error("音频资源 generation 已失效");
-      const buffer = new ArrayBuffer(bytes.byteLength);
-      new Uint8Array(buffer).set(bytes);
+      if (bytes.byteLength > MAXIMUM_ENCODED_AUDIO_BYTES)
+        throw new Error("音频资源超过前端解码预算");
+      const buffer =
+        bytes.buffer instanceof ArrayBuffer &&
+        bytes.byteOffset === 0 &&
+        bytes.byteLength === bytes.buffer.byteLength
+          ? bytes.buffer
+          : (bytes.slice().buffer as ArrayBuffer);
       return this.audioContext().decodeAudioData(buffer);
     });
     const entry: AudioBufferEntry = {

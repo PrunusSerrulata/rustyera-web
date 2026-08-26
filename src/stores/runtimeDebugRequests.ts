@@ -3,6 +3,7 @@ interface PendingDebugRequest {
   commandType: string | undefined;
   resolve?: (value: any) => void;
   reject?: (error: Error) => void;
+  timer?: number;
 }
 
 export class RuntimeDebugRequestState {
@@ -41,6 +42,7 @@ export class RuntimeDebugRequestState {
           window.clearTimeout(timer);
           reject(error);
         },
+        timer,
       });
     });
   }
@@ -50,6 +52,7 @@ export class RuntimeDebugRequestState {
     const key = String(correlationId);
     const request = this.pending.get(key);
     this.pending.delete(key);
+    if (request?.timer != null) window.clearTimeout(request.timer);
     return request;
   }
 
@@ -67,6 +70,11 @@ export class RuntimeDebugRequestState {
     this.surfacePauseActive = false;
     this.surfaceResumePending = false;
     this.grantRefreshNeeded = false;
+    const cancellation = new Error("debug request was retired with its runtime timeline");
+    for (const request of this.pending.values()) {
+      if (request.timer != null) window.clearTimeout(request.timer);
+      request.reject?.(cancellation);
+    }
     this.pending.clear();
   }
 }

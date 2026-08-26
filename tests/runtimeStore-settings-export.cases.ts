@@ -825,10 +825,11 @@ describe("runtime store settings-export", () => {
     });
     await vi.advanceTimersByTimeAsync(16);
 
-    expect(bridge.saveDownload).toHaveBeenCalledWith(
-      "input-replay_20260730-003007.jsonl",
-      Uint8Array.of(1, 2, 3),
-    );
+    expect(bridge.beginStateExport).toHaveBeenCalledWith("input-replay_20260730-003007.jsonl", 3);
+    expect(bridge.writeStateExportChunk.mock.calls).toEqual([
+      [Uint8Array.of(1, 2, 3), true, false],
+      [new Uint8Array(), false, true],
+    ]);
     expect(store.testTransferState().export).toBeNull();
     expect(store.status).toBe("已导出 input-replay_20260730-003007.jsonl");
   });
@@ -937,7 +938,7 @@ describe("runtime store settings-export", () => {
         )
         .filter((message) => message.type === "state_export_chunk_request")
         .map((message) => message.value?.maximum_bytes),
-    ).toEqual([16 * 1024 * 1024]);
+    ).toEqual([1024 * 1024]);
     expect(bridge.writeProjectFileChunk).toHaveBeenCalledWith(Uint8Array.of(1, 2, 3), true, true);
     expect(store.gameInteractionsBlocked).toBe(false);
   });

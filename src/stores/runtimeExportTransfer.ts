@@ -2,11 +2,7 @@ import { blake3 } from "@noble/hashes/blake3.js";
 
 import { concatenateChunks } from "@/core/runtimeSupport";
 import type { RuntimeMessage } from "@/core/types";
-import {
-  runtimeExportKind,
-  STATE_EXPORT_CHUNK_BYTES,
-  type ExportState,
-} from "@/stores/runtimeState";
+import { runtimeExportKind, type ExportState } from "@/stores/runtimeState";
 
 interface RuntimeExportTransferContext {
   exportState(): ExportState | undefined;
@@ -17,6 +13,9 @@ interface RuntimeExportTransferContext {
   beginProjectFilePackaging(total: number): void;
   updateProjectFilePackaging(completed: number, total: number): void;
   writeProjectFileChunk(bytes: Uint8Array, reset: boolean, complete: boolean): Promise<void>;
+  beginStateDownload(name: string, totalBytes: number): Promise<boolean>;
+  writeStateDownload(bytes: Uint8Array, reset: boolean, complete: boolean): Promise<void>;
+  cancelStateDownload(): Promise<void>;
   failProjectFile(message?: string): Promise<void>;
   enqueueCompiledCacheWrite(
     activeExport: ExportState,
@@ -27,8 +26,13 @@ interface RuntimeExportTransferContext {
   continueCompiledCache(activeExport: ExportState, complete: boolean): void;
   failCompiledCache(activeExport: ExportState, error: unknown): Promise<void>;
   finishExport(activeExport: ExportState): Promise<void>;
+  diagnosisRetainedBytes(): number;
   logWarning(message: string): void;
+  exportChunkBytes(): number;
 }
+
+const MAXIMUM_DIAGNOSIS_TRANSFER_BYTES = 128 * 1024 * 1024;
+const MAXIMUM_DIAGNOSIS_RETAINED_BYTES = 256 * 1024 * 1024;
 
 /** Coordinate protocol transfer descriptors and chunks without owning export-specific UI. */
 export class RuntimeExportTransferState {
@@ -67,16 +71,58 @@ export class RuntimeExportTransferState {
       }
       return;
     }
-    activeExport.descriptor = ready.result.transfer;
     const totalBytes = Number(ready.result.transfer.total_bytes);
+    if (!Number.isSafeInteger(totalBytes) || totalBytes < 0) {
+      const message = "Runtime 返回了无效的状态导出长度";
+      if (activeExport.kind.startsWith("diagnosis_")) {
+        await this.context.failDiagnosis(activeExport, `诊断信息导出失败：${message}`);
+        return;
+      }
+      throw new Error(message);
+    }
+    if (
+      activeExport.kind.startsWith("diagnosis_") &&
+      totalBytes > MAXIMUM_DIAGNOSIS_TRANSFER_BYTES
+    ) {
+      await this.context.failDiagnosis(
+        activeExport,
+        `诊断信息导出失败：单项数据超过 ${MAXIMUM_DIAGNOSIS_TRANSFER_BYTES / 1024 / 1024} MiB 安全限制`,
+      );
+      return;
+    }
+    if (
+      activeExport.kind.startsWith("diagnosis_") &&
+      this.context.diagnosisRetainedBytes() + totalBytes > MAXIMUM_DIAGNOSIS_RETAINED_BYTES
+    ) {
+      await this.context.failDiagnosis(
+        activeExport,
+        `诊断信息导出失败：归档源数据合计超过 ${MAXIMUM_DIAGNOSIS_RETAINED_BYTES / 1024 / 1024} MiB 安全限制`,
+      );
+      return;
+    }
+    activeExport.descriptor = ready.result.transfer;
     if (activeExport.kind.startsWith("diagnosis_") && Number.isSafeInteger(totalBytes))
       this.context.setDiagnosisProgress(activeExport.kind, 0, totalBytes);
     if (activeExport.kind === "project_file") this.context.beginProjectFilePackaging(totalBytes);
+    if (activeExport.kind === "download" || activeExport.kind === "input_replay_download") {
+      try {
+        if (!(await this.context.beginStateDownload(activeExport.name, totalBytes))) {
+          await this.context.send({ type: "state_export_cancel", value: { kind: expectedKind } });
+          this.context.clearExportState();
+          return;
+        }
+        activeExport.digestHasher = blake3.create();
+      } catch (error) {
+        await this.context.cancelStateDownload();
+        this.context.clearExportState();
+        throw error;
+      }
+    }
     if (
       activeExport.kind !== "compiled_cache" &&
       activeExport.kind !== "project_file" &&
-      Number.isSafeInteger(totalBytes) &&
-      totalBytes >= 0
+      activeExport.kind !== "download" &&
+      activeExport.kind !== "input_replay_download"
     )
       activeExport.buffer = new Uint8Array(totalBytes);
     try {
@@ -86,6 +132,13 @@ export class RuntimeExportTransferState {
         await this.context.failDiagnosis(activeExport, `诊断信息导出失败：${String(error)}`);
       } else if (activeExport.kind === "compiled_cache") {
         await this.context.failCompiledCache(activeExport, error);
+      } else if (
+        activeExport.kind === "download" ||
+        activeExport.kind === "input_replay_download"
+      ) {
+        await this.context.cancelStateDownload();
+        this.context.clearExportState();
+        throw error;
       } else {
         throw error;
       }
@@ -100,7 +153,7 @@ export class RuntimeExportTransferState {
       value: {
         transfer_id: activeExport.descriptor.transfer_id,
         offset: activeExport.received,
-        maximum_bytes: STATE_EXPORT_CHUNK_BYTES,
+        maximum_bytes: this.context.exportChunkBytes(),
       },
     });
   }
@@ -143,6 +196,13 @@ export class RuntimeExportTransferState {
         this.context.enqueueCompiledCacheWrite(activeExport, bytes, reset, chunk.complete);
       } else if (activeExport.kind === "project_file") {
         await this.context.writeProjectFileChunk(bytes, reset, chunk.complete);
+      } else if (
+        activeExport.kind === "download" ||
+        activeExport.kind === "input_replay_download"
+      ) {
+        activeExport.digestHasher?.update(bytes);
+        // Commit only after the terminal length/digest validation below succeeds.
+        await this.context.writeStateDownload(bytes, reset, false);
       } else if (activeExport.buffer) {
         activeExport.buffer.set(bytes, Number(chunk.offset));
       } else {
@@ -151,6 +211,11 @@ export class RuntimeExportTransferState {
     } catch (error) {
       if (activeExport.kind === "project_file") {
         await this.context.failProjectFile();
+      } else if (
+        activeExport.kind === "download" ||
+        activeExport.kind === "input_replay_download"
+      ) {
+        await this.context.cancelStateDownload();
       } else if (activeExport.kind.startsWith("diagnosis_")) {
         await this.context.failDiagnosis(activeExport, `诊断信息导出失败：${String(error)}`);
       } else if (activeExport.kind === "compiled_cache") {
@@ -168,7 +233,27 @@ export class RuntimeExportTransferState {
     }
     try {
       if (!chunk.complete) await this.requestChunk();
-      else if (activeExport.kind.startsWith("diagnosis_")) {
+      else if (activeExport.kind === "download" || activeExport.kind === "input_replay_download") {
+        const expectedLength = Number(activeExport.descriptor.total_bytes);
+        const actualDigest = activeExport.digestHasher?.digest();
+        activeExport.digestHasher = undefined;
+        const expectedDigest = Uint8Array.from(
+          activeExport.descriptor.digest ?? [],
+          (value: number | bigint) => Number(value),
+        );
+        if (
+          activeExport.received !== expectedLength ||
+          !actualDigest ||
+          expectedDigest.length !== actualDigest.length ||
+          expectedDigest.some((value, index) => value !== actualDigest[index])
+        ) {
+          await this.context.cancelStateDownload();
+          this.context.clearExportState();
+          throw new Error("Runtime 状态导出分块长度或摘要无效");
+        }
+        await this.context.writeStateDownload(new Uint8Array(), false, true);
+        await this.context.finishExport(activeExport);
+      } else if (activeExport.kind.startsWith("diagnosis_")) {
         const expectedLength = Number(activeExport.descriptor.total_bytes);
         const result =
           activeExport.buffer ?? concatenateChunks(activeExport.chunks, activeExport.received);

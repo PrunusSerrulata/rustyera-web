@@ -12,6 +12,7 @@ fn packaged_host(path: PathBuf) -> ProjectHost {
         packaged_project: Some(PackagedProjectFile {
             storage_key: packaged_project_storage_key(&path),
             path,
+            file_digest: [0; 32],
         }),
         runtime_manifest_sparse: false,
         pending_reload: None,
