@@ -17,7 +17,7 @@ describe("AboutDialog", () => {
     expect(document.body.textContent).toContain("0.9.0-wasm");
     expect(document.body.textContent).toContain("core 版本");
     const coreRevision = readFileSync("rustyera-core.rev", "utf8").trim().slice(0, 8);
-    expect(document.body.textContent).toContain(`0.7.0 (${coreRevision})`);
+    expect(document.body.textContent).toContain(`0.8.0 (${coreRevision})`);
     expect(document.body.textContent).toContain("GPL-3.0-only");
     expect(document.body.textContent).toContain("仅适用于 RustyEra 相关组件");
     expect(

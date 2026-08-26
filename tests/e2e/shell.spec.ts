@@ -21,7 +21,7 @@ test("shared shell exposes menus and the unified settings dialog", async ({ page
   await expect(about.getByText("PrunusSerrulata")).toBeVisible();
   await expect(about.getByText("0.9.0-wasm")).toBeVisible();
   const coreRevision = readFileSync("rustyera-core.rev", "utf8").trim().slice(0, 8);
-  await expect(about.getByText(`0.7.0 (${coreRevision})`)).toBeVisible();
+  await expect(about.getByText(`0.8.0 (${coreRevision})`)).toBeVisible();
   await expect(about.getByText("GPL-3.0-only")).toBeVisible();
   await about.getByRole("button", { name: "确定" }).click();
   await expect(about).toBeHidden();
