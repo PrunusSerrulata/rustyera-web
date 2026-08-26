@@ -14,6 +14,7 @@ export class RuntimePresentationProjection {
   private stagedPresentation?: PresentationState;
   private stagedReady = false;
   private stagedCanFlushWhenIdle = false;
+  private stagedForInputTransition = false;
 
   current(): PresentationState {
     return this.stagedPresentation ?? this.presentation;
@@ -23,8 +24,41 @@ export class RuntimePresentationProjection {
     return this.current();
   }
 
-  markStagedReady(): void {
+  openInputWait(inputWait: any): void {
+    this.current().inputWait = inputWait;
     if (this.stagedPresentation) this.stagedReady = true;
+    else this.stagedForInputTransition = false;
+  }
+
+  beginInputTransition(): void {
+    if (this.current().inputWait == null) return;
+    // Input submission replaces one stable interaction surface with another. Keep that change
+    // atomic even when the runtime crosses an explicit REDRAW boundary while building the target.
+    this.stage();
+    this.stagedCanFlushWhenIdle = true;
+    this.stagedForInputTransition = true;
+  }
+
+  closeInputWait(): void {
+    this.beginInputTransition();
+    this.current().inputWait = null;
+  }
+
+  publishForPresentNow(presentationRevision: unknown): boolean {
+    const stagedRevision = String(this.current().revision);
+    const expectedRevision = String(presentationRevision);
+    if (stagedRevision !== expectedRevision) {
+      throw new Error(`立即展示 revision 不匹配：期望 ${expectedRevision}，当前 ${stagedRevision}`);
+    }
+    if (!this.stagedPresentation) return false;
+    const continueInputTransition = this.stagedForInputTransition;
+    const published = this.publish();
+    // Keep only the transition marker after the explicit display barrier. Creating an empty
+    // staged clone here can strand it when present_now is the batch's final presentation event,
+    // leaving the DOM on the just-published revision while later input waits advance off-screen.
+    // If more output arrives, projectDelta will stage lazily from the published barrier frame.
+    this.stagedForInputTransition = continueInputTransition && this.presentation.inputWait == null;
+    return published;
   }
 
   shouldPublish(runtimeState: string): boolean {
@@ -58,6 +92,7 @@ export class RuntimePresentationProjection {
       this.stagedPresentation = next;
       this.stagedReady = false;
       this.stagedCanFlushWhenIdle = false;
+      this.stagedForInputTransition = false;
       this.staged.value = true;
       return false;
     }
@@ -72,11 +107,17 @@ export class RuntimePresentationProjection {
     const disablesRedraw = operations.some(
       (operation: any) => operation.type === "set_redraw" && operation.redraw?.enabled === false,
     );
-    const completesFrame = operations.some(
-      (operation: any) =>
-        (operation.type === "set_redraw" && operation.redraw?.enabled !== false) ||
-        (operation.type === "set_input_wait" && operation.input_wait != null),
+    const enablesRedraw = operations.some(
+      (operation: any) => operation.type === "set_redraw" && operation.redraw?.enabled !== false,
     );
+    const opensInputWait = operations.some(
+      (operation: any) => operation.type === "set_input_wait" && operation.input_wait != null,
+    );
+    const closesInputWait = operations.some(
+      (operation: any) => operation.type === "set_input_wait" && operation.input_wait == null,
+    );
+    const completesFrame = enablesRedraw || opensInputWait;
+    if (closesInputWait && this.current().inputWait != null) this.beginInputTransition();
     // CLEARLINE commonly lands in its own output batch between timed animation frames. Emuera
     // repaints the replacement immediately, but publishing that intermediate tail deletion lets
     // the browser paint an empty frame before the next zero-delay pump. Hold the previous frame
@@ -89,6 +130,7 @@ export class RuntimePresentationProjection {
       );
     const shouldStage =
       this.stagedPresentation != null ||
+      this.stagedForInputTransition ||
       (!completesFrame &&
         ((this.presentation.redraw?.enabled === false && this.presentation.inputWait == null) ||
           disablesRedraw ||
@@ -98,7 +140,9 @@ export class RuntimePresentationProjection {
     if (target !== this.stagedPresentation) return true;
     if (disablesRedraw || target.redraw?.enabled === false) this.stagedCanFlushWhenIdle = false;
     else if (startsTransientReplacement) this.stagedCanFlushWhenIdle = true;
-    if (completesFrame) this.stagedReady = true;
+    if (opensInputWait || (completesFrame && !this.stagedForInputTransition)) {
+      this.stagedReady = true;
+    }
     return false;
   }
 
@@ -106,6 +150,7 @@ export class RuntimePresentationProjection {
     this.stagedPresentation = undefined;
     this.stagedReady = false;
     this.stagedCanFlushWhenIdle = false;
+    this.stagedForInputTransition = false;
     this.staged.value = false;
   }
 

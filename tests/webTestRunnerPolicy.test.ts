@@ -350,7 +350,9 @@ describe("browser game runner progress policy", () => {
       "utf8",
     );
 
-    expect(runner).toContain('locator.click({ button: action.button ?? "left" })');
+    expect(runner).toContain(
+      'locator.click({ button: action.button ?? "left", force: action.force === true })',
+    );
     expect(runner).toContain("action.settle_ms");
     expect(fullProjectExport).toContain('"observe": false');
   });
@@ -505,6 +507,30 @@ describe("browser game runner progress policy", () => {
     expect(spec).toContain('assert.equal(final.bridgeKind, "tauri")');
     expect(spec).toContain('assert.equal(final.wait?.kind, "string_value")');
     for (const text of ["一键提升能力", "结束提升能力"]) expect(spec).toContain(text);
+  });
+
+  it("checks erarorona training transitions for atomic painted presentations", () => {
+    const scenario = JSON.parse(
+      readFileSync(
+        resolve("tools/runtime-tester/scenarios/erarorona-presentation-atomicity.json"),
+        "utf8",
+      ),
+    );
+    const atomicClicks = scenario.actions.filter(
+      (action: any) => action.type === "click" && action.expect_atomic_presentation === true,
+    );
+
+    expect(atomicClicks.map((action: any) => action.locator.name)).toEqual([
+      "[  0] 调教",
+      "能力提升结束了",
+    ]);
+    expect(atomicClicks.at(-1)).toMatchObject({ dom_click: true });
+    expect(scenario.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "input", value: "切" }),
+        expect.objectContaining({ type: "input", value: "99" }),
+      ]),
+    );
   });
 
   it("can assert computed game-font styles after applying settings", () => {

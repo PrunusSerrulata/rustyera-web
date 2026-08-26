@@ -6,6 +6,7 @@ import { blake3 } from "@noble/hashes/blake3.js";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  assertAtomicPresentationTransition,
   browserProjectProgressErrors,
   compareObservations,
   injectInGameSaveFlow,
@@ -23,6 +24,32 @@ import {
 } from "../scripts/web-test-lib.mjs";
 
 describe("web game test scenario", () => {
+  it("accepts only the starting and completed presentation revisions across painted frames", () => {
+    const samples = [
+      { revision: "10", waitId: "4", outputTail: ["command"] },
+      { revision: "10", waitId: "4", outputTail: ["command"] },
+      { revision: "14", waitId: "5", outputTail: ["complete"] },
+    ];
+
+    expect(assertAtomicPresentationTransition(samples, "14")).toMatchObject({
+      startRevision: "10",
+      endRevision: "14",
+      paintedRevisions: ["10", "14"],
+    });
+    expect(() =>
+      assertAtomicPresentationTransition(
+        [samples[0], { revision: "12", waitId: null, outputTail: ["incomplete"] }, samples[2]],
+        "14",
+      ),
+    ).toThrow("painted intermediate revisions");
+    expect(() => assertAtomicPresentationTransition(samples.slice(0, 2), "14")).toThrow(
+      "did not paint completed revision",
+    );
+    expect(() => assertAtomicPresentationTransition(samples.slice(0, 2), "10")).toThrow(
+      "did not advance",
+    );
+  });
+
   it.each(["\n", "\r\n"])("injects the save flow using the fixture's %j newline", (newline) => {
     const source = `@SYSTEM_TITLE${newline}PRINTL ORACLE_READY${newline}RETURN${newline}`;
 

@@ -160,6 +160,132 @@ describe("runtime presentation staging", () => {
     expect(presentationInteractionEnabled(projection.current(), publishedInteraction)).toBe(true);
   });
 
+  it("keeps an input transition atomic across explicit redraw and output batches", () => {
+    const projection = new RuntimePresentationProjection();
+    projection.projectSnapshot({
+      revision: 1,
+      title: "command menu",
+      history: { logical_lines: [line(1, true)] },
+      input_wait: { wait_id: 10 },
+      redraw: { enabled: true },
+    });
+
+    projection.closeInputWait();
+    projection.projectDelta({
+      base_revision: 1,
+      new_revision: 2,
+      operations: [
+        { type: "append_line", line: line(2) },
+        { type: "set_redraw", redraw: { enabled: true } },
+      ],
+    });
+
+    expect(projection.shouldPublish("more_work")).toBe(false);
+    expect(projection.presentation.revision).toBe(1);
+    expect(projection.presentation.lines).toHaveLength(1);
+
+    projection.projectDelta({
+      base_revision: 2,
+      new_revision: 3,
+      operations: [
+        { type: "append_line", line: line(3, true) },
+        { type: "set_input_wait", input_wait: { wait_id: 11 } },
+      ],
+    });
+
+    expect(projection.shouldPublish("idle")).toBe(true);
+    projection.publish();
+    expect(projection.presentation.revision).toBe(3);
+    expect(projection.presentation.lines).toHaveLength(3);
+    expect(projection.presentation.inputWait).toEqual({ wait_id: 11 });
+  });
+
+  it("starts an atomic transition when the presentation delta closes the wait first", () => {
+    const projection = new RuntimePresentationProjection();
+    projection.projectSnapshot({
+      revision: 1,
+      title: "ability message",
+      history: { logical_lines: [line(1, true)] },
+      input_wait: { wait_id: 10 },
+      redraw: { enabled: true },
+    });
+
+    expect(
+      projection.projectDelta({
+        base_revision: 1,
+        new_revision: 2,
+        operations: [
+          { type: "set_input_wait", input_wait: null },
+          { type: "append_line", line: line(2) },
+        ],
+      }),
+    ).toBe(false);
+    expect(projection.presentation.revision).toBe(1);
+    expect(projection.current().revision).toBe(2);
+  });
+
+  it("publishes a requested present-now revision and keeps staging the input transition", () => {
+    const projection = new RuntimePresentationProjection();
+    projection.projectSnapshot({
+      revision: 1,
+      title: "command menu",
+      history: { logical_lines: [line(1, true)] },
+      input_wait: { wait_id: 10 },
+      redraw: { enabled: true },
+    });
+    projection.closeInputWait();
+    projection.projectDelta({
+      base_revision: 1,
+      new_revision: 2,
+      operations: [
+        { type: "append_line", line: line(2) },
+        { type: "set_redraw", redraw: { enabled: true } },
+      ],
+    });
+
+    expect(projection.publishForPresentNow(2)).toBe(true);
+    expect(projection.presentation.revision).toBe(2);
+    expect(projection.staged.value).toBe(false);
+
+    projection.projectDelta({
+      base_revision: 2,
+      new_revision: 3,
+      operations: [{ type: "append_line", line: line(3) }],
+    });
+    expect(projection.presentation.revision).toBe(2);
+    expect(projection.staged.value).toBe(true);
+    expect(projection.current().revision).toBe(3);
+    expect(() => projection.publishForPresentNow(4)).toThrow("立即展示 revision 不匹配");
+  });
+
+  it("finishes a latent present-now transition when the next wait opens separately", () => {
+    const projection = new RuntimePresentationProjection();
+    projection.projectSnapshot({
+      revision: 1,
+      history: { logical_lines: [line(1, true)] },
+      input_wait: { wait_id: 10 },
+      redraw: { enabled: true },
+    });
+    projection.closeInputWait();
+    projection.projectDelta({
+      base_revision: 1,
+      new_revision: 2,
+      operations: [{ type: "set_redraw", redraw: { enabled: true } }],
+    });
+    projection.publishForPresentNow(2);
+
+    projection.openInputWait({ wait_id: 11 });
+    expect(
+      projection.projectDelta({
+        base_revision: 2,
+        new_revision: 3,
+        operations: [{ type: "append_line", line: line(3) }],
+      }),
+    ).toBe(true);
+    expect(projection.staged.value).toBe(false);
+    expect(projection.presentation.revision).toBe(3);
+  });
+
   it("resets client interaction sequencing with the projection", () => {
     const projection = new RuntimePresentationProjection();
     projection.projectSnapshot({

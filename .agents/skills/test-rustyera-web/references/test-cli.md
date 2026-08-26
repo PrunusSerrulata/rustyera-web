@@ -105,6 +105,12 @@ An action has `type`:
 - `input`: `value`; fills `.prompt-bar input` and clicks the submit button.
 - `click`: `locator`, optional `button` (`left`, `middle`, or `right`, default `left`); set
   `advances_game: true` and `semantic_input` when it advances a compared game.
+  Set `force: true` only after separately asserting or revealing a virtualized target whose
+  Playwright actionability wait is not part of the behavior under test.
+  Set `dom_click: true` only for an already revealed, unique virtualized button when native DOM
+  activation is required without pointer hit-testing.
+  Set `expect_atomic_presentation: true` for a screen transition that must paint only its starting
+  and next stable presentation revisions, never a runtime-running intermediate revision.
 - `touch_gesture`: Chromium-only real touch input with `locator` and `gesture` set to
   `two_finger_tap` or `long_press`; set `advances_game: true` when it advances the runtime.
 - `hover`: `locator`; moves the pointer over an element without advancing the game.

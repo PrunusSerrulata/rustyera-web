@@ -58,6 +58,74 @@ describe("runtime store debug-presentation-reload", () => {
     stop();
   });
 
+  it("publishes a present-now revision before acknowledging the effect", async () => {
+    bridge.kind = "browser";
+    let paint: FrameRequestCallback | undefined;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      paint = callback;
+      return 1;
+    });
+    const wait = {
+      kind: "string_value",
+      wait_id: 31,
+      submission_token: { epoch: 4, id: 9 },
+    };
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("presentation_snapshot", {
+          revision: 1,
+          title: "before present now",
+          history: { logical_lines: [] },
+          input_wait: wait,
+        }),
+        runtimeEvent("wait_changed", { type: "opened", value: wait }),
+        runtimeEvent("wait_changed", { type: "closed", value: null }),
+        runtimeEvent("presentation_delta", {
+          base_revision: 1,
+          new_revision: 2,
+          operations: [
+            { type: "set_title", title: "present now" },
+            { type: "set_redraw", redraw: { enabled: true } },
+          ],
+        }),
+        runtimeEvent("effect_batch", {
+          effects: [
+            {
+              effect_id: 7,
+              kind: { type: "present_now", value: { presentation_revision: 2 } },
+            },
+          ],
+        }),
+      ],
+    });
+    const store = useRuntimeStore();
+
+    const enabling = store.enableDebug();
+    await advanceUntil(() => store.presentation.revision === 2);
+
+    expect(store.presentation.revision).toBe(2);
+    expect(document.title).toBe("present now");
+    expect(
+      bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) => (message as { type?: string }).type === "effect_acknowledgement",
+      ),
+    ).toBe(false);
+
+    expect(paint).toBeDefined();
+    paint!(0);
+    await enabling;
+    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+      {
+        type: "effect_acknowledgement",
+        value: {
+          outcomes: [{ effect_id: 7, status: "completed", message: null }],
+        },
+      },
+      undefined,
+    );
+  });
+
   it("keeps presentation services ordered between synchronous deltas", async () => {
     const line = (lineId: number, text: string) => ({
       line_id: lineId,

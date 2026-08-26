@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/erarorona",
+  "mode": "fixed",
+  "compiled_cache": true,
+  "start": {
+    "type": "traditional_save",
+    "path": "../../../../games/erarorona/sav/save01.sav"
+  },
+  "clock": "2026-01-01T00:00:00Z",
+  "viewport": { "width": 1415, "height": 1056 },
+  "actions": [
+    {
+      "type": "assert_dom",
+      "locator": { "role": "button", "name": "[  0] 调教", "exact": true },
+      "fields": ["count", "visible", "enabled"],
+      "expect": { "count": 1, "visible": true, "enabled": true }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "[  0] 调教", "exact": true },
+      "advances_game": true,
+      "semantic_input": "0",
+      "expect_atomic_presentation": true,
+      "auto_enter": false
+    },
+    { "type": "input", "value": "切", "auto_enter": false },
+    { "type": "input", "value": "0", "auto_enter": false },
+    { "type": "input", "value": "", "message_skip": true, "auto_enter": false },
+    { "type": "input", "value": "99", "auto_enter": false },
+    {
+      "type": "reveal_text",
+      "text": "能力提升结束了"
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "能力提升结束了",
+        "exact": false,
+        "nth": 0
+      },
+      "advances_game": true,
+      "semantic_input": "0",
+      "expect_atomic_presentation": true,
+      "dom_click": true,
+      "auto_enter": false
+    },
+    {
+      "type": "reveal_text",
+      "text": "[  0] 调教"
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "button", "name": "[  0] 调教", "exact": true },
+      "fields": ["count", "visible", "enabled"],
+      "expect": { "count": 1, "visible": true, "enabled": true }
+    },
+    { "type": "assert_state", "expect": { "phase": "waiting_input", "fault": null } }
+  ],
+  "limits": { "max_steps": 40, "timeout_seconds": 300 }
+}

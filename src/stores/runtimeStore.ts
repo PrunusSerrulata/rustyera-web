@@ -913,10 +913,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   function handleRuntimeWaitChanged(value: any): void {
     if (value.type === "opened" || value.type === "updated") {
       runtimeInput.updateWait(value.value);
-      currentPresentation().inputWait = value.value;
-      presentationProjection.markStagedReady();
+      presentationProjection.openInputWait(value.value);
     } else if (value.type === "closed") {
-      currentPresentation().inputWait = null;
+      presentationProjection.closeInputWait();
       runtimeInput.closeWait();
     }
   }
@@ -1276,9 +1275,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
         const kind = effect.kind;
         if (kind.type === "audio") await audio.applyEffect(kind.value);
         else if (kind.type === "open_configuration") openPreferencesFromRuntime();
-        else if (kind.type === "start_animation" || kind.type === "present_now") {
-          // Rendering state already carries the recoverable revision; requestAnimationFrame
-          // gives this transient effect an immediate projection boundary.
+        else if (kind.type === "start_animation") {
+          await new Promise(requestAnimationFrame);
+        } else if (kind.type === "present_now") {
+          batchMediaDirty =
+            presentationProjection.publishForPresentNow(kind.value?.presentation_revision) ||
+            batchMediaDirty;
+          if (batchMediaDirty) {
+            await synchronizeMedia();
+            batchMediaDirty = false;
+          }
+          // Acknowledge only after the requested recoverable revision has crossed a paint boundary.
           await new Promise(requestAnimationFrame);
         } else {
           throw new Error(`前端未启用 effect：${kind.type}`);

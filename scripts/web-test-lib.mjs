@@ -604,6 +604,82 @@ export function resolveLocator(page, locator = {}) {
   return locator.nth == null ? resolved : resolved.nth(Number(locator.nth));
 }
 
+export function assertAtomicPresentationTransition(samples, completedRevision) {
+  if (!Array.isArray(samples) || samples.length < 2)
+    throw new Error("atomic presentation probe did not capture a painted transition");
+  const startRevision = String(samples[0].revision);
+  const endRevision = String(completedRevision);
+  if (startRevision === endRevision)
+    throw new Error(`atomic presentation transition did not advance from ${startRevision}`);
+  const intermediate = samples.filter((sample) => {
+    const revision = String(sample.revision);
+    return revision !== startRevision && revision !== endRevision;
+  });
+  if (intermediate.length > 0) {
+    throw new Error(
+      `presentation transition painted intermediate revisions: ${JSON.stringify({ startRevision, endRevision, intermediate })}`,
+    );
+  }
+  if (!samples.some((sample) => String(sample.revision) === endRevision)) {
+    throw new Error(`atomic presentation probe did not paint completed revision ${endRevision}`);
+  }
+  return {
+    startRevision,
+    endRevision,
+    paintedRevisions: [...new Set(samples.map((sample) => String(sample.revision)))],
+    samples,
+  };
+}
+
+async function startAtomicPresentationProbe(page) {
+  await page.evaluate(() => {
+    window.__RUSTYERA_ATOMIC_PRESENTATION_PROBE__?.stop?.();
+    const samples = [];
+    let frame;
+    let stopped = false;
+    const capture = () => {
+      const snapshot = window.__RUSTYERA_TEST__.snapshot();
+      const sample = {
+        revision: String(snapshot.presentationRevision),
+        waitId: snapshot.wait?.wait_id == null ? null : String(snapshot.wait.wait_id),
+        canInteract: snapshot.canInteract,
+        outputCount: snapshot.output.length,
+        outputTail: snapshot.output.slice(-6),
+      };
+      const previous = samples.at(-1);
+      if (!previous || JSON.stringify(previous) !== JSON.stringify(sample)) samples.push(sample);
+    };
+    const sampleFrame = () => {
+      if (stopped) return;
+      capture();
+      frame = window.requestAnimationFrame(sampleFrame);
+    };
+    capture();
+    frame = window.requestAnimationFrame(sampleFrame);
+    window.__RUSTYERA_ATOMIC_PRESENTATION_PROBE__ = {
+      stop() {
+        if (!stopped) {
+          stopped = true;
+          if (frame != null) window.cancelAnimationFrame(frame);
+          capture();
+        }
+        delete window.__RUSTYERA_ATOMIC_PRESENTATION_PROBE__;
+        return samples;
+      },
+    };
+  });
+}
+
+async function stopAtomicPresentationProbe(page) {
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve(undefined))),
+      ),
+  );
+  return page.evaluate(() => window.__RUSTYERA_ATOMIC_PRESENTATION_PROBE__?.stop?.() ?? []);
+}
+
 export async function runAction(page, action) {
   if (action.type === "edit_project_source") {
     await page.evaluate(
@@ -982,13 +1058,41 @@ export async function runAction(page, action) {
     const beforeWaitId = runtimeInput
       ? await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot().wait?.wait_id)
       : undefined;
-    await locator.click({ button: action.button ?? "left" });
-    if (beforeWaitId != null)
-      await page.waitForFunction((waitId) => {
-        const snapshot = window.__RUSTYERA_TEST__.snapshot();
-        return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
-      }, beforeWaitId);
+    let transitionSamples;
+    let completedRevision;
+    if (action.expect_atomic_presentation === true) {
+      if (!runtimeInput)
+        throw new Error("expect_atomic_presentation requires a runtime input button");
+      await startAtomicPresentationProbe(page);
+    }
+    try {
+      if (action.dom_click === true) await locator.evaluate((element) => element.click());
+      else await locator.click({ button: action.button ?? "left", force: action.force === true });
+      if (beforeWaitId != null)
+        await page.waitForFunction((waitId) => {
+          const snapshot = window.__RUSTYERA_TEST__.snapshot();
+          return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
+        }, beforeWaitId);
+      if (action.expect_atomic_presentation === true)
+        completedRevision = await page.evaluate(async () => {
+          await window.__RUSTYERA_TEST__.waitForStableObservation(30_000);
+          return String(window.__RUSTYERA_TEST__.snapshot().presentationRevision);
+        });
+    } finally {
+      if (action.expect_atomic_presentation === true)
+        transitionSamples = await stopAtomicPresentationProbe(page);
+    }
     if (action.settle_ms != null) await page.waitForTimeout(Number(action.settle_ms));
+    if (transitionSamples)
+      return {
+        query: {
+          presentation_transition: assertAtomicPresentationTransition(
+            transitionSamples,
+            completedRevision,
+          ),
+        },
+        semanticInput: action.semantic_input,
+      };
   } else if (action.type === "scroll_key") {
     await locator.focus();
     await page.keyboard.press(String(action.key ?? "PageUp"));
