@@ -3,6 +3,8 @@ import { nextTick, reactive, ref } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const scrollToIndex = vi.hoisted(() => vi.fn());
+const measure = vi.hoisted(() => vi.fn());
+const naturalMeasureElement = vi.hoisted(() => vi.fn());
 const virtualOptions = vi.hoisted(() => ({ value: undefined as any }));
 const virtualState = vi.hoisted(() => ({ items: [] as any[], totalSize: 0 }));
 const continueFromViewport = vi.hoisted(() => vi.fn());
@@ -30,12 +32,14 @@ const store = reactive({
 });
 
 vi.mock("@tanstack/vue-virtual", () => ({
+  measureElement: naturalMeasureElement,
   useVirtualizer: (options: any) => {
     virtualOptions.value = options;
     return ref({
       getVirtualItems: () => virtualState.items,
       getTotalSize: () => virtualState.totalSize,
       measureElement: vi.fn(),
+      measure,
       scrollToIndex,
     });
   },
@@ -130,12 +134,30 @@ describe("game viewport", () => {
       await flushPromises();
 
       expect(projectViewport).toHaveBeenCalledWith(expect.objectContaining({ lineColumns: 80 }));
+      expect(measure).toHaveBeenCalledOnce();
     } finally {
       wrapper?.unmount();
       HTMLElement.prototype.getBoundingClientRect = originalBounds;
       delete (HTMLElement.prototype as any).clientWidth;
       delete (HTMLElement.prototype as any).clientHeight;
       store.gameTextStyle.fontSize = "12px";
+    }
+  });
+
+  it("invalidates measured rows when only the configured line height changes", async () => {
+    const originalLineHeight = store.gameLineHeightPx;
+    const wrapper = shallowMount(GameViewport);
+    measure.mockClear();
+
+    try {
+      store.gameLineHeightPx = originalLineHeight + 1;
+      await nextTick();
+      await flushPromises();
+
+      expect(measure).toHaveBeenCalledOnce();
+    } finally {
+      wrapper.unmount();
+      store.gameLineHeightPx = originalLineHeight;
     }
   });
 
@@ -684,10 +706,66 @@ describe("game viewport", () => {
     wrapper.unmount();
   });
 
-  it("leaves virtual rows on their natural DOM measurement path", () => {
+  it("uses the configured height without a synchronous DOM read for fixed console rows", () => {
     const wrapper = shallowMount(GameViewport);
+    const element = document.createElement("div");
+    const instance = {
+      indexFromElement: () => 0,
+      itemSizeCache: new Map(),
+      options: { getItemKey: () => "line-1", estimateSize: () => 13 },
+    } as any;
 
-    expect(virtualOptions.value.value.measureElement).toBeUndefined();
+    expect(virtualOptions.value.value.measureElement(element, undefined, instance)).toBe(13);
+    expect(naturalMeasureElement).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("accepts ResizeObserver corrections for fixed console rows", () => {
+    naturalMeasureElement.mockReturnValue(14);
+    const wrapper = shallowMount(GameViewport);
+    const element = document.createElement("div");
+    const entry = {} as ResizeObserverEntry;
+    const instance = { indexFromElement: () => 0 } as any;
+
+    expect(virtualOptions.value.value.measureElement(element, entry, instance)).toBe(14);
+    expect(naturalMeasureElement).toHaveBeenCalledWith(element, entry, instance);
+    wrapper.unmount();
+  });
+
+  it("preserves an observed fixed-row size when its element ref runs again", () => {
+    naturalMeasureElement.mockReturnValue(14);
+    const wrapper = shallowMount(GameViewport);
+    const element = document.createElement("div");
+    const instance = {
+      indexFromElement: () => 0,
+      itemSizeCache: new Map([["line-1", 14]]),
+      options: { getItemKey: () => "line-1", estimateSize: () => 13 },
+    } as any;
+
+    expect(virtualOptions.value.value.measureElement(element, undefined, instance)).toBe(14);
+    expect(naturalMeasureElement).toHaveBeenCalledWith(element, undefined, instance);
+    wrapper.unmount();
+  });
+
+  it("leaves complex rows on their natural DOM measurement path", () => {
+    store.presentation.lines = [
+      {
+        line_id: 1,
+        alignment: "left",
+        runs: [{ type: "html_document", document: { nodes: [] } }],
+      },
+    ];
+    naturalMeasureElement.mockReturnValue(42);
+    const wrapper = shallowMount(GameViewport);
+    const element = document.createElement("div");
+    const instance = {
+      indexFromElement: () => 0,
+      itemSizeCache: new Map(),
+      options: { getItemKey: () => "line-1", estimateSize: () => 13 },
+    } as any;
+
+    expect(virtualOptions.value.value.measureElement(element, undefined, instance)).toBe(42);
+    expect(naturalMeasureElement).toHaveBeenCalledWith(element, undefined, instance);
     wrapper.unmount();
   });
 });

@@ -136,6 +136,7 @@ export class RuntimePresentationProjection {
           disablesRedraw ||
           startsTransientReplacement));
     const target = shouldStage ? this.stage() : this.presentation;
+    if (target === this.stagedPresentation) this.prepareStagedLines(operations);
     applyDelta(target, delta);
     if (target !== this.stagedPresentation) return true;
     if (disablesRedraw || target.redraw?.enabled === false) this.stagedCanFlushWhenIdle = false;
@@ -161,7 +162,7 @@ export class RuntimePresentationProjection {
 
   private stage(): PresentationState {
     if (!this.stagedPresentation) {
-      this.stagedPresentation = this.clone(this.presentation);
+      this.stagedPresentation = this.clone(this.presentation, false);
       this.stagedReady = false;
       this.stagedCanFlushWhenIdle = false;
       this.staged.value = true;
@@ -169,14 +170,31 @@ export class RuntimePresentationProjection {
     return this.stagedPresentation;
   }
 
-  private clone(source: PresentationState): PresentationState {
+  private prepareStagedLines(operations: any[]): void {
+    const staged = this.stagedPresentation;
+    if (!staged || staged.lines !== toRaw(this.presentation).lines) return;
+    for (const operation of operations) {
+      switch (operation.type) {
+        case "clear":
+          // CLEAR replaces the container before any later history operation, so it needs no copy.
+          return;
+        case "append_line":
+        case "delete_lines":
+        case "replace_line":
+        case "trim_lines":
+          staged.lines = [...staged.lines];
+          return;
+      }
+    }
+  }
+
+  private clone(source: PresentationState, copyLines = true): PresentationState {
     const raw = toRaw(source);
-    // Automatic redraw frames usually replace only a short tail. Share immutable line payloads
-    // with the published frame and copy the history container, rather than deep-cloning the
-    // complete accumulated log on every frame.
+    // Immutable line payloads stay shared. Staging may also share the container until the first
+    // history mutation; snapshots request an immediate shallow container copy.
     return {
       ...raw,
-      lines: [...raw.lines],
+      lines: copyLines ? [...raw.lines] : raw.lines,
       nextInteractionSequence: raw.nextInteractionSequence,
       retiredInteractionSequence: raw.retiredInteractionSequence,
     };

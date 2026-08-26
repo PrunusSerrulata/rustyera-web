@@ -91,6 +91,54 @@ describe("runtime presentation staging", () => {
     expect(projection.presentation.lines).toHaveLength(5_000);
   });
 
+  it("does not copy accumulated history until a staged delta mutates it", () => {
+    const projection = new RuntimePresentationProjection();
+    projection.presentation.revision = 1;
+    projection.presentation.lines = Array.from({ length: 5_000 }, (_, index) => line(index));
+    projection.presentation.inputWait = { wait_id: 1 };
+    const publishedLines = toRaw(projection.presentation.lines);
+
+    projection.closeInputWait();
+    projection.projectDelta({
+      base_revision: 1,
+      new_revision: 2,
+      operations: [{ type: "set_title", title: "staged" }],
+    });
+
+    expect(projection.current().lines).toBe(publishedLines);
+    expect(toRaw(projection.presentation.lines)).toBe(publishedLines);
+
+    projection.projectDelta({
+      base_revision: 2,
+      new_revision: 3,
+      operations: [{ type: "append_line", line: line(5_001) }],
+    });
+
+    expect(projection.current().lines).not.toBe(publishedLines);
+    expect(toRaw(projection.presentation.lines)).toBe(publishedLines);
+    expect(projection.presentation.lines).toHaveLength(5_000);
+  });
+
+  it("replaces shared staged history without copying when clear is the first mutation", () => {
+    const projection = new RuntimePresentationProjection();
+    projection.presentation.revision = 1;
+    projection.presentation.lines = Array.from({ length: 5_000 }, (_, index) => line(index));
+    projection.presentation.inputWait = { wait_id: 1 };
+    const publishedLines = toRaw(projection.presentation.lines);
+
+    projection.closeInputWait();
+    projection.projectDelta({
+      base_revision: 1,
+      new_revision: 2,
+      operations: [{ type: "clear" }, { type: "append_line", line: line(6_000) }],
+    });
+
+    expect(projection.current().lines).not.toBe(publishedLines);
+    expect(projection.current().lines).toHaveLength(1);
+    expect(toRaw(projection.presentation.lines)).toBe(publishedLines);
+    expect(projection.presentation.lines).toHaveLength(5_000);
+  });
+
   it("applies a complete redraw-disabled input frame without cloning accumulated history", () => {
     const projection = new RuntimePresentationProjection();
     projection.presentation.revision = 1;

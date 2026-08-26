@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import { useVirtualizer } from "@tanstack/vue-virtual";
+import {
+  measureElement as measureVirtualElement,
+  useVirtualizer,
+  type Virtualizer,
+} from "@tanstack/vue-virtual";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import DisplayLine from "@/components/DisplayLine.vue";
@@ -9,6 +13,7 @@ import MediaImage from "@/components/MediaImage.vue";
 import { useTouchSecondaryAction } from "@/components/useTouchSecondaryAction";
 import { isViewportContinuationClick } from "@/core/viewportInteraction";
 import { htmlBoxRowLayoutsForRange } from "@/core/htmlBoxLayout";
+import { usesConfiguredLineHeight } from "@/core/lineLayout";
 import type { DisplayLine as PresentationLine, DisplayRun, MediaPlacement } from "@/core/types";
 import { measureGameViewport } from "@/platform/viewportMeasurement";
 import { useRuntimeStore } from "@/stores/runtime";
@@ -100,6 +105,23 @@ function mediaLayoutIdentity(line: PresentationLine | undefined): string | undef
     : undefined;
 }
 
+function measureLineElement(
+  element: Element,
+  entry: ResizeObserverEntry | undefined,
+  instance: Virtualizer<HTMLElement, Element>,
+): number {
+  if (entry == null) {
+    const index = instance.indexFromElement(element);
+    const key = instance.options.getItemKey(index);
+    if (
+      !instance.itemSizeCache.has(key) &&
+      usesConfiguredLineHeight(store.presentation.lines[index])
+    )
+      return Math.max(1, instance.options.estimateSize(index));
+  }
+  return measureVirtualElement(element, entry, instance);
+}
+
 const virtualizer = useVirtualizer(
   computed(() => {
     // Equal-length replacements do not change count; revision keeps the virtualizer's key lookup
@@ -109,6 +131,7 @@ const virtualizer = useVirtualizer(
       count: store.presentation.lines.length,
       getScrollElement: () => viewport.value ?? null,
       estimateSize: () => Math.max(1, store.gameLineHeightPx),
+      measureElement: measureLineElement,
       overscan: 20,
       // Preserve measured rows and mounted media across same-epoch snapshots. When an animation
       // deletes and recreates an equal-length tail, reuse that row's render key so its canvas can
@@ -300,10 +323,11 @@ onBeforeUnmount(() => {
   if (viewportFrame != null) cancelAnimationFrame(viewportFrame);
 });
 watch(
-  () => [store.gameTextStyle?.fontFamily, store.gameTextStyle?.fontSize],
+  () => [store.gameTextStyle?.fontFamily, store.gameTextStyle?.fontSize, store.gameLineHeightPx],
   async () => {
     await nextTick();
     synchronizeViewport();
+    virtualizer.value.measure();
   },
 );
 </script>
