@@ -288,6 +288,17 @@ export function restoreButtonBoundary(state: PresentationState, boundary: number
   state.retiredInteractionSequence = boundary;
 }
 
+export function restoreSubmittedButtonBoundary(
+  state: PresentationState,
+  boundary: number,
+): boolean {
+  // A later interaction sequence is the runtime's replacement surface. Keep the submitted
+  // surface retired in that case; only a new wait over the unchanged surface can re-arm it.
+  if (state.retiredInteractionSequence !== state.nextInteractionSequence - 1) return false;
+  restoreButtonBoundary(state, boundary);
+  return true;
+}
+
 export function presentationInteractionEnabled(
   state: PresentationState,
   interaction: any,

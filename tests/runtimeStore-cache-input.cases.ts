@@ -472,6 +472,67 @@ describe("runtime store cache-input", () => {
     );
   });
 
+  it("re-arms unchanged buttons when the runtime opens the next value wait", async () => {
+    const wait = {
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    };
+    const token = { epoch: 2, id: 6 };
+    const store = await storeWithInputWait(wait, [
+      runtimeEvent("presentation_delta", {
+        base_revision: 1,
+        new_revision: 2,
+        operations: [
+          {
+            type: "append_line",
+            line: {
+              line_id: 1,
+              temporary: false,
+              logical_line_start: true,
+              line_end: true,
+              alignment: "left",
+              runs: [
+                {
+                  type: "button",
+                  runs: [{ type: "text", text: "unavailable action", style: {} }],
+                  token,
+                  enabled: true,
+                  generation: 0,
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    ]);
+    bridge.submitRuntime.mockClear();
+
+    await store.activate(token);
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("wait_changed", { type: "closed", value: null })],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+
+    const nextWait = {
+      kind: "integer_value",
+      wait_id: 18,
+      submission_token: { epoch: 2, id: 7 },
+    };
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("wait_changed", { type: "opened", value: nextWait })],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    await store.activate(token);
+
+    const inputs = bridge.submitRuntime.mock.calls.filter(
+      ([message]: unknown[]) => (message as { type?: string }).type === "input",
+    );
+    expect(inputs.map((call: unknown[]) => (call[0] as any).value.wait_id)).toEqual([17, 18]);
+  });
+
   it("submits and immediately retires an enabled HTML-island interaction", async () => {
     const wait = {
       kind: "integer_value",

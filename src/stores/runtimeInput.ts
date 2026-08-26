@@ -3,6 +3,7 @@ import { ref } from "vue";
 import { isMessageSkipWait, messageWaitIntent } from "@/core/messageSkip";
 import {
   restoreButtonBoundary,
+  restoreSubmittedButtonBoundary,
   retirePresentedButtons,
   type PresentationState,
 } from "@/core/presentation";
@@ -92,6 +93,12 @@ export class RuntimeInputState {
     if (!pending.retryPending) {
       if (!pending.waitClosed) return;
       if (!pending.messageSkip) {
+        const wait = this.context.presentation().inputWait;
+        if (!wait || inputWaitIdentity(wait) === pending.waitIdentity) return;
+        restoreSubmittedButtonBoundary(
+          this.context.mutableInteractions(),
+          pending.previousRetiredInteractionSequence,
+        );
         this.pending.value = undefined;
         return;
       }

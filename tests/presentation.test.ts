@@ -8,6 +8,7 @@ import {
   plainLine,
   printedHtmlLine,
   restoreButtonBoundary,
+  restoreSubmittedButtonBoundary,
   retirePresentedButtons,
 } from "@/core/presentation";
 import type { DisplayLine } from "@/core/types";
@@ -277,6 +278,54 @@ describe("presentation projection", () => {
 
     restoreButtonBoundary(state, retired);
     expect(hasEnabledButton(state, { epoch: 1, id: 1 })).toBe(true);
+  });
+
+  it("re-arms an unchanged submitted surface without reviving replaced or broken buttons", () => {
+    const state = emptyPresentation();
+    const line = (lineId: number, id: number, generation = 0) => ({
+      line_id: lineId,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs: [
+        {
+          type: "button",
+          runs: [{ type: "text", text: String(id), style: {} }],
+          token: { epoch: 1, id },
+          enabled: true,
+          generation,
+        },
+      ],
+    });
+    applySnapshot(state, {
+      revision: 1,
+      title: "menu",
+      history: { logical_lines: [line(1, 1)] },
+    });
+
+    const unchangedBoundary = retirePresentedButtons(state);
+    expect(restoreSubmittedButtonBoundary(state, unchangedBoundary)).toBe(true);
+    expect(hasEnabledButton(state, { epoch: 1, id: 1 })).toBe(true);
+
+    const replacedBoundary = retirePresentedButtons(state);
+    applyDelta(state, {
+      base_revision: 1,
+      new_revision: 2,
+      operations: [{ type: "append_line", line: line(2, 2) }],
+    });
+    expect(restoreSubmittedButtonBoundary(state, replacedBoundary)).toBe(false);
+    expect(hasEnabledButton(state, { epoch: 1, id: 1 })).toBe(false);
+    expect(hasEnabledButton(state, { epoch: 1, id: 2 })).toBe(true);
+
+    const currentBoundary = retirePresentedButtons(state);
+    applyDelta(state, {
+      base_revision: 2,
+      new_revision: 3,
+      operations: [{ type: "set_button_generation", generation: 1 }],
+    });
+    expect(restoreSubmittedButtonBoundary(state, currentBoundary)).toBe(true);
+    expect(hasEnabledButton(state, { epoch: 1, id: 2 })).toBe(false);
   });
 
   it("validates and retires the current tail without revisiting accumulated history", () => {
