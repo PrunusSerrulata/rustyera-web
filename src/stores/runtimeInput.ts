@@ -9,6 +9,7 @@ import {
 } from "@/core/presentation";
 import type { InteractionToken, RuntimeMessage } from "@/core/types";
 import type { PendingGameInput, PendingInputUndo, RuntimeInputIntent } from "@/stores/runtimeState";
+import { inputMayHaveBeenAccepted } from "@/stores/runtimePump";
 
 interface RuntimeInputContext {
   presentation(): PresentationState;
@@ -49,10 +50,11 @@ export class RuntimeInputState {
         this.pending.value.messageId = String(messageId);
     } catch (error) {
       if (this.pending.value?.waitIdentity === waitIdentity) {
-        restoreButtonBoundary(
-          this.context.mutableInteractions(),
-          previousRetiredInteractionSequence,
-        );
+        if (!inputMayHaveBeenAccepted(error))
+          restoreButtonBoundary(
+            this.context.mutableInteractions(),
+            previousRetiredInteractionSequence,
+          );
         this.pending.value = undefined;
       }
       throw error;

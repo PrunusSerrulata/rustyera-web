@@ -23,10 +23,13 @@
           "permissions": [
             "core:default",
             "core:window:allow-close",
+            "core:window:allow-hide",
             "core:window:allow-maximize",
+            "core:window:allow-set-focus",
             "core:window:allow-set-position",
             "core:window:allow-set-resizable",
             "core:window:allow-set-size",
+            "core:window:allow-show",
             "core:window:allow-unmaximize",
             "dialog:allow-open",
             "dialog:allow-save",

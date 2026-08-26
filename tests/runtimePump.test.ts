@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { PumpBatch } from "@/core/types";
-import { RuntimePumpCoordinator } from "@/stores/runtimePump";
+import type { PumpBatch, SubmittedPumpBatch } from "@/core/types";
+import { RuntimePumpCoordinator, RuntimePumpSubmissionError } from "@/stores/runtimePump";
 
 function batch(state: PumpBatch["state"] = "idle"): PumpBatch {
   return { state, vmInstructions: 0, runtimeTransitions: 0, events: [] };
+}
+
+function submittedBatch(state: PumpBatch["state"] = "idle"): SubmittedPumpBatch {
+  return { ...batch(state), submittedMessageId: 7n };
 }
 
 describe("runtime pump coordinator", () => {
@@ -120,6 +124,101 @@ describe("runtime pump coordinator", () => {
     expect(handleError).toHaveBeenCalledWith(failure);
     expect(coordinator.pumping).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("owns fast submission, projects its batch, and replaces a scheduled pump", async () => {
+    const order: string[] = [];
+    const pump = vi.fn(async () => batch());
+    const handleBatch = vi.fn(async () => {
+      order.push("batch");
+    });
+    const coordinator = createCoordinator({ pump, handleBatch });
+    coordinator.setReady(true);
+    coordinator.schedule(16);
+
+    const result = await coordinator.submitAndHandle(async () => {
+      order.push("submit");
+      return submittedBatch("output_ready");
+    });
+
+    expect(result).toEqual(submittedBatch("output_ready"));
+    expect(order).toEqual(["submit", "batch"]);
+    expect(pump).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(1);
+    coordinator.clearTimer();
+  });
+
+  it("falls back instead of deadlocking on a reentrant fast submission", async () => {
+    const nestedOperation = vi.fn(async () => submittedBatch());
+    let nestedResult: SubmittedPumpBatch | undefined;
+    const holder: { coordinator?: RuntimePumpCoordinator } = {};
+    const coordinator = createCoordinator({
+      handleBatch: async () => {
+        nestedResult = await holder.coordinator!.submitAndHandle(nestedOperation);
+      },
+    });
+    holder.coordinator = coordinator;
+    coordinator.setReady(true);
+
+    await coordinator.submitAndHandle(async () => submittedBatch());
+
+    expect(nestedResult).toBeUndefined();
+    expect(nestedOperation).not.toHaveBeenCalled();
+    coordinator.clearTimer();
+  });
+
+  it("waits for an in-flight pump before starting fast submission", async () => {
+    let releasePump!: (value: PumpBatch) => void;
+    const inFlight = new Promise<PumpBatch>((resolve) => {
+      releasePump = resolve;
+    });
+    const order: string[] = [];
+    const coordinator = createCoordinator({
+      pump: vi.fn(async () => {
+        order.push("pump");
+        return inFlight;
+      }),
+      handleBatch: vi.fn(async () => {
+        order.push("batch");
+      }),
+    });
+    coordinator.setReady(true);
+    coordinator.schedule(0);
+    vi.advanceTimersByTime(0);
+    await Promise.resolve();
+
+    const submission = coordinator.submitAndHandle(async () => {
+      order.push("submit");
+      return submittedBatch();
+    });
+    await Promise.resolve();
+    expect(order).toEqual(["pump"]);
+
+    releasePump(batch());
+    await vi.advanceTimersByTimeAsync(16);
+    await submission;
+
+    expect(order).toEqual(["pump", "batch", "submit", "batch"]);
+    coordinator.clearTimer();
+  });
+
+  it("routes fast submission failures through fail-closed pump handling", async () => {
+    const failure = new Error("submission failed after acceptance became uncertain");
+    const handleError = vi.fn();
+    const coordinator = createCoordinator({ handleError });
+    coordinator.setReady(true);
+
+    await expect(
+      coordinator.submitAndHandle(async () => {
+        throw failure;
+      }),
+    ).rejects.toMatchObject({
+      name: "RuntimePumpSubmissionError",
+      inputMayHaveBeenAccepted: true,
+    } satisfies Partial<RuntimePumpSubmissionError>);
+
+    expect(handleError).toHaveBeenCalledWith(failure);
+    expect(coordinator.pumping).toBe(false);
   });
 });
 

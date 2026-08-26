@@ -30,6 +30,7 @@ import type {
   RuntimeHostMemoryCounters,
   RuntimeMessage,
   SessionOptions,
+  SubmittedPumpBatch,
   SystemFontQueryResult,
 } from "@/core/types";
 import { defaultProjectPreferences } from "@/core/types";
@@ -113,6 +114,24 @@ export class TauriBridge implements FrontendBridge {
         correlationId: encodeIpcValue(correlationId),
       }),
     );
+  }
+
+  async submitRuntimeAndPump(
+    message: RuntimeMessage,
+    correlationId?: number | bigint,
+  ): Promise<SubmittedPumpBatch> {
+    if (import.meta.env.VITE_RUSTYERA_TEST === "1")
+      performance.mark("rustyera:settlement-invoke-start");
+    const response = await invoke("submit_runtime_and_pump", {
+      message: encodeIpcValue(message),
+      correlationId: encodeIpcValue(correlationId),
+    });
+    if (import.meta.env.VITE_RUSTYERA_TEST === "1")
+      performance.mark("rustyera:settlement-invoke-resolved");
+    const decoded = decodeIpcResponse<SubmittedPumpBatch>(response);
+    if (import.meta.env.VITE_RUSTYERA_TEST === "1")
+      performance.mark("rustyera:settlement-decode-finished");
+    return decoded;
   }
 
   async submitDebug(

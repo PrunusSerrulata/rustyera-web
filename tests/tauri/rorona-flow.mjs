@@ -144,8 +144,11 @@ export async function skipOpeningToWorkshop() {
   );
 }
 
-export async function clickViewportBottom(button, { requireNonInteractive = false } = {}) {
-  const click = await browser.execute(() => {
+export async function clickViewportBottom(
+  button,
+  { requireNonInteractive = false, captureEvents = true } = {},
+) {
+  const click = await browser.execute((shouldCaptureEvents) => {
     const element = document.querySelector(".game-viewport");
     if (!(element instanceof HTMLElement)) return null;
     element.scrollTop = element.scrollHeight;
@@ -153,29 +156,31 @@ export async function clickViewportBottom(button, { requireNonInteractive = fals
     const clientX = Math.floor(bounds.left + bounds.width / 2);
     const clientY = Math.floor(bounds.bottom - 4);
     const target = document.elementFromPoint(clientX, clientY);
-    const capture = { element, events: [], listeners: [] };
-    for (const eventType of ["mousedown", "mouseup", "click", "contextmenu"]) {
-      const listener = (event) => {
-        const eventTarget = event.target;
-        capture.events.push({
-          type: event.type,
-          button: event.button,
-          clientX: event.clientX,
-          clientY: event.clientY,
-          target:
-            eventTarget instanceof Element
-              ? {
-                  tag: eventTarget.tagName.toLowerCase(),
-                  className: eventTarget.className,
-                  text: eventTarget.textContent?.slice(-160) ?? "",
-                }
-              : null,
-        });
-      };
-      capture.listeners.push({ eventType, listener });
-      element.addEventListener(eventType, listener, { capture: true });
+    if (shouldCaptureEvents) {
+      const capture = { element, events: [], listeners: [] };
+      for (const eventType of ["mousedown", "mouseup", "click", "contextmenu"]) {
+        const listener = (event) => {
+          const eventTarget = event.target;
+          capture.events.push({
+            type: event.type,
+            button: event.button,
+            clientX: event.clientX,
+            clientY: event.clientY,
+            target:
+              eventTarget instanceof Element
+                ? {
+                    tag: eventTarget.tagName.toLowerCase(),
+                    className: eventTarget.className,
+                    text: eventTarget.textContent?.slice(-160) ?? "",
+                  }
+                : null,
+          });
+        };
+        capture.listeners.push({ eventType, listener });
+        element.addEventListener(eventType, listener, { capture: true });
+      }
+      window.__RUSTYERA_TAURI_VIEWPORT_CLICK__ = capture;
     }
-    window.__RUSTYERA_TAURI_VIEWPORT_CLICK__ = capture;
     return {
       x: clientX - Math.floor(bounds.left + bounds.width / 2),
       y: clientY - Math.floor(bounds.top + bounds.height / 2),
@@ -202,35 +207,34 @@ export async function clickViewportBottom(button, { requireNonInteractive = fals
           }
         : null,
     };
-  });
-  assert.ok(click, "game viewport must exist before clicking its bottom edge");
-  assert.ok(click.target, "viewport bottom-center click point must hit a document element");
-  if (requireNonInteractive) {
-    assert.equal(
-      click.targetInteractive,
-      false,
-      "viewport bottom-center click point must not hit an interactive control",
-    );
-  }
-  let events = [];
+  }, captureEvents);
+  let events;
   try {
-    await browser
-      .action("pointer", { parameters: { pointerType: "mouse" } })
-      .move({ origin: "viewport", x: click.clientX, y: click.clientY })
-      .down({ button: button === "right" ? 2 : 0 })
-      .pause(50)
-      .up({ button: button === "right" ? 2 : 0 })
-      .perform();
+    assert.ok(click, "game viewport must exist before clicking its bottom edge");
+    assert.ok(click.target, "viewport bottom-center click point must hit a document element");
+    if (requireNonInteractive) {
+      assert.equal(
+        click.targetInteractive,
+        false,
+        "viewport bottom-center click point must not hit an interactive control",
+      );
+    }
+    await performViewportPointerAction(button, click);
   } finally {
-    events = await browser.execute(() => {
-      const capture = window.__RUSTYERA_TAURI_VIEWPORT_CLICK__;
-      if (!capture) return [];
-      for (const { eventType, listener } of capture.listeners) {
-        capture.element.removeEventListener(eventType, listener, true);
-      }
-      delete window.__RUSTYERA_TAURI_VIEWPORT_CLICK__;
-      return capture.events;
-    });
+    if (captureEvents) {
+      events = await browser.execute(() => {
+        const capture = window.__RUSTYERA_TAURI_VIEWPORT_CLICK__;
+        if (!capture) return [];
+        for (const { eventType, listener } of capture.listeners) {
+          capture.element.removeEventListener(eventType, listener, true);
+        }
+        delete window.__RUSTYERA_TAURI_VIEWPORT_CLICK__;
+        return capture.events;
+      });
+    }
+  }
+  if (!captureEvents) {
+    return { button, planned: click };
   }
   const expectedEventTypes =
     button === "right" ? ["mousedown", "mouseup"] : ["mousedown", "mouseup", "click"];
@@ -253,6 +257,53 @@ export async function clickViewportBottom(button, { requireNonInteractive = fals
     return event;
   });
   return { button, planned: click, events, requiredEvents };
+}
+
+async function performViewportPointerAction(button, click) {
+  const buttonNumber = button === "right" ? 2 : 0;
+  const pointer = (actions) => [
+    {
+      type: "pointer",
+      id: "rustyera-viewport-pointer",
+      parameters: { pointerType: "mouse" },
+      actions,
+    },
+  ];
+  let primaryError;
+  let releaseError;
+  let pointerMayBePressed = false;
+  try {
+    pointerMayBePressed = true;
+    await browser.performActions(
+      pointer([
+        {
+          type: "pointerMove",
+          duration: 0,
+          origin: "viewport",
+          x: click.clientX,
+          y: click.clientY,
+        },
+        { type: "pointerDown", button: buttonNumber },
+      ]),
+    );
+    // Keep the physical button down while the WebView remains free to run microtasks and paint.
+    // A single W3C action sequence blocks WebKit presentation for the sequence's entire pause.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await browser.performActions(pointer([{ type: "pointerUp", button: buttonNumber }]));
+    pointerMayBePressed = false;
+  } catch (error) {
+    primaryError = error;
+  } finally {
+    if (pointerMayBePressed) {
+      try {
+        await browser.releaseActions();
+      } catch (error) {
+        releaseError = error;
+      }
+    }
+  }
+  if (primaryError) throw primaryError;
+  if (releaseError) throw releaseError;
 }
 
 export function nextOpeningAction(state, stepIndex) {

@@ -2,6 +2,7 @@ import { vi } from "vitest";
 
 import {
   defaultPreferences,
+  type FrontendBridge,
   type ProjectProgress,
   type ProjectPreferences,
   type RuntimeMessage,
@@ -30,6 +31,7 @@ export const bridge = {
     void _correlationId;
     return 1;
   }),
+  submitRuntimeAndPump: undefined as FrontendBridge["submitRuntimeAndPump"],
   submitDebug: vi.fn(async () => 1),
   pump: vi.fn(),
   projectProgressListener: undefined as ((progress: ProjectProgress) => void) | undefined,

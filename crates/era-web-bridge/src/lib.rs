@@ -106,6 +106,18 @@ pub struct PumpBatch {
     pub events: Vec<WebEvent>,
 }
 
+impl PumpBatch {
+    fn append(&mut self, mut next: Self) {
+        self.state = next.state;
+        self.vm_instructions = self.vm_instructions.saturating_add(next.vm_instructions);
+        self.runtime_transitions = self
+            .runtime_transitions
+            .saturating_add(next.runtime_transitions);
+        self.cooperative_background_work |= next.cooperative_background_work;
+        self.events.append(&mut next.events);
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebTraditionalSaveInspection {
@@ -478,6 +490,23 @@ impl WebSession {
         coalesce_quiet_pumps(|| self.pump(budget), maximum_slices)
     }
 
+    /// Retain bounded observable output while driving until the runtime blocks or terminates.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same runtime and projection errors as [`Self::pump`].
+    pub fn pump_until_blocked(
+        &mut self,
+        budget: RuntimeDriveBudget,
+        maximum_quiet_slices: usize,
+        maximum_batches: usize,
+    ) -> Result<PumpBatch, String> {
+        coalesce_observable_pumps(
+            || self.pump_quiet(budget, maximum_quiet_slices),
+            maximum_batches,
+        )
+    }
+
     /// Drive the runtime while satisfying selected external requests inside a native host boundary.
     ///
     /// Large saves and runs of small graphics reads remain native bytes instead of crossing a
@@ -523,6 +552,40 @@ impl WebSession {
         }
     }
 
+    /// Drive bounded observable work while satisfying native requests under one host ownership.
+    ///
+    /// Observable event batches are retained in order, while cooperative background work, a
+    /// terminal/blocked state, or either global cap returns control to the frontend. The quiet
+    /// slice cap bounds compute work inside each batch, so the product of both caps is the global
+    /// compute-slice ceiling for this call.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same runtime, projection, and native-completion errors as
+    /// [`Self::pump_with_native_host`].
+    pub fn pump_with_native_host_until_blocked(
+        &mut self,
+        budget: RuntimeDriveBudget,
+        maximum_quiet_slices: usize,
+        maximum_batches: usize,
+        maximum_external_requests: usize,
+        mut handle_storage: impl FnMut(StorageRequest) -> StorageResponse,
+        mut handle_service: impl FnMut(ServiceRequest) -> Option<ServiceResponse>,
+    ) -> Result<PumpBatch, String> {
+        let mut driver = WebSessionNativePumpDriver {
+            session: self,
+            budget,
+            maximum_quiet_slices,
+        };
+        drive_native_until_blocked(
+            &mut driver,
+            maximum_batches,
+            maximum_external_requests,
+            &mut handle_storage,
+            &mut handle_service,
+        )
+    }
+
     #[must_use]
     pub const fn is_negotiated(&self) -> bool {
         self.session.is_some() && self.epoch.is_some()
@@ -533,6 +596,86 @@ impl WebSession {
         self.next_message_id = self.next_message_id.saturating_add(1);
         value
     }
+}
+
+trait NativePumpDriver {
+    fn pump_batch(&mut self) -> Result<PumpBatch, String>;
+    fn submit_completion(&mut self, completion: NativeCompletion) -> Result<(), String>;
+}
+
+struct WebSessionNativePumpDriver<'a> {
+    session: &'a mut WebSession,
+    budget: RuntimeDriveBudget,
+    maximum_quiet_slices: usize,
+}
+
+impl NativePumpDriver for WebSessionNativePumpDriver<'_> {
+    fn pump_batch(&mut self) -> Result<PumpBatch, String> {
+        self.session
+            .pump_quiet(self.budget, self.maximum_quiet_slices)
+    }
+
+    fn submit_completion(&mut self, completion: NativeCompletion) -> Result<(), String> {
+        self.session
+            .submit_runtime(&completion.message, completion.correlation_id)
+            .map(|_| ())
+    }
+}
+
+fn drive_native_until_blocked(
+    driver: &mut impl NativePumpDriver,
+    maximum_batches: usize,
+    maximum_external_requests: usize,
+    mut handle_storage: impl FnMut(StorageRequest) -> StorageResponse,
+    mut handle_service: impl FnMut(ServiceRequest) -> Option<ServiceResponse>,
+) -> Result<PumpBatch, String> {
+    let maximum_batches = maximum_batches.max(1);
+    let mut combined: Option<PumpBatch> = None;
+    let mut handled = 0usize;
+    for batch_index in 0..maximum_batches {
+        let mut batch = driver.pump_batch()?;
+        let cooperative_background_work = batch.cooperative_background_work;
+        let (visible, completions) = extract_native_events(
+            std::mem::take(&mut batch.events),
+            maximum_external_requests.saturating_sub(handled),
+            &mut handle_storage,
+            &mut handle_service,
+        )?;
+        batch.events = visible;
+        let active = matches!(
+            batch.state,
+            WebDriveState::MoreWork | WebDriveState::OutputReady
+        );
+        let submitted_completions = !completions.is_empty();
+        merge_pump_batch(&mut combined, batch);
+        for completion in completions {
+            driver.submit_completion(completion)?;
+            handled = handled.saturating_add(1);
+        }
+        let external_cap_reached = submitted_completions && handled == maximum_external_requests;
+        let batch_cap_reached = batch_index + 1 == maximum_batches;
+        let terminal = matches!(
+            combined.as_ref().map(|result| result.state),
+            Some(WebDriveState::Stopped | WebDriveState::Faulted)
+        );
+        if !terminal
+            && (external_cap_reached
+                || (submitted_completions && (batch_cap_reached || cooperative_background_work)))
+        {
+            combined
+                .as_mut()
+                .ok_or_else(|| "native host pump produced no batch".to_owned())?
+                .state = WebDriveState::MoreWork;
+        }
+        if cooperative_background_work
+            || external_cap_reached
+            || batch_cap_reached
+            || (!submitted_completions && !active)
+        {
+            break;
+        }
+    }
+    combined.ok_or_else(|| "native host pump produced no batch".to_owned())
 }
 
 fn split_browser_project_manifest(
@@ -623,13 +766,7 @@ struct NativeCompletion {
 
 fn merge_pump_batch(combined: &mut Option<PumpBatch>, batch: PumpBatch) {
     if let Some(result) = combined {
-        result.state = batch.state;
-        result.vm_instructions = result.vm_instructions.saturating_add(batch.vm_instructions);
-        result.runtime_transitions = result
-            .runtime_transitions
-            .saturating_add(batch.runtime_transitions);
-        result.cooperative_background_work |= batch.cooperative_background_work;
-        result.events.extend(batch.events);
+        result.append(batch);
     } else {
         *combined = Some(batch);
     }
@@ -703,16 +840,27 @@ fn coalesce_quiet_pumps(
         {
             break;
         }
-        let mut next = pump()?;
-        combined.state = next.state;
-        combined.vm_instructions = combined
-            .vm_instructions
-            .saturating_add(next.vm_instructions);
-        combined.runtime_transitions = combined
-            .runtime_transitions
-            .saturating_add(next.runtime_transitions);
-        combined.cooperative_background_work |= next.cooperative_background_work;
-        combined.events.append(&mut next.events);
+        combined.append(pump()?);
+    }
+    Ok(combined)
+}
+
+fn coalesce_observable_pumps(
+    mut pump: impl FnMut() -> Result<PumpBatch, String>,
+    maximum_batches: usize,
+) -> Result<PumpBatch, String> {
+    let maximum_batches = maximum_batches.max(1);
+    let mut combined = pump()?;
+    for _ in 1..maximum_batches {
+        if combined.cooperative_background_work
+            || !matches!(
+                combined.state,
+                WebDriveState::MoreWork | WebDriveState::OutputReady
+            )
+        {
+            break;
+        }
+        combined.append(pump()?);
     }
     Ok(combined)
 }

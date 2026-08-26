@@ -1,6 +1,6 @@
 import { ref } from "vue";
 
-import type { FrontendBridge, PumpBatch } from "@/core/types";
+import type { FrontendBridge, PumpBatch, SubmittedPumpBatch } from "@/core/types";
 
 const MAXIMUM_CONTIGUOUS_COMPUTE_PUMPS = 8;
 
@@ -15,6 +15,7 @@ export class RuntimePumpCoordinator {
   readonly #pumping = ref(false);
   readonly #transitioning = ref(false);
   #timer: number | undefined;
+  #handlingBatch = false;
 
   constructor(
     private readonly bridge: Pick<FrontendBridge, "pump">,
@@ -65,6 +66,41 @@ export class RuntimePumpCoordinator {
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   }
 
+  async submitAndHandle(
+    operation: () => Promise<SubmittedPumpBatch>,
+  ): Promise<SubmittedPumpBatch | undefined> {
+    // Batch handling may synchronously discover another message-skip wait. Falling back to the
+    // ordered submit path avoids waiting on the coordinator operation that is awaiting this batch.
+    if (this.#handlingBatch) return undefined;
+    this.clearTimer();
+    for (;;) {
+      await this.waitUntilIdle();
+      this.clearTimer();
+      if (!this.ready || this.transitioning || this.#handlingBatch) return undefined;
+      if (this.pumping) continue;
+      this.#pumping.value = true;
+      break;
+    }
+    try {
+      const batch = await operation();
+      this.#handlingBatch = true;
+      try {
+        await this.callbacks.handleBatch(batch);
+      } finally {
+        this.#handlingBatch = false;
+      }
+      if (import.meta.env.VITE_RUSTYERA_TEST === "1")
+        performance.mark("rustyera:settlement-batch-handled");
+      this.schedule(batch.state === "more_work" || batch.state === "output_ready" ? 0 : 16);
+      return batch;
+    } catch (error) {
+      this.callbacks.handleError(error);
+      throw new RuntimePumpSubmissionError(error);
+    } finally {
+      this.#pumping.value = false;
+    }
+  }
+
   async #pumpOnce(): Promise<void> {
     if (this.pumping || this.transitioning) return;
     this.#pumping.value = true;
@@ -77,7 +113,12 @@ export class RuntimePumpCoordinator {
         // present for the runtime's timer/input arbitration in the next pump.
         await this.callbacks.advanceTimedWait();
         batch = await this.bridge.pump();
-        await this.callbacks.handleBatch(batch);
+        this.#handlingBatch = true;
+        try {
+          await this.callbacks.handleBatch(batch);
+        } finally {
+          this.#handlingBatch = false;
+        }
         pumps += 1;
         // Compute-only slices have no frame for the browser to present. Continue them without a
         // zero-delay timer (and its nested-timer clamp), but retain a hard fairness boundary.
@@ -94,4 +135,17 @@ export class RuntimePumpCoordinator {
       this.#pumping.value = false;
     }
   }
+}
+
+export class RuntimePumpSubmissionError extends Error {
+  readonly inputMayHaveBeenAccepted = true;
+
+  constructor(cause: unknown) {
+    super(String(cause), { cause });
+    this.name = "RuntimePumpSubmissionError";
+  }
+}
+
+export function inputMayHaveBeenAccepted(error: unknown): boolean {
+  return error instanceof RuntimePumpSubmissionError;
 }

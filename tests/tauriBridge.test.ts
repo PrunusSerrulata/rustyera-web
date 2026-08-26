@@ -603,4 +603,70 @@ describe("Tauri lossless integer transport", () => {
       correlationId: undefined,
     });
   });
+
+  it("submits and decodes a native pumped input in one IPC call", async () => {
+    const fixture = {
+      submittedMessageId: { $rustyeraInteger: "9007199254740993" },
+      state: "idle",
+      vmInstructions: { $rustyeraInteger: "9007199254740994" },
+      runtimeTransitions: 3,
+      events: [
+        {
+          channel: "runtime",
+          sequence: { $rustyeraInteger: "9007199254740995" },
+          messageId: { $rustyeraInteger: "9007199254740996" },
+          correlationId: { $rustyeraInteger: "9007199254740997" },
+          epoch: null,
+          message: {
+            type: "test_first",
+            value: { nestedId: { $rustyeraInteger: "9007199254740998" } },
+          },
+        },
+        {
+          channel: "runtime",
+          sequence: 2,
+          messageId: 3,
+          correlationId: null,
+          epoch: null,
+          message: { type: "test_second" },
+        },
+      ],
+    };
+    invoke.mockResolvedValue(new TextEncoder().encode(JSON.stringify(fixture)).buffer);
+    const bridge = new TauriBridge();
+
+    const batch = await bridge.submitRuntimeAndPump(
+      { type: "input", value: { message_skip: true } },
+      9_007_199_254_740_993n,
+    );
+
+    expect(batch).toEqual({
+      submittedMessageId: 9_007_199_254_740_993n,
+      state: "idle",
+      vmInstructions: 9_007_199_254_740_994n,
+      runtimeTransitions: 3,
+      events: [
+        {
+          channel: "runtime",
+          sequence: 9_007_199_254_740_995n,
+          messageId: 9_007_199_254_740_996n,
+          correlationId: 9_007_199_254_740_997n,
+          epoch: null,
+          message: { type: "test_first", value: { nestedId: 9_007_199_254_740_998n } },
+        },
+        {
+          channel: "runtime",
+          sequence: 2,
+          messageId: 3,
+          correlationId: null,
+          epoch: null,
+          message: { type: "test_second" },
+        },
+      ],
+    });
+    expect(invoke).toHaveBeenCalledWith("submit_runtime_and_pump", {
+      message: { type: "input", value: { message_skip: true } },
+      correlationId: { $rustyeraInteger: "9007199254740993" },
+    });
+  });
 });

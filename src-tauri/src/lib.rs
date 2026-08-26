@@ -40,7 +40,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::export::AtomicFileWriter;
 use crate::ipc::{
     decode_bytes as decode_ipc_bytes, decode_value as decode_ipc_value,
-    encode_pump_response as encode_ipc_response, encode_value as encode_ipc_value,
+    encode_pump_response as encode_ipc_response,
+    encode_submitted_pump_response as encode_submitted_ipc_response,
+    encode_value as encode_ipc_value,
 };
 use crate::project::{ProjectFontSource, ProjectHost, ProjectReloadScope, ProjectReloadTargets};
 use crate::services::native_service;
@@ -143,6 +145,41 @@ async fn submit_runtime(
             session.submit_runtime(&message, correlation_id)
         })?;
         encode_ipc_value(&message_id)
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+const FRONTEND_DRIVE_BUDGET: RuntimeDriveBudget = RuntimeDriveBudget {
+    maximum_vm_instructions: 100_000,
+    maximum_runtime_transitions: 1024,
+};
+const MESSAGE_SKIP_MAXIMUM_OBSERVABLE_BATCHES: usize = 128;
+const NATIVE_PUMP_MAXIMUM_EXTERNAL_REQUESTS: usize = 1024;
+
+#[tauri::command]
+async fn submit_runtime_and_pump(
+    state: State<'_, AppState>,
+    message: Value,
+    correlation_id: Option<Value>,
+) -> Result<tauri::ipc::Response, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let message = decode_ipc_value::<RuntimeMessage>(message)?;
+        if !matches!(&message, RuntimeMessage::Input(input) if input.message_skip) {
+            return Err("submit_runtime_and_pump requires a message-skip input".to_owned());
+        }
+        let correlation_id = correlation_id.map(decode_ipc_value).transpose()?;
+        let mut session_guard = state.session.lock().map_err(lock_error)?;
+        let session = session_guard
+            .as_mut()
+            .ok_or_else(|| "runtime session has not been created".to_owned())?;
+        let message_id = session.submit_runtime(&message, correlation_id)?;
+        let mut storage_guard = state.storage.lock().map_err(lock_error)?;
+        let project_guard = state.project.lock().map_err(lock_error)?;
+        let batch =
+            pump_message_skip_session(session, storage_guard.as_mut(), project_guard.as_ref())?;
+        encode_submitted_ipc_response(message_id, &batch)
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
@@ -258,25 +295,52 @@ async fn pump(state: State<'_, AppState>) -> Result<tauri::ipc::Response, String
             .ok_or_else(|| "runtime session has not been created".to_owned())?;
         let mut storage_guard = state.storage.lock().map_err(lock_error)?;
         let project_guard = state.project.lock().map_err(lock_error)?;
-        let budget = RuntimeDriveBudget {
-            maximum_vm_instructions: 100_000,
-            maximum_runtime_transitions: 1024,
-        };
-        let batch = if let Some(storage) = storage_guard.as_mut() {
-            session.pump_with_native_host(
-                budget,
-                FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
-                1024,
-                |request| storage.handle(request),
-                |request| native_service(request, project_guard.as_ref()),
-            )?
-        } else {
-            session.pump_quiet(budget, FRONTEND_PUMP_MAXIMUM_QUIET_SLICES)?
-        };
+        let batch = pump_frontend_session(session, storage_guard.as_mut(), project_guard.as_ref())?;
         encode_ipc_response(&batch)
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+fn pump_frontend_session(
+    session: &mut WebSession,
+    storage: Option<&mut StorageHost>,
+    project: Option<&ProjectHost>,
+) -> Result<era_web_bridge::PumpBatch, String> {
+    if let Some(storage) = storage {
+        session.pump_with_native_host(
+            FRONTEND_DRIVE_BUDGET,
+            FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
+            NATIVE_PUMP_MAXIMUM_EXTERNAL_REQUESTS,
+            |request| storage.handle(request),
+            |request| native_service(request, project),
+        )
+    } else {
+        session.pump_quiet(FRONTEND_DRIVE_BUDGET, FRONTEND_PUMP_MAXIMUM_QUIET_SLICES)
+    }
+}
+
+fn pump_message_skip_session(
+    session: &mut WebSession,
+    storage: Option<&mut StorageHost>,
+    project: Option<&ProjectHost>,
+) -> Result<era_web_bridge::PumpBatch, String> {
+    if let Some(storage) = storage {
+        session.pump_with_native_host_until_blocked(
+            FRONTEND_DRIVE_BUDGET,
+            FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
+            MESSAGE_SKIP_MAXIMUM_OBSERVABLE_BATCHES,
+            NATIVE_PUMP_MAXIMUM_EXTERNAL_REQUESTS,
+            |request| storage.handle(request),
+            |request| native_service(request, project),
+        )
+    } else {
+        session.pump_until_blocked(
+            FRONTEND_DRIVE_BUDGET,
+            FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
+            MESSAGE_SKIP_MAXIMUM_OBSERVABLE_BATCHES,
+        )
+    }
 }
 
 #[tauri::command]
@@ -488,20 +552,26 @@ async fn reload_project(
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let scan_progress = |completed, total| emit_scanning_progress(&app, completed, total);
-        let mut project = state.project.lock().map_err(lock_error)?;
-        let host = project
-            .as_mut()
-            .ok_or_else(|| "no project is open".to_owned())?;
-        let request = host.reload_scoped_with_progress(&scope, Some(&scan_progress))?;
-        match with_session(&state, |session| {
+        let request = {
+            let mut project = state.project.lock().map_err(lock_error)?;
+            project
+                .as_mut()
+                .ok_or_else(|| "no project is open".to_owned())?
+                .reload_scoped_with_progress(&scope, Some(&scan_progress))?
+        };
+        let submitted = with_session(&state, |session| {
             session.submit_runtime(&RuntimeMessage::ReloadProject(request), None)
-        }) {
-            Ok(message_id) => Ok(message_id),
-            Err(error) => {
+        });
+        if submitted.is_err() {
+            // Do not hold the project mutex while acquiring the session mutex. The pump path owns
+            // those locks in session -> storage -> project order.
+            if let Ok(mut project) = state.project.lock()
+                && let Some(host) = project.as_mut()
+            {
                 host.finalize_reload(false);
-                Err(error)
             }
         }
+        submitted
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
@@ -713,6 +783,7 @@ pub fn run() {
             create_session,
             destroy_session,
             submit_runtime,
+            submit_runtime_and_pump,
             stage_full_project_manifest,
             read_full_project_manifest_chunk,
             release_full_project_manifest,

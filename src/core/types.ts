@@ -21,6 +21,10 @@ export interface PumpBatch {
   events: WebEvent[];
 }
 
+export interface SubmittedPumpBatch extends PumpBatch {
+  submittedMessageId: number | bigint;
+}
+
 export type InteractionAssistMode = "off" | "on" | "auto";
 
 export interface Preferences {
@@ -231,6 +235,11 @@ export interface FrontendBridge {
   readonly traditionalSaves?: TraditionalSaveAccess;
   createSession(options: SessionOptions): Promise<PumpBatch>;
   submitRuntime(message: RuntimeMessage, correlationId?: number | bigint): Promise<number | bigint>;
+  /** Native fast path that submits an input and drives bounded work in the same host call. */
+  submitRuntimeAndPump?(
+    message: RuntimeMessage,
+    correlationId?: number | bigint,
+  ): Promise<SubmittedPumpBatch>;
   submitDebug(message: DebugMessage, correlationId?: number | bigint): Promise<number | bigint>;
   pump(): Promise<PumpBatch>;
   setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void;

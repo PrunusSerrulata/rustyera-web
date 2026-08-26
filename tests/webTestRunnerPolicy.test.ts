@@ -428,6 +428,85 @@ describe("browser game runner progress policy", () => {
     );
   });
 
+  it("measures native Tauri settlement from right-button press to the visible ability screen", () => {
+    const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
+    const spec = readFileSync(
+      resolve("tests/tauri/rorona-settlement-performance.spec.mjs"),
+      "utf8",
+    );
+    const flow = readFileSync(resolve("tests/tauri/rorona-flow.mjs"), "utf8");
+
+    expect(runner).toContain('"rorona-settlement-performance.spec.mjs"');
+    expect(runner).toContain("release: true");
+    expect(runner).toContain("releaseRequested || specProfile?.release === true");
+    expect(runner).toContain('createWriteStream(snapshotLogPath, { flags: "wx" })');
+    expect(runner).toContain('type: "tauri-snapshot-log"');
+    expect(runner).toContain("snapshotLog.write(`${message}\\n`)");
+    const webdriverConfiguration = readFileSync(
+      resolve("src-tauri/tauri.webdriver.conf.json"),
+      "utf8",
+    );
+    expect(webdriverConfiguration).toContain('"core:window:allow-show"');
+    expect(webdriverConfiguration).toContain('"core:window:allow-hide"');
+    expect(webdriverConfiguration).toContain('"core:window:allow-set-focus"');
+    expect(spec).toContain("reachManualSettlementBoundary()");
+    expect(spec).toContain("reachTitle(20)");
+    expect(spec).toContain("submit(1, true)");
+    expect(spec).toContain("submit(0, true)");
+    expect(spec).toContain("/\\[\\s*0\\s*\\][\\s\\S]*调教/");
+    expect(spec).toContain("/\\[\\s*0\\s*\\][\\s\\S]*爱抚/");
+    expect(spec).toContain('assert.equal(pettingBoundary.wait?.kind, "enter_key")');
+    expect(spec).toContain("/\\[999\\]\\s*调教结束/");
+    expect(spec).toContain("/调教结束了|显示调教结果/");
+    expect(spec).toContain("waitForVisibleGameButton(");
+    expect(spec).toContain('document.querySelectorAll(".game-viewport button")');
+    expect(spec).toContain('const buttons = await $$(".game-viewport button")');
+    expect(spec).toContain("isDisplayed({ withinViewport: true })");
+    expect(spec).toContain('waitKind: "any_key"');
+    expect(spec).toContain('clickViewportBottom("right"');
+    expect(spec).toContain("captureEvents: false");
+    expect(spec).toContain("await appWindow.show()");
+    expect(spec).toContain("await appWindow.setFocus()");
+    expect(spec).toContain("await appWindow.isVisible()");
+    expect(spec).toContain("await appWindow.isFocused()");
+    expect(spec).toContain("foreground.frameIntervals.every((interval) => interval < 50)");
+    expect(spec).toContain("hidePerformanceWindow()");
+    expect(spec).toContain("TARGET_ELAPSED_MS + 50");
+    expect(spec).toContain("await readSettlementProbe()");
+    expect(spec).toContain("event.button !== 2");
+    expect(spec).toContain("measurement.mouseUpAt != null");
+    expect(spec).toContain("measurement.mouseUpAt >= measurement.mouseDownAt");
+    expect(spec).toContain("measurement.mouseUpAt - measurement.mouseDownAt >= 40");
+    expect(spec).toContain('measurement.mouseDownVisibilityState, "visible"');
+    expect(spec).toContain("measurement.mouseDownFocused, true");
+    expect(spec).toContain('measurement.paintVisibilityState, "visible"');
+    expect(spec).toContain("measurement.paintFocused, true");
+    expect(spec).toContain("performanceWindowShowAttempted = true");
+    expect(spec).toContain("performance.now()");
+    expect(spec).toContain("paintReadyAt - measurement.mouseDownAt");
+    expect(spec).toContain("elapsedMs <= TARGET_ELAPSED_MS");
+    expect(spec).toContain("checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })");
+    expect(spec).toContain('const buttons = [...viewport.querySelectorAll("button")]');
+    expect(spec).toContain("const buttons = targetButtons()");
+    expect(spec).toContain("if (buttons.some((button) => !actuallyVisible(button)))");
+    expect(spec).toContain("finally");
+    expect(spec).toContain("cleanupSettlementProbe()");
+    expect(spec).toContain("observer.disconnect()");
+    expect(spec).toContain("cancelAnimationFrame(sampleFrame)");
+    expect(spec).toContain("cancelAnimationFrame(paintFrame)");
+    expect(spec).toContain("delete window.__RUSTYERA_TAURI_SETTLEMENT_PROBE__");
+    expect(flow).toContain('id: "rustyera-viewport-pointer"');
+    expect(flow).toContain('type: "pointerDown"');
+    expect(flow).toContain('type: "pointerUp"');
+    expect(flow).toContain("setTimeout(resolve, 50)");
+    expect(flow).toContain("await browser.releaseActions()");
+    expect(flow).toContain("if (pointerMayBePressed)");
+    expect(flow).not.toContain(".pause(50)");
+    expect(spec).toContain('assert.equal(final.bridgeKind, "tauri")');
+    expect(spec).toContain('assert.equal(final.wait?.kind, "string_value")');
+    for (const text of ["一键提升能力", "结束提升能力"]) expect(spec).toContain(text);
+  });
+
   it("can assert computed game-font styles after applying settings", () => {
     const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
     const scenario = readFileSync(

@@ -11,6 +11,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -29,7 +30,7 @@ const projectIndex = arguments_.indexOf("--project");
 const specIndex = arguments_.indexOf("--spec");
 const stateIndex = arguments_.indexOf("--state");
 const stateTypeIndex = arguments_.indexOf("--state-type");
-const release = arguments_.includes("--release");
+const releaseRequested = arguments_.includes("--release");
 const configuredProject =
   projectIndex >= 0 ? arguments_[projectIndex + 1] : process.env.ERATW_PROJECT;
 let project = path.resolve(repository, configuredProject ?? "../games/eraTW");
@@ -93,6 +94,10 @@ const specProfiles = {
     defaultState: "../games/erarorona/runtime_20260825-100940.snapshot",
     defaultStateType: "vm_snapshot",
   },
+  "rorona-settlement-performance.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_RORONA_SETTLEMENT_PERFORMANCE",
+    release: true,
+  },
   "eratw-character-images.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_ERATW_CHARACTER_IMAGES",
     defaultState: "tests/fixtures/eratw/save18.sav",
@@ -100,6 +105,7 @@ const specProfiles = {
   },
 };
 const specProfile = specName ? specProfiles[specName] : undefined;
+const release = releaseRequested || specProfile?.release === true;
 const configuredState = stateIndex >= 0 ? arguments_[stateIndex + 1] : specProfile?.defaultState;
 const configuredStateType =
   stateTypeIndex >= 0
@@ -180,6 +186,15 @@ const environment = {
   ),
 };
 
+const snapshotLogDirectory = path.resolve(repository, ".rustyera/test-runs/tauri-snapshots");
+await mkdir(snapshotLogDirectory, { recursive: true });
+const snapshotLogPath = path.join(
+  snapshotLogDirectory,
+  `${new Date().toISOString().replaceAll(":", "-")}-${specName ?? "all"}.jsonl`,
+);
+const snapshotLog = createWriteStream(snapshotLogPath, { flags: "wx" });
+console.log(JSON.stringify({ type: "tauri-snapshot-log", path: snapshotLogPath }));
+
 activeStage = "building the Tauri webdriver binary";
 await run(
   packageCommand,
@@ -235,6 +250,7 @@ try {
     deadline: taskDeadline,
     describeDeadline: () => deadlineDiagnostic(),
     output(message) {
+      snapshotLog.write(`${message}\n`);
       const report = JSON.parse(message);
       lastCompleteSnapshot = { document: report.document, runtime: report.runtime };
       monitorObservation.sequence += 1;
@@ -286,6 +302,10 @@ try {
   delete globalThis.browser;
   delete globalThis.$;
   delete globalThis.$$;
+  await new Promise((resolve, reject) => {
+    snapshotLog.once("error", reject);
+    snapshotLog.end(resolve);
+  });
 }
 if (runError ?? finalizationError) throw runError ?? finalizationError;
 

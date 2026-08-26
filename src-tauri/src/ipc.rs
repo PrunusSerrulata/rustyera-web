@@ -25,6 +25,32 @@ pub(crate) fn encode_pump_response(value: &PumpBatch) -> Result<Response, String
     Ok(Response::new(bytes))
 }
 
+pub(crate) fn encode_submitted_pump_response(
+    message_id: u64,
+    value: &PumpBatch,
+) -> Result<Response, String> {
+    let bytes = serde_json::to_vec(&SafeSubmittedPump { message_id, value })
+        .map_err(|error| format!("cannot encode binary IPC response: {error}"))?;
+    Ok(Response::new(bytes))
+}
+
+struct SafeSubmittedPump<'a> {
+    message_id: u64,
+    value: &'a PumpBatch,
+}
+
+impl Serialize for SafeSubmittedPump<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(5))?;
+        map.serialize_entry("submittedMessageId", &SafeU64(self.message_id))?;
+        serialize_pump_fields(&mut map, self.value)?;
+        map.end()
+    }
+}
+
 struct SafePump<'a>(&'a PumpBatch);
 
 impl Serialize for SafePump<'_> {
@@ -33,12 +59,20 @@ impl Serialize for SafePump<'_> {
         S: Serializer,
     {
         let mut map = serializer.serialize_map(Some(4))?;
-        map.serialize_entry("state", &self.0.state)?;
-        map.serialize_entry("vmInstructions", &SafeU64(self.0.vm_instructions))?;
-        map.serialize_entry("runtimeTransitions", &self.0.runtime_transitions)?;
-        map.serialize_entry("events", &SafeEvents(&self.0.events))?;
+        serialize_pump_fields(&mut map, self.0)?;
         map.end()
     }
+}
+
+fn serialize_pump_fields<S>(map: &mut S, value: &PumpBatch) -> Result<(), S::Error>
+where
+    S: SerializeMap,
+{
+    map.serialize_entry("state", &value.state)?;
+    map.serialize_entry("vmInstructions", &SafeU64(value.vm_instructions))?;
+    map.serialize_entry("runtimeTransitions", &value.runtime_transitions)?;
+    map.serialize_entry("events", &SafeEvents(&value.events))?;
+    Ok(())
 }
 
 struct SafeEvents<'a>(&'a [WebEvent]);
@@ -194,6 +228,32 @@ mod tests {
             encoded["events"][0]["message"]["value"][IPC_INTEGER_TAG],
             (MAXIMUM_SAFE_JAVASCRIPT_INTEGER + 2).to_string()
         );
+    }
+
+    #[test]
+    fn submitted_pump_serializer_tags_the_message_id() {
+        let batch = PumpBatch {
+            state: WebDriveState::Idle,
+            vm_instructions: 1,
+            runtime_transitions: 2,
+            cooperative_background_work: false,
+            events: Vec::new(),
+        };
+        let encoded: Value = serde_json::from_slice(
+            &serde_json::to_vec(&SafeSubmittedPump {
+                message_id: MAXIMUM_SAFE_JAVASCRIPT_INTEGER + 1,
+                value: &batch,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            encoded["submittedMessageId"][IPC_INTEGER_TAG],
+            (MAXIMUM_SAFE_JAVASCRIPT_INTEGER + 1).to_string()
+        );
+        assert_eq!(encoded["state"], "idle");
+        assert_eq!(encoded["runtimeTransitions"], 2);
     }
 
     #[test]

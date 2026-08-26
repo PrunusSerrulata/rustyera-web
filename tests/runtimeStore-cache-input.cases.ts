@@ -698,6 +698,80 @@ describe("runtime store cache-input", () => {
     },
   );
 
+  it("uses the native submit-and-pump fast path for message skipping", async () => {
+    const store = await storeWithInputWait({
+      kind: "any_key",
+      wait_id: 22,
+      submission_token: { epoch: 2, id: 9 },
+    });
+    const submitRuntimeAndPump = vi.fn(async () => ({
+      ...emptyBatch(),
+      submittedMessageId: 41,
+    }));
+    bridge.submitRuntimeAndPump = submitRuntimeAndPump;
+    bridge.submitRuntime.mockClear();
+
+    await store.skip();
+
+    expect(submitRuntimeAndPump).toHaveBeenCalledOnce();
+    expect(submitRuntimeAndPump).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "input",
+        value: expect.objectContaining({
+          wait_id: 22,
+          intent: { type: "any_key", value: "\n" },
+          message_skip: true,
+        }),
+      }),
+      undefined,
+    );
+    expect(bridge.submitRuntime).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when native fast submission may already have accepted the input", async () => {
+    const interaction = { epoch: 2, id: 8, enabled: true, generation: 1 };
+    const store = await storeWithInputWait(
+      {
+        kind: "any_key",
+        wait_id: 22,
+        submission_token: { epoch: 2, id: 9 },
+      },
+      [
+        runtimeEvent("presentation_delta", {
+          base_revision: 1,
+          new_revision: 2,
+          operations: [
+            {
+              type: "set_html_island",
+              html_island: [
+                {
+                  nodes: [
+                    {
+                      type: "element",
+                      interaction,
+                      semantic: { type: "button", title: "island action" },
+                      children: [{ type: "text", text: "island action" }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    );
+    bridge.submitRuntimeAndPump = vi.fn(async () => {
+      throw new Error("native response was lost");
+    });
+
+    await expect(store.skip()).rejects.toThrow("native response was lost");
+
+    expect(store.interactionEnabled(interaction)).toBe(false);
+    expect(store.fault).toMatchObject({ code: "frontend" });
+    expect(store.canInteract).toBe(false);
+    expect(bridge.submitRuntime).not.toHaveBeenCalled();
+  });
+
   it.each<[string, { kind: string; stop_message_skip?: boolean }]>([
     ["a stop-message-skip wait", { kind: "enter_key", stop_message_skip: true }],
     ["a non-message wait", { kind: "integer_value" }],
@@ -745,7 +819,7 @@ describe("runtime store cache-input", () => {
     await skipping;
   });
 
-  it("holds a right-click skip across a running frame until the next message wait", async () => {
+  it("holds a right-click skip across a running frame and uses ordered fallback reentrantly", async () => {
     const store = await storeWithInputWait({
       kind: "any_key",
       wait_id: 22,
@@ -759,6 +833,11 @@ describe("runtime store cache-input", () => {
       ],
     });
     await vi.advanceTimersByTimeAsync(32);
+    const submitRuntimeAndPump = vi.fn(async () => ({
+      ...emptyBatch(),
+      submittedMessageId: 41,
+    }));
+    bridge.submitRuntimeAndPump = submitRuntimeAndPump;
     bridge.submitRuntime.mockClear();
 
     await store.skip();
@@ -797,6 +876,7 @@ describe("runtime store cache-input", () => {
       }),
       undefined,
     );
+    expect(submitRuntimeAndPump).not.toHaveBeenCalled();
   });
 
   it("drops a held right-click skip at a non-skippable input boundary", async () => {
