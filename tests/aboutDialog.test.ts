@@ -14,7 +14,7 @@ describe("AboutDialog", () => {
 
     expect(document.body.textContent).toContain("PrunusSerrulata");
     expect(document.body.textContent).toContain("前端版本");
-    expect(document.body.textContent).toContain("0.8.0-wasm");
+    expect(document.body.textContent).toContain("0.9.0-wasm");
     expect(document.body.textContent).toContain("core 版本");
     const coreRevision = readFileSync("rustyera-core.rev", "utf8").trim().slice(0, 8);
     expect(document.body.textContent).toContain(`0.7.0 (${coreRevision})`);
@@ -45,7 +45,7 @@ describe("AboutDialog", () => {
       props: { open: true, coreVersion: import.meta.env.VITE_RUSTYERA_CORE_VERSION },
     });
 
-    expect(document.body.textContent).toContain("0.8.0-tauri");
+    expect(document.body.textContent).toContain("0.9.0-tauri");
 
     wrapper.unmount();
     delete window.__TAURI_INTERNALS__;
