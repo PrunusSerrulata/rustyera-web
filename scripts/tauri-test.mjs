@@ -13,13 +13,15 @@ import {
 } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import Mocha from "mocha";
 
 import { resolveTauriBinary, startTauriSessionMonitor } from "./tauri-test-support.mjs";
 
 const repository = fileURLToPath(new URL("..", import.meta.url));
+const cargoLocal = path.join(repository, "scripts/cargo-local.mjs");
 const taskDeadline = Date.now() + 60 * 60 * 1_000;
 let activeStage = "parsing arguments";
 let lastCompleteSnapshot;
@@ -203,10 +205,18 @@ const snapshotLogPath = path.join(
 const snapshotLog = createWriteStream(snapshotLogPath, { flags: "wx" });
 console.log(JSON.stringify({ type: "tauri-snapshot-log", path: snapshotLogPath }));
 
+activeStage = "resolving the Cargo target directory";
+const metadata = await promisify(execFile)(
+  process.execPath,
+  [cargoLocal, "metadata", "--no-deps", "--format-version", "1", "--offline"],
+  { cwd: repository, env: environment, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
+);
+const binary = resolveTauriBinary(JSON.parse(metadata.stdout).target_directory, release);
 activeStage = "building the Tauri webdriver binary";
 await run(
-  packageCommand,
+  process.execPath,
   [
+    cargoLocal,
     ...packageArguments,
     "run",
     "tauri",
@@ -219,14 +229,15 @@ await run(
     "--config",
     "src-tauri/tauri.webdriver.conf.json",
   ],
-  environment,
+  { ...environment, RUSTYERA_CARGO: packageCommand },
   taskDeadline,
   () => deadlineDiagnostic(),
 );
+await access(binary);
+console.log(JSON.stringify({ type: "tauri-test-binary", path: binary }));
 Object.assign(process.env, environment);
 const { cleanupWdioSession, createTauriCapabilities, startWdioSession } =
   await import("@wdio/tauri-service");
-const binary = resolveTauriBinary(repository, release);
 const capabilities = createTauriCapabilities(binary, {
   driverProvider: "embedded",
   logLevel: "info",

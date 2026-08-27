@@ -23,13 +23,21 @@ describe("Tauri end-to-end test support", () => {
     ["linux", "era-web-tauri"],
     ["darwin", "era-web-tauri"],
   ])("resolves the native binary name on %s", (platform, executable) => {
-    const debugBinary = resolveTauriBinary("/workspace/rustyera-web", false, platform);
-    const releaseBinary = resolveTauriBinary("/workspace/rustyera-web", true, platform);
+    const target = path.resolve("/workspace/isolated-build/target");
+    const debugBinary = resolveTauriBinary(target, false, platform);
+    const releaseBinary = resolveTauriBinary(target, true, platform);
 
+    expect(debugBinary).toBe(path.join(target, "debug", executable));
+    expect(releaseBinary).toBe(path.join(target, "release", executable));
     expect(path.basename(debugBinary)).toBe(executable);
     expect(path.basename(path.dirname(debugBinary))).toBe("debug");
     expect(path.basename(releaseBinary)).toBe(executable);
     expect(path.basename(path.dirname(releaseBinary))).toBe("release");
+  });
+
+  it("rejects missing or relative Cargo metadata instead of selecting an old default binary", () => {
+    for (const directory of [undefined, "", "../target"])
+      expect(() => resolveTauriBinary(directory, false)).toThrow("absolute target_directory");
   });
 
   it("captures every element with attributes, text, value, visibility, and runtime state", async () => {

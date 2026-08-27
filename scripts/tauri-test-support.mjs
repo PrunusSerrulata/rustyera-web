@@ -4,10 +4,12 @@ import path from "node:path";
 
 const SNAPSHOT_INTERVAL_MS = 5_000;
 
-export function resolveTauriBinary(repository, release, platform = process.platform) {
+export function resolveTauriBinary(targetDirectory, release, platform = process.platform) {
+  if (typeof targetDirectory !== "string" || !path.isAbsolute(targetDirectory))
+    throw new Error("Cargo metadata must provide an absolute target_directory");
   const profile = release ? "release" : "debug";
   const executable = `era-web-tauri${platform === "win32" ? ".exe" : ""}`;
-  return path.resolve(repository, "../target", profile, executable);
+  return path.join(targetDirectory, profile, executable);
 }
 
 export async function captureCompleteTauriSnapshot(browser, timeoutMs = SNAPSHOT_INTERVAL_MS) {
