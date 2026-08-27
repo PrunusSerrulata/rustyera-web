@@ -1515,6 +1515,7 @@ fn packaged_project_storage_key(path: &Path) -> String {
         .to_string()
 }
 
+mod resource_storage;
 mod scan;
 
 #[allow(clippy::wildcard_imports)]

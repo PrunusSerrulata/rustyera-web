@@ -312,7 +312,7 @@ fn pump_frontend_session(
             FRONTEND_DRIVE_BUDGET,
             FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
             NATIVE_PUMP_MAXIMUM_EXTERNAL_REQUESTS,
-            |request| storage.handle(request),
+            |request| storage.handle_with_project(request, project),
             |request| native_service(request, project),
         )
     } else {
@@ -331,7 +331,7 @@ fn pump_message_skip_session(
             FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
             MESSAGE_SKIP_MAXIMUM_OBSERVABLE_BATCHES,
             NATIVE_PUMP_MAXIMUM_EXTERNAL_REQUESTS,
-            |request| storage.handle(request),
+            |request| storage.handle_with_project(request, project),
             |request| native_service(request, project),
         )
     } else {
@@ -694,13 +694,12 @@ async fn storage_request(state: State<'_, AppState>, request: Value) -> Result<R
     let request = storage::decode_request(request)?;
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let response = state
-            .storage
-            .lock()
-            .map_err(lock_error)?
+        let mut storage = state.storage.lock().map_err(lock_error)?;
+        let project = state.project.lock().map_err(lock_error)?;
+        let response = storage
             .as_mut()
             .ok_or_else(|| "no project storage is open".to_owned())?
-            .handle(request);
+            .handle_with_project(request, project.as_ref());
         storage::encode_response(&response)
     })
     .await

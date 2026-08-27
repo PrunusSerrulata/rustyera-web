@@ -40,6 +40,10 @@ import {
   writeBrowserSourceIndex,
 } from "@/platform/browserProjectSourceIndex";
 import { dispatchBrowserStorage } from "@/platform/browserProjectStorage";
+import {
+  maximumResourceReadBytes,
+  type BrowserStorageResource,
+} from "@/platform/browserResourceStorage";
 import { isPackagedProjectFontPath, type ProjectFontSource } from "@/platform/projectFonts";
 import { scanBrowserProjectFilesOffThread } from "@/platform/browserProjectScanPool";
 import type { ScannedFile } from "@/platform/browserProjectScanner";
@@ -1120,9 +1124,28 @@ export class BrowserProject {
     for (const [path, canonical] of candidate.canonicalPaths) {
       if (activePaths.has(path)) this.canonicalPaths.set(path, canonical);
     }
+    const previousResourceIdentities = new Map(this.resourceIdentities);
     this.resourceIdentities.clear();
-    for (const [path, identity] of candidate.resourceIdentities) {
-      if (activePaths.has(path)) this.resourceIdentities.set(path, identity);
+    for (const file of pending.manifest.files) {
+      if (file.category !== "resource") continue;
+      const key = file.relative_path.toLowerCase();
+      const current = candidate.resourceIdentities.get(key);
+      const previous = previousResourceIdentities.get(key);
+      const matching =
+        current && equalBytes(current.contentHash, file.content_hash) ? current : previous;
+      this.resourceIdentities.set(key, {
+        contentHash: file.content_hash,
+        byteLength:
+          file.payload.type === "external"
+            ? file.payload.byteLength
+            : file.payload.type === "bytes"
+              ? file.payload.value.length
+              : new TextEncoder().encode(file.payload.value).length,
+        signature:
+          matching && equalBytes(matching.contentHash, file.content_hash)
+            ? matching.signature
+            : undefined,
+      });
     }
   }
 
@@ -1240,14 +1263,20 @@ export class BrowserProject {
 
   async storage(request: any): Promise<any> {
     try {
+      const generation = this.manifestValue;
       const result = await dispatchBrowserStorage(
         this.root,
         request.namespace,
         request.relative_path,
         request.operation,
-        await this.dataRoot(),
+        request.namespace === "resource" ? this.root : await this.dataRoot(),
         this.compatibility().profile === "emuera.em",
+        request.namespace === "resource" ? this.storageResources() : [],
+        this.compatibility().profile === "emuera.skia.snake" ? "nfc_lower" : "literal",
+        this.compatibility().profile,
       );
+      if (request.namespace === "resource" && generation !== this.manifestValue)
+        throw new DOMException("资源项目在读取期间发生变化", "InvalidModificationError");
       return { request_id: request.request_id, result };
     } catch (error) {
       return {
@@ -1258,6 +1287,56 @@ export class BrowserProject {
         },
       };
     }
+  }
+
+  private storageResources(): BrowserStorageResource[] {
+    const canonical = new Set<string>();
+    const resources: BrowserStorageResource[] = [];
+    for (const file of this.manifestValue?.files ?? []) {
+      if (file.category !== "resource") continue;
+      const path = safePath(file.relative_path);
+      const canonicalKey = path.toLowerCase();
+      if (canonical.has(canonicalKey))
+        throw new DOMException("资源清单包含重复规范路径", "DataError");
+      canonical.add(canonicalKey);
+      // The active manifest authorizes both scanned and embedded resources. Scan identities only
+      // contribute change tokens; they cannot supply stale paths or omit packaged-only entries.
+      const key = file.relative_path.toLowerCase();
+      const byteLength =
+        file.payload.type === "external"
+          ? file.payload.byteLength
+          : file.payload.type === "bytes"
+            ? file.payload.value.byteLength
+            : new TextEncoder().encode(file.payload.value).byteLength;
+      const observed = this.resourceIdentities.get(key);
+      const signature =
+        observed?.byteLength === byteLength && equalBytes(observed.contentHash, file.content_hash)
+          ? observed.signature
+          : undefined;
+      const embedded = this.embeddedResources.get(canonicalKey);
+      const embeddedManifest = this.usesEmbeddedManifest;
+      const packaged = embeddedManifest ? this.packagedResourceReader : undefined;
+      const handle = this.files.get(key);
+      resources.push({
+        path,
+        byteLength,
+        contentHash: file.content_hash,
+        signature,
+        open: async () => {
+          if (embedded) return embedded;
+          if (packaged) {
+            if (byteLength > maximumResourceReadBytes)
+              throw new DOMException("打包资源超过读取限额", "DataError");
+            return packaged(path, maximumResourceReadBytes + 1);
+          }
+          if (embeddedManifest) throw new DOMException("打包资源没有内嵌字节", "DataError");
+          const source = handle ?? (await optionalFileHandle(this.root, path.split("/")));
+          if (!source) throw new DOMException("清单资源已被删除", "InvalidModificationError");
+          return source.getFile();
+        },
+      });
+    }
+    return resources;
   }
 
   private async enumerateFiles(progress?: (visitedEntries: number) => void) {
@@ -1409,7 +1488,13 @@ function identityPayload(file: ScannedFile): ScannedFile["payload"] {
   return file.category === "resource"
     ? file.payload.type === "external"
       ? file.payload
-      : { type: "bytes", value: new Uint8Array() }
+      : {
+          type: "external",
+          byteLength:
+            file.payload.type === "bytes"
+              ? file.payload.value.byteLength
+              : new TextEncoder().encode(file.payload.value).byteLength,
+        }
     : { type: "utf8", value: "" };
 }
 
