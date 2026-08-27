@@ -1,4 +1,5 @@
 import type { BrowserManifest } from "@/platform/browserProject";
+import { requireCompatibilityIdentity } from "@/core/compatibility";
 
 const PROJECT_FILE_CATEGORIES = new Set([
   "csv",
@@ -16,6 +17,7 @@ export function normalizeProjectFileManifest(manifest: unknown): BrowserManifest
   if (!Array.isArray(record.files)) throw new Error("项目文件清单 files 不是数组");
   return {
     project_revision: requireSafeInteger(record.project_revision, "项目文件清单 revision"),
+    compatibility: requireCompatibilityIdentity(record.compatibility),
     files: record.files.map((value, index) => normalizeProjectFile(value, index)),
   };
 }

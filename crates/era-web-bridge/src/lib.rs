@@ -13,10 +13,11 @@ use era_runtime::{
 };
 use era_runtime_protocol::{
     ClientCapabilities, ClientHello, ConfigurationClientProfile, ExternalResource, FileCategory,
-    FilePayload, InputModality, ProjectIdentity, ProjectLoadRequest, ProjectManifest,
-    RUNTIME_PROTOCOL_VERSION, RuntimeFeature, RuntimeLimits, RuntimeMessage,
-    SequenceAcknowledgement, ServerHello, ServiceCapability, ServiceKind, ServiceRequest,
-    ServiceResponse, StorageCapabilities, StorageRequest, StorageResponse, SubmittedFile,
+    FilePayload, InputModality, ProjectCompatibilityResolved, ProjectIdentity, ProjectLoadRequest,
+    ProjectManifest, RUNTIME_PROTOCOL_VERSION, ResolveProjectCompatibility, RuntimeFeature,
+    RuntimeLimits, RuntimeMessage, SequenceAcknowledgement, ServerHello, ServiceCapability,
+    ServiceKind, ServiceRequest, ServiceResponse, StorageCapabilities, StorageRequest,
+    StorageResponse, SubmittedFile,
 };
 use erabasic_vm::VmConfig;
 use serde::{Deserialize, Serialize};
@@ -146,6 +147,25 @@ pub struct WebSession {
 }
 
 impl WebSession {
+    /// Resolve project metadata through the shared public core parser after negotiation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session has not completed its hello exchange.
+    pub fn resolve_project_compatibility(
+        &self,
+        configuration: Option<SubmittedFile>,
+    ) -> Result<ProjectCompatibilityResolved, String> {
+        if !self.is_negotiated() {
+            return Err("project compatibility requires a negotiated session".into());
+        }
+        Ok(era_runtime::resolve_project_compatibility(
+            &ResolveProjectCompatibility {
+                request_id: 0,
+                configuration,
+            },
+        ))
+    }
     /// Create a negotiated graphics/audio-capable web session.
     ///
     /// # Errors
@@ -289,9 +309,36 @@ impl WebSession {
     /// Returns an error when the project file is corrupt, unsupported, or exceeds its own
     /// transfer size.
     pub fn project_file_manifest(&self, bytes: &[u8]) -> Result<ProjectManifest, String> {
-        era_runtime::decode_project_file_frontend_manifest(bytes, bytes.len())
+        let manifest = era_runtime::decode_project_file_frontend_manifest(bytes, bytes.len())
             .map(|decoded| decoded.manifest)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        self.validate_manifest_compatibility(&manifest)?;
+        Ok(manifest)
+    }
+
+    fn validate_manifest_compatibility(&self, manifest: &ProjectManifest) -> Result<(), String> {
+        let configuration = manifest
+            .files
+            .iter()
+            .find(|file| {
+                file.relative_path
+                    .replace('\\', "/")
+                    .eq_ignore_ascii_case("reraconfig.toml")
+            })
+            .cloned();
+        let resolved = self.resolve_project_compatibility(configuration)?;
+        let identity = resolved.identity.ok_or_else(|| {
+            resolved
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?;
+        if identity != manifest.compatibility {
+            return Err("project compatibility does not match its root configuration".into());
+        }
+        Ok(())
     }
 
     /// Submit an already validated portable-project source manifest and return its browser
@@ -317,6 +364,7 @@ impl WebSession {
         &mut self,
         decoded: era_runtime::DecodedProjectFile,
     ) -> Result<(u64, ProjectManifest), String> {
+        self.validate_manifest_compatibility(&decoded.manifest)?;
         let (runtime_manifest, frontend_manifest) =
             split_browser_project_manifest(decoded.manifest)?;
         let message_id = self.load_project(runtime_manifest)?;
@@ -337,6 +385,10 @@ impl WebSession {
             .runtime
             .stage_project_file_cache(bytes)
             .map_err(|error| error.to_string())?;
+        if let Err(error) = self.validate_manifest_compatibility(&decoded.manifest) {
+            self.runtime.clear_staged_project_file_cache();
+            return Err(error);
+        }
         let result = self.load_project_request(decoded.identity, None, None);
         if result.is_err() {
             self.runtime.clear_staged_project_file_cache();
@@ -709,6 +761,12 @@ fn split_browser_project_manifest(
                 }
                 _ => file.payload.clone(),
             }
+        } else if file
+            .relative_path
+            .replace('\\', "/")
+            .eq_ignore_ascii_case("reraconfig.toml")
+        {
+            file.payload.clone()
         } else {
             empty_file_payload(&file.payload)
         };
@@ -722,6 +780,7 @@ fn split_browser_project_manifest(
     let frontend = ProjectManifest {
         project_revision: runtime.project_revision,
         files: frontend_files,
+        compatibility: runtime.compatibility.clone(),
     };
     if project_identity(&runtime)? != original_identity
         || project_identity(&frontend)? != original_identity
@@ -916,6 +975,8 @@ pub fn project_identity(manifest: &ProjectManifest) -> Result<ProjectIdentity, S
     Ok(ProjectIdentity {
         project_revision: manifest.project_revision,
         source_digest: era_protocol::ProtocolBytes::new(hasher.finalize().as_bytes().to_vec()),
+        compatibility: manifest.compatibility.clone(),
+        configuration_digest: era_runtime::compatibility_configuration_digest(manifest),
     })
 }
 

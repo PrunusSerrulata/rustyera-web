@@ -1,3 +1,4 @@
+import { referenceCompatibility } from "./compatibilityTestSupport";
 import { describe, expect, it } from "vitest";
 
 import { encodeBrowserManifest, streamBrowserManifestFiles } from "@/platform/browserManifestCodec";
@@ -13,11 +14,11 @@ describe("browser manifest codec", () => {
     }));
 
     const encoded = await encodeBrowserManifest(
-      { project_revision: 7, files },
+      { project_revision: 7, compatibility: referenceCompatibility(), files },
       (completed, total) => progress.push([completed, total]),
     );
 
-    expect(new TextDecoder().decode(encoded.subarray(0, 8))).toBe("RERMAN01");
+    expect(new TextDecoder().decode(encoded.subarray(0, 8))).toBe("RERMAN02");
     expect(new DataView(encoded.buffer).getBigUint64(8, true)).toBe(7n);
     expect(new DataView(encoded.buffer).getUint32(16, true)).toBe(files.length);
     expect(progress[0]).toEqual([0, 100]);
@@ -34,6 +35,7 @@ describe("browser manifest codec", () => {
 
     const encoded = await encodeBrowserManifest({
       project_revision: 1,
+      compatibility: referenceCompatibility(),
       files: [
         {
           relative_path: "ERB/日本語.erb",
@@ -45,9 +47,10 @@ describe("browser manifest codec", () => {
     });
 
     const view = new DataView(encoded.buffer);
-    const pathBytes = view.getUint32(21, true);
-    const payloadBytes = Number(view.getBigUint64(26, true));
-    const payloadOffset = 35 + pathBytes;
+    const headerBytes = 24 + view.getUint32(20, true);
+    const pathBytes = view.getUint32(headerBytes + 1, true);
+    const payloadBytes = Number(view.getBigUint64(headerBytes + 6, true));
+    const payloadOffset = headerBytes + 15 + pathBytes;
     expect(payloadBytes).toBe(new TextEncoder().encode(text).byteLength);
     expect(
       new TextDecoder().decode(encoded.subarray(payloadOffset, payloadOffset + payloadBytes)),
@@ -58,6 +61,7 @@ describe("browser manifest codec", () => {
   it("encodes external resource length and image metadata without resource bytes", async () => {
     const encoded = await encodeBrowserManifest({
       project_revision: 1,
+      compatibility: referenceCompatibility(),
       files: [
         {
           relative_path: "resources/image.png",
@@ -72,10 +76,11 @@ describe("browser manifest codec", () => {
       ],
     });
     const view = new DataView(encoded.buffer);
-    const pathBytes = view.getUint32(21, true);
-    expect(view.getUint8(25)).toBe(2);
-    expect(view.getBigUint64(26, true)).toBe(18n);
-    const descriptor = 35 + pathBytes;
+    const headerBytes = 24 + view.getUint32(20, true);
+    const pathBytes = view.getUint32(headerBytes + 1, true);
+    expect(view.getUint8(headerBytes + 5)).toBe(2);
+    expect(view.getBigUint64(headerBytes + 6, true)).toBe(18n);
+    const descriptor = headerBytes + 15 + pathBytes;
     expect(view.getBigUint64(descriptor, true)).toBe(987654n);
     expect(view.getUint32(descriptor + 8, true)).toBe(640);
     expect(view.getUint32(descriptor + 12, true)).toBe(480);
@@ -89,6 +94,7 @@ describe("browser manifest codec", () => {
     let peakBytes = 0;
     const manifest = {
       project_revision: 7,
+      compatibility: referenceCompatibility(),
       files: ["one", "two", "three"].map((text, index) => ({
         relative_path: `${index}.erb`,
         category: "erb",

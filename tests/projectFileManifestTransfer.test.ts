@@ -1,3 +1,4 @@
+import { referenceCompatibility } from "./compatibilityTestSupport";
 import { expect, it } from "vitest";
 
 import type { BrowserManifest } from "@/platform/browserProject";
@@ -11,6 +12,7 @@ import {
 it("normalizes the WASM project-file projection into browser-owned resource descriptors", () => {
   const manifest = normalizeProjectFileManifest({
     project_revision: 7,
+    compatibility: referenceCompatibility(),
     files: [
       {
         relative_path: "resources/1.webp",
@@ -29,6 +31,7 @@ it("normalizes the WASM project-file projection into browser-owned resource desc
 
   expect(manifest).toEqual({
     project_revision: 7,
+    compatibility: referenceCompatibility(),
     files: [
       {
         relative_path: "resources/1.webp",
@@ -80,6 +83,7 @@ it.each([
   expect(() =>
     normalizeProjectFileManifest({
       project_revision: 1,
+      compatibility: referenceCompatibility(),
       files: [
         {
           relative_path: "resources/1.webp",
@@ -97,6 +101,7 @@ it("rejects missing file arrays and unknown project-file categories", () => {
   expect(() =>
     normalizeProjectFileManifest({
       project_revision: 1,
+      compatibility: referenceCompatibility(),
       files: [
         {
           relative_path: "resources/1.webp",
@@ -114,6 +119,7 @@ it("transfers each embedded resource buffer into one isolated manifest owner", (
   const second = Uint8Array.of(4, 5);
   const manifest: BrowserManifest = {
     project_revision: 1,
+    compatibility: referenceCompatibility(),
     files: [
       {
         relative_path: "resources/first.bin",
@@ -153,6 +159,7 @@ it("does not transfer embedded resources on project-file worker responses", () =
   const result = {
     manifest: {
       project_revision: 1,
+      compatibility: referenceCompatibility(),
       files: [
         {
           relative_path: "resources/a.bin",

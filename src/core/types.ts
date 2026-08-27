@@ -1,3 +1,4 @@
+import type { CompatibilityIdentity } from "@/core/compatibility";
 export type RuntimeMessage = { type: string; value?: any };
 export type DebugMessage = { type: string; value?: any };
 
@@ -349,6 +350,7 @@ export interface ProjectConfigurationEntry {
 }
 
 export interface ProjectConfigurationSnapshot {
+  compatibility?: CompatibilityIdentity;
   project_revision: number | bigint;
   source_digest: Uint8Array;
   entries: ProjectConfigurationEntry[];

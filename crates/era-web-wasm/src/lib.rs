@@ -53,21 +53,26 @@ struct ProjectManifestUpload {
 }
 
 impl ProjectManifestUpload {
-    const HEADER_BYTES: usize = 20;
+    const HEADER_BYTES: usize = 24;
     const FILE_FIXED_BYTES: usize = 15;
 
     fn begin(
         &mut self,
         project_revision: u64,
         expected_files: usize,
+        compatibility: era_runtime_protocol::CompatibilityIdentity,
         maximum_bytes: usize,
     ) -> Result<(), String> {
         if self.pending.is_some() {
             return Err("a browser project manifest upload is already active".to_owned());
         }
+        let header_bytes = Self::HEADER_BYTES
+            + serde_json::to_vec(&compatibility)
+                .map_err(|error| error.to_string())?
+                .len();
         let minimum_bytes = expected_files
             .checked_mul(Self::FILE_FIXED_BYTES)
-            .and_then(|bytes| bytes.checked_add(Self::HEADER_BYTES))
+            .and_then(|bytes| bytes.checked_add(header_bytes))
             .ok_or_else(|| "browser project manifest size overflow".to_owned())?;
         if minimum_bytes > maximum_bytes {
             return Err(
@@ -78,9 +83,10 @@ impl ProjectManifestUpload {
             manifest: ProjectManifest {
                 project_revision,
                 files: Vec::new(),
+                compatibility,
             },
             expected_files,
-            received_bytes: Self::HEADER_BYTES,
+            received_bytes: header_bytes,
             maximum_bytes,
         });
         Ok(())
@@ -465,6 +471,24 @@ impl WasmRuntime {
         to_js(message_id)
     }
 
+    /// Resolve the root configuration with the public core parser, without constructing a VM.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed wire input or an unnegotiated session.
+    #[wasm_bindgen(js_name = resolveProjectCompatibility)]
+    pub fn resolve_project_compatibility(
+        &self,
+        configuration: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let configuration: Option<SubmittedFile> = from_js(configuration)?;
+        to_js(
+            self.inner
+                .resolve_project_compatibility(configuration)
+                .map_err(js_error)?,
+        )
+    }
+
     /// Decode and submit the browser's compact binary manifest transport.
     ///
     /// # Errors
@@ -489,6 +513,7 @@ impl WasmRuntime {
         &mut self,
         project_revision: u64,
         file_count: u32,
+        compatibility: JsValue,
     ) -> Result<(), JsValue> {
         let maximum = usize::try_from(self.inner.maximum_transfer_bytes()).unwrap_or(usize::MAX);
         self.project_manifest_upload
@@ -496,6 +521,7 @@ impl WasmRuntime {
                 project_revision,
                 usize::try_from(file_count)
                     .map_err(|_| js_error("browser project file count is unsupported"))?,
+                from_js(compatibility)?,
                 maximum,
             )
             .map_err(js_error)
@@ -914,7 +940,7 @@ fn wasm_memory_bytes() -> u32 {
         .map_or(0, |buffer| buffer.byte_length())
 }
 
-const BROWSER_MANIFEST_MAGIC: &[u8; 8] = b"RERMAN01";
+const BROWSER_MANIFEST_MAGIC: &[u8; 8] = b"RERMAN02";
 
 fn decode_browser_manifest(bytes: &[u8]) -> Result<ProjectManifest, String> {
     let mut reader = BinaryReader::new(bytes);
@@ -924,6 +950,10 @@ fn decode_browser_manifest(bytes: &[u8]) -> Result<ProjectManifest, String> {
     let project_revision = reader.read_u64()?;
     let file_count = usize::try_from(reader.read_u32()?)
         .map_err(|_| "browser project manifest file count is too large")?;
+    let compatibility_length = usize::try_from(reader.read_u32()?)
+        .map_err(|_| "browser compatibility identity is too large")?;
+    let compatibility = serde_json::from_slice(reader.read_exact(compatibility_length)?)
+        .map_err(|error| format!("browser compatibility identity is invalid: {error}"))?;
     if file_count > bytes.len() / 15 {
         return Err("browser project manifest file count exceeds its encoded size".into());
     }
@@ -974,6 +1004,7 @@ fn decode_browser_manifest(bytes: &[u8]) -> Result<ProjectManifest, String> {
     Ok(ProjectManifest {
         project_revision,
         files,
+        compatibility,
     })
 }
 
@@ -1079,9 +1110,13 @@ mod tests {
 
     #[test]
     fn browser_manifest_binary_decodes_text_and_resource_payloads() {
-        let mut bytes = b"RERMAN01".to_vec();
+        let mut bytes = b"RERMAN02".to_vec();
         bytes.extend_from_slice(&7_u64.to_le_bytes());
         bytes.extend_from_slice(&3_u32.to_le_bytes());
+        let compatibility =
+            serde_json::to_vec(&era_runtime_protocol::CompatibilityIdentity::default()).unwrap();
+        bytes.extend_from_slice(&u32::try_from(compatibility.len()).unwrap().to_le_bytes());
+        bytes.extend_from_slice(&compatibility);
         append_file(&mut bytes, 2, b"main.erb", 0, b"@MAIN\nRETURN\n", &[3; 32]);
         append_file(&mut bytes, 4, b"resources/a.png", 1, &[1, 2, 3], &[4; 32]);
         let mut external = Vec::new();
@@ -1114,9 +1149,39 @@ mod tests {
     }
 
     #[test]
+    fn browser_manifest_identity_survives_binary_and_chunk_transfers() {
+        let identity = era_runtime_protocol::CompatibilityIdentity::for_profile(
+            era_runtime_protocol::CompatibilityProfileId::EmueraSkiaSnake,
+        );
+        let mut bytes = b"RERMAN02".to_vec();
+        bytes.extend_from_slice(&9_u64.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        let encoded = serde_json::to_vec(&identity).unwrap();
+        bytes.extend_from_slice(&u32::try_from(encoded.len()).unwrap().to_le_bytes());
+        bytes.extend_from_slice(&encoded);
+        assert_eq!(
+            decode_browser_manifest(&bytes).unwrap().compatibility,
+            identity
+        );
+        let mut upload = ProjectManifestUpload::default();
+        upload.begin(9, 0, identity.clone(), 1024).unwrap();
+        assert_eq!(upload.finish().unwrap().compatibility, identity);
+        bytes.truncate(bytes.len() - 1);
+        assert!(decode_browser_manifest(&bytes).is_err());
+        assert!(decode_browser_manifest(b"RERMAN01").is_err());
+    }
+
+    #[test]
     fn streamed_browser_manifest_retains_only_final_file_payloads() {
         let mut upload = ProjectManifestUpload::default();
-        upload.begin(7, 2, 1024).unwrap();
+        upload
+            .begin(
+                7,
+                2,
+                era_runtime_protocol::CompatibilityIdentity::default(),
+                1024,
+            )
+            .unwrap();
         let source = String::from("@MAIN\nRETURN\n");
         let source_allocation = source.as_ptr();
         upload
@@ -1159,10 +1224,22 @@ mod tests {
         };
         let mut upload = ProjectManifestUpload::default();
 
-        upload.begin(7, 2, 1024).unwrap();
+        upload
+            .begin(
+                7,
+                2,
+                era_runtime_protocol::CompatibilityIdentity::default(),
+                1024,
+            )
+            .unwrap();
         assert!(
             upload
-                .begin(8, 1, 1024)
+                .begin(
+                    8,
+                    1,
+                    era_runtime_protocol::CompatibilityIdentity::default(),
+                    1024
+                )
                 .unwrap_err()
                 .contains("already active")
         );
@@ -1172,10 +1249,24 @@ mod tests {
         assert!(upload.append(file()).unwrap_err().contains("more files"));
         assert_eq!(upload.finish().unwrap().files.len(), 2);
 
-        upload.begin(9, 1, 1024).unwrap();
+        upload
+            .begin(
+                9,
+                1,
+                era_runtime_protocol::CompatibilityIdentity::default(),
+                1024,
+            )
+            .unwrap();
         upload.append(file()).unwrap();
         upload.cancel();
-        upload.begin(10, 1, 1024).unwrap();
+        upload
+            .begin(
+                10,
+                1,
+                era_runtime_protocol::CompatibilityIdentity::default(),
+                1024,
+            )
+            .unwrap();
         upload.append(file()).unwrap();
         assert_eq!(upload.finish().unwrap().project_revision, 10);
     }
@@ -1183,8 +1274,30 @@ mod tests {
     #[test]
     fn streamed_browser_manifest_preflights_header_and_file_size_before_append() {
         let mut upload = ProjectManifestUpload::default();
-        assert!(upload.begin(1, 0, 19).unwrap_err().contains("file count"));
-        upload.begin(1, 1, 35).unwrap();
+        let minimum_manifest_bytes = ProjectManifestUpload::HEADER_BYTES
+            + serde_json::to_vec(&era_runtime_protocol::CompatibilityIdentity::default())
+                .unwrap()
+                .len()
+            + ProjectManifestUpload::FILE_FIXED_BYTES;
+        assert!(
+            upload
+                .begin(
+                    1,
+                    0,
+                    era_runtime_protocol::CompatibilityIdentity::default(),
+                    19
+                )
+                .unwrap_err()
+                .contains("file count")
+        );
+        upload
+            .begin(
+                1,
+                1,
+                era_runtime_protocol::CompatibilityIdentity::default(),
+                minimum_manifest_bytes,
+            )
+            .unwrap();
         assert!(
             upload
                 .preflight("main.erb".len(), 1, 0)
@@ -1253,6 +1366,7 @@ mod tests {
     #[test]
     fn packaged_resources_move_out_of_the_frontend_manifest() {
         let mut manifest = ProjectManifest {
+            compatibility: era_runtime_protocol::CompatibilityIdentity::default(),
             project_revision: 1,
             files: vec![SubmittedFile {
                 relative_path: "Resources/Title.bin".into(),

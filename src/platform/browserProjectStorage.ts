@@ -20,12 +20,19 @@ export async function dispatchBrowserStorage(
   namespace: string,
   relativePath: string | undefined,
   operation: any,
+  dataRoot: FileSystemDirectoryHandle = projectRoot,
+  allowRootReadFallback = true,
 ): Promise<any> {
   const parts = relativePath ? safePath(relativePath).split("/") : [];
   const readOnly = ["read", "stat", "read_range", "list"].includes(operation.type);
-  const rootReadFallback = readOnly && ["project", "data"].includes(namespace);
+  const rootReadFallback =
+    allowRootReadFallback && readOnly && ["project", "data"].includes(namespace);
   try {
-    const primary = await storageNamespace(projectRoot, namespace, !rootReadFallback);
+    const primary = await storageNamespace(
+      namespace === "resource" ? projectRoot : dataRoot,
+      namespace,
+      !rootReadFallback,
+    );
     return await operateBrowserStorage(primary, parts, operation);
   } catch (error) {
     if (!rootReadFallback || errorKind(error) !== "not_found") throw error;

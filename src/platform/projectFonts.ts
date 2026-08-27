@@ -42,7 +42,11 @@ export class ProjectFontRegistry {
   private activeIdentity = "";
   private activeResult: ProjectFontLoadResult = { fonts: [], errors: [] };
 
-  async replace(sources: ProjectFontSource[]): Promise<ProjectFontLoadResult> {
+  async replace(
+    sources: ProjectFontSource[],
+    assertCurrent: () => void = () => {},
+  ): Promise<ProjectFontLoadResult> {
+    assertCurrent();
     const selected = sources.slice(0, MAXIMUM_PROJECT_FONT_FILES);
     const identity = selected.map(sourceIdentity).join("\0");
     if (identity && identity === this.activeIdentity)
@@ -75,6 +79,7 @@ export class ProjectFontRegistry {
       await prepareSource(source, candidates, errors, budget);
     }
 
+    assertCurrent();
     for (const face of this.active) {
       try {
         document.fonts.delete(face);

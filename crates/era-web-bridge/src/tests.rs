@@ -507,6 +507,7 @@ fn project_identity_matches_the_cross_host_fixed_vector() {
         content_hash: Some(ProtocolBytes::new(digest)),
     };
     let left = ProjectManifest {
+        compatibility: era_runtime_protocol::CompatibilityIdentity::default(),
         project_revision: 7,
         files: vec![
             make("ERB/a.erb", FileCategory::Erb, vec![1; 32]),
@@ -516,6 +517,7 @@ fn project_identity_matches_the_cross_host_fixed_vector() {
         ],
     };
     let right = ProjectManifest {
+        compatibility: era_runtime_protocol::CompatibilityIdentity::default(),
         project_revision: 7,
         files: vec![
             make("resources/icon.png", FileCategory::Resource, vec![255; 32]),
@@ -539,8 +541,47 @@ fn project_identity_matches_the_cross_host_fixed_vector() {
 }
 
 #[test]
+fn browser_projection_preserves_core_identity_and_root_configuration() {
+    let session = negotiated_web_session();
+    let configuration = SubmittedFile {
+        relative_path: "reraconfig.toml".into(),
+        category: FileCategory::Configuration,
+        payload: FilePayload::Utf8(
+            "[meta]\nschema_version = 4\n[compatibility]\nprofile = \"emuera.skia.snake\"\n".into(),
+        ),
+        content_hash: None,
+    };
+    let resolved = session
+        .resolve_project_compatibility(Some(configuration.clone()))
+        .unwrap();
+    let identity = resolved.identity.unwrap();
+    assert!(!resolved.diagnostics.is_empty());
+    let manifest = ProjectManifest {
+        project_revision: 1,
+        files: vec![configuration.clone()],
+        compatibility: identity.clone(),
+    };
+    let (_, projected) = split_browser_project_manifest(manifest).unwrap();
+    assert_eq!(projected.compatibility, identity);
+    assert_eq!(projected.files[0].payload, configuration.payload);
+    assert_eq!(
+        project_identity(&projected).unwrap().configuration_digest,
+        resolved.configuration_digest
+    );
+    assert!(session.validate_manifest_compatibility(&projected).is_ok());
+    let mut mismatched = projected;
+    mismatched.compatibility = era_runtime_protocol::CompatibilityIdentity::default();
+    assert!(
+        session
+            .validate_manifest_compatibility(&mismatched)
+            .is_err()
+    );
+}
+
+#[test]
 fn browser_project_projection_keeps_resources_without_cloning_source_payloads() {
     let source = ProjectManifest {
+        compatibility: era_runtime_protocol::CompatibilityIdentity::default(),
         project_revision: 7,
         files: vec![
             SubmittedFile {
@@ -590,6 +631,7 @@ fn decoded_project_file_load_projects_and_stages_a_valid_manifest() {
     let source = "@SYSTEM_TITLE\nRETURN\n";
     let resource = vec![2, 3, 4];
     let manifest = ProjectManifest {
+        compatibility: era_runtime_protocol::CompatibilityIdentity::default(),
         project_revision: 1,
         files: vec![
             SubmittedFile {
@@ -635,6 +677,7 @@ fn project_file_cache_load_reuses_bytecode_and_externalizes_frontend_resources()
     let source = "@SYSTEM_TITLE\nRETURN\n";
     let resource = vec![7, 8, 9];
     let manifest = ProjectManifest {
+        compatibility: era_runtime_protocol::CompatibilityIdentity::default(),
         project_revision: 1,
         files: vec![
             SubmittedFile {
@@ -693,6 +736,7 @@ fn owned_project_manifest_uses_a_lightweight_load_envelope() {
     session.pump(RuntimeDriveBudget::default()).unwrap();
     let source = format!(";{}\n@SYSTEM_TITLE\nRETURN\n", "x".repeat(2 * 1024 * 1024));
     let manifest = ProjectManifest {
+        compatibility: era_runtime_protocol::CompatibilityIdentity::default(),
         project_revision: 1,
         files: vec![SubmittedFile {
             relative_path: "ERB/main.erb".into(),
@@ -712,6 +756,7 @@ fn failed_lightweight_load_submission_rolls_back_the_owned_manifest() {
     let mut session = WebSession::new(WebSessionOptions::default()).unwrap();
     session.pump(RuntimeDriveBudget::default()).unwrap();
     let manifest = ProjectManifest {
+        compatibility: era_runtime_protocol::CompatibilityIdentity::default(),
         project_revision: 1,
         files: Vec::new(),
     };
@@ -1005,4 +1050,49 @@ fn missing_storage_response(request: &StorageRequest) -> StorageResponse {
             },
         },
     }
+}
+
+#[test]
+fn configuration_digest_uses_payload_normalization_instead_of_the_declared_hash() {
+    for source in [
+        "[meta]\r\nschema_version = 4\r\n",
+        "\u{feff}[meta]\r\nschema_version = 4\r\n",
+    ] {
+        let manifest = ProjectManifest {
+            project_revision: 7,
+            compatibility: era_runtime_protocol::CompatibilityIdentity::default(),
+            files: vec![SubmittedFile {
+                relative_path: "reraconfig.toml".into(),
+                category: FileCategory::Configuration,
+                payload: FilePayload::Utf8(source.into()),
+                content_hash: Some(ProtocolBytes::new(vec![9; 32])),
+            }],
+        };
+        let identity = project_identity(&manifest).unwrap();
+        let expected = Some(ProtocolBytes::new(
+            blake3::hash(b"[meta]\nschema_version = 4\n")
+                .as_bytes()
+                .to_vec(),
+        ));
+        assert_eq!(identity.configuration_digest, expected);
+        assert_ne!(
+            identity.configuration_digest.as_ref().unwrap().as_slice(),
+            &[9; 32]
+        );
+        let mut other_payload = manifest.clone();
+        other_payload.files[0].payload = FilePayload::Utf8("different".into());
+        assert_eq!(
+            identity.source_digest,
+            project_identity(&other_payload).unwrap().source_digest
+        );
+    }
+    let manifest = ProjectManifest {
+        project_revision: 7,
+        files: vec![],
+        compatibility: era_runtime_protocol::CompatibilityIdentity::default(),
+    };
+    assert_eq!(
+        project_identity(&manifest).unwrap().configuration_digest,
+        None
+    );
 }

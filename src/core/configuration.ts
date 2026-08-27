@@ -1,3 +1,4 @@
+import { requireCompatibilityIdentity } from "@/core/compatibility";
 import type {
   PreparedProjectConfiguration,
   ProjectConfigurationChange,
@@ -25,6 +26,9 @@ export function parseProjectConfiguration(value: unknown): ProjectConfigurationS
   if (!Array.isArray(value.entries)) throw new Error("项目配置条目不是数组");
   return {
     project_revision: revision,
+    ...(value.compatibility == null
+      ? {}
+      : { compatibility: requireCompatibilityIdentity(value.compatibility) }),
     source_digest: digest,
     entries: value.entries.map(parseEntry),
     restart_pending: value.restart_pending == null ? false : booleanField(value, "restart_pending"),
