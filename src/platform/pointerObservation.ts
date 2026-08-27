@@ -8,7 +8,6 @@ import {
 export interface PointerButtonModel {
   epoch: ServiceInteger;
   value: string;
-  enabled: boolean;
 }
 
 const buttons = new WeakMap<Element, () => PointerButtonModel | undefined>();
@@ -122,7 +121,8 @@ export class RuntimePointerObservation {
         while (element && element !== viewport) {
           const model = buttons.get(element)?.();
           if (model) {
-            if (model.enabled && sameServiceInteger(model.epoch, epoch)) buttonValue = model.value;
+            // MOUSEB observes PointingString, not the reference's selectable input button.
+            if (sameServiceInteger(model.epoch, epoch)) buttonValue = model.value;
             break;
           }
           element = element.parentElement;

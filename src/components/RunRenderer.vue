@@ -30,9 +30,7 @@ const store = useRuntimeStore();
 const pointerButton = usePointerButton(() => {
   if (props.run.type !== "button") return undefined;
   const value = pointerButtonValue(props.run.value);
-  return value == null
-    ? undefined
-    : { epoch: props.run.token.epoch, value, enabled: store.interactionEnabled(props.run) };
+  return value == null ? undefined : { epoch: props.run.token.epoch, value };
 });
 
 type NestedFragment =

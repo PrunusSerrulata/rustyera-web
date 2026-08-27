@@ -117,7 +117,16 @@ describe("frontend host and image-line policy", () => {
       window.dispatchEvent(new MouseEvent("pointermove", { clientX: 10, clientY: 20 }));
       hit = ordinary.get("button").element;
       expect(pointer.sample(4).buttonValue).toBe("300");
+      await ordinary.setProps({ run: { ...ordinary.props("run"), enabled: false } });
+      expect(ordinary.get("button").attributes("disabled")).toBeDefined();
+      expect(pointer.sample(4).buttonValue).toBe("300");
       hit = html.get("button").element;
+      expect(pointer.sample(4).buttonValue).toBe("001");
+      const node = html.props("node");
+      await html.setProps({
+        node: { ...node, interaction: { ...node.interaction, enabled: false } },
+      });
+      expect(html.get("button").attributes("disabled")).toBeDefined();
       expect(pointer.sample(4).buttonValue).toBe("001");
       html.unmount();
       htmlMounted = false;

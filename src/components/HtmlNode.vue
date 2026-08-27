@@ -38,9 +38,7 @@ const pointerButton = measurement
       const interaction = props.node.interaction;
       if (props.node.kind !== "button" || !interaction) return undefined;
       const value = htmlPointerButtonValue(interaction);
-      return value == null
-        ? undefined
-        : { epoch: interaction.epoch, value, enabled: store.interactionEnabled(interaction) };
+      return value == null ? undefined : { epoch: interaction.epoch, value };
     });
 const tags: Record<string, string> = {
   bold: "strong",

@@ -1111,16 +1111,12 @@ describe("pointer canonical button observation", () => {
       configurable: true,
       value: vi.fn(() => hit),
     });
-    let enabled = true;
-    const unregister = registerPointerButton(button, () => ({ epoch: 1, value: "42", enabled }));
+    const unregister = registerPointerButton(button, () => ({ epoch: 1, value: "42" }));
     pointer = new RuntimePointerObservation(() => viewport);
     pointer.start();
     window.dispatchEvent(new MouseEvent("pointermove", { clientX: 30, clientY: 50, buttons: 2 }));
     expect(pointer.sample(1)).toEqual({ x: 20, y: -170, buttonValue: "42" });
     expect(pointer.sample(2).buttonValue).toBe("");
-    enabled = false;
-    expect(pointer.sample(1).buttonValue).toBe("");
-    enabled = true;
     hit = viewport;
     viewport.dispatchEvent(new Event("scroll"));
     expect(pointer.sample(1).buttonValue).toBe("");
