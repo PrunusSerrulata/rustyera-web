@@ -172,12 +172,21 @@ describe("game viewport", () => {
 
       expect(projectViewport).toHaveBeenCalledWith(expect.objectContaining({ lineColumns: 80 }));
       expect(measure).toHaveBeenCalledOnce();
+      projectViewport.mockClear();
+      store.gameTextStyle.fontFamily = "serif";
+      await nextTick();
+      await flushPromises();
+      expect(projectViewport).toHaveBeenCalledOnce();
+      expect(projectViewport).toHaveBeenCalledWith(
+        expect.objectContaining({ width: 800, height: 600, lineColumns: 80 }),
+      );
     } finally {
       wrapper?.unmount();
       HTMLElement.prototype.getBoundingClientRect = originalBounds;
       delete (HTMLElement.prototype as any).clientWidth;
       delete (HTMLElement.prototype as any).clientHeight;
       store.gameTextStyle.fontSize = "12px";
+      store.gameTextStyle.fontFamily = "sans-serif";
     }
   });
 

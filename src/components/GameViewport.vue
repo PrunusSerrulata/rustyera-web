@@ -332,13 +332,14 @@ function wheel(event: WheelEvent): void {
   viewport.value.scrollTop += Math.sign(event.deltaY) * store.scrollHeight * store.gameLineHeightPx;
 }
 
-function synchronizeViewport(): void {
+function synchronizeViewport(forceObservation = false): void {
   viewportFrame = undefined;
   if (!viewport.value) return;
   const measurement = measureGameViewport(viewport.value, history.value);
   viewportHeight.value = measurement.height;
   viewportColumns.value = measurement.lineColumns;
   if (
+    !forceObservation &&
     measurement.width === projectedWidth &&
     measurement.height === projectedHeight &&
     measurement.lineColumns === projectedLineColumns
@@ -352,7 +353,7 @@ function synchronizeViewport(): void {
 
 function scheduleViewportSynchronization(): void {
   if (viewportFrame != null) cancelAnimationFrame(viewportFrame);
-  viewportFrame = requestAnimationFrame(synchronizeViewport);
+  viewportFrame = requestAnimationFrame(() => synchronizeViewport());
 }
 
 onMounted(() => {
@@ -370,7 +371,7 @@ watch(
   () => [store.gameTextStyle?.fontFamily, store.gameTextStyle?.fontSize, store.gameLineHeightPx],
   async () => {
     await nextTick();
-    synchronizeViewport();
+    synchronizeViewport(true);
     virtualizer.value.measure();
   },
 );

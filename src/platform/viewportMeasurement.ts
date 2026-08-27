@@ -32,10 +32,14 @@ export function measureGameViewport(
   };
 }
 
-export function currentGameViewportMeasurement(): GameViewportMeasurement | undefined {
+export function currentGameViewport(): HTMLElement | undefined {
   const viewport = document.querySelector(".game-viewport");
-  if (!(viewport instanceof HTMLElement) || viewport.clientWidth <= 0 || viewport.clientHeight <= 0)
-    return undefined;
+  return viewport instanceof HTMLElement ? viewport : undefined;
+}
+
+export function currentGameViewportMeasurement(): GameViewportMeasurement | undefined {
+  const viewport = currentGameViewport();
+  if (!viewport || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return undefined;
   const history = viewport.querySelector(".virtual-history");
   return measureGameViewport(viewport, history instanceof HTMLElement ? history : undefined);
 }
