@@ -39,6 +39,11 @@ prompt is a test-flow bug. Preserve the reference behavior and geometry assertio
 timeout. All tests in the current batch share a 60-minute wall-clock limit, and no full suite may be
 started more than once per batch. Use the root rules to combine small items and give large items
 independent batches.
+For iterative work, these limits apply to the current batch in one iteration, not the whole task.
+A single iteration timeout does not end further iterations before the user's goal/deadline. Reserve
+wrap-up time and retain test procedures, scripts, fixtures, temporary projects, and restart evidence
+on pause; cleanup requires the user's explicit task-completed/aborted instruction. Follow the skill
+for continuation, deadline handling, and resumption budgets.
 
 The test build must use default frontend preferences unless the spec explicitly covers a preference;
 persisted user font and image settings are not valid inputs to reference-geometry tests.

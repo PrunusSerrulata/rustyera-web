@@ -37,6 +37,11 @@ surface its upload confirmation or `FileList`; resume ordinary identical-snapsho
 as it does. Preserve the reference output and DOM/layout assertions when repairing a timeout. All tests
 in the current batch share one 60-minute wall-clock budget, and each full suite may start only once
 per batch. Use the root rules to combine small items and give large items independent batches.
+For iterative work, these limits apply to the current batch in one iteration, not the whole task.
+A single iteration timeout does not end further iterations before the user's goal/deadline. Reserve
+wrap-up time and retain test procedures, scripts, fixtures, temporary projects, and restart evidence
+on pause; cleanup requires the user's explicit task-completed/aborted instruction. Follow the skill
+for continuation, deadline handling, and resumption budgets.
 
 The snapshot cadence is independent from action pacing. Poll actionable browser state at roughly
 100 ms and native Android hierarchy continuously (no extra delay after a completed dump, at most
