@@ -183,7 +183,11 @@ describe("Era HTML box layout", () => {
 
 // These tests exercise canonical projection and async ownership with controlled DOM geometry.
 // Real browser/font measurements remain a separate Browser/Tauri acceptance gate.
-import type { HtmlMeasurementBinding } from "@/components/htmlMeasurementProjection";
+import {
+  HtmlMeasurementScope,
+  htmlMeasurementProjectionKey,
+  type HtmlMeasurementBinding,
+} from "@/components/htmlMeasurementProjection";
 import {
   htmlMeasurementSegments,
   htmlPrefixDocument,
@@ -197,6 +201,7 @@ import { RuntimeServiceError } from "@/core/runtimeServiceProtocol";
 import type { FrontendBridge } from "@/core/types";
 import { HtmlMeasurementProvider } from "@/platform/htmlMeasurement";
 import * as htmlResourceUrls from "@/core/resources";
+import * as pointerObservation from "@/platform/pointerObservation";
 
 const queryStyle = (): HtmlQueryStyle => ({
   current: {
@@ -422,6 +427,7 @@ describe("bounded offscreen HTML measurement", () => {
   });
 
   it("independently shapes a prefix and ignores the unrelated current-style bits", async () => {
+    const register = vi.spyOn(pointerObservation, "registerPointerButton");
     const signal = new AbortController().signal;
     const provider = new HtmlMeasurementProvider();
     const regular: string[] = [];
@@ -444,6 +450,7 @@ describe("bounded offscreen HTML measurement", () => {
     expect(result.advancePx).toBe(9);
     expect(result.cuts).toEqual([{ id: 7, advancePx: 6 }]);
     expect(regular).toEqual(["normal", "normal"]);
+    expect(register).not.toHaveBeenCalled();
     expect(viewport.querySelector(".html-measurement-host")).toBeNull();
   });
 
@@ -841,5 +848,32 @@ describe("bounded offscreen HTML measurement", () => {
     await Promise.all(failures);
     expect(fontLoad).toHaveBeenCalledOnce();
     expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it("does not register canonical button interactions in an offscreen projection", () => {
+    const register = vi.spyOn(pointerObservation, "registerPointerButton");
+    const binding = measurementBinding(viewport);
+    const scope = new HtmlMeasurementScope(binding, queryStyle(), {
+      signal: new AbortController().signal,
+      assertCurrent() {},
+    });
+    const wrapper = mount(HtmlNode, {
+      props: {
+        node: {
+          type: "element",
+          kind: "button",
+          semantic: { type: "button", value: "42" },
+          interaction: { enabled: true, epoch: 1, id: 2, integer_value: 42 },
+          children: [{ type: "text", text: "button" }],
+          attributes: [],
+        },
+        measurementPath: [0],
+      },
+      global: { provide: { [htmlMeasurementProjectionKey as symbol]: scope } },
+    });
+    expect(wrapper.find("button").attributes("disabled")).toBeDefined();
+    expect(register).not.toHaveBeenCalled();
+    wrapper.unmount();
+    scope.dispose();
   });
 });

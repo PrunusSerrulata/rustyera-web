@@ -2,6 +2,8 @@
 import { computed } from "vue";
 
 import HtmlNode from "@/components/HtmlNode.vue";
+import { usePointerButton } from "@/components/usePointerButton";
+import { pointerButtonValue } from "@/platform/pointerObservation";
 import MediaImage from "@/components/MediaImage.vue";
 import TextRunGroup from "@/components/TextRunGroup.vue";
 import {
@@ -24,6 +26,13 @@ const props = defineProps<{
   trailingBoxFill?: { character: string; columns: number };
 }>();
 const store = useRuntimeStore();
+const pointerButton = usePointerButton(() => {
+  if (props.run.type !== "button") return undefined;
+  const value = pointerButtonValue(props.run.value);
+  return value == null
+    ? undefined
+    : { epoch: props.run.token.epoch, value, enabled: store.interactionEnabled(props.run) };
+});
 
 type NestedFragment =
   | { type: "text_group"; key: number; runs: TextDisplayRun[] }
@@ -115,6 +124,7 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
   >
   <button
     v-else-if="run.type === 'button'"
+    ref="pointerButton"
     class="game-button"
     :disabled="!store.interactionEnabled(run) || !store.canInteract"
     :aria-description="run.title || undefined"

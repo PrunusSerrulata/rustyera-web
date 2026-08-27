@@ -5,6 +5,8 @@ import { htmlMeasurementProjectionKey } from "@/components/htmlMeasurementProjec
 import { htmlMeasurementSegments } from "@/core/htmlMeasurement";
 
 import MediaImage from "@/components/MediaImage.vue";
+import { usePointerButton } from "@/components/usePointerButton";
+import { htmlPointerButtonValue } from "@/platform/pointerObservation";
 import {
   htmlTextSegments,
   lastRenderableTextNodeIndex,
@@ -30,6 +32,16 @@ const props = defineProps<{
 const measurement = inject(htmlMeasurementProjectionKey, undefined);
 const children = computed<any[]>(() => props.node.children ?? []);
 const store = measurement?.state ?? useRuntimeStore();
+const pointerButton = measurement
+  ? undefined
+  : usePointerButton(() => {
+      const interaction = props.node.interaction;
+      if (props.node.kind !== "button" || !interaction) return undefined;
+      const value = htmlPointerButtonValue(interaction);
+      return value == null
+        ? undefined
+        : { epoch: interaction.epoch, value, enabled: store.interactionEnabled(interaction) };
+    });
 const tags: Record<string, string> = {
   bold: "strong",
   italic: "em",
@@ -335,6 +347,7 @@ const trailingTextChildIndex = computed(() =>
   <component
     :is="tag"
     v-else
+    ref="pointerButton"
     :disabled="
       node.interaction && (!store.interactionEnabled(node.interaction) || !store.canInteract)
     "

@@ -418,6 +418,7 @@ export type DisplayRun =
   | { type: "text_layout"; text: string; style: TextStyle; columns: number }
   | {
       type: "button";
+      value: { type: "integer"; value: number | bigint } | { type: "string"; value: string };
       runs: DisplayRun[];
       token: InteractionToken;
       title?: string;

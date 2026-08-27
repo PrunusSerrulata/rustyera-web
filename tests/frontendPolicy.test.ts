@@ -28,6 +28,7 @@ vi.mock("@/stores/runtime", () => ({
 
 import HtmlNode from "@/components/HtmlNode.vue";
 import RunRenderer from "@/components/RunRenderer.vue";
+import { RuntimePointerObservation } from "@/platform/pointerObservation";
 
 describe("frontend host and image-line policy", () => {
   it("hotly replaces full-width spaces in ordinary and HTML text without changing source", async () => {
@@ -47,6 +48,71 @@ describe("frontend host and image-line policy", () => {
     expect(html.element.textContent).toBe("C  D");
     expect(run.text).toBe("A　B");
     expect(node.text).toBe("C　D");
+  });
+
+  it("registers script button values from both renderers independently of DOM labels", async () => {
+    const viewport = document.createElement("main");
+    document.body.append(viewport);
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 300 },
+      clientHeight: { configurable: true, value: 200 },
+    });
+    const bounds = vi
+      .spyOn(viewport, "getBoundingClientRect")
+      .mockReturnValue({ left: 0, top: 0 } as DOMRect);
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const originalHit = document.elementFromPoint;
+    let hit: Element | null = null;
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => hit });
+    const ordinary = mount(RunRenderer, {
+      attachTo: viewport,
+      props: {
+        run: {
+          type: "button",
+          token: { epoch: 4, id: 1 },
+          value: { type: "integer", value: 300 },
+          enabled: true,
+          runs: [{ type: "text", text: "not 300", style: {} }],
+        },
+      },
+    });
+    const html = mount(HtmlNode, {
+      attachTo: viewport,
+      props: {
+        node: {
+          type: "element",
+          kind: "button",
+          semantic: { type: "button" },
+          interaction: { epoch: 4, id: 2, string_value: "001", enabled: true },
+          children: [{ type: "text", text: "not 001" }],
+        },
+      },
+    });
+    const pointer = new RuntimePointerObservation(() => viewport);
+    pointer.start();
+    let htmlMounted = true;
+    try {
+      await nextTick();
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 10, clientY: 20 }));
+      hit = ordinary.get("button").element;
+      expect(pointer.sample(4).buttonValue).toBe("300");
+      hit = html.get("button").element;
+      expect(pointer.sample(4).buttonValue).toBe("001");
+      html.unmount();
+      htmlMounted = false;
+      expect(pointer.sample(4).buttonValue).toBe("");
+    } finally {
+      pointer.stop();
+      ordinary.unmount();
+      if (htmlMounted) html.unmount();
+      viewport.remove();
+      focus.mockRestore();
+      bounds.mockRestore();
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: originalHit,
+      });
+    }
   });
 
   it("grants both Tauri hosts the window permissions used by the frontend", () => {
