@@ -38,7 +38,8 @@
             "wdio-webdriver:default"
           ]
         }
-      ]
+      ],
+      "csp": "default-src 'self'; img-src 'self' asset: blob: data: http://127.0.0.1:*; media-src 'self' asset: blob: data:; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:"
     }
   }
 }

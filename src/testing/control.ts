@@ -1,3 +1,8 @@
+import {
+  configureServiceLifecycle,
+  serviceLifecycleSnapshot,
+  type ServiceLifecycleConfiguration,
+} from "@/testing/serviceLifecycle";
 import type { Pinia } from "pinia";
 
 import { plainLine } from "@/core/presentation";
@@ -7,12 +12,14 @@ import { useRuntimeStore } from "@/stores/runtime";
 
 export interface WebTestControl {
   configure(configuration: RuntimeTestConfiguration): void;
+  configureServiceLifecycle(configuration: ServiceLifecycleConfiguration): void;
   openProject(): Promise<void>;
   waitForStableObservation(timeoutMs?: number): Promise<Record<string, unknown>>;
   snapshot(): Record<string, unknown>;
   mediaPlacements(): Record<string, unknown>;
   mediaReplay(resourceName: string): Record<string, unknown>;
   inspect(watches: string[]): Promise<Record<string, unknown>>;
+  inspectTyped(watches: string[]): Promise<Record<string, unknown>>;
   exportSnapshot(): Promise<void>;
   exportTraditionalSave(): Promise<void>;
   takeDownload(timeoutMs?: number): Promise<{ name: string; bytes: number[] }>;
@@ -42,6 +49,13 @@ export function installWebTestControl(pinia: Pinia): void {
   const snapshot = (): Record<string, unknown> =>
     serialize({
       bridgeKind: store.bridgeKind,
+      serviceEvidence: store.testRuntimeEvidence(),
+      serviceLifecycle: serviceLifecycleSnapshot(),
+      buildIdentity: {
+        corePin: import.meta.env.VITE_RUSTYERA_CORE_FULL_REVISION,
+        wasmRevision: import.meta.env.VITE_RUSTYERA_WASM_REVISION,
+        frontendVersion: import.meta.env.VITE_RUSTYERA_FRONTEND_VERSION,
+      },
       phase: store.phase,
       runtimeEpoch: store.runtimeEpoch,
       status: store.status,
@@ -95,11 +109,13 @@ export function installWebTestControl(pinia: Pinia): void {
 
   window.__RUSTYERA_TEST__ = {
     configure: (configuration) => store.configureTestRun(configuration),
+    configureServiceLifecycle,
     openProject: () => store.openProject(),
     snapshot,
     mediaPlacements: () => presentationMedia(store.presentation),
     mediaReplay: (resourceName) => mediaReplay(store.presentation.resources, resourceName),
     inspect: (watches) => store.inspectWatches(watches),
+    inspectTyped: (watches) => store.inspectTypedWatches(watches),
     exportSnapshot: () => store.exportSnapshot("normal"),
     exportTraditionalSave: () => store.exportTraditionalSaveForTest(),
     async replaceProjectSource(relativePath, expected, replacement) {
@@ -229,6 +245,19 @@ function downloadSummary(download?: {
               .map((file) => [file.relative_path, hex(file.content_hash)]),
           ),
           projectRevision: download.projectManifest.project_revision,
+          projectIdentityFiles: download.projectManifest.files.map((file) => ({
+            relativePath: file.relative_path,
+            category: file.category,
+            // For source text this is the submitted UTF-8 payload digest; for Resource it is raw.
+            contentHash: hex(file.content_hash),
+            payloadKind: file.payload.type,
+            byteLength:
+              file.payload.type === "external"
+                ? file.payload.byteLength
+                : file.payload.type === "bytes"
+                  ? file.payload.value.length
+                  : new TextEncoder().encode(file.payload.value).length,
+          })),
         }
       : {}),
     ...replay,

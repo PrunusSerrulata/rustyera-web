@@ -1,3 +1,4 @@
+import { serviceLifecycleResourceUrl } from "@/testing/serviceLifecycle";
 import type { FrontendBridge } from "@/core/types";
 
 interface ResourceUrlEntry {
@@ -49,7 +50,12 @@ export class ResourceUrlRegistry {
       const created = entry;
       created.promise = bridge
         .readResource(resourceId)
-        .then((bytes) => {
+        .then(async (bytes) => {
+          const testUrl = await serviceLifecycleResourceUrl(resourceId, bytes, generation);
+          if (testUrl) {
+            created.bytes = bytes.byteLength;
+            return testUrl;
+          }
           const url = URL.createObjectURL(
             new Blob([bytes as BlobPart], { type: mediaType(resourceId) }),
           );

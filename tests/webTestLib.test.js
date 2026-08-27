@@ -1545,3 +1545,57 @@ describe("web game test scenario", () => {
     );
   });
 });
+
+describe("snake service scenarios", () => {
+  it("uses a visible pointer click and preserves the whole initialization goal", async () => {
+    const services = await loadScenario("tools/runtime-tester/scenarios/snake-services.json");
+    expect(services.actions.at(-1)).toMatchObject({
+      type: "click",
+      semantic_input: "41",
+      advances_game: true,
+    });
+    const combined = await loadScenario("tools/runtime-tester/scenarios/snake-batch1.json");
+    expect(
+      goalStatus({ output: ["SNAKE_BATCH1_READY"], wait: { kind: "integer_value" } }, combined.goal)
+        .satisfied,
+    ).toBe(false);
+    expect(
+      goalStatus(
+        { output: [...combined.goal.output_contains], wait: { kind: "integer_value" } },
+        combined.goal,
+      ).satisfied,
+    ).toBe(true);
+  });
+});
+
+describe("snake pointer lifecycle scenario", () => {
+  it("uses real hover, resize, scroll and keyboard actions and retains five independent button observations", async () => {
+    const scenario = await loadScenario(
+      "tools/runtime-tester/scenarios/snake-service-lifecycle.json",
+    );
+    expect(scenario.actions.filter((action) => action.type === "press")).toHaveLength(5);
+    expect(scenario.actions.some((action) => action.type === "set_viewport")).toBe(true);
+    expect(
+      scenario.actions.some((action) => action.type === "scroll_key" && action.key === "PageUp"),
+    ).toBe(true);
+    expect(scenario.goal.watch_equals).toEqual({
+      "LIFE_BUTTON:0": "41",
+      "LIFE_BUTTON:1": "",
+      "LIFE_BUTTON:2": "",
+      "LIFE_BUTTON:3": "41",
+      "LIFE_BUTTON:4": "",
+    });
+    const complete = {
+      output: [...scenario.goal.output_contains],
+      wait: { kind: "integer_value" },
+      watches: { ...scenario.goal.watch_equals },
+    };
+    expect(goalStatus(complete, scenario.goal).satisfied).toBe(true);
+    expect(
+      goalStatus(
+        { ...complete, watches: { ...complete.watches, "LIFE_BUTTON:4": "41" } },
+        scenario.goal,
+      ).satisfied,
+    ).toBe(false);
+  });
+});

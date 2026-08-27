@@ -2,15 +2,29 @@
 /* global document, getComputedStyle, HTMLInputElement, HTMLElement, MutationObserver, navigator, window */
 
 import { appendFileSync, createReadStream, mkdirSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { remote } from "webdriverio";
 
 import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs";
+import { captureConfiguration, prepareCaptureInputs } from "./snake-service-capture-io.mjs";
+import {
+  allowsServiceOracleFault,
+  recordServiceOracleWatchdog,
+  runServiceOracleCapture,
+  webdriverCaptureClient,
+} from "./snake-service-capture-client.mjs";
 import { createLoopbackViteServer, viteServerPort } from "./vite-test-server.mjs";
 import { runSnakeDataClient, SNAKE_DATA_MARKERS } from "./snake-data-test-support.mjs";
+import { createLifecycleImageGate } from "./snake-service-lifecycle-gate.mjs";
+import { runSnakeServiceLifecycleClient } from "./snake-service-lifecycle-test-support.mjs";
+import {
+  runSnakeServicesClient,
+  runSnakeBatch1Client,
+  SNAKE_SERVICE_MARKERS,
+} from "./snake-services-test-support.mjs";
 
 import {
   browserProjectProgressErrors,
@@ -50,9 +64,52 @@ if (expectedOutputIndex >= 0 && !process.argv[expectedOutputIndex + 1])
 const expectedOutput = expectedOutputIndex >= 0 ? process.argv[expectedOutputIndex + 1] : undefined;
 const checkTooltip = process.argv.includes("--check-tooltip");
 const snakeData = process.argv.includes("--snake-data");
+const snakeServiceOracle = process.argv.includes("--snake-service-oracle");
+const oracleConfig = snakeServiceOracle
+  ? await captureConfiguration(process.argv, project, browserName)
+  : undefined;
+const oracleInputs = oracleConfig ? await prepareCaptureInputs(oracleConfig) : undefined;
 if (snakeData && projectIndex < 0) throw new Error("--snake-data requires --project");
 if (snakeData && projectFile) throw new Error("--snake-data requires the source fixture directory");
-const startupOnly = process.argv.includes("--startup-only") || snakeData;
+const snakeServices = process.argv.includes("--snake-services");
+const snakeBatch1 = process.argv.includes("--snake-batch1");
+const snakeServiceLifecycle = process.argv.includes("--snake-service-lifecycle");
+const replacementIndex = process.argv.indexOf("--replacement-project");
+const lifecycleReplacement =
+  snakeServiceLifecycle && replacementIndex >= 0 && process.argv[replacementIndex + 1]
+    ? path.resolve(repository, process.argv[replacementIndex + 1])
+    : undefined;
+if (
+  snakeServiceLifecycle &&
+  (!lifecycleReplacement || (await realpath(lifecycleReplacement)) === (await realpath(project)))
+)
+  throw new Error(
+    "lifecycle requires --replacement-project pointing to the distinct successor fixture",
+  );
+const lifecycleReplacementFiles = lifecycleReplacement
+  ? await collectFiles(lifecycleReplacement)
+  : undefined;
+if (
+  Number(snakeData) +
+    Number(snakeServices) +
+    Number(snakeBatch1) +
+    Number(snakeServiceLifecycle) +
+    Number(snakeServiceOracle) >
+  1
+)
+  throw new Error("choose one snake fixture flow");
+if (
+  (snakeServices || snakeBatch1 || snakeServiceLifecycle || snakeServiceOracle) &&
+  (projectIndex < 0 || projectFile)
+)
+  throw new Error("snake service flows require --project source directory");
+const startupOnly =
+  process.argv.includes("--startup-only") ||
+  snakeData ||
+  snakeServices ||
+  snakeBatch1 ||
+  snakeServiceLifecycle ||
+  snakeServiceOracle;
 const cacheInputSmoke = process.argv.includes("--cache-input-smoke");
 const logInputSmoke = process.argv.includes("--log-input-smoke");
 const settingsHotApply = process.argv.includes("--settings-hot-apply");
@@ -91,13 +148,26 @@ try {
       browserName === "safari" && projectFile ? [safariProjectFilePlugin(projectFile)] : undefined,
   });
   const port = viteServerPort(server);
+  if (
+    snakeServiceOracle &&
+    browserName === "safari" &&
+    (await realpath(oracleConfig.clientArtifact)) !==
+      (await realpath("/Applications/Safari.app/Contents/MacOS/Safari"))
+  )
+    throw new Error("Safari capture artifact must identify the installed Safari executable");
+  const firefoxCapabilities = nativeFirefoxCapabilities();
+  if (snakeServiceOracle && browserName === "firefox")
+    firefoxCapabilities["moz:firefoxOptions"] = {
+      ...firefoxCapabilities["moz:firefoxOptions"],
+      binary: oracleConfig.clientArtifact,
+    };
   browser = await remote({
     logLevel: "warn",
     connectionRetryTimeout: 20_000,
     connectionRetryCount: 1,
     capabilities:
       browserName === "firefox"
-        ? nativeFirefoxCapabilities()
+        ? firefoxCapabilities
         : {
             browserName: "safari",
             "wdio:enforceWebDriverClassic": true,
@@ -135,6 +205,9 @@ try {
     eventType: "browser-compat-snapshot",
     label: `${browserName} compatibility`,
     snapshotContext: () => ({ stage: compatibilityStage }),
+    allowFault: () => snakeServiceOracle && allowsServiceOracleFault(),
+    onSnapshot: (snapshot) =>
+      snakeServiceOracle ? recordServiceOracleWatchdog(snapshot) : undefined,
     output(line) {
       appendFileSync(snapshotPath, `${line}\n`);
       const snapshot = JSON.parse(line);
@@ -258,7 +331,7 @@ try {
   });
 
   compatibilityStage = projectFile ? "opening packaged project" : "opening fixture project";
-  if (snakeData) {
+  if (snakeData || snakeServiceOracle) {
     await browser.execute(() =>
       window.__RUSTYERA_TEST__.configure({
         start: { type: "new_game", seed: "123456" },
@@ -330,6 +403,22 @@ try {
       }),
     );
   }
+  if (snakeServices || snakeBatch1) {
+    compatibilityStage = "running snake services through visible controls";
+    const observed = await (snakeBatch1 ? runSnakeBatch1Client : runSnakeServicesClient)(
+      browser,
+      "browser",
+    );
+    console.log(
+      JSON.stringify({
+        browser: browserName,
+        type: snakeBatch1 ? "snake-batch1-integration" : "snake-service-integration",
+        verified: SNAKE_SERVICE_MARKERS,
+        output: observed.output,
+        bridgeKind: observed.bridgeKind,
+      }),
+    );
+  }
   if (expectedOutput) {
     compatibilityStage = `checking output marker ${expectedOutput}`;
     await browser.waitUntil(
@@ -382,6 +471,42 @@ try {
     const observed = await collectCompatibilityReport(browser);
     if (projectFile) assertPackagedStartup(observed.startupTelemetry);
     else assertColdStartup(observed.startupTelemetry);
+    if (snakeServiceLifecycle) {
+      // Keep the initial cold-start proof separate from the intentional later restart telemetry.
+      compatibilityStage =
+        "running snake service lifecycle through real pointer, keyboard and window actions";
+      const gate = await createLifecycleImageGate(project);
+      try {
+        const lifecycle = await runSnakeServiceLifecycleClient(browser, "browser", {
+          gate,
+          prepareReplacement: async () => {
+            const selection = await installPortableProjectPicker(
+              browser,
+              lifecycleReplacement,
+              lifecycleReplacementFiles,
+            );
+            if (!selection.ok)
+              throw new Error(`independent lifecycle picker failed: ${selection.error}`);
+          },
+        });
+        console.log(
+          JSON.stringify({ browser: browserName, type: "snake-service-lifecycle", ...lifecycle }),
+        );
+      } finally {
+        console.log(JSON.stringify({ type: "lifecycle-image-stream", ...gate.status() }));
+        await gate.close();
+      }
+    }
+    if (snakeServiceOracle) {
+      compatibilityStage = "capturing exact service oracle case through the real input";
+      const capture = await runServiceOracleCapture(
+        webdriverCaptureClient(browser),
+        oracleConfig,
+        oracleInputs,
+      );
+      console.log(JSON.stringify({ type: "snake-service-oracle-capture", ...capture }));
+      if (capture.status === "captured_with_observation_blocks") process.exitCode = 2;
+    }
     console.log(
       JSON.stringify({
         browser: browserName,

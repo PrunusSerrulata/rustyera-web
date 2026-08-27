@@ -1,3 +1,4 @@
+import { RuntimeEvidence, readTypedWatches } from "@/testing/runtimeEvidence";
 import { defineStore } from "pinia";
 import { computed, nextTick, ref } from "vue";
 import { blake3 } from "@noble/hashes/blake3.js";
@@ -196,6 +197,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     MAXIMUM_LOG_TOTAL_BYTES,
   );
   const testEnvironment = new RuntimeTestEnvironment();
+  const testEvidence = new RuntimeEvidence(import.meta.env.VITE_RUSTYERA_TEST === "1");
   const logs = runtimeLogs.entries;
   const projectSettingsOpen = ref(false);
   const preferencesOpen = ref(false);
@@ -850,6 +852,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     for (let index = 0; index < batch.events.length;) {
       if (batchLifecycleGeneration !== lifecycleGeneration) return;
       const event = batch.events[index];
+      testEvidence.receive(event);
       if (event.epoch != null && !observeRuntimeEpoch(event.epoch)) {
         index += 1;
         continue;
@@ -2602,7 +2605,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       await requestDebugGrant();
     } else {
       if (debugGrant.value)
-        await bridge.submitDebug({
+        await submitObservedDebug({
           type: "revoke",
           value: { grant_id: debugGrant.value.token.grant_id, reason: "disabled by user" },
         });
@@ -2675,8 +2678,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
   }
 
+  async function submitObservedDebug(message: any): Promise<number | bigint> {
+    const epoch = runtimeEpoch.value;
+    const messageId = await bridge.submitDebug(message);
+    testEvidence.sent("debug", message, messageId, epoch);
+    return messageId;
+  }
+
   async function requestDebugGrant(): Promise<void> {
-    await bridge.submitDebug(
+    await submitObservedDebug(
       transportValue({
         type: "hello",
         value: {
@@ -2702,7 +2712,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function debugCommand(command: any): Promise<void> {
     if (!debugGrant.value || diagnosisExporting.value) return;
     const grant = debugGrant.value.token;
-    const messageId = await bridge.submitDebug(
+    const messageId = await submitObservedDebug(
       transportValue({
         type: "request",
         value: { grant, command },
@@ -2714,7 +2724,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function debugRequest(command: any, timeoutMs = 10_000): Promise<any> {
     if (!debugGrant.value) throw new Error("debug grant 尚未就绪");
     const grant = debugGrant.value.token;
-    const messageId = await bridge.submitDebug(
+    const messageId = await submitObservedDebug(
       transportValue({
         type: "request",
         value: { grant, command },
@@ -2723,6 +2733,36 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const response = debugRequests.wait(messageId, grant, command?.type, timeoutMs);
     schedulePump(0);
     return response;
+  }
+
+  async function inspectTypedWatches(watches: string[]): Promise<Record<string, unknown>> {
+    if (import.meta.env.VITE_RUSTYERA_TEST !== "1")
+      throw new Error("typed observation requires test mode");
+    const epoch = runtimeEpoch.value;
+    const lifecycle = lifecycleGeneration;
+    if (!debugEnabled.value) {
+      await enableDebug();
+      await waitUntil(() => debugGrant.value != null, 10_000, "typed debug grant");
+    }
+    const alreadyStopped = debugStopToken(debugStop.value) != null;
+    if (!alreadyStopped) {
+      await pauseDebug();
+      await waitUntil(() => debugStopToken(debugStop.value) != null, 10_000, "typed debug stop");
+    }
+    const stop = debugStopToken(debugStop.value);
+    const stopIdentity = JSON.stringify(transportValue(stop));
+    const current = () =>
+      lifecycle === lifecycleGeneration &&
+      sameServiceInteger(epoch, runtimeEpoch.value) &&
+      JSON.stringify(transportValue(debugStopToken(debugStop.value))) === stopIdentity;
+    try {
+      return await readTypedWatches(watches, stop, debugRequest, () => {
+        if (!current()) throw new Error("typed watch stop or session changed");
+      });
+    } finally {
+      // Never resume a replacement session or somebody else's newer stop.
+      if (!alreadyStopped && current()) await continueDebug();
+    }
   }
 
   async function inspectWatches(watches: string[]): Promise<Record<string, unknown>> {
@@ -3014,6 +3054,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     message: RuntimeMessage,
     correlationId?: ServiceInteger,
   ): Promise<number | bigint> {
+    const observedEpoch = runtimeEpoch.value;
     const telemetry = startupTelemetry.value;
     const startupStart =
       message.type === "start" &&
@@ -3030,7 +3071,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
       const batch = await runtimePump.submitAndHandle(() =>
         bridge.submitRuntimeAndPump!(transported, correlationId),
       );
-      if (batch) return batch.submittedMessageId;
+      if (batch) {
+        testEvidence.sent(
+          "runtime",
+          transported,
+          batch.submittedMessageId,
+          observedEpoch,
+          correlationId,
+        );
+        return batch.submittedMessageId;
+      }
     }
     const submission = bridge.submitRuntime(transported, correlationId);
     // WorkerClient posts both requests to one Worker port, so queue the drive immediately:
@@ -3038,6 +3088,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     // Native IPC does not expose that ordering guarantee and keeps the acknowledgement barrier.
     if (bridge.kind === "browser") schedulePump(0);
     const messageId = await submission;
+    testEvidence.sent("runtime", transported, messageId, observedEpoch, correlationId);
     if (startupStart) startupTelemetryState.startMessageId = String(messageId);
     if (bridge.kind !== "browser") schedulePump(0);
     return messageId;
@@ -3320,6 +3371,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     enableDebug,
     debugCommand,
     inspectWatches,
+    inspectTypedWatches,
+    testRuntimeEvidence: () => testEvidence.snapshot(),
     openDebugDialog,
     closeDebugDialog,
     stepDebug,

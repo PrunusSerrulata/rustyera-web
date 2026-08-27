@@ -74,7 +74,24 @@ export function assertSnapshotProgress(previousSnapshot, currentSnapshot, label 
 }
 
 export function snapshotProgressSignature(snapshot) {
-  return JSON.stringify(withoutReportMetadata(snapshot));
+  // Appended transport/decode ledgers are capture evidence, not live game state.
+  // Polling/debug acknowledgements must not manufacture watchdog progress.
+  // Keep its failure status and preserve the complete ledger in the raw snapshot.
+  const runtime = snapshot?.runtime;
+  let observable = snapshot;
+  if (runtime && typeof runtime === "object") {
+    const projected = { ...runtime };
+    for (const field of ["serviceEvidence", "serviceLifecycle"]) {
+      const evidence = runtime[field];
+      if (evidence && typeof evidence === "object") {
+        projected[field] = Object.fromEntries(
+          Object.entries(evidence).filter(([key]) => key !== "records" && key !== "bytes"),
+        );
+      }
+    }
+    observable = { ...snapshot, runtime: projected };
+  }
+  return JSON.stringify(withoutReportMetadata(observable));
 }
 
 export function startTauriSessionMonitor(
@@ -87,6 +104,8 @@ export function startTauriSessionMonitor(
     label = "Tauri",
     output = console.log,
     snapshotContext = () => undefined,
+    allowFault = () => false,
+    onSnapshot,
   } = {},
 ) {
   let stopped = false;
@@ -126,7 +145,8 @@ export function startTauriSessionMonitor(
         const captured = await captureCompleteTauriSnapshot(browser);
         const snapshot = { ...captured, operation: snapshotContext() };
         const runtime = captured.runtime;
-        if (runtime?.fault != null) {
+        await onSnapshot?.(snapshot);
+        if (runtime?.fault != null && !allowFault()) {
           throw new Error(`${label} runtime faulted: ${JSON.stringify(snapshot)}`);
         }
         const terminalRejection = runtime?.logs?.find((entry) =>
@@ -137,7 +157,7 @@ export function startTauriSessionMonitor(
             `${label} runtime rejected the configured state: ${JSON.stringify(snapshot)}`,
           );
         }
-        output(
+        await output(
           JSON.stringify({
             type: eventType,
             capturedAt: new Date().toISOString(),

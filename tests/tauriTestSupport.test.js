@@ -1,6 +1,32 @@
+import {
+  observePendingCanvas,
+  assertCancelledLifecycle,
+} from "../scripts/snake-service-lifecycle-races.mjs";
+import { assertLifecyclePointer } from "../scripts/snake-service-lifecycle-test-support.mjs";
+import {
+  assertSnakeServiceState,
+  SNAKE_SERVICE_MARKERS,
+} from "../scripts/snake-services-test-support.mjs";
 /* global document, structuredClone, window */
 
 import path from "node:path";
+import { Buffer } from "node:buffer";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { gunzipSync } from "node:zlib";
+import {
+  CaptureWriter,
+  hashFile,
+  inventory,
+  selectCaptureCase,
+  sha256,
+} from "../scripts/snake-service-capture-io.mjs";
+import {
+  captureTerminal,
+  runServiceOracleCapture,
+  serviceOracleReady,
+  serviceOracleReadyMarker,
+} from "../scripts/snake-service-capture-client.mjs";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -19,6 +45,7 @@ import {
 } from "../scripts/tauri-test-support.mjs";
 
 afterEach(() => {
+  vi.useRealTimers();
   document.body.replaceChildren();
   delete window.__RUSTYERA_TEST__;
 });
@@ -179,6 +206,42 @@ describe("Tauri end-to-end test support", () => {
     ).not.toThrow();
   });
 
+  it("does not count growing capture history as game progress", () => {
+    const first = {
+      document: [{ tag: "body", text: "waiting", visible: true }],
+      runtime: {
+        phase: "waiting_input",
+        serviceEvidence: {
+          version: 1,
+          enabled: true,
+          overflow: false,
+          failure: null,
+          bytes: 20,
+          records: [{ messageId: "1", message: { type: "advance_time" } }],
+        },
+        serviceLifecycle: { enabled: true, failure: null, records: [{ phase: "start" }] },
+      },
+    };
+    const second = structuredClone(first);
+    second.runtime.serviceEvidence.records.push({
+      messageId: "2",
+      message: { type: "advance_time" },
+    });
+    second.runtime.serviceEvidence.bytes = 40;
+    second.runtime.serviceLifecycle.records.push({ phase: "settled" });
+    expect(() => assertSnapshotProgress(first, second)).toThrow(/identical/);
+    expect(second.runtime.serviceEvidence.records).toHaveLength(2);
+    expect(second.runtime.serviceLifecycle.records).toHaveLength(2);
+    second.runtime.phase = "running";
+    expect(() => assertSnapshotProgress(first, second)).not.toThrow();
+    second.runtime.phase = first.runtime.phase;
+    second.runtime.serviceEvidence.overflow = true;
+    expect(snapshotProgressSignature(first)).not.toBe(snapshotProgressSignature(second));
+    second.runtime.serviceEvidence.overflow = false;
+    second.runtime.serviceLifecycle.failure = "lifecycle_observation_limit";
+    expect(snapshotProgressSignature(first)).not.toBe(snapshotProgressSignature(second));
+  });
+
   it("ignores log timestamps but preserves observable runtime changes", () => {
     const first = {
       document: [],
@@ -289,5 +352,469 @@ describe("Tauri end-to-end test support", () => {
     await monitor.stop();
 
     expect(browser.execute).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("snake service client assertions", () => {
+  const ready = () => ({
+    bridgeKind: "tauri",
+    fault: null,
+    canInteract: true,
+    wait: { kind: "integer_value" },
+    output: [...SNAKE_SERVICE_MARKERS, "SNAKE_POINTER=40/-20/41", "SNAKE_SERVICES_READY"],
+  });
+  it("requires every semantic marker and actual script button value", () => {
+    expect(assertSnakeServiceState(ready(), "tauri")).toEqual(ready());
+    for (const marker of SNAKE_SERVICE_MARKERS)
+      expect(() =>
+        assertSnakeServiceState(
+          { ...ready(), output: ready().output.filter((value) => value !== marker) },
+          "tauri",
+        ),
+      ).toThrow("missing service marker");
+    expect(() =>
+      assertSnakeServiceState(
+        {
+          ...ready(),
+          output: ready().output.map((value) => value.replace("40/-20/41", "40/-20/1")),
+        },
+        "tauri",
+      ),
+    ).toThrow("script value 41");
+    expect(() =>
+      assertSnakeServiceState({ ...ready(), fault: { message: "stale projection" } }, "tauri"),
+    ).toThrow("service fault");
+    expect(() => assertSnakeServiceState(ready(), "browser")).toThrow("require browser");
+  });
+});
+
+describe("snake service lifecycle assertions", () => {
+  const geometry = {
+    pointer: { x: 30, y: 50 },
+    viewport: { left: 10, top: 20, clientLeft: 0, clientTop: 0, width: 300, height: 200 },
+  };
+  const state = (text) => ({ fault: null, output: [`SNAKE_LIFECYCLE_POINTER_0=${text}`] });
+  it("checks negative bottom-origin coordinates and the script value independently of DOM labels", () => {
+    expect(assertLifecyclePointer(state("20/-170/41"), 0, geometry, "41").actual).toEqual({
+      x: 20,
+      y: -170,
+      buttonValue: "41",
+    });
+    expect(() => assertLifecyclePointer(state("20/30/41"), 0, geometry, "41")).toThrow("pointer 0");
+    expect(() =>
+      assertLifecyclePointer(state("20/-170/SNAKE_LIFECYCLE_TARGET"), 0, geometry, "41"),
+    ).toThrow("pointer 0");
+    expect(() => assertLifecyclePointer(state("20/-170/1"), 0, geometry, "41")).toThrow(
+      "pointer 0",
+    );
+  });
+  it("requires empty no-hover values and rejects old geometry, duplicate markers and faults", () => {
+    expect(assertLifecyclePointer(state("20/-170/"), 0, geometry, "").actual.buttonValue).toBe("");
+    expect(() => assertLifecyclePointer(state("20/-170/41"), 0, geometry, "")).toThrow("pointer 0");
+    expect(() =>
+      assertLifecyclePointer(
+        state("20/-170/"),
+        0,
+        { ...geometry, viewport: { ...geometry.viewport, height: 250 } },
+        "",
+      ),
+    ).toThrow("pointer 0");
+    expect(() =>
+      assertLifecyclePointer(
+        {
+          fault: null,
+          output: ["SNAKE_LIFECYCLE_POINTER_0=20/-170/", "SNAKE_LIFECYCLE_POINTER_0=20/-170/"],
+        },
+        0,
+        geometry,
+        "",
+      ),
+    ).toThrow("exactly one");
+    expect(() =>
+      assertLifecyclePointer(
+        { ...state("20/-170/"), fault: { message: "stale" } },
+        0,
+        geometry,
+        "",
+      ),
+    ).toThrow("runtime fault");
+  });
+});
+
+describe("real service capture producer boundaries", () => {
+  function startupConfiguration(hazard = false) {
+    const ordinary = {
+      id: "s04-empty-lazy",
+      group: "SERVICES",
+      requests: [{ request: { op: "run", entry: "S04_CASE_EMPTY", watch: ["RESULT:10"] } }],
+    };
+    const noProgress = {
+      id: "s04-lines-no-progress",
+      group: "SERVICES_HAZARD",
+      requests: [{ request: { op: "run", entry: "S04_CASE_NO_PROGRESS", watch: ["RESULT:10"] } }],
+    };
+    const fixtureManifest = {
+      cases: hazard
+        ? [noProgress]
+        : [
+            {
+              id: "s04-other",
+              group: "SERVICES",
+              requests: [{ request: { op: "run", entry: "S04_CASE_OTHER", watch: [] } }],
+            },
+            ordinary,
+          ],
+    };
+    return {
+      family: "chromium",
+      fixtureManifest,
+      ...selectCaptureCase(fixtureManifest, hazard ? noProgress.id : ordinary.id),
+    };
+  }
+
+  it.each([false, true])("accepts only the exact fixture ready marker (hazard=%s)", (hazard) => {
+    const config = startupConfiguration(hazard);
+    const expected = hazard ? "S04_NO_PROGRESS_READY" : "S04_ORACLE_READY";
+    const other = hazard ? "S04_ORACLE_READY" : "S04_NO_PROGRESS_READY";
+    const marker = serviceOracleReadyMarker(config);
+    const ready = { canInteract: true, wait: { kind: "integer_value" }, output: [expected] };
+    expect(marker).toBe(expected);
+    expect(config.menu).toBe(hazard ? "1" : "2");
+    expect(serviceOracleReady(ready, marker)).toBe(true);
+    expect(serviceOracleReady({ ...ready, output: [expected + " suffix"] }, marker)).toBe(false);
+    expect(serviceOracleReady({ ...ready, output: [" " + expected] }, marker)).toBe(false);
+    expect(serviceOracleReady({ ...ready, output: [expected.toLowerCase()] }, marker)).toBe(false);
+    expect(serviceOracleReady({ ...ready, canInteract: false }, marker)).toBe(false);
+    expect(serviceOracleReady({ ...ready, wait: { kind: "string_value" } }, marker)).toBe(false);
+    expect(() => serviceOracleReady({ ...ready, output: [other] }, marker)).toThrow(
+      "unexpected service oracle ready marker",
+    );
+    expect(() => serviceOracleReady({ ...ready, output: [expected, other] }, marker)).toThrow(
+      "unexpected service oracle ready marker",
+    );
+    expect(() => serviceOracleReady({ ...ready, output: [expected, expected] }, marker)).toThrow(
+      "ambiguous service oracle ready marker",
+    );
+    expect(() =>
+      serviceOracleReady({ ...ready, fault: { message: "startup failed" } }, marker),
+    ).toThrow("fixture startup fault");
+    expect(() => serviceOracleReady({ ...ready, phase: "faulted" }, marker)).toThrow(
+      "fixture startup fault",
+    );
+  });
+
+  it("keeps the no-progress hazard isolated with its exact case, group and run entry", () => {
+    const mixed = startupConfiguration(true);
+    mixed.fixtureManifest.cases.push(startupConfiguration().selected);
+    expect(() => serviceOracleReadyMarker(mixed)).toThrow("independent single-case hazard fixture");
+    const wrongEntry = startupConfiguration(true);
+    wrongEntry.selected.requests[0].request.entry = "S04_CASE_EMPTY";
+    wrongEntry.request.entry = "S04_CASE_EMPTY";
+    expect(() => serviceOracleReadyMarker(wrongEntry)).toThrow(
+      "independent single-case hazard fixture",
+    );
+    const wrongGroup = startupConfiguration(true);
+    wrongGroup.selected.group = "SERVICES";
+    expect(() => serviceOracleReadyMarker(wrongGroup)).toThrow(
+      "independent single-case hazard fixture",
+    );
+    const ordinary = startupConfiguration();
+    ordinary.fixtureManifest.cases.push(startupConfiguration(true).selected);
+    expect(() => serviceOracleReadyMarker(ordinary)).toThrow(
+      "normal service capture cannot include the no-progress hazard",
+    );
+    const renamed = startupConfiguration(true);
+    renamed.selected.id = "s04-lines-no-progress-copy";
+    renamed.selected.group = "SERVICES";
+    expect(() => serviceOracleReadyMarker(renamed)).toThrow(
+      "normal service capture cannot include the no-progress hazard",
+    );
+  });
+
+  it("refuses changed selected IDs, menu numbers or requests before startup observation", () => {
+    const changedId = startupConfiguration();
+    changedId.selected = { ...changedId.selected, id: "S04-EMPTY-LAZY" };
+    expect(() => serviceOracleReadyMarker(changedId)).toThrow("exact case");
+    const changedMenu = startupConfiguration(true);
+    changedMenu.menu = "2";
+    expect(() => serviceOracleReadyMarker(changedMenu)).toThrow("menu/request differs");
+    const changedRequest = startupConfiguration(true);
+    changedRequest.request.watch = [];
+    expect(() => serviceOracleReadyMarker(changedRequest)).toThrow("menu/request differs");
+    expect(() => serviceOracleReady({}, "S04_ANY_READY")).toThrow(
+      "unknown exact service oracle ready marker",
+    );
+  });
+
+  it.each([false, true])(
+    "rejects the other fixture's marker before menu input or capture writes (hazard=%s)",
+    async (hazard) => {
+      const config = startupConfiguration(hazard);
+      const client = {
+        execute: vi.fn(async () => ({
+          canInteract: true,
+          wait: { kind: "integer_value" },
+          output: [hazard ? "S04_ORACLE_READY" : "S04_NO_PROGRESS_READY"],
+        })),
+        submit: vi.fn(),
+      };
+      await expect(runServiceOracleCapture(client, config, {})).rejects.toThrow(
+        "unexpected service oracle ready marker",
+      );
+      expect(client.execute).toHaveBeenCalledTimes(1);
+      expect(client.submit).not.toHaveBeenCalled();
+    },
+  );
+
+  it("maps only exact fixture IDs to their original visible menu numbers without expectations", () => {
+    const fixture = {
+      cases: [
+        {
+          id: "first",
+          requests: [{ request: { op: "run", entry: "FIRST", watch: [] }, expect: { forged: 42 } }],
+        },
+        {
+          id: "second",
+          requests: [
+            {
+              request: { op: "run", entry: "SECOND", watch: ["RESULT:10"] },
+              expect: { forged: 99 },
+            },
+          ],
+        },
+      ],
+    };
+    expect(selectCaptureCase(fixture, "second")).toMatchObject({
+      menu: "2",
+      request: { op: "run", entry: "SECOND", watch: ["RESULT:10"] },
+    });
+    expect(selectCaptureCase(fixture, "second").request).not.toHaveProperty("expect");
+    expect(() => selectCaptureCase(fixture, "SECOND")).toThrow("exact case");
+    expect(() =>
+      selectCaptureCase({ cases: [fixture.cases[0], fixture.cases[0]] }, "first"),
+    ).toThrow("duplicate");
+  });
+
+  it("never turns missing completion or an actual fault into a completed entry", () => {
+    expect(
+      captureTerminal({ canInteract: true, wait: {}, output: ["S04_ENTRY_BEGIN"] }),
+    ).toBeNull();
+    expect(captureTerminal({ canInteract: true, wait: {}, output: ["S04_CASE_COMPLETE"] })).toBe(
+      "completed",
+    );
+    expect(captureTerminal({ fault: { message: "bad HTML" }, output: ["S04_ENTRY_BEGIN"] })).toBe(
+      "fault",
+    );
+  });
+
+  it("writes ordered gzip packets and independent stored/decoded hashes without expanded trace copies", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "rustyera-service-capture-"));
+    try {
+      const writer = new CaptureWriter(directory);
+      await Promise.all([
+        writer.record({ type: "header", identity: { actual: true } }),
+        writer.record({ type: "footer", captureComplete: true }),
+      ]);
+      const trace = await writer.close();
+      const stored = await readFile(path.join(directory, trace.path));
+      const decoded = gunzipSync(stored);
+      expect(trace).toMatchObject({
+        storedBytes: stored.length,
+        storedSha256: sha256(stored),
+        decodedBytes: decoded.length,
+        decodedSha256: sha256(decoded),
+      });
+      expect(
+        decoded
+          .toString()
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line).index),
+      ).toEqual([0, 1]);
+      expect(await hashFile(path.join(directory, trace.path))).toEqual({
+        bytes: stored.length,
+        sha256: sha256(stored),
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("hashes Vite source inputs and keeps raw versus UTF8 BOM payload identity distinct", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "rustyera-service-inventory-"));
+    try {
+      await mkdir(path.join(directory, "src"));
+      await mkdir(path.join(directory, "scripts"));
+      await mkdir(path.join(directory, "dist"));
+      await writeFile(path.join(directory, "src/input.ts"), Buffer.from([0xef, 0xbb, 0xbf, 0x41]));
+      await writeFile(path.join(directory, "scripts/runner.mjs"), "real runner");
+      await writeFile(path.join(directory, "package-lock.json"), "{}");
+      await writeFile(path.join(directory, "dist/unrelated.js"), "not running in Vite dev");
+      const source = await inventory(directory, { sourceManifest: true, decoded: true });
+      expect(source.map((item) => item.path)).toEqual([
+        "package-lock.json",
+        "scripts/runner.mjs",
+        "src/input.ts",
+      ]);
+      expect(source.at(-1).decodedUtf8Sha256).toBe(sha256("A"));
+      expect(source.at(-1).sha256).not.toBe(source.at(-1).decodedUtf8Sha256);
+      await symlink(path.join(directory, "src/input.ts"), path.join(directory, "src/alias.ts"));
+      await expect(inventory(directory, { sourceManifest: true })).rejects.toThrow("symlink");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("records an explicitly permitted expected fault but still rejects identical full snapshots", async () => {
+    const state = {
+      document: [{ tag: "main", text: "fault" }],
+      runtime: { fault: { message: "expected malformed HTML" } },
+    };
+    const onSnapshot = vi.fn(async () => undefined);
+    const monitor = startTauriSessionMonitor(
+      { execute: vi.fn(async () => structuredClone(state)) },
+      { interval: 1, allowFault: () => true, onSnapshot, output: vi.fn() },
+    );
+    await expect(monitor.failure).rejects.toThrow("identical");
+    await expect(monitor.stop()).rejects.toThrow("identical");
+    expect(onSnapshot).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("real lifecycle race evidence assertions", () => {
+  const sourceUrl = "http://127.0.0.1:19001/snake-lifecycle/" + "a".repeat(64) + ".png";
+  const request = {
+    index: 8,
+    direction: "receive",
+    epoch: "20",
+    message: {
+      type: "service_request",
+      value: { request_id: "9", kind: "canvas", operation: "sample_canvas_pixel" },
+    },
+  };
+  const authorized = {
+    index: 0,
+    phase: "resource_authorized",
+    sourceUrl,
+    resourceGeneration: 4,
+    sha256: "b".repeat(64),
+    byteLength: 71,
+  };
+  const start = { index: 1, phase: "start", sourceUrl, resourceGeneration: 4 };
+  const cancel = { index: 2, phase: "cancelled", sourceUrl, resourceGeneration: 4 };
+  const settled = {
+    index: 4,
+    phase: "settled",
+    sourceUrl,
+    resourceGeneration: 4,
+    outcome: "resolved",
+  };
+  const fresh = {
+    index: 9,
+    direction: "receive",
+    epoch: "21",
+    message: {
+      type: "service_request",
+      value: { request_id: "9", kind: "canvas", operation: "sample_canvas_pixel" },
+    },
+  };
+  const reply = {
+    index: 10,
+    direction: "send",
+    epoch: "21",
+    message: { type: "service_response", value: { request_id: "9", result: { type: "ready" } } },
+  };
+  const freshDecode = {
+    index: 3,
+    phase: "settled",
+    resourceId: "resources/lifecycle-next.png",
+    resourceGeneration: 5,
+    outcome: "resolved",
+  };
+  const state = (wire = [request], decode = [authorized, start], epoch = "20") => ({
+    runtimeEpoch: epoch,
+    fault: null,
+    serviceEvidence: { enabled: true, overflow: false, failure: null, records: wire },
+    serviceLifecycle: { enabled: true, failure: null, records: decode },
+  });
+
+  it("requires actual pending service, source authorization and unfinished physical decode", () => {
+    expect(observePendingCanvas(state(), sourceUrl, 7)).toMatchObject({
+      epoch: "20",
+      authorization: authorized,
+    });
+    expect(observePendingCanvas(state([request], []), sourceUrl, 7)).toBeNull();
+    expect(() => observePendingCanvas(state([], [authorized, start]), sourceUrl, 7)).toThrow(
+      "exactly one",
+    );
+    expect(() => observePendingCanvas(state([request], [start]), sourceUrl, 7)).toThrow(
+      "authorized source hash",
+    );
+    expect(() =>
+      observePendingCanvas(state([request], [authorized, start, settled]), sourceUrl, 7),
+    ).toThrow("not physically");
+    expect(() =>
+      observePendingCanvas(state([request, { ...reply, epoch: "20" }]), sourceUrl, 7),
+    ).toThrow("already replied");
+    expect(() =>
+      observePendingCanvas(
+        { ...state(), serviceEvidence: { enabled: true, overflow: true } },
+        sourceUrl,
+        7,
+      ),
+    ).toThrow("complete real");
+  });
+
+  it("separates actual cancellation, new request progress, late settle and resource generation", () => {
+    const pending = observePendingCanvas(state(), sourceUrl, 7);
+    const held = state([request, fresh, reply], [authorized, start, cancel, freshDecode], "21");
+    const completed = state(
+      [request, fresh, reply],
+      [authorized, start, cancel, freshDecode, settled],
+      "21",
+    );
+    expect(assertCancelledLifecycle(pending, held, completed, true).settled).toEqual(settled);
+    expect(() =>
+      assertCancelledLifecycle(
+        pending,
+        state([request, fresh, reply], [authorized, start, freshDecode], "21"),
+        completed,
+        true,
+      ),
+    ).toThrow("actually cancelled");
+    expect(() => assertCancelledLifecycle(pending, completed, completed, true)).toThrow(
+      "physical decode",
+    );
+    expect(() =>
+      assertCancelledLifecycle(pending, { ...held, runtimeEpoch: "20" }, completed, true),
+    ).toThrow("new runtime epoch");
+    expect(() =>
+      assertCancelledLifecycle(
+        pending,
+        state([request, fresh], [authorized, start, cancel], "21"),
+        completed,
+        false,
+      ),
+    ).toThrow("did not complete");
+    expect(() =>
+      assertCancelledLifecycle(
+        pending,
+        state([request, fresh, reply], [authorized, start, cancel], "21"),
+        completed,
+        true,
+      ),
+    ).toThrow("newer real resource generation");
+    expect(() =>
+      assertCancelledLifecycle(
+        pending,
+        held,
+        state(
+          [request, fresh, reply, { ...reply, index: 11, epoch: "20" }],
+          completed.serviceLifecycle.records,
+          "21",
+        ),
+        true,
+      ),
+    ).toThrow("stale reply");
   });
 });

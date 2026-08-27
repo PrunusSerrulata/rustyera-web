@@ -7,6 +7,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   stat,
   writeFile,
@@ -19,6 +20,10 @@ import { promisify } from "node:util";
 import Mocha from "mocha";
 
 import { resolveTauriBinary, startTauriSessionMonitor } from "./tauri-test-support.mjs";
+import {
+  allowsServiceOracleFault,
+  recordServiceOracleWatchdog,
+} from "./snake-service-capture-client.mjs";
 
 const repository = fileURLToPath(new URL("..", import.meta.url));
 const cargoLocal = path.join(repository, "scripts/cargo-local.mjs");
@@ -36,11 +41,28 @@ const releaseRequested = arguments_.includes("--release");
 const configuredProject =
   projectIndex >= 0 ? arguments_[projectIndex + 1] : process.env.ERATW_PROJECT;
 let project = path.resolve(repository, configuredProject ?? "../games/eraTW");
+const originalProject = project;
 const requestedSpec = specIndex >= 0 ? arguments_[specIndex + 1] : undefined;
 // Keep game-specific image flows opt-in while they are under investigation.
 const configuredSpec = requestedSpec;
 const specName = configuredSpec ? path.basename(configuredSpec) : undefined;
 const specProfiles = {
+  "snake-service-oracle.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_SERVICE_ORACLE",
+    copyProject: true,
+  },
+  "snake-service-lifecycle.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_SERVICE_LIFECYCLE",
+    copyProject: true,
+  },
+  "snake-services.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_SERVICES",
+    copyProject: true,
+  },
+  "snake-batch1.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_BATCH1",
+    copyProject: true,
+  },
   "snake-data.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_DATA",
     copyProject: true,
@@ -169,6 +191,29 @@ if (specProfile?.copyProject) {
   if (specProfile.prewarmWithTui) project = await prewarmTuiCache(project, runDirectory);
 }
 
+let lifecycleReplacementProject;
+if (specName === "snake-service-lifecycle.spec.mjs") {
+  const index = arguments_.indexOf("--replacement-project");
+  if (index < 0 || !arguments_[index + 1])
+    throw new Error("lifecycle requires --replacement-project independent fixture");
+  const source = path.resolve(repository, arguments_[index + 1]);
+  if ((await realpath(source)) === (await realpath(originalProject)))
+    throw new Error("lifecycle successor must be a different project");
+  lifecycleReplacementProject = path.join(path.dirname(project), "lifecycle-independent-successor");
+  await cp(source, lifecycleReplacementProject, {
+    recursive: true,
+    errorOnExist: true,
+    force: false,
+  });
+  console.log(
+    JSON.stringify({
+      type: "lifecycle-successor-copy",
+      source,
+      project: lifecycleReplacementProject,
+    }),
+  );
+}
+
 const environment = {
   ...process.env,
   // WebdriverIO's bundled Undici dispatcher is incompatible with Node 26 when
@@ -178,6 +223,8 @@ const environment = {
   VITE_RUSTYERA_TEST: "1",
   VITE_RUSTYERA_TAURI_TEST: "1",
   VITE_RUSTYERA_TEST_PROJECT: project,
+  RUSTYERA_LIFECYCLE_REPLACEMENT_PROJECT: lifecycleReplacementProject ?? "",
+  RUSTYERA_SERVICE_CAPTURE_SOURCE_PROJECT: originalProject,
   VITE_RUSTYERA_TEST_PROJECT_FILE:
     specName === "diagnosis.spec.mjs"
       ? path.join(project, ".rustyera", "diagnosis-project.reraproj")
@@ -239,6 +286,7 @@ await run(
 );
 await access(binary);
 console.log(JSON.stringify({ type: "tauri-test-binary", path: binary }));
+environment.RUSTYERA_SERVICE_CAPTURE_NATIVE_BINARY = binary;
 Object.assign(process.env, environment);
 const { cleanupWdioSession, createTauriCapabilities, startWdioSession } =
   await import("@wdio/tauri-service");
@@ -272,6 +320,11 @@ try {
   monitor = startTauriSessionMonitor(browser, {
     deadline: taskDeadline,
     describeDeadline: () => deadlineDiagnostic(),
+    allowFault: () => specName === "snake-service-oracle.spec.mjs" && allowsServiceOracleFault(),
+    onSnapshot: (snapshot) =>
+      specName === "snake-service-oracle.spec.mjs"
+        ? recordServiceOracleWatchdog(snapshot)
+        : undefined,
     output(message) {
       snapshotLog.write(`${message}\n`);
       const report = JSON.parse(message);

@@ -1,3 +1,4 @@
+import { nextServiceLifecycleProject } from "@/testing/serviceLifecycle";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { invoke } from "@tauri-apps/api/core";
@@ -160,7 +161,10 @@ export class TauriBridge implements FrontendBridge {
     onSubmitted?: ProjectSubmittedListener,
     prepareAfterSelection?: ProjectSelectionPreparation,
   ): Promise<ProjectOpenMetrics | undefined> {
-    const testProject = import.meta.env.VITE_RUSTYERA_TEST_PROJECT;
+    const testProject =
+      import.meta.env.VITE_RUSTYERA_TEST === "1" && import.meta.env.VITE_RUSTYERA_TEST_PROJECT
+        ? nextServiceLifecycleProject(import.meta.env.VITE_RUSTYERA_TEST_PROJECT)
+        : undefined;
     if (import.meta.env.VITE_RUSTYERA_TEST === "1" && testProject) {
       const submittedAtMs = performance.now();
       onSubmitted?.(submittedAtMs);

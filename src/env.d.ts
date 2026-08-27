@@ -13,6 +13,7 @@ interface ImportMetaEnv {
   readonly VITE_RUSTYERA_FRONTEND_COMMIT?: string;
   readonly VITE_RUSTYERA_CORE_VERSION: string;
   readonly VITE_RUSTYERA_CORE_REVISION: string;
+  readonly VITE_RUSTYERA_CORE_FULL_REVISION: string;
 }
 
 interface Window {

@@ -1,6 +1,124 @@
 import { describe, expect, it } from "vitest";
 
 import { inputReplaySummary, isStableObservationCandidate } from "@/testing/control";
+import { RuntimeEvidence, readTypedWatches } from "@/testing/runtimeEvidence";
+
+describe("runtime evidence observations", () => {
+  it("preserves exact service integers and bytes without exposing mutable records", () => {
+    const evidence = new RuntimeEvidence(true);
+    const payload = Uint8Array.of(0xa1, 0, 1);
+    evidence.receive({
+      channel: "runtime",
+      epoch: 2n,
+      sequence: 3n,
+      messageId: 4n,
+      message: { type: "service_request", value: { request_id: 9223372036854775807n, payload } },
+    });
+    payload[0] = 0;
+    const observed = evidence.snapshot() as any;
+    expect(observed.records[0]).toMatchObject({
+      index: 0,
+      direction: "receive",
+      epoch: "2",
+      message: { value: { request_id: "9223372036854775807", payload: [0xa1, 0, 1] } },
+    });
+    observed.records[0].message.value.request_id = "changed";
+    expect((evidence.snapshot() as any).records[0].message.value.request_id).toBe(
+      "9223372036854775807",
+    );
+  });
+
+  it("discloses overflow instead of truncating a successful-looking capture", () => {
+    const evidence = new RuntimeEvidence(true, 1024, 1);
+    evidence.sent("runtime", { type: "start" }, 1n, 2n);
+    evidence.sent("runtime", { type: "service_response" }, 2n, 2n);
+    expect(evidence.snapshot()).toMatchObject({ overflow: true, failure: "observation_limit" });
+    expect((evidence.snapshot() as any).records).toHaveLength(1);
+    const disabled = new RuntimeEvidence(false, 1, 1);
+    disabled.sent("runtime", { type: "start" }, 1n, 2n);
+    expect(disabled.snapshot()).toMatchObject({ enabled: false, overflow: false, records: [] });
+  });
+
+  it("records serialization failure without changing runtime control flow", () => {
+    const evidence = new RuntimeEvidence(true);
+    const message: any = { type: "cycle" };
+    message.self = message;
+    expect(() => evidence.sent("runtime", message, 1, 1)).not.toThrow();
+    expect(evidence.snapshot()).toMatchObject({
+      overflow: true,
+      failure: "unserializable_observation",
+    });
+  });
+
+  it("paginates typed watches and distinguishes integer values from numeric strings", async () => {
+    const commands: any[] = [];
+    const stop = { program_generation: 7n };
+    const result: any = await readTypedWatches(
+      ["RESULT:0", "RESULTS:1", "MISSING"],
+      stop,
+      async (command) => {
+        commands.push(command);
+        if (command.type === "list_variables")
+          return {
+            type: "variable_page",
+            value: {
+              variables: [
+                {
+                  name: command.cursor === null ? "RESULT" : "RESULTS",
+                  symbol_key: [1],
+                  storage: "global",
+                  dimensions: [100],
+                },
+              ],
+              next_cursor: command.cursor === null ? 1n : null,
+            },
+          };
+        return {
+          type: "variable_value",
+          value: {
+            value:
+              command.value.indices[0] === 0
+                ? { type: "integer", value: -9223372036854775808n }
+                : { type: "string", value: "-9223372036854775808" },
+          },
+        };
+      },
+      () => {},
+    );
+    expect(result.values["RESULT:0"]).toMatchObject({
+      present: true,
+      value: { type: "integer", value: -9223372036854775808n },
+    });
+    expect(result.values["RESULTS:1"]).toMatchObject({
+      present: true,
+      value: { type: "string", value: "-9223372036854775808" },
+    });
+    expect(result.values.MISSING).toEqual({ present: false, error: "not_found" });
+    expect(commands.filter((command) => command.type === "list_variables")).toHaveLength(2);
+    expect(commands.at(-1).value.generation).toBe(7n);
+  });
+
+  it("rejects repeated cursors and a changed stop before reading stale values", async () => {
+    await expect(
+      readTypedWatches(
+        ["RESULT"],
+        {},
+        async () => ({ type: "variable_page", value: { variables: [], next_cursor: 1 } }),
+        () => {},
+      ),
+    ).rejects.toThrow("repeated a cursor");
+    await expect(
+      readTypedWatches(
+        ["RESULT"],
+        {},
+        async () => undefined,
+        () => {
+          throw new Error("changed stop");
+        },
+      ),
+    ).rejects.toThrow("changed stop");
+  });
+});
 
 describe("Web test observation boundaries", () => {
   it("keeps waiting while the runtime is running without an input boundary", () => {
