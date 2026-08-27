@@ -44,6 +44,13 @@ try {
     reducedMotion: "reduce",
   });
   page = await context.newPage();
+  // Playwright defaults to simulated focus even in headful mode. Restore native focus before
+  // installing observers; only subsequent real window transitions may satisfy the blur check.
+  await (
+    await context.newCDPSession(page)
+  ).send("Emulation.setFocusEmulationEnabled", {
+    enabled: false,
+  });
   await page.addInitScript(() => {
     Object.defineProperty(window, "showDirectoryPicker", { configurable: true, value: undefined });
   });
@@ -173,6 +180,11 @@ function playwrightLifecycleAdapter(browser, context, page) {
     async newWindow(url) {
       const next = await browser.newContext();
       const nextPage = await next.newPage();
+      await (
+        await next.newCDPSession(nextPage)
+      ).send("Emulation.setFocusEmulationEnabled", {
+        enabled: false,
+      });
       await nextPage.goto(url);
       active = "focus-probe";
       windows.set(active, { context: next, page: nextPage });
