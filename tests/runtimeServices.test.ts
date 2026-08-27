@@ -10,6 +10,7 @@ import { decodeServicePayload, encodeServicePayload } from "@/core/serviceCodec"
 import {
   RuntimeServiceError,
   projectionMap,
+  validateServiceRequest,
   type ProjectionQueryContext,
   type RuntimeServiceRequest,
 } from "@/core/runtimeServiceProtocol";
@@ -356,7 +357,33 @@ function htmlServiceHarness() {
   };
 }
 
+function wasmServiceRequest(request: RuntimeServiceRequest): RuntimeServiceRequest {
+  return {
+    ...request,
+    request_id: BigInt(request.request_id),
+    operation_version: {
+      major: BigInt(request.operation_version.major),
+      minor: BigInt(request.operation_version.minor),
+    },
+    payload: Array.from(request.payload, BigInt),
+  };
+}
+
 describe("HTML v2 runtime service adapter", () => {
+  it.each(["html_string_len", "html_substring", "html_string_lines"])(
+    "accepts WASM bigint versions and payload bytes for %s",
+    async (operation) => {
+      const harness = htmlServiceHarness();
+      await handleRuntimeService(
+        wasmServiceRequest(htmlServiceRequest(htmlServicePayload(), operation)),
+        42n,
+        harness.context,
+      );
+      expect(harness.measurement.measure).toHaveBeenCalledOnce();
+      expect((harness.send.mock.calls[0] as unknown as [any])[0].value.result.type).toBe("ready");
+    },
+  );
+
   it.each(["html_string_len", "html_substring", "html_string_lines"])(
     "routes %s to independent prefix measurement and returns minicbor enum arrays",
     async (operation) => {
@@ -633,6 +660,28 @@ describe("strict projection CBOR", () => {
 });
 
 describe("projection runtime services", () => {
+  it("accepts WASM bigint pointer versions and bytes without changing identities", async () => {
+    const harness = serviceHarness();
+    await handleRuntimeService(wasmServiceRequest(serviceRequest()), 42n, harness.context);
+    const [response, correlation] = harness.send.mock.calls[0] as unknown as [any, bigint];
+    expect(response.value.request_id).toBe(1n);
+    expect(response.value.result.type).toBe("ready");
+    expect(correlation).toBe(42n);
+  });
+
+  it.each([-1n, 65536n, 1.5, NaN, "1"])("rejects invalid service version %s", (major) => {
+    const request = {
+      ...serviceRequest(),
+      operation_version: { major, minor: 0n },
+    } as RuntimeServiceRequest;
+    expect(() => validateServiceRequest(request)).toThrow("service operation version is invalid");
+  });
+
+  it.each([-1n, 256n, 1.5, NaN, "163"])("rejects invalid protocol byte %s", (byte) => {
+    const request = { ...serviceRequest(), payload: [byte] } as RuntimeServiceRequest;
+    expect(() => validateServiceRequest(request)).toThrow("service payload contains a non-byte");
+  });
+
   it("preserves full-width request and correlation identities", async () => {
     const identity = 0xffff_ffff_ffff_fff0n;
     const harness = serviceHarness(identity);

@@ -43,8 +43,8 @@ export interface RuntimeServiceRequest {
   request_id: ServiceInteger;
   kind: string;
   operation: string;
-  operation_version: { major: number; minor: number };
-  payload: Uint8Array | number[];
+  operation_version: { major: ServiceInteger; minor: ServiceInteger };
+  payload: Uint8Array | ServiceInteger[];
 }
 
 export function serviceInteger(value: unknown, name: string, signed = false): ServiceInteger {
@@ -129,16 +129,12 @@ export function validateServiceRequest(request: RuntimeServiceRequest): unknown 
   const version = request.operation_version;
   if (
     !version ||
-    !Number.isInteger(version.major) ||
-    !Number.isInteger(version.minor) ||
-    version.major < 0 ||
-    version.major > 65535 ||
-    version.minor < 0 ||
-    version.minor > 65535
+    !isBoundedUnsignedInteger(version.major, 65535) ||
+    !isBoundedUnsignedInteger(version.minor, 65535)
   )
     throw new RuntimeServiceError("invalid_request", "service operation version is invalid");
   const major = isHtmlQueryService(request) ? 2 : 1;
-  if (version.major !== major || version.minor !== 0)
+  if (!sameServiceInteger(version.major, major) || !sameServiceInteger(version.minor, 0))
     throw new RuntimeServiceError(
       "unsupported",
       `service operation version ${version.major}.${version.minor} is not implemented`,
@@ -152,20 +148,27 @@ export function validateServiceRequest(request: RuntimeServiceRequest): unknown 
     throw new RuntimeServiceError("invalid_request", "service payload is not bytes");
   if (request.payload.length > (isHtmlQueryService(request) ? 2 : 16) * 1024 * 1024)
     throw new RuntimeServiceError("resource_limit", "service payload exceeds the frontend budget");
-  if (
-    request.payload.some(
-      (byte) => typeof byte !== "number" || !Number.isInteger(byte) || byte < 0 || byte > 255,
-    )
-  )
+  if (request.payload.some((byte) => !isBoundedUnsignedInteger(byte, 255)))
     throw new RuntimeServiceError("invalid_request", "service payload contains a non-byte value");
   try {
-    if (isStrictProjectionService(request))
-      validateProjectionCbor(
-        request.payload instanceof Uint8Array ? request.payload : Uint8Array.from(request.payload),
-      );
-    return decodeServicePayload(request.payload);
+    // The generic WASM protocol value represents all integers, including u16
+    // versions and byte arrays, as bigint. Narrow only after validating bounds.
+    const bytes =
+      request.payload instanceof Uint8Array
+        ? request.payload
+        : Uint8Array.from(request.payload, Number);
+    if (isStrictProjectionService(request)) validateProjectionCbor(bytes);
+    return decodeServicePayload(bytes);
   } catch (error) {
     if (error instanceof RuntimeServiceError) throw error;
     throw new RuntimeServiceError("invalid_request", `invalid service CBOR: ${String(error)}`);
   }
+}
+
+function isBoundedUnsignedInteger(value: unknown, maximum: number): value is ServiceInteger {
+  return (
+    (typeof value === "bigint" || (typeof value === "number" && Number.isInteger(value))) &&
+    value >= 0 &&
+    value <= maximum
+  );
 }
