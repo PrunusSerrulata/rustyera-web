@@ -6,7 +6,10 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { isolatedProject } from "./web-test-lib.mjs";
 import { createLoopbackViteServer, viteServerPort } from "./vite-test-server.mjs";
-import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs";
+import {
+  captureCompleteTauriSnapshot,
+  startCompleteSnapshotMonitor,
+} from "./tauri-test-support.mjs";
 import { createLifecycleImageGate } from "./snake-service-lifecycle-gate.mjs";
 import { runSnakeServiceLifecycleClient } from "./snake-service-lifecycle-test-support.mjs";
 
@@ -25,7 +28,7 @@ await mkdir(output, { recursive: false });
 const sourceCopy = await isolatedProject(project, { cleanSaves: true });
 const successorCopy = await isolatedProject(successor, { cleanSaves: true });
 const repository = fileURLToPath(new URL("..", import.meta.url));
-let server, browser, gate, monitor;
+let server, browser, gate, monitor, page;
 let failure;
 try {
   server = await createLoopbackViteServer({
@@ -40,7 +43,7 @@ try {
     viewport: { width: 1280, height: 900 },
     reducedMotion: "reduce",
   });
-  const page = await context.newPage();
+  page = await context.newPage();
   await page.addInitScript(() => {
     Object.defineProperty(window, "showDirectoryPicker", { configurable: true, value: undefined });
   });
@@ -96,6 +99,22 @@ try {
   };
   await appendFile(path.join(output, "result.json"), JSON.stringify(report));
   console.log(JSON.stringify(report));
+} catch (error) {
+  // Preserve the precise failure frontier even when it falls between watchdog ticks.
+  let snapshot, snapshotError;
+  try {
+    if (page && !page.isClosed())
+      snapshot = await captureCompleteTauriSnapshot({
+        execute: (callback) => page.evaluate(callback),
+      });
+  } catch (cause) {
+    snapshotError = String(cause);
+  }
+  await appendFile(
+    path.join(output, "failure.json"),
+    JSON.stringify({ error: String(error), snapshot, snapshotError }),
+  );
+  throw error;
 } finally {
   try {
     if (gate)
