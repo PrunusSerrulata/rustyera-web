@@ -39,6 +39,26 @@ describe("runtime evidence observations", () => {
     expect(disabled.snapshot()).toMatchObject({ enabled: false, overflow: false, records: [] });
   });
 
+  it("distinguishes reused wire identities across actual frontend session generations", () => {
+    const evidence = new RuntimeEvidence(true);
+    const message = { type: "service_response", value: { request_id: 2 } };
+    evidence.sent("runtime", message, 5, 2, undefined, 3);
+    evidence.sent("runtime", message, 5, 2, undefined, 4);
+    evidence.receive(
+      {
+        channel: "runtime",
+        epoch: 2,
+        sequence: 1,
+        messageId: 6,
+        message: { type: "status", value: {} },
+      },
+      4,
+    );
+    const snapshot = evidence.snapshot(4) as any;
+    expect(snapshot.sessionGeneration).toBe(4);
+    expect(snapshot.records.map((row: any) => row.sessionGeneration)).toEqual([3, 4, 4]);
+  });
+
   it("records serialization failure without changing runtime control flow", () => {
     const evidence = new RuntimeEvidence(true);
     const message: any = { type: "cycle" };

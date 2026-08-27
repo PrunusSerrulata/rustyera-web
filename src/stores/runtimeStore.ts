@@ -852,7 +852,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     for (let index = 0; index < batch.events.length;) {
       if (batchLifecycleGeneration !== lifecycleGeneration) return;
       const event = batch.events[index];
-      testEvidence.receive(event);
+      testEvidence.receive(event, batchLifecycleGeneration);
       if (event.epoch != null && !observeRuntimeEpoch(event.epoch)) {
         index += 1;
         continue;
@@ -2680,8 +2680,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function submitObservedDebug(message: any): Promise<number | bigint> {
     const epoch = runtimeEpoch.value;
+    const sessionGeneration = lifecycleGeneration;
     const messageId = await bridge.submitDebug(message);
-    testEvidence.sent("debug", message, messageId, epoch);
+    testEvidence.sent("debug", message, messageId, epoch, undefined, sessionGeneration);
     return messageId;
   }
 
@@ -3055,6 +3056,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     correlationId?: ServiceInteger,
   ): Promise<number | bigint> {
     const observedEpoch = runtimeEpoch.value;
+    const observedSessionGeneration = lifecycleGeneration;
     const telemetry = startupTelemetry.value;
     const startupStart =
       message.type === "start" &&
@@ -3078,6 +3080,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           batch.submittedMessageId,
           observedEpoch,
           correlationId,
+          observedSessionGeneration,
         );
         return batch.submittedMessageId;
       }
@@ -3088,7 +3091,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
     // Native IPC does not expose that ordering guarantee and keeps the acknowledgement barrier.
     if (bridge.kind === "browser") schedulePump(0);
     const messageId = await submission;
-    testEvidence.sent("runtime", transported, messageId, observedEpoch, correlationId);
+    testEvidence.sent(
+      "runtime",
+      transported,
+      messageId,
+      observedEpoch,
+      correlationId,
+      observedSessionGeneration,
+    );
     if (startupStart) startupTelemetryState.startMessageId = String(messageId);
     if (bridge.kind !== "browser") schedulePump(0);
     return messageId;
@@ -3372,7 +3382,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     debugCommand,
     inspectWatches,
     inspectTypedWatches,
-    testRuntimeEvidence: () => testEvidence.snapshot(),
+    testRuntimeEvidence: () => testEvidence.snapshot(lifecycleGeneration),
     openDebugDialog,
     closeDebugDialog,
     stepDebug,

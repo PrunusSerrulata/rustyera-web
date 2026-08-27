@@ -12,8 +12,8 @@ export class RuntimeEvidence {
     private readonly maximumRecords = 8192,
   ) {}
 
-  receive(event: WebEvent): void {
-    this.record({ direction: "receive", ...event });
+  receive(event: WebEvent, sessionGeneration = 0): void {
+    this.record({ direction: "receive", ...event, sessionGeneration });
   }
 
   sent(
@@ -22,13 +22,23 @@ export class RuntimeEvidence {
     messageId: number | bigint,
     epoch: number | bigint,
     correlationId?: number | bigint,
+    sessionGeneration = 0,
   ): void {
-    this.record({ direction: "send", channel, message, messageId, epoch, correlationId });
+    this.record({
+      direction: "send",
+      channel,
+      message,
+      messageId,
+      epoch,
+      correlationId,
+      sessionGeneration,
+    });
   }
 
-  snapshot(): Record<string, unknown> {
+  snapshot(sessionGeneration = 0): Record<string, unknown> {
     return {
       version: 1,
+      sessionGeneration,
       enabled: this.enabled,
       overflow: this.failure !== null,
       failure: this.failure,

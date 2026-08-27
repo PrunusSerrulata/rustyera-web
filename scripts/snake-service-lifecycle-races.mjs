@@ -3,17 +3,29 @@
 export function lifecycleRecords(state) {
   if (
     !state?.serviceEvidence?.enabled ||
+    !Number.isSafeInteger(state.serviceEvidence.sessionGeneration) ||
+    state.serviceEvidence.sessionGeneration < 0 ||
     state.serviceEvidence.overflow ||
     state.serviceEvidence.failure ||
     !state.serviceLifecycle?.enabled ||
     state.serviceLifecycle.failure
   )
     throw new Error("complete real lifecycle/transport evidence is required");
-  return { wire: state.serviceEvidence.records, decode: state.serviceLifecycle.records };
+  return {
+    wire: state.serviceEvidence.records,
+    decode: state.serviceLifecycle.records,
+    sessionGeneration: state.serviceEvidence.sessionGeneration,
+    epoch: String(state.runtimeEpoch),
+  };
+}
+
+function sameSession(row, session) {
+  return row.sessionGeneration === session.sessionGeneration && String(row.epoch) === session.epoch;
 }
 
 export function observePendingCanvas(state, sourceUrl, afterIndex) {
-  const { wire, decode } = lifecycleRecords(state);
+  const session = lifecycleRecords(state);
+  const { wire, decode } = session;
   const starts = decode.filter((row) => row.sourceUrl === sourceUrl && row.phase === "start");
   if (!starts.length) return null;
   if (
@@ -26,6 +38,7 @@ export function observePendingCanvas(state, sourceUrl, afterIndex) {
   const requests = wire.filter(
     (row) =>
       row.index > afterIndex &&
+      sameSession(row, session) &&
       row.direction === "receive" &&
       row.message?.type === "service_request" &&
       row.message.value?.kind === "canvas" &&
@@ -48,9 +61,10 @@ export function observePendingCanvas(state, sourceUrl, afterIndex) {
   if (
     wire.some(
       (row) =>
+        row.index > request.index &&
         row.direction === "send" &&
         row.message?.type === "service_response" &&
-        String(row.epoch) === String(request.epoch) &&
+        sameSession(row, session) &&
         String(row.message.value?.request_id) === String(request.message.value.request_id),
     )
   )
@@ -61,6 +75,7 @@ export function observePendingCanvas(state, sourceUrl, afterIndex) {
     decodeStart: starts[0],
     sourceUrl,
     epoch: String(request.epoch),
+    sessionGeneration: session.sessionGeneration,
   };
 }
 
@@ -80,15 +95,16 @@ export function assertCancelledLifecycle(
     held.decode.some((row) => old(row) && row.phase === "settled")
   )
     throw new Error("old image must be actually cancelled while physical decode is still pending");
-  if (String(beforeRelease.runtimeEpoch) === pending.epoch || beforeRelease.fault)
+  if (sameSession(held, pending) || beforeRelease.fault)
     throw new Error(
-      "replacement must reach a healthy new runtime epoch before old bytes are released",
+      "replacement must reach a healthy new runtime session before old bytes are released",
     );
   const late = after.wire.filter(
     (row) =>
+      row.index > pending.request.index &&
       row.direction === "send" &&
       row.message?.type === "service_response" &&
-      String(row.epoch) === pending.epoch &&
+      sameSession(row, pending) &&
       String(row.message.value?.request_id) === String(pending.request.message.value.request_id),
   );
   if (late.length) throw new Error("retired service produced a stale reply");
@@ -99,7 +115,7 @@ export function assertCancelledLifecycle(
     (row) =>
       row.index > pending.request.index &&
       row.direction === "receive" &&
-      String(row.epoch) === String(beforeRelease.runtimeEpoch) &&
+      sameSession(row, held) &&
       row.message?.type === "service_request" &&
       row.message.value?.kind === "canvas" &&
       row.message.value?.operation === "sample_canvas_pixel",
@@ -108,9 +124,10 @@ export function assertCancelledLifecycle(
     !freshRequest ||
     !held.wire.some(
       (row) =>
+        row.index > freshRequest.index &&
         row.direction === "send" &&
         row.message?.type === "service_response" &&
-        String(row.epoch) === String(freshRequest.epoch) &&
+        sameSession(row, held) &&
         String(row.message.value?.request_id) === String(freshRequest.message.value.request_id) &&
         row.message.value?.result?.type === "ready",
     )
@@ -133,6 +150,8 @@ export function assertCancelledLifecycle(
     freshDecode,
     beforeReleaseEpoch: beforeRelease.runtimeEpoch,
     afterReleaseEpoch: completed.runtimeEpoch,
+    beforeReleaseSessionGeneration: held.sessionGeneration,
+    afterReleaseSessionGeneration: after.sessionGeneration,
   };
 }
 
@@ -214,7 +233,7 @@ export async function runLifecycleRaces(browser, bridgeKind, options) {
         state.bridgeKind === bridgeKind &&
         state.canInteract &&
         state.output.includes(marker) &&
-        String(state.runtimeEpoch) !== pending.epoch &&
+        !sameSession(lifecycleRecords(state), pending) &&
         lifecycleRecords(state).decode.some(
           (row) => row.sourceUrl === pending.sourceUrl && row.phase === "cancelled",
         ) &&
@@ -222,7 +241,7 @@ export async function runLifecycleRaces(browser, bridgeKind, options) {
           (row) =>
             row.direction === "send" &&
             row.message?.type === "service_response" &&
-            String(row.epoch) === String(state.runtimeEpoch) &&
+            sameSession(row, lifecycleRecords(state)) &&
             row.message.value?.result?.type === "ready",
         ),
     );

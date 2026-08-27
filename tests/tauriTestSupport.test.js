@@ -685,6 +685,7 @@ describe("real lifecycle race evidence assertions", () => {
   const sourceUrl = "http://127.0.0.1:19001/snake-lifecycle/" + "a".repeat(64) + ".png";
   const request = {
     index: 8,
+    sessionGeneration: 4,
     direction: "receive",
     epoch: "20",
     message: {
@@ -711,6 +712,7 @@ describe("real lifecycle race evidence assertions", () => {
   };
   const fresh = {
     index: 9,
+    sessionGeneration: 5,
     direction: "receive",
     epoch: "21",
     message: {
@@ -720,6 +722,7 @@ describe("real lifecycle race evidence assertions", () => {
   };
   const reply = {
     index: 10,
+    sessionGeneration: 5,
     direction: "send",
     epoch: "21",
     message: { type: "service_response", value: { request_id: "9", result: { type: "ready" } } },
@@ -734,7 +737,13 @@ describe("real lifecycle race evidence assertions", () => {
   const state = (wire = [request], decode = [authorized, start], epoch = "20") => ({
     runtimeEpoch: epoch,
     fault: null,
-    serviceEvidence: { enabled: true, overflow: false, failure: null, records: wire },
+    serviceEvidence: {
+      enabled: true,
+      overflow: false,
+      failure: null,
+      records: wire,
+      sessionGeneration: epoch === "21" ? 5 : 4,
+    },
     serviceLifecycle: { enabled: true, failure: null, records: decode },
   });
 
@@ -754,7 +763,11 @@ describe("real lifecycle race evidence assertions", () => {
       observePendingCanvas(state([request], [authorized, start, settled]), sourceUrl, 7),
     ).toThrow("not physically");
     expect(() =>
-      observePendingCanvas(state([request, { ...reply, epoch: "20" }]), sourceUrl, 7),
+      observePendingCanvas(
+        state([request, { ...reply, epoch: "20", sessionGeneration: 4 }]),
+        sourceUrl,
+        7,
+      ),
     ).toThrow("already replied");
     expect(() =>
       observePendingCanvas(
@@ -763,6 +776,40 @@ describe("real lifecycle race evidence assertions", () => {
         7,
       ),
     ).toThrow("complete real");
+  });
+
+  it("does not match old replies when a restarted transport reuses its epoch and request ID", () => {
+    const history = { ...reply, index: 3, epoch: "20", sessionGeneration: 3 };
+    const earlier = { ...reply, index: 5, epoch: "20", sessionGeneration: 4 };
+    const pending = observePendingCanvas(state([history, earlier, request]), sourceUrl, 7);
+    expect(pending.request.index).toBe(8);
+    const held = state(
+      [history, earlier, request, { ...fresh, epoch: "20" }, { ...reply, epoch: "20" }],
+      [authorized, start, cancel, freshDecode],
+      "21",
+    );
+    held.runtimeEpoch = "20";
+    const completed = {
+      ...held,
+      serviceLifecycle: {
+        ...held.serviceLifecycle,
+        records: [authorized, start, cancel, freshDecode, settled],
+      },
+    };
+    expect(
+      assertCancelledLifecycle(pending, held, completed, true).beforeReleaseSessionGeneration,
+    ).toBe(5);
+    const stale = {
+      ...completed,
+      serviceEvidence: {
+        ...completed.serviceEvidence,
+        records: [
+          ...completed.serviceEvidence.records,
+          { ...reply, index: 11, epoch: "20", sessionGeneration: 4 },
+        ],
+      },
+    };
+    expect(() => assertCancelledLifecycle(pending, held, stale, true)).toThrow("stale reply");
   });
 
   it("separates actual cancellation, new request progress, late settle and resource generation", () => {
@@ -786,8 +833,17 @@ describe("real lifecycle race evidence assertions", () => {
       "physical decode",
     );
     expect(() =>
-      assertCancelledLifecycle(pending, { ...held, runtimeEpoch: "20" }, completed, true),
-    ).toThrow("new runtime epoch");
+      assertCancelledLifecycle(
+        pending,
+        {
+          ...held,
+          runtimeEpoch: "20",
+          serviceEvidence: { ...held.serviceEvidence, sessionGeneration: 4 },
+        },
+        completed,
+        true,
+      ),
+    ).toThrow("new runtime session");
     expect(() =>
       assertCancelledLifecycle(
         pending,
@@ -809,7 +865,7 @@ describe("real lifecycle race evidence assertions", () => {
         pending,
         held,
         state(
-          [request, fresh, reply, { ...reply, index: 11, epoch: "20" }],
+          [request, fresh, reply, { ...reply, index: 11, epoch: "20", sessionGeneration: 4 }],
           completed.serviceLifecycle.records,
           "21",
         ),
