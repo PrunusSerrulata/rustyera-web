@@ -1,12 +1,31 @@
 import { flushPromises, shallowMount } from "@vue/test-utils";
-import { nextTick, reactive, ref } from "vue";
+import { nextTick, reactive, ref, unref } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const scrollToIndex = vi.hoisted(() => vi.fn());
 const measure = vi.hoisted(() => vi.fn());
 const naturalMeasureElement = vi.hoisted(() => vi.fn());
 const virtualOptions = vi.hoisted(() => ({ value: undefined as any }));
-const virtualState = vi.hoisted(() => ({ items: [] as any[], totalSize: 0 }));
+const virtualState = vi.hoisted(() => ({
+  items: [] as any[],
+  totalSize: 0,
+  naturalRange: { startIndex: 0, endIndex: 0 },
+  useOptionsRange: false,
+}));
+const defaultRangeExtractor = vi.hoisted(
+  () => (range: { startIndex: number; endIndex: number; overscan: number; count: number }) => {
+    if (range.count === 0) return [];
+    return Array.from(
+      {
+        length:
+          Math.min(range.count - 1, range.endIndex + range.overscan) -
+          Math.max(0, range.startIndex - range.overscan) +
+          1,
+      },
+      (_, offset) => Math.max(0, range.startIndex - range.overscan) + offset,
+    );
+  },
+);
 const continueFromViewport = vi.hoisted(() => vi.fn());
 const projectViewport = vi.hoisted(() => vi.fn());
 const store = reactive({
@@ -32,12 +51,28 @@ const store = reactive({
 });
 
 vi.mock("@tanstack/vue-virtual", () => ({
+  defaultRangeExtractor,
   measureElement: naturalMeasureElement,
   useVirtualizer: (options: any) => {
     virtualOptions.value = options;
     return ref({
-      getVirtualItems: () => virtualState.items,
+      getVirtualItems: () => {
+        if (!virtualState.useOptionsRange) return virtualState.items;
+        const resolved = unref(options);
+        return resolved
+          .rangeExtractor({
+            ...virtualState.naturalRange,
+            overscan: resolved.overscan,
+            count: resolved.count,
+          })
+          .map((index: number) => ({
+            index,
+            key: resolved.getItemKey(index),
+            start: index * resolved.estimateSize(index),
+          }));
+      },
       getTotalSize: () => virtualState.totalSize,
+      calculateRange: () => virtualState.naturalRange,
       measureElement: vi.fn(),
       measure,
       scrollToIndex,
@@ -60,6 +95,8 @@ describe("game viewport", () => {
     store.scrollHeight = 1;
     virtualState.items = [];
     virtualState.totalSize = 0;
+    virtualState.naturalRange = { startIndex: 0, endIndex: 0 };
+    virtualState.useOptionsRange = false;
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
       callback(0);
       return 1;
@@ -200,6 +237,84 @@ describe("game viewport", () => {
     wrapper.unmount();
   });
 
+  it("mounts the terminal history range in the first followed commit", async () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    virtualState.useOptionsRange = true;
+    virtualState.naturalRange = { startIndex: 20, endIndex: 59 };
+    store.presentation.lines = Array.from({ length: 100 }, (_, index) => ({
+      line_id: index + 1,
+      alignment: "left",
+      runs: [],
+    }));
+    const wrapper = shallowMount(GameViewport);
+    scrollToIndex.mockClear();
+
+    store.presentation.lines = Array.from({ length: 100 }, (_, index) => ({
+      line_id: index + 101,
+      alignment: "left",
+      runs: [],
+    }));
+    store.presentation.revision += 1;
+    store.presentation.historyRevision += 1;
+    await nextTick();
+
+    const committedIds = wrapper
+      .findAllComponents(DisplayLine)
+      .map((line) => line.props("line").line_id);
+    expect(committedIds.at(-1)).toBe(200);
+    expect(committedIds).not.toContain(101);
+    expect(committedIds).toHaveLength(40);
+    expect(scrollToIndex).toHaveBeenCalledOnce();
+    expect(callbacks).toHaveLength(1);
+    expect(virtualOptions.value.value.rangeExtractor).not.toBe(defaultRangeExtractor);
+
+    callbacks.shift()?.(0);
+    await flushPromises();
+    expect(virtualOptions.value.value.rangeExtractor).not.toBe(defaultRangeExtractor);
+    callbacks.shift()?.(0);
+    await flushPromises();
+    expect(virtualOptions.value.value.rangeExtractor).toBe(defaultRangeExtractor);
+    wrapper.unmount();
+  });
+
+  it("does not retain the terminal range after scrolling back", async () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    const wrapper = shallowMount(GameViewport);
+    const viewport = wrapper.get<HTMLElement>("main").element;
+    let scrollTop = 50;
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 50 },
+      scrollHeight: { configurable: true, value: 100 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+
+    store.presentation.historyRevision += 1;
+    await nextTick();
+    callbacks.shift()?.(0);
+    await flushPromises();
+    callbacks.shift()?.(0);
+    await flushPromises();
+    scrollTop = 0;
+    await wrapper.get("main").trigger("scroll");
+
+    expect(virtualOptions.value.value.rangeExtractor).toBe(defaultRangeExtractor);
+    wrapper.unmount();
+  });
+
   it("updates an equal-length dynamic tail without moving the viewport", async () => {
     store.presentation.lines = [
       { line_id: 1, alignment: "left", runs: [] },
@@ -232,6 +347,7 @@ describe("game viewport", () => {
     expect(wrapper.findComponent(DisplayLine).props("line")).toEqual(store.presentation.lines[1]);
     expect(scrollToIndex).not.toHaveBeenCalled();
     expect(setScrollTop).not.toHaveBeenCalled();
+    expect(virtualOptions.value.value.rangeExtractor).toBe(defaultRangeExtractor);
     wrapper.unmount();
   });
 
@@ -294,13 +410,21 @@ describe("game viewport", () => {
     const wrapper = shallowMount(GameViewport);
     store.presentation.historyRevision += 1;
     await nextTick();
+    const firstExtractor = virtualOptions.value.value.rangeExtractor;
     store.presentation.historyRevision += 1;
     await nextTick();
 
-    while (callbacks.length) callbacks.shift()?.(0);
+    expect(virtualOptions.value.value.rangeExtractor).not.toBe(firstExtractor);
+
+    callbacks.shift()?.(0);
     await flushPromises();
-    while (callbacks.length) callbacks.shift()?.(0);
+    expect(virtualOptions.value.value.rangeExtractor).not.toBe(defaultRangeExtractor);
+    callbacks.shift()?.(0);
     await flushPromises();
+    expect(virtualOptions.value.value.rangeExtractor).not.toBe(defaultRangeExtractor);
+    callbacks.shift()?.(0);
+    await flushPromises();
+    expect(virtualOptions.value.value.rangeExtractor).toBe(defaultRangeExtractor);
 
     expect(scrollToIndex).toHaveBeenCalledTimes(3);
     wrapper.unmount();

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import {
+  defaultRangeExtractor,
   measureElement as measureVirtualElement,
   useVirtualizer,
+  type Range,
   type Virtualizer,
 } from "@tanstack/vue-virtual";
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 
 import DisplayLine from "@/components/DisplayLine.vue";
 import GameTooltip from "@/components/GameTooltip.vue";
@@ -36,6 +38,8 @@ let keyedRuntimeEpoch = "";
 let bottomFollowRevision = 0;
 let followingBottom = false;
 const keyedLines = new Map<number, { id: string; key: string; mediaLayout?: string }>();
+type RangeExtractor = (range: Range) => number[];
+const activeRangeExtractor = shallowRef<RangeExtractor>(defaultRangeExtractor);
 
 watch(
   () => store.runtimeEpoch,
@@ -133,6 +137,7 @@ const virtualizer = useVirtualizer(
       estimateSize: () => Math.max(1, store.gameLineHeightPx),
       measureElement: measureLineElement,
       overscan: 20,
+      rangeExtractor: activeRangeExtractor.value,
       // Preserve measured rows and mounted media across same-epoch snapshots. When an animation
       // deletes and recreates an equal-length tail, reuse that row's render key so its canvas can
       // keep the prior frame visible until the replacement replay has committed.
@@ -169,8 +174,15 @@ watch(
     // Equal-length dynamic-map refreshes replace the tail with new line IDs without
     // counting as new history. Keep following them only when the old frame was at bottom;
     // an intentionally scrolled-back viewport must remain untouched.
-    followAfterRender =
+    const shouldFollow =
       historyRevision !== previousHistoryRevision || followingBottom || isAtBottom();
+    bottomFollowRevision += 1;
+    followAfterRender = shouldFollow;
+    if (shouldFollow) selectTerminalRange();
+    else {
+      followingBottom = false;
+      releaseTerminalRange();
+    }
   },
   { flush: "pre" },
 );
@@ -179,10 +191,10 @@ watch(
   async () => {
     if (!followAfterRender) return;
     followAfterRender = false;
-    const followRevision = ++bottomFollowRevision;
+    const followRevision = bottomFollowRevision;
     followingBottom = true;
-    // Run after Vue has committed the current history window, then select the new tail before the
-    // browser paints. An extra nextTick here makes the virtualizer defer the input row by a frame.
+    // The pre-flush extractor made the new tail part of this commit. Select it immediately so the
+    // browser can paint the final interactive row without waiting for a second virtualizer range.
     goBottom();
     // Dynamic rows are measured only after the first scroll makes the tail
     // visible. Follow the corrected size on the next frame, then clamp to the
@@ -194,9 +206,41 @@ watch(
     if (followRevision !== bottomFollowRevision) return;
     if (viewport.value) viewport.value.scrollTop = viewport.value.scrollHeight;
     followingBottom = false;
+    // The terminal extractor only has to make the new tail part of the first commit. Keeping it
+    // beyond the two measurement frames can hide the user's scrolled-back range when natural
+    // range synchronization is delayed, so the newest follow generation always releases it.
+    releaseTerminalRange();
   },
   { flush: "post" },
 );
+
+function selectTerminalRange(): void {
+  const lineHeight = Math.max(1, store.gameLineHeightPx);
+  const visibleLines =
+    viewportHeight.value > 0
+      ? Math.max(1, Math.ceil(viewportHeight.value / lineHeight))
+      : undefined;
+  // A distinct extractor identity invalidates TanStack's range memo even when a redraw replaces
+  // an equal-length tail. Mounting only the terminal window avoids retaining both generations of
+  // interactive controls while the post-render scroll catches up.
+  activeRangeExtractor.value = (range) => {
+    if (range.count === 0) return [];
+    const visible = visibleLines ?? Math.max(1, range.endIndex - range.startIndex + 1);
+    const start = Math.max(0, range.count - visible);
+    // The extractor exists only for the first followed commit. Mount exactly the visible tail;
+    // applying the steady-state overscan here creates dozens of off-screen rich rows on the
+    // latency-critical input transition, even though the natural range is restored after layout.
+    return Array.from({ length: range.count - start }, (_, offset) => start + offset);
+  };
+}
+
+function releaseTerminalRange(): void {
+  activeRangeExtractor.value = defaultRangeExtractor;
+}
+
+function releaseTerminalRangeOnScrollBack(): void {
+  if (!followingBottom && !isAtBottom()) releaseTerminalRange();
+}
 
 function isAtBottom(): boolean {
   if (!viewport.value) return false;
@@ -347,6 +391,7 @@ watch(
     @pointermove="touchSecondaryAction.pointerMove"
     @pointerup="touchSecondaryAction.pointerUp"
     @pointercancel="touchSecondaryAction.pointerCancel"
+    @scroll.passive="releaseTerminalRangeOnScrollBack"
     @wheel.prevent="wheel"
   >
     <div class="background-layer">

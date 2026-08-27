@@ -146,6 +146,36 @@ describe("display line rendering", () => {
     });
   });
 
+  it("coalesces adjacent whitespace layout cells without crossing style boundaries", () => {
+    const white = textStyle();
+    const accent = textStyle({ foreground: { red: 18, green: 52, blue: 86, alpha: 255 } });
+    const wrapper = mount(DisplayLine, {
+      props: {
+        viewportColumns: 80,
+        line: {
+          line_id: 1,
+          temporary: false,
+          logical_line_start: true,
+          line_end: true,
+          alignment: "left",
+          runs: [
+            { type: "text_layout", text: " ", columns: 1, style: white },
+            { type: "text_layout", text: "  ", columns: 2, style: { ...white } },
+            { type: "text_layout", text: " ", columns: 3, style: accent },
+            { type: "text_layout", text: "label", columns: 5, style: accent },
+            { type: "text_layout", text: " ", columns: 1, style: accent },
+          ],
+        },
+      },
+    });
+
+    const spans = wrapper.findAll("span.text-layout");
+    expect(spans).toHaveLength(4);
+    expect(spans.map((span) => span.attributes("data-columns"))).toEqual(["3", "3", "5", "1"]);
+    expect(spans.map((span) => span.element.textContent)).toEqual(["   ", " ", "label", " "]);
+    expect(spans[0].attributes("style")).toContain("width: 3ch");
+  });
+
   it("preserves mixed run order and keeps non-text runs on RunRenderer", () => {
     const wrapper = mount(DisplayLine, {
       props: {
