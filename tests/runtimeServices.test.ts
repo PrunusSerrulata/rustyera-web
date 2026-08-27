@@ -901,6 +901,36 @@ describe("projection runtime services", () => {
 });
 
 describe("realized viewport identity", () => {
+  it("reuses the confirmed environment after output publishes without hiding real changes", async () => {
+    let message = 0;
+    const send = vi.fn(async () => ++message);
+    const viewport = new RuntimeViewportState(send);
+    const measurement = {
+      width: 300,
+      height: 200,
+      lineColumns: 30,
+      chromeWidth: 0,
+      chromeHeight: 0,
+    };
+    await viewport.observe(measurement, true, 8, "", "font-one");
+    await viewport.observe({ ...measurement }, true, 9n, "", "font-one");
+    expect(send).toHaveBeenCalledOnce();
+    const expected = {
+      presentationRevision: 9n,
+      environmentRevision: 1,
+      projectionSpaceRevision: 1,
+    };
+    expect(viewport.matches(expected, 9n, measurement, "font-one")).toBe(true);
+    await viewport.observe(measurement, true, 9n, "", "font-two");
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(viewport.matches(expected, 9n, measurement, "font-two")).toBe(false);
+    await viewport.observe(measurement, true, 9n, "typed", "font-two");
+    expect(send).toHaveBeenCalledTimes(3);
+    viewport.reject("3");
+    await viewport.observe(measurement, true, 9n, "typed", "font-two");
+    expect(send).toHaveBeenCalledTimes(4);
+  });
+
   it("records only acknowledged observations and invalidates rejected or reset identities", async () => {
     const gate = deferred<number>();
     const viewport = new RuntimeViewportState(() => gate.promise);

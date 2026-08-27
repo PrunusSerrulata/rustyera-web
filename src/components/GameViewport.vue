@@ -368,7 +368,11 @@ onBeforeUnmount(() => {
   if (viewportFrame != null) cancelAnimationFrame(viewportFrame);
 });
 watch(
-  () => [store.gameTextStyle?.fontFamily, store.gameTextStyle?.fontSize, store.gameLineHeightPx],
+  [
+    () => store.gameTextStyle?.fontFamily,
+    () => store.gameTextStyle?.fontSize,
+    () => store.gameLineHeightPx,
+  ],
   async () => {
     await nextTick();
     synchronizeViewport(true);

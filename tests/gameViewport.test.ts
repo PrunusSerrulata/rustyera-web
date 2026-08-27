@@ -165,6 +165,12 @@ describe("game viewport", () => {
         expect.objectContaining({ lineColumns: 100 }),
       );
       projectViewport.mockClear();
+      // A new presentation object can recompute an identical gameTextStyle.
+      store.gameTextStyle = { ...store.gameTextStyle };
+      await nextTick();
+      await flushPromises();
+      expect(projectViewport).not.toHaveBeenCalled();
+      expect(measure).not.toHaveBeenCalled();
       probeWidth = 100;
       store.gameTextStyle.fontSize = "13px";
       await nextTick();

@@ -20,6 +20,8 @@ export class RuntimeViewportState {
     projectionSpaceRevision: number;
     width: number;
     height: number;
+    lineColumns: number;
+    textBox: string;
     styleIdentity: string;
     messageId: string;
   };
@@ -36,6 +38,18 @@ export class RuntimeViewportState {
     if (!measurement) return;
     this.measurement.value = measurement;
     if (!runtimeReady) return;
+    const observed = this.observation;
+    // Publishing output alone does not change the measured environment. Reusing
+    // its identity keeps the observation barrier from invalidating its own query.
+    if (
+      observed &&
+      observed.width === measurement.width &&
+      observed.height === measurement.height &&
+      observed.lineColumns === measurement.lineColumns &&
+      observed.textBox === textBox &&
+      observed.styleIdentity === styleIdentity
+    )
+      return;
     const generation = this.generation;
     const revision = this.environmentRevision++;
     this.latestSubmittedRevision = revision;
@@ -66,6 +80,8 @@ export class RuntimeViewportState {
         projectionSpaceRevision: revision,
         width: measurement.width,
         height: measurement.height,
+        lineColumns: measurement.lineColumns,
+        textBox,
         styleIdentity,
         messageId: String(messageId),
       };
