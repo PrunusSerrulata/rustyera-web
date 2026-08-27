@@ -16,6 +16,7 @@ import {
 import { projectRectangleShape, projectSpaceShape } from "@/core/shapeProjection";
 import { lastRenderableTextNodeIndex, nextRenderableTextCharacter } from "@/core/htmlBoxLayout";
 import type { DisplayRun } from "@/core/types";
+import { plainRun } from "@/core/presentation";
 import { useRuntimeStore } from "@/stores/runtime";
 
 defineOptions({ name: "RunRenderer" });
@@ -127,6 +128,7 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
     ref="pointerButton"
     class="game-button"
     :disabled="!store.interactionEnabled(run) || !store.canInteract"
+    :aria-label="plainRun(run) || undefined"
     :aria-description="run.title || undefined"
     :data-era-tooltip="run.title || undefined"
     @click="store.activate(run.token)"

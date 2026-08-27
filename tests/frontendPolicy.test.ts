@@ -31,6 +31,27 @@ import RunRenderer from "@/components/RunRenderer.vue";
 import { RuntimePointerObservation } from "@/platform/pointerObservation";
 
 describe("frontend host and image-line policy", () => {
+  it("keeps a button's accessible name intact across per-character layout runs", () => {
+    const label = "SNAKE_POINTER_TARGET";
+    const wrapper = mount(RunRenderer, {
+      props: {
+        run: {
+          type: "button",
+          token: { epoch: 4, id: 1 },
+          enabled: true,
+          runs: [...label].map((text) => ({ type: "text_layout", text, columns: 1, style: {} })),
+        },
+      },
+    });
+    try {
+      const button = wrapper.get("button");
+      expect(button.findAll(".text-layout")).toHaveLength(label.length);
+      expect(button.attributes("aria-label")).toBe(label);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("hotly replaces full-width spaces in ordinary and HTML text without changing source", async () => {
     const run = { type: "text", text: "A　B", style: {} };
     const node = { type: "text", text: "C　D" };
