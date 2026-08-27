@@ -15,6 +15,11 @@ or frontend-state actions, and [tauri-e2e.md](references/tauri-e2e.md) before ch
 
 ## Enforce the task budget
 
+Follow the root `AGENTS.md` parallel scheduling rules. Run independent checks concurrently when
+their inputs, outputs, and mutable resources are isolated; pipeline dependent checks as prerequisites
+pass. Parallelism never bypasses the required review, focused-before-full, or static-before-dynamic
+gates. Delegate test execution as required by the component's `AGENTS.md`.
+
 - Before starting any test command, confirm that any required refactoring subagent has completed
   its single permitted run and that every requirement it reported has been implemented. Refuse to
   start testing while any refactoring requirement remains. Once the first test starts, never spawn,
@@ -208,8 +213,10 @@ filesystem sandbox with `sandbox_permissions=require_escalated`; this includes t
 `npm test` suite. State in the approval justification that the test must bind a temporary local
 loopback server. Do not make an initial sandboxed attempt.
 
-Run focused Vitest first, then run `npm test` once, followed by typecheck, ESLint, Prettier check,
-build, WASM build, the relevant Chromium game scenario, and native Firefox compatibility. On
+Run focused Vitest before the single `npm test` run. Typecheck, ESLint, Prettier check, build, and
+WASM build may run alongside independent static checks when inputs and outputs are isolated. Only
+after all applicable static gates pass, run the relevant Chromium game scenario and native Firefox
+compatibility; independent browser/native sessions may run concurrently with isolated resources. On
 macOS, also run native Safari compatibility; on other operating systems, do not run Safari. If the
 complete Vitest fails, fix it and rerun only the directly affected files or named
 cases. For Tauri-facing changes, also run `npm run test:tauri` against the real eraTW checkout. Use
