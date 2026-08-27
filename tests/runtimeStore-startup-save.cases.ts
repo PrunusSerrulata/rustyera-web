@@ -36,6 +36,7 @@ describe("runtime store startup-save", () => {
     await store.openProject();
 
     expect(store.coreVersion).toBe(`9.8.7 (${import.meta.env.VITE_RUSTYERA_CORE_REVISION})`);
+    expect(store.testRuntimeEvidence().sessionGeneration).toBe(1);
   });
 
   it("advances deadline waits from the frontend monotonic clock without user input", async () => {
@@ -260,6 +261,12 @@ describe("runtime store startup-save", () => {
       expect.objectContaining({ type: "start" }),
       expect.anything(),
     );
+    expect(store.testRuntimeEvidence().sessionGeneration).toBe(1);
+
+    await store.restart();
+
+    expect(bridge.createSession).toHaveBeenCalledTimes(2);
+    expect(store.testRuntimeEvidence().sessionGeneration).toBe(2);
   });
 
   it("recreates a constrained browser session before importing a selected VM snapshot", async () => {

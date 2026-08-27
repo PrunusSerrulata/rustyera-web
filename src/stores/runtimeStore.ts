@@ -247,6 +247,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let initialized = false;
   let initialization: Promise<void> | undefined;
   let lifecycleGeneration = 0;
+  // Observation identity follows host session creation, not the application's teardown lifetime.
+  let runtimeSessionObservationGeneration = 0;
   const runtimeConfiguration = new RuntimeConfigurationState({
     bridge,
     send,
@@ -647,6 +649,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (sessionPreparation) return sessionPreparation;
     const attempt = (async () => {
       if (bridge.kind === "tauri") await requestSystemFonts();
+      runtimeSessionObservationGeneration += 1;
       const batch = await bridge.createSession(sessionOptions());
       runtimePump.setReady(true);
       try {
@@ -846,13 +849,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function handleBatch(batch: PumpBatch): Promise<void> {
     const batchLifecycleGeneration = lifecycleGeneration;
+    const batchSessionGeneration = runtimeSessionObservationGeneration;
     startupTelemetryState.recordWasmMemory(batch.memoryBytes);
     batchMediaDirty = false;
     const suppressedLogNotificationIndexes = suppressedMirroredLogNotificationIndexes(batch.events);
     for (let index = 0; index < batch.events.length;) {
       if (batchLifecycleGeneration !== lifecycleGeneration) return;
       const event = batch.events[index];
-      testEvidence.receive(event, batchLifecycleGeneration);
+      testEvidence.receive(event, batchSessionGeneration);
       if (event.epoch != null && !observeRuntimeEpoch(event.epoch)) {
         index += 1;
         continue;
@@ -1698,6 +1702,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       await nextTick();
       await yieldToPaint();
       await bridge.prepareSessionReplacement();
+      runtimeSessionObservationGeneration += 1;
       const batch = await bridge.createSession(sessionOptions());
       runtimePump.setReady(true);
       await handleBatch(batch);
@@ -2680,7 +2685,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function submitObservedDebug(message: any): Promise<number | bigint> {
     const epoch = runtimeEpoch.value;
-    const sessionGeneration = lifecycleGeneration;
+    const sessionGeneration = runtimeSessionObservationGeneration;
     const messageId = await bridge.submitDebug(message);
     testEvidence.sent("debug", message, messageId, epoch, undefined, sessionGeneration);
     return messageId;
@@ -3056,7 +3061,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     correlationId?: ServiceInteger,
   ): Promise<number | bigint> {
     const observedEpoch = runtimeEpoch.value;
-    const observedSessionGeneration = lifecycleGeneration;
+    const observedSessionGeneration = runtimeSessionObservationGeneration;
     const telemetry = startupTelemetry.value;
     const startupStart =
       message.type === "start" &&
@@ -3382,7 +3387,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     debugCommand,
     inspectWatches,
     inspectTypedWatches,
-    testRuntimeEvidence: () => testEvidence.snapshot(lifecycleGeneration),
+    testRuntimeEvidence: () => testEvidence.snapshot(runtimeSessionObservationGeneration),
     openDebugDialog,
     closeDebugDialog,
     stepDebug,
