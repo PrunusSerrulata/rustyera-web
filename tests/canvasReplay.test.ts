@@ -35,6 +35,10 @@ import {
   createCanvasReplayRenderer,
   type CanvasReplayData,
 } from "@/components/canvasReplayRenderer";
+import {
+  HtmlMeasurementScope,
+  htmlMeasurementProjectionKey,
+} from "@/components/htmlMeasurementProjection";
 import type { FrontendBridge } from "@/core/types";
 import { RuntimeCanvasPixelSampler } from "@/components/canvasPixelSampler";
 import { RuntimeServiceRequests } from "@/stores/runtimeServiceRequests";
@@ -317,6 +321,59 @@ describe("canvas resource replay", () => {
     expect(contexts[0].drawnImages).toHaveLength(0);
     const release = pool.fork().reserve(8192, 8192);
     release();
+  });
+
+  it("accounts retained HTML canvas surfaces together until the measurement is disposed", async () => {
+    const viewport = document.createElement("section");
+    Object.defineProperties(viewport, {
+      clientWidth: { value: 320 },
+      clientHeight: { value: 200 },
+    });
+    document.body.append(viewport);
+    const base = {
+      foreground: { red: 0, green: 0, blue: 0, alpha: 255 },
+      bold: false,
+      italic: false,
+      underline: false,
+      strikeout: false,
+      font_millipixels: 16000,
+    };
+    const scope = new HtmlMeasurementScope(
+      {
+        viewport,
+        context: { presentationRevision: 1, environmentRevision: 2, projectionSpaceRevision: 3 },
+        resources: { sprites: [], canvases: [] },
+        resourceGeneration: 7,
+        preferences: { fontFamilyOverride: null, fontSizeOverridePx: null, imageScale: 1 },
+        replaceFullWidthSpaces: false,
+        resourceBridge: {} as FrontendBridge,
+      },
+      { current: base, base, settings: { line_height: 17000 } },
+      { signal: new AbortController().signal, assertCurrent() {} },
+    );
+    const wrappers = Array.from({ length: 3 }, (_, index) =>
+      mount(CanvasReplay, {
+        props: {
+          replay: {
+            canvas_id: index + 1,
+            revision: 1,
+            size: { width: 5000, height: 5000 },
+            commands: [],
+          },
+        },
+        global: { provide: { [htmlMeasurementProjectionKey as symbol]: scope } },
+      }),
+    );
+    try {
+      await expect(scope.settle()).rejects.toMatchObject({ category: "resource_limit" });
+    } finally {
+      wrappers.forEach((wrapper) => wrapper.unmount());
+      scope.dispose();
+      viewport.remove();
+    }
+    expect(
+      contexts.every((context) => context.canvas.width === 0 && context.canvas.height === 0),
+    ).toBe(true);
   });
 
   it("resolves GDRAWSPRITE names through sprite frames and crops their source", async () => {

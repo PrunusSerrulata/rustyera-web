@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, shallowRef, watch, watchEffect } from "vue";
+import { computed, inject, onBeforeUnmount, ref, shallowRef, watch, watchEffect } from "vue";
 
 import CanvasReplay from "@/components/CanvasReplay.vue";
+import { htmlMeasurementProjectionKey } from "@/components/htmlMeasurementProjection";
+import { HTML_MEASUREMENT_LIMITS } from "@/core/htmlMeasurement";
+import { RuntimeServiceError, sameServiceInteger } from "@/core/runtimeServiceProtocol";
 import { acquireResourceUrl } from "@/core/resources";
 import type { PresentationLength } from "@/core/types";
 import { platformBridge } from "@/platform";
@@ -11,7 +14,8 @@ const props = withDefaults(defineProps<{ placement: any; alt?: string; lineSlot?
   alt: undefined,
   lineSlot: true,
 });
-const store = useRuntimeStore();
+const measurement = inject(htmlMeasurementProjectionKey, undefined);
+const store = measurement?.state ?? useRuntimeStore();
 const source = ref("");
 const failed = ref(false);
 const hovered = ref(false);
@@ -29,10 +33,12 @@ const sprite = computed(() => {
 });
 const frame = computed(() => sprite.value?.frames?.[0]);
 const canvasReplay = computed(() => {
-  const canvasId = sprite.value?.canvas_id;
+  const canvasId = sprite.value?.canvas_id ?? (measurement ? frame.value?.canvas_id : undefined);
   return canvasId == null
     ? undefined
-    : store.presentation.resources.canvases?.find((item: any) => item.canvas_id === canvasId);
+    : store.presentation.resources.canvases?.find((item: any) =>
+        measurement ? sameServiceInteger(item.canvas_id, canvasId) : item.canvas_id === canvasId,
+      );
 });
 const resourceIdentity = computed(() =>
   JSON.stringify(
@@ -86,6 +92,23 @@ watchEffect((onCleanup) => {
     return;
   }
   let active = true;
+  if (measurement) {
+    const lease = measurement.acquireImage(resourceId, props.placement.revision);
+    measurement.track(
+      lease.ready.then((value) => {
+        measurement.assertCurrent();
+        if (!active) return;
+        naturalSize.value = { width: value.width, height: value.height };
+        source.value = value.url;
+        sourceIdentity.value = identity;
+      }),
+    );
+    onCleanup(() => {
+      active = false;
+      lease.release();
+    });
+    return;
+  }
   // Keep the current visual mounted while a hover replacement loads. Otherwise
   // the pointer leaves a positioned image as soon as its one-row slot is exposed.
   failed.value = false;
@@ -128,6 +151,23 @@ const dimensions = computed(() => {
     height = (width * spriteHeight) / spriteWidth;
   } else if (height != null && width == null && spriteWidth && spriteHeight) {
     width = (height * spriteWidth) / spriteHeight;
+  }
+  if (measurement) {
+    const imageScale = store.effectivePreferences.imageScale;
+    if (
+      [width, height].some(
+        (value) =>
+          value != null &&
+          (!Number.isFinite(value) || value * imageScale > HTML_MEASUREMENT_LIMITS.side),
+      ) ||
+      (width != null &&
+        height != null &&
+        width * height * imageScale * imageScale > HTML_MEASUREMENT_LIMITS.pixels)
+    )
+      throw new RuntimeServiceError(
+        "resource_limit",
+        "HTML media layout dimensions exceed the measurement budget",
+      );
   }
   return { width, height };
 });
@@ -279,7 +319,7 @@ function cancelCanvasHandoff(): void {
 }
 
 function startHover(): void {
-  hovered.value = true;
+  if (!measurement) hovered.value = true;
 }
 
 function stopHover(): void {

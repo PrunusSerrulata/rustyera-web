@@ -1,5 +1,5 @@
-import { mount } from "@vue/test-utils";
-import { describe, expect, it, vi } from "vitest";
+import { flushPromises, mount } from "@vue/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/stores/runtime", () => ({
   useRuntimeStore: () => ({
@@ -178,5 +178,668 @@ describe("Era HTML box layout", () => {
       },
     ]);
     expect(htmlBoxRowLayoutsForRange([unsafe], 0, 0).size).toBe(0);
+  });
+});
+
+// These tests exercise canonical projection and async ownership with controlled DOM geometry.
+// Real browser/font measurements remain a separate Browser/Tauri acceptance gate.
+import type { HtmlMeasurementBinding } from "@/components/htmlMeasurementProjection";
+import {
+  htmlMeasurementSegments,
+  htmlPrefixDocument,
+  htmlTextBoundaries,
+  inspectHtmlDocument,
+  validateHtmlCut,
+  type CanonicalHtmlDocument,
+  type HtmlQueryStyle,
+} from "@/core/htmlMeasurement";
+import { RuntimeServiceError } from "@/core/runtimeServiceProtocol";
+import type { FrontendBridge } from "@/core/types";
+import { HtmlMeasurementProvider } from "@/platform/htmlMeasurement";
+import * as htmlResourceUrls from "@/core/resources";
+
+const queryStyle = (): HtmlQueryStyle => ({
+  current: {
+    foreground: { red: 255, green: 255, blue: 255, alpha: 255 },
+    bold: true,
+    italic: true,
+    underline: true,
+    strikeout: true,
+    font_millipixels: 24000,
+  },
+  base: {
+    foreground: { red: 255, green: 255, blue: 255, alpha: 255 },
+    bold: false,
+    italic: false,
+    underline: false,
+    strikeout: false,
+    font_millipixels: 16000,
+    font_family: "FixtureFont",
+  },
+  settings: { line_height: 17000 },
+});
+const queryText = (text: string): CanonicalHtmlDocument => ({ nodes: [{ type: "text", text }] });
+
+function measurementBinding(viewport: HTMLElement): HtmlMeasurementBinding {
+  return {
+    viewport,
+    context: { presentationRevision: 3, environmentRevision: 4, projectionSpaceRevision: 5 },
+    resources: { sprites: [], canvases: [] },
+    resourceGeneration: 8,
+    preferences: { fontFamilyOverride: null, fontSizeOverridePx: null, imageScale: 1 },
+    replaceFullWidthSpaces: false,
+    resourceBridge: {
+      readImageMetadata: vi.fn(),
+      readResource: vi.fn(),
+    } as unknown as FrontendBridge,
+  };
+}
+
+describe("HTML measurement source positions", () => {
+  it("matches UTF-8 and UTF-16 scalar boundaries without accepting a surrogate midpoint", () => {
+    const document = queryText("A&中😀");
+    expect(htmlTextBoundaries("A&中😀")).toEqual([
+      { utf8: 0, utf16: 0 },
+      { utf8: 1, utf16: 1 },
+      { utf8: 2, utf16: 2 },
+      { utf8: 5, utf16: 3 },
+      { utf8: 9, utf16: 5 },
+    ]);
+    expect(() =>
+      validateHtmlCut(document, {
+        id: 1,
+        textNodePath: [0],
+        decodedUtf8Offset: 9,
+        decodedUtf16Offset: 4,
+      }),
+    ).toThrow("matching scalar boundary");
+    expect(() =>
+      validateHtmlCut(document, {
+        id: 1,
+        textNodePath: [0],
+        decodedUtf8Offset: 5,
+        decodedUtf16Offset: 5,
+      }),
+    ).toThrow("matching scalar boundary");
+    expect(() => htmlTextBoundaries("\ud83d")).toThrow("unpaired surrogate");
+    const prefix = htmlPrefixDocument(document, {
+      id: 2,
+      textNodePath: [0],
+      decodedUtf8Offset: 5,
+      decodedUtf16Offset: 3,
+    });
+    expect(prefix.nodes).toEqual([{ type: "text", text: "A&中" }]);
+    expect(document.nodes).toEqual([{ type: "text", text: "A&中😀" }]);
+  });
+
+  it("keeps U+3000 expansion atomic and excludes box continuation decoration from source offsets", () => {
+    const segments = htmlMeasurementSegments("A　😀┌─", true);
+    const space = segments.find((segment) => segment.kind === "space")!;
+    expect(space.text).toBe("  ");
+    expect(space.boundaries).toEqual([
+      { sourceUtf16: 1, domUtf16: 0 },
+      { sourceUtf16: 2, domUtf16: 2 },
+    ]);
+    const emoji = segments.find((segment) => segment.text === "😀")!;
+    expect(emoji.boundaries).toEqual([
+      { sourceUtf16: 2, domUtf16: 0 },
+      { sourceUtf16: 4, domUtf16: 2 },
+    ]);
+    const corner = segments.find((segment) => segment.text === "┌")!;
+    expect(corner.continuation).toBe("─");
+    expect(corner.boundaries).toEqual([
+      { sourceUtf16: 4, domUtf16: 0 },
+      { sourceUtf16: 5, domUtf16: 1 },
+    ]);
+  });
+
+  it("crops only canonical nodes and retains styling without parsing literal tag-looking text", () => {
+    const document: CanonicalHtmlDocument = {
+      nodes: [
+        {
+          type: "element",
+          kind: "bold",
+          attributes: [],
+          semantic: { type: "style" },
+          children: [{ type: "text", text: "<img>fi" }],
+        },
+      ],
+    };
+    const prefix = htmlPrefixDocument(document, {
+      id: 1,
+      textNodePath: [0, 0],
+      decodedUtf8Offset: 6,
+      decodedUtf16Offset: 6,
+    });
+    expect(prefix.nodes[0]).toMatchObject({
+      kind: "bold",
+      children: [{ type: "text", text: "<img>f" }],
+    });
+    expect(() =>
+      inspectHtmlDocument({
+        nodes: [
+          {
+            type: "element",
+            kind: "canvas",
+            attributes: [],
+            children: [],
+            semantic: { type: "style" },
+          } as never,
+        ],
+      }),
+    ).toThrow("unknown");
+  });
+
+  it("rejects cycles, excessive projected DOM and unsupported shapes before mounting", () => {
+    const cyclic: CanonicalHtmlDocument = {
+      nodes: [
+        {
+          type: "element",
+          kind: "bold",
+          attributes: [],
+          semantic: { type: "style" },
+          children: [],
+        },
+      ],
+    };
+    (
+      cyclic.nodes[0] as Extract<CanonicalHtmlDocument["nodes"][number], { type: "element" }>
+    ).children.push(cyclic.nodes[0]);
+    expect(() => inspectHtmlDocument(cyclic)).toThrow("cyclic");
+    expect(() => inspectHtmlDocument(queryText("─".repeat(3000)))).toThrow("budget");
+    expect(() =>
+      inspectHtmlDocument({
+        nodes: [
+          {
+            type: "element",
+            kind: "shape",
+            attributes: [],
+            children: [],
+            semantic: { type: "shape", kind: "triangle", parameters: [] },
+          },
+        ],
+      }),
+    ).toThrow("existing projection");
+  });
+});
+
+describe("bounded offscreen HTML measurement", () => {
+  let viewport: HTMLElement;
+  let originalFonts: PropertyDescriptor | undefined;
+  let originalRects: PropertyDescriptor | undefined;
+  let fontLoad: ReturnType<typeof vi.fn>;
+  const rectangles = new WeakMap<Range, Node>();
+  const shapedWidth = (value: string) => (value === "fi" ? 9 : Array.from(value).length * 6);
+
+  beforeEach(() => {
+    viewport = document.createElement("section");
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 320 },
+      clientHeight: { configurable: true, value: 200 },
+    });
+    viewport.style.fontFamily = "FixtureFont";
+    viewport.style.fontSize = "16px";
+    document.body.append(viewport);
+    originalFonts = Object.getOwnPropertyDescriptor(document, "fonts");
+    fontLoad = vi.fn().mockResolvedValue([]);
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: { load: fontLoad, ready: Promise.resolve() },
+    });
+    originalRects = Object.getOwnPropertyDescriptor(Range.prototype, "getClientRects");
+    vi.spyOn(Range.prototype, "selectNodeContents").mockImplementation(function (
+      this: Range,
+      node: Node,
+    ) {
+      rectangles.set(this, node);
+    });
+    Object.defineProperty(Range.prototype, "getClientRects", {
+      configurable: true,
+      value: function (this: Range) {
+        return [new DOMRect(0, 0, shapedWidth(rectangles.get(this)?.textContent ?? ""), 16)];
+      },
+    });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return new DOMRect(0, 0, shapedWidth(this.textContent ?? ""), 16);
+    });
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      queueMicrotask(() => callback(0));
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+  });
+
+  afterEach(() => {
+    viewport.remove();
+    if (originalFonts) Object.defineProperty(document, "fonts", originalFonts);
+    else Reflect.deleteProperty(document, "fonts");
+    if (originalRects) Object.defineProperty(Range.prototype, "getClientRects", originalRects);
+    else Reflect.deleteProperty(Range.prototype, "getClientRects");
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("independently shapes a prefix and ignores the unrelated current-style bits", async () => {
+    const signal = new AbortController().signal;
+    const provider = new HtmlMeasurementProvider();
+    const regular: string[] = [];
+    fontLoad.mockImplementation(async () => {
+      regular.push(
+        viewport.querySelector<HTMLElement>("[data-html-measurement-line]")!.style.fontWeight,
+      );
+      return [];
+    });
+    const result = await provider.measure(
+      {
+        document: queryText("fi"),
+        mode: "text_part",
+        cuts: [{ id: 7, textNodePath: [0], decodedUtf8Offset: 1, decodedUtf16Offset: 1 }],
+        style: queryStyle(),
+      },
+      measurementBinding(viewport),
+      { signal, assertCurrent() {} },
+    );
+    expect(result.advancePx).toBe(9);
+    expect(result.cuts).toEqual([{ id: 7, advancePx: 6 }]);
+    expect(regular).toEqual(["normal", "normal"]);
+    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it("reports an empty first forced row without using later visible text", async () => {
+    const document: CanonicalHtmlDocument = {
+      nodes: [
+        {
+          type: "element",
+          kind: "break",
+          attributes: [],
+          children: [],
+          semantic: { type: "break" },
+        },
+        { type: "text", text: "later" },
+      ],
+    };
+    const result = await new HtmlMeasurementProvider().measureDocument(
+      document,
+      queryStyle(),
+      measurementBinding(viewport),
+      { signal: new AbortController().signal, assertCurrent() {} },
+    );
+    expect(result.firstRow).toEqual({ advancePx: 0, heightPx: 17, fragments: [] });
+  });
+
+  it.each(["abort", "resize", "revision", "clear"])(
+    "disposes the DOM and refuses a reply after %s during font loading",
+    async (reason) => {
+      let finish!: () => void;
+      fontLoad.mockReturnValue(
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+      );
+      const controller = new AbortController();
+      let current = true;
+      const provider = new HtmlMeasurementProvider();
+      const pending = provider.measure(
+        { document: queryText("x"), mode: "text_part", cuts: [], style: queryStyle() },
+        measurementBinding(viewport),
+        {
+          signal: controller.signal,
+          assertCurrent() {
+            if (!current) throw new RuntimeServiceError("stale_projection", "revision changed");
+          },
+        },
+      );
+      const rejected = expect(pending).rejects.toMatchObject({ category: "stale_projection" });
+      await flushPromises();
+      expect(fontLoad).toHaveBeenCalledOnce();
+      if (reason === "abort") controller.abort();
+      if (reason === "resize") Object.defineProperty(viewport, "clientWidth", { value: 321 });
+      if (reason === "revision") current = false;
+      if (reason === "clear") provider.clear();
+      finish();
+      await rejected;
+      expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    },
+  );
+
+  it("requires a mounted viewport and reports font failure instead of a zero-width success", async () => {
+    const provider = new HtmlMeasurementProvider();
+    const probe = {
+      document: queryText("x"),
+      mode: "text_part" as const,
+      cuts: [],
+      style: queryStyle(),
+    };
+    const guard = { signal: new AbortController().signal, assertCurrent() {} };
+    await expect(
+      provider.measure(probe, measurementBinding(document.createElement("section")), guard),
+    ).rejects.toMatchObject({ category: "stale_projection" });
+    fontLoad.mockRejectedValue(new Error("font backend failed"));
+    await expect(
+      provider.measure(probe, measurementBinding(viewport), guard),
+    ).rejects.toMatchObject({ category: "backend_failure" });
+    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  function imageProbe(source = "portrait") {
+    return {
+      document: {
+        nodes: [
+          {
+            type: "element" as const,
+            kind: "image" as const,
+            attributes: [],
+            children: [],
+            semantic: { type: "image" as const, source },
+          },
+        ],
+      },
+      missingDocument: queryText("<img>"),
+      style: queryStyle(),
+    };
+  }
+
+  it("measures core fallback only for an undeclared sprite, including the empty name", async () => {
+    const binding = measurementBinding(viewport);
+    const guard = { signal: new AbortController().signal, assertCurrent() {} };
+    const provider = new HtmlMeasurementProvider();
+    for (const name of ["missing", ""]) {
+      const result = await provider.measureImageSlot(imageProbe(name), binding, guard);
+      expect(result).toEqual({ context: binding.context, type: "missing", fallbackAdvancePx: 30 });
+    }
+    expect(binding.resourceBridge.readImageMetadata).not.toHaveBeenCalled();
+    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it("returns frozen sprite natural dimensions rather than atlas or requested dimensions", async () => {
+    const binding = measurementBinding(viewport);
+    binding.resources.sprites = [
+      {
+        name: "PORTRAIT",
+        size: [20, 10],
+        frames: [{ resource_id: "atlas.png", source_rectangle: [12, 14, 20, 10] }],
+      },
+    ];
+    vi.mocked(binding.resourceBridge.readImageMetadata).mockResolvedValue({
+      width: 300,
+      height: 200,
+      format: "png",
+      animated: false,
+    });
+    const release = vi.fn();
+    vi.spyOn(htmlResourceUrls, "acquireResourceUrl").mockReturnValue({
+      url: Promise.resolve("blob:frozen"),
+      release,
+    });
+    vi.stubGlobal(
+      "Image",
+      class {
+        src = "";
+        naturalWidth = 300;
+        naturalHeight = 200;
+        decode = vi.fn().mockResolvedValue(undefined);
+      },
+    );
+    const provider = new HtmlMeasurementProvider();
+    const pending = provider.measureImageSlot(imageProbe(), binding, {
+      signal: new AbortController().signal,
+      assertCurrent() {},
+    });
+    binding.resources.sprites[0].size = [999, 999];
+    binding.resources.sprites = [];
+    expect(await pending).toEqual({
+      context: binding.context,
+      type: "loaded",
+      naturalWidth: 20,
+      naturalHeight: 10,
+    });
+    expect(binding.resourceBridge.readImageMetadata).toHaveBeenCalledWith("atlas.png");
+    expect(release).toHaveBeenCalledOnce();
+    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it.each(["permission", "hash changed", "decode"])(
+    "does not turn declared image %s failure into Missing",
+    async (reason) => {
+      const binding = measurementBinding(viewport);
+      binding.resources.sprites = [
+        {
+          name: "portrait",
+          size: [20, 10],
+          frames: [{ resource_id: "declared.png", source_rectangle: [0, 0, 20, 10] }],
+        },
+      ];
+      const release = vi.fn();
+      vi.spyOn(htmlResourceUrls, "acquireResourceUrl").mockReturnValue({
+        url: Promise.resolve("blob:declared"),
+        release,
+      });
+      vi.stubGlobal(
+        "Image",
+        class {
+          src = "";
+          naturalWidth = 20;
+          naturalHeight = 10;
+          decode = vi.fn().mockRejectedValue(new Error("decode failed"));
+        },
+      );
+      if (reason === "decode")
+        vi.mocked(binding.resourceBridge.readImageMetadata).mockResolvedValue({
+          width: 20,
+          height: 10,
+          format: "png",
+          animated: false,
+        });
+      else vi.mocked(binding.resourceBridge.readImageMetadata).mockRejectedValue(new Error(reason));
+      await expect(
+        new HtmlMeasurementProvider().measureImageSlot(imageProbe(), binding, {
+          signal: new AbortController().signal,
+          assertCurrent() {},
+        }),
+      ).rejects.toMatchObject({ category: "backend_failure" });
+      expect(fontLoad).not.toHaveBeenCalled();
+      expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+      if (reason === "decode") expect(release).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("retires an image decoding request on clear and allows the next generation to measure", async () => {
+    const binding = measurementBinding(viewport);
+    binding.resources.sprites = [
+      { name: "portrait", size: [20, 10], frames: [{ resource_id: "declared.png" }] },
+    ];
+    vi.mocked(binding.resourceBridge.readImageMetadata).mockResolvedValue({
+      width: 20,
+      height: 10,
+      format: "png",
+      animated: false,
+    });
+    const release = vi.fn();
+    vi.spyOn(htmlResourceUrls, "acquireResourceUrl").mockReturnValue({
+      url: Promise.resolve("blob:declared"),
+      release,
+    });
+    let finish!: () => void;
+    const decode = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    vi.stubGlobal(
+      "Image",
+      class {
+        src = "";
+        naturalWidth = 20;
+        naturalHeight = 10;
+        decode = decode;
+      },
+    );
+    const provider = new HtmlMeasurementProvider();
+    const guard = { signal: new AbortController().signal, assertCurrent() {} };
+    const pending = provider.measureImageSlot(imageProbe(), binding, guard);
+    const rejected = expect(pending).rejects.toMatchObject({ category: "stale_projection" });
+    await flushPromises();
+    expect(decode).toHaveBeenCalledOnce();
+    provider.clear();
+    await rejected;
+    expect(release).toHaveBeenCalledOnce();
+    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    finish();
+    const result = await provider.measure(
+      { document: queryText("fi"), style: queryStyle(), mode: "text_part", cuts: [] },
+      measurementBinding(viewport),
+      guard,
+    );
+    expect(result.advancePx).toBe(9);
+  });
+
+  it("rejects absent or inconsistent cut offsets before creating any DOM", async () => {
+    const provider = new HtmlMeasurementProvider();
+    const guard = { signal: new AbortController().signal, assertCurrent() {} };
+    for (const cut of [
+      { id: 1, textNodePath: [0] },
+      { id: 1, textNodePath: [0], decodedUtf8Offset: 4, decodedUtf16Offset: 1 },
+    ]) {
+      await expect(
+        provider.measure(
+          {
+            document: queryText("😀"),
+            style: queryStyle(),
+            mode: "text_part",
+            cuts: [cut as never],
+          },
+          measurementBinding(viewport),
+          guard,
+        ),
+      ).rejects.toMatchObject({ category: "invalid_request" });
+    }
+    expect(fontLoad).not.toHaveBeenCalled();
+    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it("confirms a fixed slot without exposing a DOM-derived width", async () => {
+    const probe = {
+      document: {
+        nodes: [
+          {
+            type: "element" as const,
+            kind: "shape" as const,
+            attributes: [],
+            children: [],
+            semantic: {
+              type: "shape" as const,
+              kind: "space",
+              parameters: [{ unit: "pixels" as const, value: 12 }],
+            },
+          },
+        ],
+      },
+      style: queryStyle(),
+    };
+    const result = await new HtmlMeasurementProvider().ensureFixedSlot(
+      probe,
+      measurementBinding(viewport),
+      { signal: new AbortController().signal, assertCurrent() {} },
+    );
+    expect(result).toEqual({
+      context: { presentationRevision: 3, environmentRevision: 4, projectionSpaceRevision: 5 },
+      type: "ready",
+    });
+    expect(HTMLElement.prototype.getBoundingClientRect).not.toHaveBeenCalled();
+  });
+
+  it("rejects giant fixed slots before mounting or measuring instead of fabricating readiness", async () => {
+    const provider = new HtmlMeasurementProvider();
+    for (const width of [32769, 1073741824]) {
+      const probe = {
+        document: {
+          nodes: [
+            {
+              type: "element" as const,
+              kind: "shape" as const,
+              attributes: [],
+              children: [],
+              semantic: {
+                type: "shape" as const,
+                kind: "space",
+                parameters: [{ unit: "pixels" as const, value: width }],
+              },
+            },
+          ],
+        },
+        style: queryStyle(),
+      };
+      await expect(
+        provider.ensureFixedSlot(probe, measurementBinding(viewport), {
+          signal: new AbortController().signal,
+          assertCurrent() {},
+        }),
+      ).rejects.toMatchObject({ category: "resource_limit" });
+      expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    }
+    expect(fontLoad).not.toHaveBeenCalled();
+    expect(HTMLElement.prototype.getBoundingClientRect).not.toHaveBeenCalled();
+  });
+
+  it("does not ignore a later declared image failure in full-document diagnostics", async () => {
+    const binding = measurementBinding(viewport);
+    binding.resources.sprites = [
+      { name: "portrait", size: [20, 10], frames: [{ resource_id: "declared.png" }] },
+    ];
+    vi.mocked(binding.resourceBridge.readImageMetadata).mockRejectedValue(
+      new Error("later image failed"),
+    );
+    const document: CanonicalHtmlDocument = {
+      nodes: [
+        { type: "text", text: "first" },
+        {
+          type: "element",
+          kind: "break",
+          attributes: [],
+          children: [],
+          semantic: { type: "break" },
+        },
+        ...imageProbe().document.nodes,
+      ],
+    };
+    await expect(
+      new HtmlMeasurementProvider().measureDocument(document, queryStyle(), binding, {
+        signal: new AbortController().signal,
+        assertCurrent() {},
+      }),
+    ).rejects.toMatchObject({ category: "backend_failure" });
+    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it("invalidates measurements queued before unconfirmed viewport geometry changes", async () => {
+    let finish!: () => void;
+    fontLoad.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const provider = new HtmlMeasurementProvider();
+    const guard = { signal: new AbortController().signal, assertCurrent() {} };
+    const probe = {
+      document: queryText("x"),
+      mode: "text_part" as const,
+      cuts: [],
+      style: queryStyle(),
+    };
+    const first = provider.measure(probe, measurementBinding(viewport), guard);
+    const second = provider.measure(probe, measurementBinding(viewport), guard);
+    const failures = [
+      expect(first).rejects.toMatchObject({ category: "stale_projection" }),
+      expect(second).rejects.toMatchObject({ category: "stale_projection" }),
+    ];
+    await flushPromises();
+    Object.defineProperty(viewport, "clientWidth", { value: 321 });
+    finish();
+    await Promise.all(failures);
+    expect(fontLoad).toHaveBeenCalledOnce();
+    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
   });
 });

@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, inject } from "vue";
+
+import { htmlMeasurementProjectionKey } from "@/components/htmlMeasurementProjection";
+import { htmlMeasurementSegments } from "@/core/htmlMeasurement";
 
 import MediaImage from "@/components/MediaImage.vue";
 import {
@@ -22,8 +25,11 @@ const props = defineProps<{
   alignTrailingBoxEdge?: boolean;
   trailingBoxFill?: { character: string; columns: number };
   followingTextCharacter?: string;
+  measurementPath?: number[];
 }>();
-const store = useRuntimeStore();
+const measurement = inject(htmlMeasurementProjectionKey, undefined);
+const children = computed<any[]>(() => props.node.children ?? []);
+const store = measurement?.state ?? useRuntimeStore();
 const tags: Record<string, string> = {
   bold: "strong",
   italic: "em",
@@ -224,13 +230,39 @@ function textSegments(value: unknown): HtmlTextSegment[] {
   );
 }
 
+const measurementSegments = computed(() =>
+  measurement && props.node.type === "text"
+    ? htmlMeasurementSegments(props.node.text, store.replaceFullWidthSpaces)
+    : [],
+);
+
+const measurementPath = computed(() => props.measurementPath?.join("."));
+
 const trailingTextChildIndex = computed(() =>
   lastRenderableTextNodeIndex(props.node.children ?? []),
 );
 </script>
 
 <template>
-  <template v-if="node.type === 'text'">
+  <span
+    v-if="measurement && node.type === 'text'"
+    :data-html-text-path="measurementPath"
+    style="display: contents"
+  >
+    <span
+      v-for="(segment, index) in measurementSegments"
+      :key="index"
+      :data-html-segment="index"
+      :class="{
+        'html-ascii-space': segment.kind === 'space',
+        'html-box-cell': segment.kind === 'box',
+      }"
+      :data-continuation="segment.continuation"
+      :style="{ width: segment.width }"
+      >{{ segment.text }}</span
+    >
+  </span>
+  <template v-else-if="node.type === 'text'">
     <template v-for="(segment, index) in textSegments(node.text)" :key="index">
       <span
         v-if="segment.kind === 'space'"
@@ -260,23 +292,44 @@ const trailingTextChildIndex = computed(() =>
       <template v-else>{{ segment.text }}</template>
     </template>
   </template>
-  <br v-else-if="node.kind === 'break'" />
+  <br
+    v-else-if="node.kind === 'break'"
+    :data-html-break-path="measurement ? measurementPath : undefined"
+  />
   <span
     v-else-if="spaceShapeStyle"
     class="html-node html-shape html-shape-space"
     :style="spaceShapeStyle"
+    :data-html-atomic-path="measurement ? measurementPath : undefined"
   />
   <span
     v-else-if="rectangleShapeStyle"
     class="html-node html-shape html-shape-rect"
     :style="rectangleShapeStyle.slot"
+    :data-html-atomic-path="measurement ? measurementPath : undefined"
   >
     <span class="html-shape-rect-visual" :style="rectangleShapeStyle.visual" />
   </span>
+  <span
+    v-else-if="measurement && imagePlacement"
+    :data-html-atomic-path="measurementPath"
+    style="display: contents"
+  >
+    <MediaImage :placement="imagePlacement" />
+  </span>
   <MediaImage v-else-if="imagePlacement" :placement="imagePlacement" />
-  <span v-else-if="layeredDivisionStyle" class="html-node html-division">
+  <span
+    v-else-if="layeredDivisionStyle"
+    class="html-node html-division"
+    :data-html-atomic-path="measurement ? measurementPath : undefined"
+  >
     <span class="html-division-visual" :style="layeredDivisionStyle">
-      <HtmlNode v-for="(child, index) in node.children ?? []" :key="index" :node="child" />
+      <HtmlNode
+        v-for="(child, index) in children"
+        :key="index"
+        :node="child"
+        :measurement-path="measurement ? [...(props.measurementPath ?? []), index] : undefined"
+      />
     </span>
   </span>
   <component
@@ -297,9 +350,10 @@ const trailingTextChildIndex = computed(() =>
     @click="activate"
   >
     <HtmlNode
-      v-for="(child, index) in node.children ?? []"
+      v-for="(child, index) in children"
       :key="index"
       :node="child"
+      :measurement-path="measurement ? [...(props.measurementPath ?? []), index] : undefined"
       :align-trailing-box-edge="alignTrailingBoxEdge && index === trailingTextChildIndex"
       :trailing-box-fill="
         alignTrailingBoxEdge && index === trailingTextChildIndex ? trailingBoxFill : undefined
