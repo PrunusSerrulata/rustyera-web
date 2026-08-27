@@ -8,6 +8,7 @@ fn packaged_host(path: PathBuf) -> ProjectHost {
         manifest: None,
         indexed_files: Vec::new(),
         revision: 1,
+        compatibility: CompatibilityIdentity::default(),
         embedded_resources: BTreeMap::new(),
         packaged_project: Some(PackagedProjectFile {
             storage_key: packaged_project_storage_key(&path),
@@ -18,6 +19,55 @@ fn packaged_host(path: PathBuf) -> ProjectHost {
         pending_reload: None,
         source_index_stats: (0, 0),
     }
+}
+
+#[test]
+fn core_resolution_is_required_before_selecting_snake_cache_storage() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("reraconfig.toml"),
+        "[meta]\nschema_version = 4\n[compatibility]\nprofile = \"emuera.skia.snake\"\n",
+    )
+    .unwrap();
+    let mut host = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+    let reference_path = host.compiled_cache_path();
+    let mut session =
+        era_web_bridge::WebSession::new(era_web_bridge::WebSessionOptions::default()).unwrap();
+    assert!(host.resolve_compatibility(&session).is_err());
+    session
+        .pump(era_runtime::RuntimeDriveBudget::default())
+        .unwrap();
+    host.resolve_compatibility(&session).unwrap();
+    assert_eq!(
+        host.identity().compatibility.profile,
+        CompatibilityProfileId::EmueraSkiaSnake
+    );
+    assert_ne!(host.compiled_cache_path(), reference_path);
+    assert!(
+        host.runtime_storage_root()
+            .ends_with(".rustyera/profiles/emuera.skia.snake")
+    );
+    assert!(host.identity().configuration_digest.is_some());
+}
+
+#[test]
+fn invalid_root_profile_does_not_rebind_storage() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("reraconfig.toml"),
+        "[meta]\nschema_version = 4\n[compatibility]\nprofile = \"snake\"\n",
+    )
+    .unwrap();
+    let mut host = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+    let before = host.identity();
+    let mut session =
+        era_web_bridge::WebSession::new(era_web_bridge::WebSessionOptions::default()).unwrap();
+    session
+        .pump(era_runtime::RuntimeDriveBudget::default())
+        .unwrap();
+    assert!(host.resolve_compatibility(&session).is_err());
+    assert_eq!(host.identity(), before);
+    assert!(!directory.path().join(".rustyera/profiles").exists());
 }
 
 #[test]

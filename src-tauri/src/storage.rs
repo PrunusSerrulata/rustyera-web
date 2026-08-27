@@ -24,6 +24,8 @@ use path::{
 
 pub struct StorageHost {
     project_root: PathBuf,
+    data_root: PathBuf,
+    allow_root_read_fallback: bool,
     idempotent: BTreeMap<String, CachedStorageResult>,
     idempotent_order: VecDeque<String>,
     idempotent_bytes: usize,
@@ -147,9 +149,25 @@ pub(crate) fn encode_response(response: &StorageResponse) -> Result<Response, St
 }
 
 impl StorageHost {
+    #[cfg(test)]
     pub fn new(project_root: PathBuf) -> Self {
+        Self::with_data_root(
+            project_root.clone(),
+            project_root,
+            era_runtime_protocol::CompatibilityProfileId::EmueraEm,
+        )
+    }
+
+    pub fn with_data_root(
+        project_root: PathBuf,
+        data_root: PathBuf,
+        profile: era_runtime_protocol::CompatibilityProfileId,
+    ) -> Self {
         Self {
             project_root,
+            data_root,
+            allow_root_read_fallback: profile
+                == era_runtime_protocol::CompatibilityProfileId::EmueraEm,
             idempotent: BTreeMap::new(),
             idempotent_order: VecDeque::new(),
             idempotent_bytes: 0,
@@ -376,11 +394,11 @@ impl StorageHost {
 
     fn namespace_root(&self, namespace: StorageNamespace) -> PathBuf {
         match namespace {
-            StorageNamespace::Project => self.project_root.join("project"),
+            StorageNamespace::Project => self.data_root.join("project"),
             // Emuera stores normal slots and global.sav in the project's sav directory.
-            StorageNamespace::Save | StorageNamespace::GlobalSave => self.project_root.join("sav"),
-            StorageNamespace::Data => self.project_root.join("data"),
-            StorageNamespace::Log => self.project_root.join("logs"),
+            StorageNamespace::Save | StorageNamespace::GlobalSave => self.data_root.join("sav"),
+            StorageNamespace::Data => self.data_root.join("data"),
+            StorageNamespace::Log => self.data_root.join("logs"),
             StorageNamespace::Resource => self.project_root.clone(),
         }
     }
@@ -392,10 +410,12 @@ impl StorageHost {
     ) -> Result<(PathBuf, PathBuf), std::io::Error> {
         let root = self.namespace_root(namespace);
         let primary = resolve(&root, relative_path)?;
-        if matches!(
-            namespace,
-            StorageNamespace::Project | StorageNamespace::Data
-        ) && !primary.try_exists()?
+        if self.allow_root_read_fallback
+            && matches!(
+                namespace,
+                StorageNamespace::Project | StorageNamespace::Data
+            )
+            && !primary.try_exists()?
         {
             let path = resolve(&self.project_root, relative_path)?;
             return validate_read_path(&self.project_root, path);
@@ -868,6 +888,107 @@ mod tests {
             metadata.revision.as_deref(),
             Some(expected_revision.as_str())
         );
+    }
+
+    #[test]
+    fn snake_project_and_data_reads_never_fall_back_to_reference_sentinels() {
+        for namespace in [StorageNamespace::Project, StorageNamespace::Data] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path();
+            fs::create_dir_all(root.join("shared")).unwrap();
+            fs::write(root.join("shared/sentinel.bin"), b"reference sentinel").unwrap();
+            let mut reference = StorageHost::new(root.to_owned());
+            let mut snake = StorageHost::with_data_root(
+                root.to_owned(),
+                root.join(".rustyera/profiles/emuera.skia.snake"),
+                era_runtime_protocol::CompatibilityProfileId::EmueraSkiaSnake,
+            );
+            for operation in [
+                StorageOperation::Read,
+                StorageOperation::Stat,
+                StorageOperation::ReadRange {
+                    offset: 0,
+                    maximum_bytes: 64,
+                    change_token: None,
+                },
+                StorageOperation::List {
+                    pattern: Some("sentinel.bin".into()),
+                    recursive: false,
+                },
+            ] {
+                let relative_path = if matches!(operation, StorageOperation::List { .. }) {
+                    "shared"
+                } else {
+                    "shared/sentinel.bin"
+                };
+                let request = StorageRequest {
+                    request_id: 1,
+                    namespace,
+                    relative_path: relative_path.into(),
+                    operation,
+                    idempotency_key: String::new(),
+                    deadline_ns: None,
+                };
+                assert!(!matches!(
+                    reference.handle(request.clone()).result,
+                    StorageResult::Error { .. }
+                ));
+                let is_list = matches!(request.operation, StorageOperation::List { .. });
+                let result = snake.handle(request).result;
+                if is_list {
+                    assert!(
+                        matches!(result, StorageResult::Listed { entries } if entries.is_empty())
+                    );
+                } else {
+                    assert!(matches!(result, StorageResult::Error { .. }));
+                }
+            }
+            let request = StorageRequest {
+                request_id: 2,
+                namespace: StorageNamespace::Resource,
+                relative_path: "shared/sentinel.bin".into(),
+                operation: StorageOperation::Read,
+                idempotency_key: String::new(),
+                deadline_ns: None,
+            };
+            assert!(
+                matches!(snake.handle(request).result, StorageResult::Read { data, .. } if data.as_slice() == b"reference sentinel")
+            );
+        }
+    }
+
+    #[test]
+    fn profile_data_root_isolates_slots_and_globals_but_keeps_resource_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let snake = root.join(".rustyera/profiles/emuera.skia.snake");
+        fs::create_dir_all(root.join("sav")).unwrap();
+        fs::create_dir_all(snake.join("sav")).unwrap();
+        fs::write(root.join("sav/save00.sav"), b"reference").unwrap();
+        fs::write(snake.join("sav/save00.sav"), b"snake").unwrap();
+        let mut storage = StorageHost::with_data_root(
+            root.to_owned(),
+            snake.clone(),
+            era_runtime_protocol::CompatibilityProfileId::EmueraSkiaSnake,
+        );
+        assert_eq!(storage.namespace_root(StorageNamespace::Resource), root);
+        assert_eq!(
+            storage.namespace_root(StorageNamespace::GlobalSave),
+            snake.join("sav")
+        );
+        let response = storage.handle(StorageRequest {
+            request_id: 1,
+            namespace: StorageNamespace::Save,
+            relative_path: "save00.sav".into(),
+            operation: StorageOperation::Read,
+            idempotency_key: String::new(),
+            deadline_ns: None,
+        });
+        let StorageResult::Read { data, .. } = response.result else {
+            panic!("expected snake save");
+        };
+        assert_eq!(data.as_slice(), b"snake");
+        assert_eq!(fs::read(root.join("sav/save00.sav")).unwrap(), b"reference");
     }
 
     #[test]

@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 use encoding_rs::{GBK, SHIFT_JIS, UTF_8};
 use era_protocol::ProtocolBytes;
 use era_runtime_protocol::{
-    ExternalResource, FileCategory, FileChange, FilePayload, ImageMetadataResponse,
-    ProjectIdentity, ProjectManifest, ReloadProject, SubmittedFile, validate_relative_path,
+    CompatibilityIdentity, CompatibilityProfileId, ExternalResource, FileCategory, FileChange,
+    FilePayload, ImageMetadataResponse, ProjectIdentity, ProjectManifest, ReloadProject,
+    SubmittedFile, validate_relative_path,
 };
 
 const PROJECT_CONFIGURATION_UPDATE_HEADROOM: usize = 1024 * 1024;
@@ -171,6 +172,7 @@ impl From<&ImageMetadataResponse> for IndexedImageMetadata {
 
 pub struct ProjectHost {
     root: PathBuf,
+    compatibility: CompatibilityIdentity,
     manifest: Option<ProjectManifest>,
     indexed_files: Vec<IndexedFile>,
     revision: u64,
@@ -355,6 +357,7 @@ impl ProjectHost {
         });
         Ok(Self {
             root,
+            compatibility: CompatibilityIdentity::default(),
             indexed_files: files
                 .iter()
                 .map(indexed_file)
@@ -362,6 +365,7 @@ impl ProjectHost {
             manifest: Some(ProjectManifest {
                 project_revision: revision,
                 files,
+                compatibility: CompatibilityIdentity::default(),
             }),
             revision,
             embedded_resources: BTreeMap::new(),
@@ -487,6 +491,7 @@ impl ProjectHost {
         );
         Ok(Self {
             root,
+            compatibility: CompatibilityIdentity::default(),
             manifest: None,
             indexed_files,
             revision,
@@ -523,6 +528,7 @@ impl ProjectHost {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             root: path.parent().unwrap_or_else(|| Path::new(".")).to_owned(),
+            compatibility: decoded.project.identity.compatibility.clone(),
             manifest: None,
             indexed_files,
             revision: decoded.project.identity.project_revision,
@@ -542,15 +548,85 @@ impl ProjectHost {
         &self.root
     }
 
+    pub fn resolve_compatibility(
+        &mut self,
+        session: &era_web_bridge::WebSession,
+    ) -> Result<(), String> {
+        let configuration = if let Some(package) = &self.packaged_project {
+            decode_packaged_project(&package.path, None)?
+                .project
+                .manifest
+                .files
+                .into_iter()
+                .find(|file| file.relative_path.eq_ignore_ascii_case("reraconfig.toml"))
+        } else if let Some(indexed) = self
+            .indexed_files
+            .iter()
+            .find(|file| file.relative_path.eq_ignore_ascii_case("reraconfig.toml"))
+        {
+            let (file, _) = stable_read_file(
+                &self.root,
+                &self.root.join(&indexed.relative_path),
+                FileCategory::Configuration,
+            )?;
+            if file.content_hash.as_ref().map(ProtocolBytes::as_slice)
+                != Some(indexed.content_hash.as_slice())
+            {
+                return Err(
+                    "project configuration changed after scanning; reopen the project".into(),
+                );
+            }
+            Some(file)
+        } else {
+            for entry in fs::read_dir(&self.root).map_err(|error| error.to_string())? {
+                let entry = entry.map_err(|error| error.to_string())?;
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case("reraconfig.toml")
+                {
+                    return Err(
+                        "project configuration appeared after scanning; reopen the project".into(),
+                    );
+                }
+            }
+            None
+        };
+        let report = session.resolve_project_compatibility(configuration)?;
+        let compatibility = report.identity.ok_or_else(|| {
+            report
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?;
+        if self.packaged_project.is_some() && self.compatibility != compatibility {
+            return Err(
+                "packaged project compatibility does not match its root configuration".into(),
+            );
+        }
+        self.compatibility = compatibility;
+        if let Some(manifest) = &mut self.manifest {
+            manifest.compatibility = self.compatibility.clone();
+        }
+        Ok(())
+    }
+
     pub fn runtime_storage_root(&self) -> PathBuf {
-        self.packaged_project.as_ref().map_or_else(
+        let root = self.packaged_project.as_ref().map_or_else(
             || self.root.clone(),
             |project| {
                 self.root
                     .join(".rustyera/packaged-projects")
                     .join(&project.storage_key)
             },
-        )
+        );
+        if self.compatibility.profile == CompatibilityProfileId::EmueraSkiaSnake {
+            root.join(".rustyera/profiles/emuera.skia.snake")
+        } else {
+            root
+        }
     }
 
     pub(super) fn compiled_cache_path(&self) -> PathBuf {
@@ -559,7 +635,9 @@ impl ProjectHost {
                 .join("cache")
                 .join(COMPILED_CACHE_NAME)
         } else {
-            self.root.join(".rustyera/cache").join(COMPILED_CACHE_NAME)
+            self.runtime_storage_root()
+                .join(".rustyera/cache")
+                .join(COMPILED_CACHE_NAME)
         }
     }
 
@@ -825,6 +903,12 @@ impl ProjectHost {
         ProjectIdentity {
             project_revision: self.revision,
             source_digest: ProtocolBytes::new(hasher.finalize().as_bytes().to_vec()),
+            compatibility: self.compatibility.clone(),
+            configuration_digest: self
+                .indexed_files
+                .iter()
+                .find(|file| file.relative_path.eq_ignore_ascii_case("reraconfig.toml"))
+                .map(|file| ProtocolBytes::new(file.content_hash.to_vec())),
         }
     }
 
@@ -857,6 +941,7 @@ impl ProjectHost {
             let manifest = ProjectManifest {
                 project_revision: self.revision,
                 files,
+                compatibility: self.compatibility.clone(),
             };
             if era_web_bridge::project_identity(&manifest)? != self.identity() {
                 return Err("project changed while its source files were being loaded".into());
@@ -883,7 +968,7 @@ impl ProjectHost {
             .take()
             .ok_or_else(|| "project manifest was not materialized".to_owned())?;
         let mut written = 0_u64;
-        write_counted(output, &mut written, &[0xa2, 0x00])?;
+        write_counted(output, &mut written, &[0xa3, 0x00])?;
         write_cbor_head(output, &mut written, 0, manifest.project_revision)?;
         write_counted(output, &mut written, &[0x01])?;
         write_cbor_head(output, &mut written, 4, manifest.files.len() as u64)?;
@@ -932,6 +1017,10 @@ impl ProjectHost {
                 progress(index + 1, total);
             }
         }
+        write_counted(output, &mut written, &[0x02])?;
+        let compatibility = era_protocol::encode_canonical(&manifest.compatibility)
+            .map_err(|error| error.to_string())?;
+        write_counted(output, &mut written, &compatibility)?;
         Ok(written)
     }
 

@@ -363,6 +363,7 @@ async fn open_project(
         )?;
         let (source_index_reused_files, source_index_hashed_files) = host.source_index_stats();
         let quick_scan_ms = started.elapsed().as_secs_f64() * 1000.0;
+        with_session(&state, |session| host.resolve_compatibility(session))?;
         let identity = host.identity();
         let cache_started = Instant::now();
         let cache = host.compiled_cache()?;
@@ -392,11 +393,13 @@ async fn open_project(
             false
         };
         let submit_ms = submit_started.elapsed().as_secs_f64() * 1000.0 - source_read_ms;
-        let storage_root = host.root().to_owned();
+        let resource_root = host.root().to_owned();
+        let profile = host.identity().compatibility.profile;
+        let storage_root = host.runtime_storage_root();
         install_project_state(
             &state,
             host,
-            StorageHost::new(storage_root),
+            StorageHost::with_data_root(resource_root, storage_root, profile),
             preferences::ProjectPreferenceLocation {
                 path: path.clone(),
                 project_file: false,
@@ -426,7 +429,8 @@ async fn open_project_file(
     tauri::async_runtime::spawn_blocking(move || {
         retire_project_state(&state)?;
         let started = Instant::now();
-        let host = ProjectHost::from_project_file(&path)?;
+        let mut host = ProjectHost::from_project_file(&path)?;
+        with_session(&state, |session| host.resolve_compatibility(session))?;
         let identity = host.identity();
         let sidecar = match host.compiled_cache() {
             Ok(cache) => cache,
@@ -455,13 +459,15 @@ async fn open_project_file(
         }
         let submit_ms = started.elapsed().as_secs_f64() * 1000.0;
         let storage_root = host.runtime_storage_root();
+        let profile = host.identity().compatibility.profile;
+        let resource_root = host.root().to_owned();
         // Keep only packaged resource lookup data while the cache candidate is pending. If both a
         // refreshed sidecar and the embedded legacy cache are incompatible, `submit_project_source`
         // lazily decodes the authoritative package and transfers ownership of its source manifest.
         install_project_state(
             &state,
             host,
-            StorageHost::new(storage_root),
+            StorageHost::with_data_root(resource_root, storage_root, profile),
             preferences::ProjectPreferenceLocation {
                 path,
                 project_file: true,
