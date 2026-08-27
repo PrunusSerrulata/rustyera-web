@@ -10,6 +10,7 @@ import { remote } from "webdriverio";
 
 import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs";
 import { createLoopbackViteServer, viteServerPort } from "./vite-test-server.mjs";
+import { runSnakeDataClient, SNAKE_DATA_MARKERS } from "./snake-data-test-support.mjs";
 
 import {
   browserProjectProgressErrors,
@@ -48,7 +49,10 @@ if (expectedOutputIndex >= 0 && !process.argv[expectedOutputIndex + 1])
   throw new Error("--expect-output requires a marker");
 const expectedOutput = expectedOutputIndex >= 0 ? process.argv[expectedOutputIndex + 1] : undefined;
 const checkTooltip = process.argv.includes("--check-tooltip");
-const startupOnly = process.argv.includes("--startup-only");
+const snakeData = process.argv.includes("--snake-data");
+if (snakeData && projectIndex < 0) throw new Error("--snake-data requires --project");
+if (snakeData && projectFile) throw new Error("--snake-data requires the source fixture directory");
+const startupOnly = process.argv.includes("--startup-only") || snakeData;
 const cacheInputSmoke = process.argv.includes("--cache-input-smoke");
 const logInputSmoke = process.argv.includes("--log-input-smoke");
 const settingsHotApply = process.argv.includes("--settings-hot-apply");
@@ -254,6 +258,14 @@ try {
   });
 
   compatibilityStage = projectFile ? "opening packaged project" : "opening fixture project";
+  if (snakeData) {
+    await browser.execute(() =>
+      window.__RUSTYERA_TEST__.configure({
+        start: { type: "new_game", seed: "123456" },
+        clock: "2026-01-01T00:00:00Z",
+      }),
+    );
+  }
   const open = await browser.$(
     projectFile ? "//button[normalize-space(.)='从项目文件启动…']" : "button.primary.large",
   );
@@ -304,6 +316,19 @@ try {
       viewport: Boolean(document.querySelector(".game-viewport")),
     }));
     throw new Error(`${error.message}; diagnosis=${JSON.stringify(diagnosis)}`);
+  }
+  if (snakeData) {
+    compatibilityStage = "running snake data integration through the visible input";
+    const observed = await runSnakeDataClient(browser, "browser");
+    console.log(
+      JSON.stringify({
+        browser: browserName,
+        type: "snake-data-integration",
+        verified: SNAKE_DATA_MARKERS,
+        output: observed.output,
+        bridgeKind: observed.bridgeKind,
+      }),
+    );
   }
   if (expectedOutput) {
     compatibilityStage = `checking output marker ${expectedOutput}`;

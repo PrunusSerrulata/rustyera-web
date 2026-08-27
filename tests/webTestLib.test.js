@@ -1,7 +1,8 @@
-import { access, mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { TextEncoder } from "node:util";
+import { runInNewContext } from "node:vm";
 import { blake3 } from "@noble/hashes/blake3.js";
 import { describe, expect, it, vi } from "vitest";
 
@@ -9,9 +10,11 @@ import {
   assertAtomicPresentationTransition,
   browserProjectProgressErrors,
   compareObservations,
+  goalStatus,
   injectInGameSaveFlow,
   injectInteractionAssistFlow,
   isolatedProject,
+  installRemoteFileSystem,
   loadScenario,
   nativeFirefoxCapabilities,
   publishCrossHostArtifacts,
@@ -22,8 +25,61 @@ import {
   terminalRuntimeRejection,
   waitForWebDriverDocument,
 } from "../scripts/web-test-lib.mjs";
+import { SNAKE_DATA_MARKERS } from "../scripts/snake-data-test-support.mjs";
 
 describe("web game test scenario", () => {
+  it("rejects a missing remote directory before storage traversal starts", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rustyera-remote-directory-"));
+    const remoteWindow = {};
+    try {
+      await writeFile(path.join(root, "file.txt"), "resource");
+      await installRemoteFileSystem(
+        {
+          exposeBinding: async (name, callback) => {
+            remoteWindow[name] = (request) => callback({}, request);
+          },
+          addInitScript: async (initialize) => {
+            runInNewContext(`(${initialize.toString()})()`, {
+              window: remoteWindow,
+              DOMException: globalThis.DOMException,
+            });
+          },
+        },
+        root,
+      );
+      const directory = await remoteWindow.showDirectoryPicker();
+      await expect(directory.getDirectoryHandle("data")).rejects.toMatchObject({
+        name: "NotFoundError",
+      });
+      await expect(directory.getDirectoryHandle("file.txt")).rejects.toMatchObject({
+        name: "TypeMismatchError",
+      });
+      const created = await directory.getDirectoryHandle("data", { create: true });
+      expect(created.kind).toBe("directory");
+      await expect(directory.getDirectoryHandle("data")).resolves.toMatchObject({
+        kind: "directory",
+        name: "data",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("requires all data integration stages after the visible startup input", async () => {
+    const scenario = await loadScenario("tools/runtime-tester/scenarios/snake-data.json");
+    expect(scenario.actions).toEqual([
+      { type: "input", value: "1", when: { output_contains: "SNAKE_DATA_START" } },
+    ]);
+    const observation = { output: [...SNAKE_DATA_MARKERS], wait: { kind: "integer_value" } };
+    expect(goalStatus(observation, scenario.goal).satisfied).toBe(true);
+    expect(
+      goalStatus({ ...observation, output: ["SNAKE_DATA_READY"] }, scenario.goal).satisfied,
+    ).toBe(false);
+    expect(goalStatus({ ...observation, wait: { kind: "any_key" } }, scenario.goal).satisfied).toBe(
+      false,
+    );
+  });
+
   it("accepts only the starting and completed presentation revisions across painted frames", () => {
     const samples = [
       { revision: "10", waitId: "4", outputTail: ["command"] },

@@ -5,6 +5,12 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  assertSnakeDataState,
+  runSnakeDataClient,
+  SNAKE_DATA_MARKERS,
+  SNAKE_DATA_START,
+} from "../scripts/snake-data-test-support.mjs";
+import {
   assertSnapshotProgress,
   captureCompleteTauriSnapshot,
   resolveTauriBinary,
@@ -15,6 +21,93 @@ import {
 afterEach(() => {
   document.body.replaceChildren();
   delete window.__RUSTYERA_TEST__;
+});
+
+describe("snake data client test support", () => {
+  function completedState(bridgeKind = "tauri") {
+    return {
+      bridgeKind,
+      fault: null,
+      canInteract: true,
+      wait: { kind: "integer_value", wait_id: "2" },
+      output: [SNAKE_DATA_START, ...SNAKE_DATA_MARKERS],
+    };
+  }
+
+  it.each(SNAKE_DATA_MARKERS)("requires the completed %s stage", (marker) => {
+    const state = completedState();
+    state.output = state.output.filter((line) => line !== marker);
+
+    expect(() => assertSnakeDataState(state, "tauri")).toThrow("stages are missing");
+  });
+
+  it("rejects a wrong bridge, fault, or non-interactive completion", () => {
+    expect(() => assertSnakeDataState(completedState("browser"), "tauri")).toThrow(
+      "requires tauri",
+    );
+    expect(() =>
+      assertSnakeDataState({ ...completedState(), fault: { message: "broken" } }, "tauri"),
+    ).toThrow("runtime fault");
+    expect(() =>
+      assertSnakeDataState({ ...completedState(), canInteract: false }, "tauri"),
+    ).toThrow("final integer input wait");
+    expect(() =>
+      assertSnakeDataState({ ...completedState(), wait: { kind: "any_key" } }, "tauri"),
+    ).toThrow("final integer input wait");
+  });
+
+  it.each([
+    ["browser", "firefox"],
+    ["browser", "safari"],
+    ["tauri", "wry"],
+  ])(
+    "submits visible input and waits for a new wait identity on %s/%s",
+    async (bridgeKind, browserName) => {
+      const initial = {
+        ...completedState(bridgeKind),
+        wait: { kind: "integer_value", wait_id: "1" },
+        output: [SNAKE_DATA_START],
+      };
+      const complete = completedState(bridgeKind);
+      const states = [initial, { ...complete, wait: initial.wait }, complete];
+      const input = {
+        waitForDisplayed: vi.fn(async () => undefined),
+        waitForEnabled: vi.fn(async () => undefined),
+        setValue: vi.fn(async () => undefined),
+      };
+      const button = { click: vi.fn(async () => undefined) };
+      const browser = {
+        capabilities: { browserName },
+        keys: vi.fn(async () => undefined),
+        execute: vi.fn(async (callback) => {
+          window.__RUSTYERA_TEST__ = { snapshot: () => states.shift() };
+          return callback();
+        }),
+        $: vi.fn(async (selector) => {
+          if (selector === ".prompt-bar input") return input;
+          if (selector === ".prompt-bar button[type=submit]") return button;
+          throw new Error(`unexpected selector ${selector}`);
+        }),
+        waitUntil: vi.fn(async (predicate) => {
+          for (let attempt = 0; attempt < 3; attempt += 1) if (await predicate()) return;
+          throw new Error("test predicate never completed");
+        }),
+      };
+
+      await expect(runSnakeDataClient(browser, bridgeKind)).resolves.toBe(complete);
+      expect(input.waitForDisplayed).toHaveBeenCalledOnce();
+      expect(input.waitForEnabled).toHaveBeenCalledOnce();
+      expect(input.setValue).toHaveBeenCalledWith("1");
+      if (browserName === "safari") {
+        expect(browser.keys).toHaveBeenCalledWith("Enter");
+        expect(button.click).not.toHaveBeenCalled();
+      } else {
+        expect(button.click).toHaveBeenCalledOnce();
+        expect(browser.keys).not.toHaveBeenCalled();
+      }
+      expect(browser.execute).toHaveBeenCalledTimes(3);
+    },
+  );
 });
 
 describe("Tauri end-to-end test support", () => {

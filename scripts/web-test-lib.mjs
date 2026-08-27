@@ -485,6 +485,7 @@ export async function installRemoteFileSystem(page, root) {
       const stat = await lstat(target, { bigint: true });
       return {
         size: Number(stat.size),
+        kind: stat.isDirectory() ? "directory" : "file",
         lastModified: Number(stat.mtimeNs / 1_000_000n),
       };
     }
@@ -572,6 +573,11 @@ export async function installRemoteFileSystem(page, root) {
       async getDirectoryHandle(name, options = {}) {
         const relative = this.child(name);
         if (options.create) await callFileSystem({ op: "mkdir", path: relative });
+        // Native handles reject missing directories before returning a usable handle. Returning a
+        // phantom handle turns an ordinary Data miss into a later traversal-conflict error.
+        const metadata = await callFileSystem({ op: "stat", path: relative });
+        if (metadata.kind !== "directory")
+          throw new DOMException(`Not a directory: ${relative}`, "TypeMismatchError");
         return new RemoteDirectoryHandle(name, relative);
       }
       async getFileHandle(name, options = {}) {
