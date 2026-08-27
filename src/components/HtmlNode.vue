@@ -347,7 +347,7 @@ const trailingTextChildIndex = computed(() =>
   <component
     :is="tag"
     v-else
-    ref="pointerButton"
+    :ref="pointerButton"
     :disabled="
       node.interaction && (!store.interactionEnabled(node.interaction) || !store.canInteract)
     "

@@ -125,7 +125,7 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
   >
   <button
     v-else-if="run.type === 'button'"
-    ref="pointerButton"
+    :ref="pointerButton"
     class="game-button"
     :disabled="!store.interactionEnabled(run) || !store.canInteract"
     :aria-label="plainRun(run) || undefined"

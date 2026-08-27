@@ -874,6 +874,7 @@ describe("bounded offscreen HTML measurement", () => {
       signal: new AbortController().signal,
       assertCurrent() {},
     });
+    const warn = vi.spyOn(console, "warn");
     const wrapper = mount(HtmlNode, {
       props: {
         node: {
@@ -890,6 +891,7 @@ describe("bounded offscreen HTML measurement", () => {
     });
     expect(wrapper.find("button").attributes("disabled")).toBeDefined();
     expect(register).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
     wrapper.unmount();
     scope.dispose();
   });
