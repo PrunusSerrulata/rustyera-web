@@ -36,8 +36,9 @@ reporting-only metadata; if two consecutive snapshots are identical, terminate i
 stalled with no further grace period. Reaching a new input wait counts as progress but also means
 the test must decide before the next poll whether to submit it; repeatedly waiting at an actionable
 prompt is a test-flow bug. Preserve the reference behavior and geometry assertions when repairing a
-timeout. All tests in the task share a 60-minute wall-clock limit, and no full suite may be started
-more than once.
+timeout. All tests in the current batch share a 60-minute wall-clock limit, and no full suite may be
+started more than once per batch. Use the root rules to combine small items and give large items
+independent batches.
 
 The test build must use default frontend preferences unless the spec explicitly covers a preference;
 persisted user font and image settings are not valid inputs to reference-geometry tests.

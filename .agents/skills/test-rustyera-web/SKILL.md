@@ -13,7 +13,12 @@ screenshot-only evidence. Read [test-cli.md](references/test-cli.md) before chan
 scenario or compatibility runner, [page-api.md](references/page-api.md) before adding browser DOM
 or frontend-state actions, and [tauri-e2e.md](references/tauri-e2e.md) before changing a Tauri test.
 
-## Enforce the task budget
+## Enforce the batch budget
+
+Use the batches defined by the root `AGENTS.md`: estimate each requested feature/change/fix first,
+combine small items for implementation, refactoring review, and testing, and handle large items
+independently with separate budgets. Keep a separate commit for each item regardless of batching.
+All review counts, suite counts, gates, and deadlines below apply to the current batch.
 
 Follow the root `AGENTS.md` parallel scheduling rules. Run independent checks concurrently when
 their inputs, outputs, and mutable resources are isolated; pipeline dependent checks as prerequisites
@@ -23,19 +28,19 @@ gates. Delegate test execution as required by the component's `AGENTS.md`.
 - Before starting any test command, confirm that any required refactoring subagent has completed
   its single permitted run and that every requirement it reported has been implemented. Refuse to
   start testing while any refactoring requirement remains. Once the first test starts, never spawn,
-  resume, follow up with, or rerun a refactoring subagent during that task.
-- Start one shared 60-minute wall-clock budget with the task's first test command. It includes all
+  resume, follow up with, or rerun a refactoring subagent during that batch.
+- Start one shared 60-minute wall-clock budget with the batch's first test command. It includes all
   subsequent checks, targeted reruns, end-to-end waits, and test-failure investigation. Bound every
   command by the remaining time.
 - Before creating, resuming, following up with, or assigning a subagent to any browser, native, or
-  other dynamic end-to-end test, complete every static gate authorized for the task. Static gates
+  other dynamic end-to-end test, complete every static gate authorized for the batch. Static gates
   include the applicable focused unit/integration tests, typecheck, lint, format check, and build
   checks. If the user limits validation scope, "every" means every gate inside that scope and does
   not authorize broader suites. A static failure invalidates affected prior results; rerun only the
   smallest affected static set after the fix, and do not assign dynamic testing until all authorized
   static gates pass again. A subagent used only for static tests may be created earlier, but it must
   not receive a dynamic-test command before this gate is satisfied.
-- Start each distinct full test suite at most once per task. After a failure is fixed, rerun only
+- Start each distinct full test suite at most once per batch. After a failure is fixed, rerun only
   the directly affected test file, named case, browser scenario, or native scenario; never rerun
   the full suite.
 - Run every command that may outlive its initial tool response in a persistent PTY. Start it with
@@ -53,7 +58,7 @@ gates. Delegate test execution as required by the component's `AGENTS.md`.
   Ignore timestamps and reporting-only metadata during comparison. If two consecutive snapshots
   are identical, the game is static: terminate immediately and report a stalled-test failure,
   except for the narrowly scoped Android Firefox native directory handoff described below.
-- At the 60-minute deadline, terminate all test processes and report the active command, exact
+- At the 60-minute deadline, terminate all test processes for that batch and report the active command, exact
   case/stage, last complete snapshot, elapsed time, completed checks, and unverified checks.
 
 ## Choose the real target

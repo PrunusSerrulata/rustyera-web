@@ -34,8 +34,9 @@ terminate immediately as stalled without waiting for another timeout, except dur
 Firefox native provider-copy handoff defined in the skill. In that interval, keep the 5-second
 record with the last complete DOM plus Android hierarchy/process/RDP state and wait for Firefox to
 surface its upload confirmation or `FileList`; resume ordinary identical-snapshot failure as soon
-as it does. Preserve the reference output and DOM/layout assertions when repairing a timeout. All
-task tests share one 60-minute wall-clock budget, and each full suite may start only once.
+as it does. Preserve the reference output and DOM/layout assertions when repairing a timeout. All tests
+in the current batch share one 60-minute wall-clock budget, and each full suite may start only once
+per batch. Use the root rules to combine small items and give large items independent batches.
 
 The snapshot cadence is independent from action pacing. Poll actionable browser state at roughly
 100 ms and native Android hierarchy continuously (no extra delay after a completed dump, at most
