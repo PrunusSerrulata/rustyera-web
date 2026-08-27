@@ -51,7 +51,21 @@ import {
   type SessionOptions,
 } from "@/core/types";
 import { platformBridge } from "@/platform";
-import { currentGameViewportMeasurement } from "@/platform/viewportMeasurement";
+import {
+  currentGameViewport,
+  currentGameViewportMeasurement,
+} from "@/platform/viewportMeasurement";
+import { RuntimePointerObservation } from "@/platform/pointerObservation";
+import { RuntimeCanvasPixelSampler } from "@/components/canvasPixelSampler";
+import { HtmlMeasurementProvider } from "@/platform/htmlMeasurement";
+import {
+  RuntimeServiceError,
+  sameServiceInteger,
+  serviceInteger,
+  type ProjectionQueryContext,
+  type ServiceInteger,
+} from "@/core/runtimeServiceProtocol";
+import { RuntimeServiceRequests, type RuntimeServiceLease } from "@/stores/runtimeServiceRequests";
 import { yieldToPaint } from "@/platform/mainThread";
 import { RuntimePumpCoordinator } from "@/stores/runtimePump";
 import { RuntimePresentationProjection } from "@/stores/runtimePresentation";
@@ -224,6 +238,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     import.meta.env.VITE_RUSTYERA_TEST === "1" ? recordTestAudioPlayback : undefined,
   );
   const imagePixels = new RuntimeImagePixelCache();
+  const serviceRequests = new RuntimeServiceRequests();
+  const pointerObservation = new RuntimePointerObservation(currentGameViewport);
+  const canvasPixels = new RuntimeCanvasPixelSampler();
+  const htmlMeasurements = new HtmlMeasurementProvider();
   let initialized = false;
   let initialization: Promise<void> | undefined;
   let lifecycleGeneration = 0;
@@ -328,6 +346,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
       runtimeImport.reset();
       startupTelemetryState.fail(error);
       finishProjectLoad();
+      serviceRequests.reset();
+      htmlMeasurements.clear();
+      canvasPixels.clear();
       fault.value = { code: "frontend", message: String(error) };
       log("error", String(error), false, "none");
     },
@@ -547,6 +568,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     audio.setPreferences(preferences.value);
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
+    pointerObservation.start();
     document.addEventListener("visibilitychange", sendClientState);
     window.addEventListener("focus", sendClientState);
     window.addEventListener("blur", sendClientState);
@@ -561,6 +583,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   function teardown(): void {
     lifecycleGeneration += 1;
+    pointerObservation.stop();
+    serviceRequests.reset();
+    canvasPixels.clear();
+    htmlMeasurements.clear();
     initialization = undefined;
     clearSessionTimers();
     runtimePump.setTransitioning(true);
@@ -824,29 +850,18 @@ export const useRuntimeStore = defineStore("runtime", () => {
     for (let index = 0; index < batch.events.length;) {
       if (batchLifecycleGeneration !== lifecycleGeneration) return;
       const event = batch.events[index];
-      if (event.epoch != null) runtimeEpoch.value = event.epoch;
+      if (event.epoch != null && !observeRuntimeEpoch(event.epoch)) {
+        index += 1;
+        continue;
+      }
       if (event.channel === "runtime" && event.message.type === "service_request") {
-        const requests = [];
-        while (index < batch.events.length) {
-          const candidate = batch.events[index];
-          if (candidate.channel !== "runtime" || candidate.message.type !== "service_request")
-            break;
-          requests.push(candidate);
-          index += 1;
-        }
-        for (let offset = 0; offset < requests.length; offset += 8) {
-          await Promise.all(
-            requests
-              .slice(offset, offset + 8)
-              .map((request) =>
-                handleService(
-                  (request.message as RuntimeMessage).value,
-                  safeNumber(request.correlationId),
-                ),
-              ),
-          );
-          if (batchLifecycleGeneration !== lifecycleGeneration) return;
-        }
+        // Service decoding must not block later cancellation or epoch changes in this batch.
+        void handleService(
+          (event.message as RuntimeMessage).value,
+          event.correlationId,
+          event.epoch ?? runtimeEpoch.value,
+        );
+        index += 1;
         continue;
       }
       if (event.channel === "runtime") {
@@ -925,7 +940,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       finishProjectLoad();
       baseStatus.value = GAME_RUNNING_STATUS;
     }
-    runtimeEpoch.value = value.epoch ?? runtimeEpoch.value;
+    observeRuntimeEpoch(value.epoch ?? runtimeEpoch.value);
     if (value.phase === "faulted" || value.phase === "stopped") {
       const startupWasLoading = startupTelemetry.value?.outcome === "loading";
       if (startupWasLoading) pendingStart = { type: "new_game" };
@@ -1033,7 +1048,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       case "runtime_resynchronized":
         pendingReturnToTitleMessageId = undefined;
         phase.value = value.phase;
-        runtimeEpoch.value = value.epoch ?? runtimeEpoch.value;
+        observeRuntimeEpoch(value.epoch ?? runtimeEpoch.value);
         batchMediaDirty =
           presentationProjection.projectSnapshot(value.presentation) || batchMediaDirty;
         applyInputUndo(value.input_undo ?? null);
@@ -1059,7 +1074,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       }
       case "service_request":
-        await handleService(value, safeNumber(correlationId));
+        void handleService(value, correlationId);
+        break;
+      case "cancel_external_request":
+        if (value.kind === "service") serviceRequests.cancel(value.request_id);
         break;
       case "state_export_ready":
         await exportTransfer.handleReady(value, correlationId);
@@ -1092,6 +1110,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
           await runtimeImport.ready(value);
         break;
       case "fault": {
+        serviceRequests.reset();
+        htmlMeasurements.clear();
+        canvasPixels.clear();
         if (fullManifestImport) await cleanupFullManifestImport(false);
         runtimeImport.reset();
         gameProgressLossConfirmation.value = null;
@@ -1138,6 +1159,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         const compatibilityContext = formatCompatibilityContext(value.context);
         if (compatibilityContext) log("warning", compatibilityContext, true);
         const correlation = String(correlationId);
+        runtimeViewport.reject(correlation);
         if (pendingReturnToTitleMessageId === correlation) {
           pendingReturnToTitleMessageId = undefined;
           const message = `返回标题被 Runtime 拒绝：${value.message ?? "未知原因"}`;
@@ -1344,17 +1366,183 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await send({ type: "effect_acknowledgement", value: { outcomes } });
   }
 
-  async function handleService(request: any, correlationId?: number): Promise<void> {
-    await handleRuntimeService(request, correlationId, {
-      bridge,
-      currentPresentation,
-      heldKeys,
-      clock: () => testEnvironment.clock,
-      nextEntropy: () => testEnvironment.nextEntropy(),
-      send,
-      resourceGeneration: projectResourceGeneration.value,
-      imagePixels,
-    });
+  function observeRuntimeEpoch(epoch: ServiceInteger): boolean {
+    serviceInteger(epoch, "runtime epoch");
+    if (BigInt(epoch) < BigInt(runtimeEpoch.value)) return false;
+    if (!sameServiceInteger(epoch, runtimeEpoch.value)) {
+      pointerObservation.clear();
+      htmlMeasurements.clear();
+    }
+    runtimeEpoch.value = epoch;
+    serviceRequests.enterEpoch(epoch);
+    return true;
+  }
+
+  function viewportStyleIdentity(): string {
+    return JSON.stringify([
+      gameTextStyle.value.fontFamily,
+      gameTextStyle.value.fontSize,
+      gameLineHeightPx.value,
+    ]);
+  }
+
+  function projectionMatches(expected: ProjectionQueryContext): boolean {
+    const viewport = currentGameViewport();
+    return (
+      sameServiceInteger(currentPresentation().revision, expected.presentationRevision) &&
+      runtimeViewport.matches(
+        expected,
+        presentation.revision,
+        viewport ? { width: viewport.clientWidth, height: viewport.clientHeight } : undefined,
+        viewportStyleIdentity(),
+      )
+    );
+  }
+
+  async function handleService(
+    request: any,
+    correlationId?: ServiceInteger,
+    epoch = runtimeEpoch.value,
+  ): Promise<void> {
+    const lifecycle = lifecycleGeneration;
+    const resources = projectResourceGeneration.value;
+    const active = () =>
+      lifecycle === lifecycleGeneration &&
+      sameServiceInteger(epoch, runtimeEpoch.value) &&
+      resources === projectResourceGeneration.value;
+    if (!active()) return;
+    serviceRequests.enterEpoch(epoch);
+    try {
+      const lease = serviceRequests.begin(request.request_id, epoch);
+      const prepareProjection = async (
+        expected: ProjectionQueryContext,
+        lease: RuntimeServiceLease,
+      ) => {
+        lease.assertActive();
+        if (!sameServiceInteger(currentPresentation().revision, expected.presentationRevision))
+          throw new RuntimeServiceError(
+            "stale_projection",
+            "canonical presentation revision changed",
+          );
+        batchMediaDirty =
+          presentationProjection.publishForPresentNow(expected.presentationRevision) ||
+          batchMediaDirty;
+        await nextTick();
+        lease.assertActive();
+        await yieldToPaint();
+        lease.assertActive();
+        await nextTick();
+        lease.assertActive();
+        if (!active() || !projectionMatches(expected))
+          throw new RuntimeServiceError(
+            "stale_projection",
+            "viewport observation does not match the query",
+          );
+        return { ...presentation, resources: presentation.resources };
+      };
+      await handleRuntimeService(request, correlationId, {
+        bridge,
+        currentPresentation,
+        heldKeys,
+        clock: () => testEnvironment.clock,
+        nextEntropy: () => testEnvironment.nextEntropy(),
+        send: (message, correlation) =>
+          active() && lease.active() ? send(message, correlation) : Promise.resolve(undefined),
+        resourceGeneration: resources,
+        imagePixels,
+        lease,
+        html: {
+          measurement: htmlMeasurements,
+          async prepare(expected, lease) {
+            const projected = await prepareProjection(expected, lease);
+            lease.assertActive();
+            const viewport = currentGameViewport();
+            if (!viewport || !viewport.isConnected)
+              throw new RuntimeServiceError(
+                "stale_projection",
+                "HTML measurement requires the confirmed mounted viewport",
+              );
+            const preferences = {
+              fontFamilyOverride: effectivePreferences.value.fontFamilyOverride,
+              fontSizeOverridePx: effectivePreferences.value.fontSizeOverridePx,
+              imageScale: effectivePreferences.value.imageScale,
+            };
+            const preferenceIdentity = JSON.stringify(preferences);
+            const spaces = replaceFullWidthSpaces.value;
+            const assertCurrent = () => {
+              lease.assertActive();
+              if (
+                !active() ||
+                currentGameViewport() !== viewport ||
+                !projectionMatches(expected) ||
+                replaceFullWidthSpaces.value !== spaces ||
+                JSON.stringify({
+                  fontFamilyOverride: effectivePreferences.value.fontFamilyOverride,
+                  fontSizeOverridePx: effectivePreferences.value.fontSizeOverridePx,
+                  imageScale: effectivePreferences.value.imageScale,
+                }) !== preferenceIdentity
+              )
+                throw new RuntimeServiceError(
+                  "stale_projection",
+                  "HTML projection, resources or preferences changed",
+                );
+            };
+            assertCurrent();
+            return {
+              binding: {
+                viewport,
+                context: { ...expected },
+                resources: projected.resources,
+                resourceGeneration: resources,
+                preferences,
+                replaceFullWidthSpaces: spaces,
+                resourceBridge: bridge,
+              },
+              guard: { signal: lease.signal, assertCurrent },
+            };
+          },
+        },
+        projection: {
+          prepare: prepareProjection,
+          matches: (expected) => active() && projectionMatches(expected),
+          pointer: () => pointerObservation.sample(epoch),
+          canvas: (query, projected, lease) =>
+            canvasPixels.sample(query, projected.resources, resources, lease, () => {
+              const current = currentPresentation().resources.canvases?.find((canvas: any) =>
+                sameServiceInteger(canvas.canvas_id, query.canvasId),
+              );
+              return (
+                active() &&
+                projectionMatches(query.context) &&
+                sameServiceInteger(current?.revision, query.canvasRevision)
+              );
+            }),
+        },
+      });
+    } catch (error) {
+      // Malformed IDs cannot be correlated safely; resource saturation can return an explicit error.
+      if (!active()) return;
+      if (error instanceof RuntimeServiceError && error.category === "resource_limit") {
+        try {
+          await send(
+            {
+              type: "service_response",
+              value: {
+                request_id: request.request_id,
+                result: {
+                  type: "error",
+                  error: { code: "frontend.resource_limit", message: error.message },
+                },
+              },
+            },
+            correlationId,
+          );
+        } catch (failure) {
+          if (active())
+            log("warning", `前端服务失败 ${request.kind}/${request.operation}: ${String(failure)}`);
+        }
+      } else log("warning", `前端服务失败 ${request.kind}/${request.operation}: ${String(error)}`);
+    }
   }
 
   async function submitText(): Promise<void> {
@@ -1627,7 +1815,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     fullManifestImports.clear();
     retiredFullManifestCommandIds.clear();
     projectFileExportState.finish();
-    resetRuntimeTimelineState(true);
+    resetRuntimeTimelineState(true, fullSession);
     runtimeDiagnosis.reset();
     traditionalSaves.reset();
     runtimeLogs.clear();
@@ -1645,7 +1833,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimeManifestSparse = false;
   }
 
-  function resetRuntimeTimelineState(advanceResources = true): void {
+  function resetRuntimeTimelineState(advanceResources = true, resetViewport = true): void {
+    serviceRequests.reset();
+    pointerObservation.clear();
+    canvasPixels.clear();
+    htmlMeasurements.clear();
     presentationProjection.reset();
     if (advanceResources) advanceProjectResourceGeneration();
     testAudioPlayback.clear();
@@ -1655,11 +1847,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimeDebug.resetSession();
     prompt.value = "";
     runtimeInput.reset();
-    runtimeViewport.reset();
+    // Returning to title keeps the same physical host environment in core. Full session
+    // replacement must discard it; new geometry observations invalidate it immediately.
+    if (resetViewport) runtimeViewport.reset();
     runtimeImport.reset();
   }
 
   function advanceProjectResourceGeneration(): void {
+    serviceRequests.reset();
+    pointerObservation.clear();
+    canvasPixels.clear();
+    htmlMeasurements.clear();
     projectResourceGeneration.value += 1;
     resourceUrlRegistry.releaseBeforeGeneration(projectResourceGeneration.value);
     audio.resetResources(projectResourceGeneration.value);
@@ -2778,6 +2976,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       runtimePump.ready,
       presentation.revision,
       prompt.value,
+      viewportStyleIdentity(),
     );
   }
 
@@ -2811,7 +3010,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await send({ type: "shutdown_request", value: { graceful: true } });
   }
 
-  async function send(message: RuntimeMessage, correlationId?: number): Promise<number | bigint> {
+  async function send(
+    message: RuntimeMessage,
+    correlationId?: ServiceInteger,
+  ): Promise<number | bigint> {
     const telemetry = startupTelemetry.value;
     const startupStart =
       message.type === "start" &&

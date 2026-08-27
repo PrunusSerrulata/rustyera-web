@@ -986,9 +986,11 @@ fn client_hello(options: WebSessionOptions, limits: RuntimeLimits) -> ClientHell
         (ServiceKind::Entropy, "random_seed"),
         (ServiceKind::Clock, "local_date_time"),
         (ServiceKind::InputState, "get_key_state"),
+        (ServiceKind::InputState, "pointer_state"),
         (ServiceKind::Image, "image_metadata"),
         (ServiceKind::Image, "image_pixel"),
         (ServiceKind::Canvas, "decode_canvas_image"),
+        (ServiceKind::Canvas, "sample_canvas_pixel"),
         (ServiceKind::PresentationQuery, "get_display_line"),
         (ServiceKind::PresentationQuery, "html_get_printed_str"),
         (ServiceKind::PresentationQuery, "serialize_physical_history"),
@@ -1000,6 +1002,15 @@ fn client_hello(options: WebSessionOptions, limits: RuntimeLimits) -> ClientHell
         operation: operation.into(),
         versions: v1,
     })
+    .chain(
+        ["html_string_len", "html_substring", "html_string_lines"]
+            .into_iter()
+            .map(|operation| ServiceCapability {
+                kind: ServiceKind::PresentationQuery,
+                operation: operation.into(),
+                versions: VersionRange::exact(era_protocol::ProtocolVersion::new(2, 0)),
+            }),
+    )
     .collect();
     ClientHello {
         runtime_versions: VersionRange::exact(RUNTIME_PROTOCOL_VERSION),

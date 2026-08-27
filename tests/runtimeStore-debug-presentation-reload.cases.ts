@@ -1,5 +1,8 @@
 import { bridge } from "./runtimeStoreTestSupport";
 import { watch } from "vue";
+import { HtmlMeasurementProvider } from "@/platform/htmlMeasurement";
+import { encodeProjectionServicePayload } from "@/core/serviceCodec";
+import { projectionMap, type ProjectionQueryContext } from "@/core/runtimeServiceProtocol";
 import { describe, expect, it, vi } from "vitest";
 import {
   installRuntimeStoreTestHarness,
@@ -17,8 +20,223 @@ import {
   runtimeEvent,
 } from "./runtimeStoreTestSupport";
 
+function storeHtmlQuery(context: ProjectionQueryContext) {
+  const color = new Map([
+    [0, 192],
+    [1, 192],
+    [2, 192],
+    [3, 255],
+  ]);
+  const style = new Map<number, unknown>([
+    [0, color],
+    [2, false],
+    [3, false],
+    [4, false],
+    [5, false],
+    [7, 18000],
+  ]);
+  const settings = new Map<number, unknown>([
+    [0, 640000],
+    [1, 20000],
+    [2, color],
+    [3, color],
+    [4, 1000],
+    [5, true],
+    [6, false],
+    [7, 480000],
+  ]);
+  const document = new Map<number, unknown>([[0, [[0, ["a", 0, 1]]]]]);
+  const probe = new Map<number, unknown>([
+    [0, 0],
+    [1, document],
+    [2, 0],
+    [3, []],
+  ]);
+  return {
+    request_id: 901,
+    kind: "presentation_query",
+    operation: "html_string_len",
+    operation_version: { major: 2, minor: 0 },
+    payload: [
+      ...encodeProjectionServicePayload(
+        new Map<number, unknown>([
+          [0, projectionMap(context)],
+          [
+            1,
+            new Map([
+              [0, style],
+              [1, style],
+              [2, settings],
+            ]),
+          ],
+          [2, [probe]],
+        ]),
+      ),
+    ],
+  };
+}
+
 describe("runtime store debug-presentation-reload", () => {
   installRuntimeStoreTestHarness();
+
+  it.each(["complete", "cancel", "epoch", "fault", "teardown", "resize", "preferences"])(
+    "binds HTML provider lifetime to the confirmed viewport through %s",
+    async (ending) => {
+      const viewport = document.createElement("main");
+      viewport.className = "game-viewport";
+      let width = 640;
+      Object.defineProperties(viewport, {
+        clientWidth: { get: () => width },
+        clientHeight: { value: 480 },
+      });
+      document.body.append(viewport);
+      const gate = deferred<void>();
+      let signal: AbortSignal | undefined;
+      const measured = vi
+        .spyOn(HtmlMeasurementProvider.prototype, "measure")
+        .mockImplementation(async (_probe, binding, guard) => {
+          signal = guard.signal;
+          expect(binding.viewport).toBe(viewport);
+          expect(binding.resourceBridge).toBe(bridge);
+          await gate.promise;
+          guard.assertCurrent();
+          return {
+            context: binding.context,
+            advancePx: 9.25,
+            cuts: [],
+            textNodes: [],
+            firstRow: { advancePx: 9.25, heightPx: 18, fragments: [] },
+          };
+        });
+      const cleared = vi.spyOn(HtmlMeasurementProvider.prototype, "clear");
+      const store = await storeWithInputWait({
+        kind: "enter_key",
+        wait_id: 17,
+        submission_token: { epoch: 2, id: 5 },
+      });
+      try {
+        await store.projectViewport({
+          width: 640,
+          height: 480,
+          lineColumns: 80,
+          chromeWidth: 0,
+          chromeHeight: 0,
+        });
+        const observations = bridge.submitRuntime.mock.calls
+          .map(([message]) => message)
+          .filter((message) => message.type === "projection_observation");
+        const observation = observations[observations.length - 1].value;
+        bridge.pump.mockResolvedValueOnce({
+          ...emptyBatch(),
+          events: [
+            runtimeEvent(
+              "service_request",
+              storeHtmlQuery({
+                presentationRevision: 1,
+                environmentRevision: observation.environment_revision,
+                projectionSpaceRevision: observation.projection_space_revision,
+              }),
+              941,
+              2,
+            ),
+          ],
+        });
+        await advanceUntil(() => measured.mock.calls.length === 1);
+        cleared.mockClear();
+        if (ending === "teardown") store.teardown();
+        else if (ending === "resize") width = 641;
+        else if (ending === "preferences") store.preferences.fontSizeOverridePx = 23;
+        else if (ending !== "complete") {
+          const event =
+            ending === "cancel"
+              ? runtimeEvent(
+                  "cancel_external_request",
+                  { kind: "service", request_id: 901 },
+                  undefined,
+                  2,
+                )
+              : ending === "epoch"
+                ? runtimeEvent("state_changed", { phase: "waiting_input", epoch: 3 }, undefined, 3)
+                : runtimeEvent(
+                    "fault",
+                    { code: "fixture.fault", message: "stop measurement" },
+                    undefined,
+                    2,
+                  );
+          bridge.pump.mockResolvedValueOnce({ ...emptyBatch(), events: [event] });
+          await advanceUntil(() => signal?.aborted === true);
+        }
+        gate.resolve();
+        if (["complete", "resize", "preferences"].includes(ending)) {
+          await advanceUntil(() =>
+            bridge.submitRuntime.mock.calls.some(
+              ([message]) => message.type === "service_response",
+            ),
+          );
+          const response = bridge.submitRuntime.mock.calls.find(
+            ([message]) => message.type === "service_response",
+          )!;
+          expect(response[1]).toBe(941);
+          if (ending === "complete")
+            expect(
+              (decodeServicePayload(response[0].value.result.payload) as Map<number, any>)
+                .get(1)[0]
+                .get(1),
+            ).toEqual([0, [9250, []]]);
+          else expect(response[0].value.result.error.code).toBe("frontend.stale_projection");
+        } else {
+          await flushMicrotasks();
+          await flushMicrotasks();
+          expect(
+            bridge.submitRuntime.mock.calls.some(
+              ([message]) => message.type === "service_response",
+            ),
+          ).toBe(false);
+          expect(signal?.aborted).toBe(true);
+          if (ending !== "cancel") expect(cleared).toHaveBeenCalled();
+          else expect(cleared).not.toHaveBeenCalled(); // Cancelling one request must not cancel unrelated provider work.
+        }
+      } finally {
+        gate.resolve();
+        store.teardown();
+        measured.mockRestore();
+        cleared.mockRestore();
+      }
+    },
+  );
+
+  it("rejects HTML queries without a confirmed mounted viewport before DOM measurement", async () => {
+    const measured = vi.spyOn(HtmlMeasurementProvider.prototype, "measure");
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "service_request",
+          storeHtmlQuery({
+            presentationRevision: 0,
+            environmentRevision: 1,
+            projectionSpaceRevision: 1,
+          }),
+          941,
+        ),
+      ],
+    });
+    const store = useRuntimeStore();
+    try {
+      await store.enableDebug();
+      await advanceUntil(() =>
+        bridge.submitRuntime.mock.calls.some(([message]) => message.type === "service_response"),
+      );
+      const response = bridge.submitRuntime.mock.calls.find(
+        ([message]) => message.type === "service_response",
+      )!;
+      expect(response[0].value.result.error.code).toBe("frontend.stale_projection");
+      expect(measured).not.toHaveBeenCalled();
+    } finally {
+      store.teardown();
+      measured.mockRestore();
+    }
+  });
 
   it("publishes one final Vue observation for a batch of synchronous runtime events", async () => {
     const wait = {
@@ -158,6 +376,7 @@ describe("runtime store debug-presentation-reload", () => {
             request_id: 1,
             kind: "presentation_query",
             operation: "get_display_line",
+            operation_version: { major: 1, minor: 0 },
             payload: query,
           },
           41,
@@ -176,6 +395,7 @@ describe("runtime store debug-presentation-reload", () => {
             request_id: 2,
             kind: "presentation_query",
             operation: "get_display_line",
+            operation_version: { major: 1, minor: 0 },
             payload: query,
           },
           42,

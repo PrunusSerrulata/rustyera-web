@@ -781,15 +781,14 @@ describe("runtime store startup-save", () => {
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
       events: [
-        runtimeEvent("service_request", {
-          request_id: 1,
-          kind: "unsupported",
-          operation: "unsupported",
-          payload: [],
+        runtimeEvent("presentation_delta", {
+          base_revision: 999,
+          new_revision: 1000,
+          operations: [],
         }),
       ],
     });
-    bridge.submitRuntime.mockRejectedValueOnce(new Error("initial batch failed"));
+    bridge.submitRuntime.mockRejectedValueOnce(new Error("initial resynchronization failed"));
     mockProjectSelection(
       {
         submittedAtMs: performance.now(),

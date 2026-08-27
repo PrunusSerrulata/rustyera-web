@@ -12,6 +12,8 @@ import {
   mockProjectSelection,
   useRuntimeStore,
   runtimeEvent,
+  deferred,
+  flushMicrotasks,
 } from "./runtimeStoreTestSupport";
 
 describe("runtime store configuration", () => {
@@ -42,6 +44,7 @@ describe("runtime store configuration", () => {
             request_id: 7,
             kind: "canvas",
             operation: "decode_canvas_image",
+            operation_version: { major: 1, minor: 0 },
             payload: [...encodeServicePayload(new Map([[0, png]]))],
           },
           41,
@@ -52,6 +55,7 @@ describe("runtime store configuration", () => {
             request_id: 8,
             kind: "canvas",
             operation: "decode_canvas_image",
+            operation_version: { major: 1, minor: 0 },
             payload: [...encodeServicePayload(new Map([[0, Uint8Array.of(1, 2, 3)]]))],
           },
           42,
@@ -79,6 +83,123 @@ describe("runtime store configuration", () => {
     );
     expect(errorCall[1]).toBe(42);
     expect(errorCall[0].value.result).toMatchObject({ type: "error" });
+  });
+
+  it("handles cancellation while a service decode is pending without blocking later events", async () => {
+    const metadata = deferred<{
+      width: number;
+      height: number;
+      format: string;
+      animated: boolean;
+    }>();
+    bridge.readImageMetadata.mockReturnValueOnce(metadata.promise);
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "service_request",
+          {
+            request_id: 9,
+            kind: "image",
+            operation: "image_metadata",
+            operation_version: { major: 1, minor: 0 },
+            payload: [...encodeServicePayload(new Map([[0, "pending.png"]]))],
+          },
+          41,
+          1,
+        ),
+        runtimeEvent("cancel_external_request", { request_id: 9, kind: "service" }, undefined, 1),
+        runtimeEvent("state_changed", { phase: "waiting_external", epoch: 1 }, undefined, 1),
+      ],
+    });
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    expect(store.phase).toBe("waiting_external");
+    expect(bridge.readImageMetadata).toHaveBeenCalledWith("pending.png");
+    metadata.resolve({ width: 1, height: 1, format: "png", animated: false });
+    await flushMicrotasks();
+    expect(
+      bridge.submitRuntime.mock.calls.some(([message]) => message.type === "service_response"),
+    ).toBe(false);
+  });
+
+  it("keeps each service event bound to its epoch when the request ID is reused", async () => {
+    const metadata = deferred<{
+      width: number;
+      height: number;
+      format: string;
+      animated: boolean;
+    }>();
+    bridge.readImageMetadata
+      .mockReturnValueOnce(metadata.promise)
+      .mockResolvedValueOnce({ width: 2, height: 3, format: "png", animated: false });
+    const request = (resource: string) => ({
+      request_id: 9,
+      kind: "image",
+      operation: "image_metadata",
+      operation_version: { major: 1, minor: 0 },
+      payload: [...encodeServicePayload(new Map([[0, resource]]))],
+    });
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("service_request", request("old.png"), 41, 1),
+        runtimeEvent("service_request", request("new.png"), 42, 2),
+      ],
+    });
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    metadata.resolve({ width: 1, height: 1, format: "png", animated: false });
+    await flushMicrotasks();
+    const responses = bridge.submitRuntime.mock.calls.filter(
+      ([message]) => message.type === "service_response",
+    );
+    expect(responses).toHaveLength(1);
+    expect(responses[0][1]).toBe(42);
+    expect(decodeServicePayload(responses[0][0].value.result.payload)).toEqual(
+      new Map<number, unknown>([
+        [0, 2],
+        [1, 3],
+        [2, "png"],
+        [3, false],
+      ]),
+    );
+  });
+
+  it("reports background service transport failures without fabricating a successful reply", async () => {
+    bridge.submitRuntime.mockImplementation(async (message) => {
+      if (message.type === "service_response") throw new Error("service send failed");
+      return 1;
+    });
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "service_request",
+          {
+            request_id: 9,
+            kind: "entropy",
+            operation: "random_seed",
+            operation_version: { major: 1, minor: 0 },
+            payload: [...encodeServicePayload(new Map())],
+          },
+          41,
+          1,
+        ),
+      ],
+    });
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    await flushMicrotasks();
+    expect(
+      store.logs.some(
+        (entry) =>
+          entry.message.includes("前端服务失败") && entry.message.includes("service send failed"),
+      ),
+    ).toBe(true);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(([message]) => message.type === "service_response"),
+    ).toHaveLength(1);
   });
 
   it("uses isolated default preferences in end-to-end test builds", async () => {

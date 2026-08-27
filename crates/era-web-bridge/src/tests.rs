@@ -70,6 +70,32 @@ fn client_advertises_canvas_image_decode() {
     assert!(hello.capabilities.services.iter().any(|capability| {
         capability.kind == ServiceKind::Canvas && capability.operation == "decode_canvas_image"
     }));
+    for (kind, operation, major) in [
+        (ServiceKind::InputState, "pointer_state", 1),
+        (ServiceKind::Canvas, "sample_canvas_pixel", 1),
+        (ServiceKind::PresentationQuery, "html_string_len", 2),
+        (ServiceKind::PresentationQuery, "html_substring", 2),
+        (ServiceKind::PresentationQuery, "html_string_lines", 2),
+    ] {
+        let matched = hello
+            .capabilities
+            .services
+            .iter()
+            .filter(|capability| capability.kind == kind && capability.operation == operation)
+            .collect::<Vec<_>>();
+        assert_eq!(matched.len(), 1, "{operation}");
+        assert_eq!(
+            matched[0].versions,
+            VersionRange::exact(era_protocol::ProtocolVersion::new(major, 0))
+        );
+    }
+    assert!(
+        !hello
+            .capabilities
+            .services
+            .iter()
+            .any(|capability| capability.operation == "html_pixel_size")
+    );
 }
 
 #[test]
