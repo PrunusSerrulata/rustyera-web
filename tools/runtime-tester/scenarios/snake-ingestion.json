@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/snake-ingestion-project",
+  "mode": "fixed",
+  "seed": 123456,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [
+    {
+      "type": "assert_state",
+      "expect": {
+        "canInteract": true,
+        "fault": null,
+        "output": ["SNAKE_INGEST_READY=42/main/84"]
+      }
+    },
+    {
+      "type": "edit_project_source",
+      "relative_path": "ERB/indices/BUFF.als",
+      "expected": "10,alias",
+      "replacement": "11,alias"
+    },
+    {
+      "type": "reload_project",
+      "scope": "folder",
+      "path": "ERB/indices"
+    },
+    { "type": "input", "value": "1" },
+    {
+      "type": "assert_state",
+      "expect": {
+        "fault": null,
+        "output": ["SNAKE_INGEST_READY=42/main/84", "", "SNAKE_INGEST_READY=42/main/84"]
+      }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "文件", "exact": true } },
+    { "type": "click", "locator": { "role": "button", "name": "返回标题", "exact": true } },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "dialog", "name": "返回标题", "exact": true },
+      "expect": { "count": 1, "visible": true }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "返回标题", "exact": true } },
+    {
+      "type": "assert_state",
+      "expect": {
+        "canInteract": true,
+        "fault": null,
+        "output": ["SNAKE_INGEST_READY=84/main/84"]
+      }
+    }
+  ],
+  "goal": {
+    "output_contains": ["SNAKE_INGEST_READY=84/main/84"],
+    "wait_kind": "integer_value"
+  },
+  "limits": { "max_steps": 16, "timeout_seconds": 60 }
+}

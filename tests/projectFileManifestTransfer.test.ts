@@ -174,3 +174,24 @@ it("does not transfer embedded resources on project-file worker responses", () =
   expect(runtimeWorkerResultTransfers("finishProjectFile", result)).toEqual([]);
   expect(runtimeWorkerResultTransfers("appendProjectFile", result)).toEqual([]);
 });
+
+it.each(["als", "erd"])("preserves %s in packaged-project Worker manifests", (category) => {
+  const manifest = normalizeProjectFileManifest({
+    project_revision: 2,
+    compatibility: referenceCompatibility(),
+    files: [
+      {
+        relative_path: `ERB/BUFF.${category}`,
+        category,
+        payload: { type: "utf8", value: "10,主名\n" },
+        content_hash: new Uint8Array(32),
+      },
+    ],
+  });
+  const owned = takeProjectFileManifestOwnership(manifest).files[0];
+  expect(owned.relative_path).toBe(`ERB/BUFF.${category}`);
+  expect(owned.category).toBe(category);
+  expect(owned.payload).toEqual({ type: "utf8", value: "10,主名\n" });
+  // structuredClone can return typed arrays from another realm in the DOM test host.
+  expect(Array.from(owned.content_hash)).toEqual(Array.from(manifest.files[0].content_hash));
+});

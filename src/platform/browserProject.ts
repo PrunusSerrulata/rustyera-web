@@ -21,7 +21,7 @@ import {
   createProjectProgressReporter,
   decodeProjectSource,
   decodeProtocolBytes,
-  isScriptCategory,
+  isReloadableCategory,
   projectReloadScopeMatches,
   projectReloadSelector,
   runBounded,
@@ -988,12 +988,12 @@ export class BrowserProject {
     if (this.embeddedManifest()) return { folders: [], scripts: [] };
     const paths = new Set(
       (this.manifestValue?.files ?? [])
-        .filter((file) => isScriptCategory(file.category))
+        .filter((file) => isReloadableCategory(file.category))
         .map((file) => file.relative_path),
     );
     const { files: current } = await this.enumerateFiles();
     for (const file of current) {
-      if (isScriptCategory(file.category)) paths.add(file.relativePath);
+      if (isReloadableCategory(file.category)) paths.add(file.relativePath);
     }
     const scripts = [...paths].sort(comparePaths);
     const folders = [
@@ -1449,6 +1449,8 @@ function projectCategoryCode(category: string): number {
     resource_manifest: 3,
     resource: 4,
     configuration: 5,
+    als: 6,
+    erd: 7,
   }[category];
   if (code == null) throw new Error(`未知项目文件类别：${category}`);
   return code;

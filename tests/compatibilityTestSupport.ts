@@ -1,6 +1,6 @@
 import type { CompatibilityIdentity } from "@/core/compatibility";
 
-/** Captured public batch-0 policy fixtures, not a frontend policy implementation. */
+/** Captured public compatibility policy fixtures, not a frontend policy implementation. */
 export function referenceCompatibility(): CompatibilityIdentity {
   return {
     profile: "emuera.em",
@@ -19,6 +19,8 @@ export function snakeCompatibility(): CompatibilityIdentity {
   return {
     ...referenceCompatibility(),
     profile: "emuera.skia.snake",
+    semantic_version: 2,
+    policy_version: 2,
     save_codec: "rustyera_envelope_v1:emuera1808",
   };
 }

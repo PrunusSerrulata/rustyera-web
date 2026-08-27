@@ -31,7 +31,7 @@ describe("compatibility protocol projection", () => {
       },
     };
     const formatted = formatCompatibilityContext(context);
-    expect(formatted).toContain("emuera.skia.snake@1/1");
+    expect(formatted).toContain("emuera.skia.snake@2/2");
     expect(formatted).toContain("stage=service api=GCREATE requires=graphics.create@1.0");
     expect(
       formatDiagnostic({
@@ -45,8 +45,8 @@ describe("compatibility protocol projection", () => {
   it("normalizes lossless WASM version integers in configuration and diagnostics", () => {
     const identity = {
       ...snakeCompatibility(),
-      semantic_version: 1n,
-      policy_version: 1n,
+      semantic_version: 2n,
+      policy_version: 2n,
       rng_state_version: 1n,
       services: [{ name: "example", version: 0xffff_ffffn }],
     };
@@ -66,7 +66,7 @@ describe("compatibility protocol projection", () => {
       }).compatibility,
     ).toEqual(expected);
     expect(formatCompatibilityContext({ identity, stage: "configuration" })).toBe(
-      "profile=emuera.skia.snake@1/1 stage=configuration",
+      "profile=emuera.skia.snake@2/2 stage=configuration",
     );
     for (const value of [0n, -1n, 0x1_0000_0000n, "1", Number.NaN]) {
       expect(() => requireCompatibilityIdentity({ ...identity, policy_version: value })).toThrow();

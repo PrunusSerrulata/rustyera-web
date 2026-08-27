@@ -4,8 +4,8 @@ import { safePath } from "@/platform/browserProjectFilesystem";
 type ProjectReloadSelector =
   { type: "all" } | { type: "folder"; path: string } | { type: "script"; path: string };
 
-export function isScriptCategory(category: string): boolean {
-  return category === "erb" || category === "erh";
+export function isReloadableCategory(category: string): boolean {
+  return ["erb", "erh", "als", "erd"].includes(category);
 }
 
 export function projectReloadScopeMatches(
@@ -14,7 +14,7 @@ export function projectReloadScopeMatches(
   category: string,
 ): boolean {
   if (selector.type === "all") return true;
-  if (!isScriptCategory(category)) return false;
+  if (!isReloadableCategory(category)) return false;
   const path = relativePath.replaceAll("\\", "/").normalize("NFC");
   return selector.type === "script"
     ? path === selector.path
@@ -91,11 +91,12 @@ export function throwIfAborted(signal?: AbortSignal): void {
 }
 
 export function decodeProjectSource(bytes: Uint8Array, relativePath: string): string {
-  if (relativePath.replaceAll("\\", "/").toLowerCase() === "reraconfig.toml") {
+  const normalizedPath = relativePath.replaceAll("\\", "/").toLowerCase();
+  if (normalizedPath === "reraconfig.toml" || /\.(als|erd)$/.test(normalizedPath)) {
     try {
       return new TextDecoder("utf-8", { fatal: true }).decode(bytes).replace(/^\uFEFF/, "");
     } catch {
-      throw new Error("reraconfig.toml 不是有效的 UTF-8 文件");
+      throw new Error(`${relativePath} 不是有效的 UTF-8 文件`);
     }
   }
   for (const encoding of ["utf-8", "shift_jis", "gbk"]) {

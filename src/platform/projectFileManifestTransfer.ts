@@ -8,6 +8,8 @@ const PROJECT_FILE_CATEGORIES = new Set([
   "resource_manifest",
   "resource",
   "configuration",
+  "als",
+  "erd",
 ]);
 const PROJECT_FILE_IMAGE_FORMATS = ["bmp", "gif", "jpeg", "png", "webp"] as const;
 type ProjectFileImageFormat = (typeof PROJECT_FILE_IMAGE_FORMATS)[number];

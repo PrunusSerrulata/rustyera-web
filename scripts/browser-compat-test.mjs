@@ -43,6 +43,10 @@ if (projectFileIndex >= 0 && !process.argv[projectFileIndex + 1]) {
 }
 const projectFile =
   projectFileIndex >= 0 ? path.resolve(repository, process.argv[projectFileIndex + 1]) : undefined;
+const expectedOutputIndex = process.argv.indexOf("--expect-output");
+if (expectedOutputIndex >= 0 && !process.argv[expectedOutputIndex + 1])
+  throw new Error("--expect-output requires a marker");
+const expectedOutput = expectedOutputIndex >= 0 ? process.argv[expectedOutputIndex + 1] : undefined;
 const checkTooltip = process.argv.includes("--check-tooltip");
 const startupOnly = process.argv.includes("--startup-only");
 const cacheInputSmoke = process.argv.includes("--cache-input-smoke");
@@ -301,6 +305,18 @@ try {
     }));
     throw new Error(`${error.message}; diagnosis=${JSON.stringify(diagnosis)}`);
   }
+  if (expectedOutput) {
+    compatibilityStage = `checking output marker ${expectedOutput}`;
+    await browser.waitUntil(
+      () =>
+        browser.execute((marker) => {
+          const state = window.__RUSTYERA_TEST__?.snapshot();
+          if (state?.fault) throw new Error(JSON.stringify(state.fault));
+          return state?.canInteract && state.output.some((line) => String(line).includes(marker));
+        }, expectedOutput),
+      { timeout: 10_000, interval: 100, timeoutMsg: `missing output marker ${expectedOutput}` },
+    );
+  }
   if (projectFile && !startupOnly)
     projectPreferencesAfterLoad = await verifyProjectPreferencesAfterLoad(browser);
   compatibilityStage = "validating project progress";
@@ -353,6 +369,7 @@ try {
         startupGuidance,
         projectProgress,
         startupOnly: true,
+        expectedOutput,
         ...observed,
       }),
     );

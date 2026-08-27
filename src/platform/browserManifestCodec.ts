@@ -17,6 +17,8 @@ const CATEGORY_CODES: Record<string, number> = {
   resource_manifest: 3,
   resource: 4,
   configuration: 5,
+  als: 6,
+  erd: 7,
 };
 
 interface EncodedFile {

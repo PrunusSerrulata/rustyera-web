@@ -126,3 +126,35 @@ describe("browser manifest codec", () => {
     ]);
   });
 });
+
+it.each([
+  ["als", 6],
+  ["erd", 7],
+] as const)(
+  "keeps %s category and UTF-8 payload in both transfer modes",
+  async (category, code) => {
+    const manifest = {
+      project_revision: 1,
+      compatibility: referenceCompatibility(),
+      files: [
+        {
+          relative_path: `ERB/BUFF.${category}`,
+          category,
+          payload: { type: "utf8" as const, value: "10,主名\n" },
+          content_hash: new Uint8Array(32).fill(code),
+        },
+      ],
+    };
+    const encoded = await encodeBrowserManifest(manifest);
+    const view = new DataView(encoded.buffer);
+    const offset = 24 + view.getUint32(20, true);
+    expect(view.getUint8(offset)).toBe(code);
+    const streamed: Array<{ category: number; payload: Uint8Array; contentHash: Uint8Array }> = [];
+    await streamBrowserManifestFiles(manifest, async (file) => {
+      streamed.push(file);
+    });
+    expect(streamed[0].category).toBe(code);
+    expect(new TextDecoder().decode(streamed[0].payload)).toBe("10,主名\n");
+    expect(streamed[0].contentHash).toEqual(manifest.files[0].content_hash);
+  },
+);

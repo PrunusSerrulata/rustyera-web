@@ -187,7 +187,7 @@ fn font_directory_files_are_binary_resources_for_cross_frontend_exports() {
     }
     assert_eq!(
         classify(root, &root.join("font/license.txt"), &canonical).unwrap(),
-        None
+        Some(FileCategory::Resource)
     );
 }
 
@@ -982,4 +982,196 @@ fn reraconfig_requires_strict_utf8() {
         panic!("non-UTF-8 reraconfig.toml must be rejected during the initial scan");
     };
     assert!(error.contains("valid UTF-8"));
+}
+
+#[test]
+fn index_data_survives_native_warm_scan_materialization_and_scoped_reload() {
+    let directory = tempfile::tempdir().unwrap();
+    let indices = directory.path().join("ERB/indices");
+    let csv = directory.path().join("CSV");
+    fs::create_dir_all(&indices).unwrap();
+    fs::create_dir_all(&csv).unwrap();
+    fs::write(indices.join("BUFF.erd"), "\u{feff}10,主名\r\n").unwrap();
+    fs::write(indices.join("BUFF.als"), "11,别名\n").unwrap();
+    fs::write(csv.join("TRAIN.als"), "12,训练\n").unwrap();
+    let cold = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+    let mut warm = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+    assert_eq!(warm.source_index_stats, (3, 0));
+    assert_eq!(warm.identity(), cold.identity());
+    let materialized = warm.materialize().unwrap();
+    assert_eq!(
+        materialized
+            .files
+            .iter()
+            .map(|file| file.category)
+            .collect::<Vec<_>>(),
+        [FileCategory::Als, FileCategory::Als, FileCategory::Erd]
+    );
+    assert!(matches!(
+        &materialized.files[2].payload,
+        FilePayload::Utf8(text) if text == "10,主名\r\n"
+    ));
+    assert!(
+        warm.project_reload_targets()
+            .unwrap()
+            .scripts
+            .contains(&"ERB/indices/BUFF.erd".into())
+    );
+    fs::write(indices.join("BUFF.als"), "13,更新\n").unwrap();
+    fs::remove_file(indices.join("BUFF.erd")).unwrap();
+    fs::write(indices.join("MATRIX@2.erd"), "10,新索引\n").unwrap();
+    let reload = warm
+        .reload_scoped_with_progress(
+            &ProjectReloadScope::Folder {
+                path: "ERB/indices".into(),
+            },
+            None,
+        )
+        .unwrap();
+    assert_eq!(reload.changes.len(), 3);
+    assert!(reload.changes.iter().any(|change| matches!(change,
+        FileChange::Remove { category: FileCategory::Erd, relative_path }
+            if relative_path == "ERB/indices/BUFF.erd"
+    )));
+    warm.finalize_reload(true);
+    assert_ne!(warm.identity().source_digest, cold.identity().source_digest);
+}
+
+#[test]
+fn index_data_uses_canonical_roots_and_strict_utf8() {
+    let root = Path::new("/game");
+    let roots = BTreeSet::from(["csv".into(), "erb".into()]);
+    for (path, category) in [
+        ("ERB/nested/BUFF.erd", FileCategory::Erd),
+        ("ERB/nested/BUFF.als", FileCategory::Als),
+        ("CSV/TRAIN.als", FileCategory::Als),
+    ] {
+        assert_eq!(
+            classify(root, &root.join(path), &roots).unwrap(),
+            Some(category)
+        );
+        assert!(normalized_project_text(path, b"\x82\xa0", category).is_none());
+        assert_eq!(
+            normalized_project_text(path, "\u{feff}10,索引\n".as_bytes(), category).unwrap(),
+            "10,索引\n"
+        );
+    }
+    for path in ["loose.erd", "CSV/BUFF.erd", "notes/BUFF.als"] {
+        assert_eq!(classify(root, &root.join(path), &roots).unwrap(), None);
+    }
+    assert_eq!(
+        classify(root, &root.join("flat.als"), &BTreeSet::new()).unwrap(),
+        Some(FileCategory::Als)
+    );
+}
+
+#[test]
+fn data_resource_inventory_preserves_raw_bytes_without_loading_plugins() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugins = directory.path().join("plugins");
+    let saves = directory.path().join("sav");
+    fs::create_dir(&plugins).unwrap();
+    fs::create_dir(&saves).unwrap();
+    let bytes = [0xef, 0xbb, 0xbf, 0x0d, 0x0a, 0xff];
+    for suffix in ["xml", "txt", "db", "sqlite", "dll"] {
+        fs::write(plugins.join(format!("fixture.{suffix}")), bytes).unwrap();
+    }
+    fs::write(saves.join("txt00.txt"), "user save").unwrap();
+    let cold = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+    let mut warm = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+    assert_eq!(warm.identity(), cold.identity());
+    assert_eq!(warm.source_index_stats, (4, 0));
+    let files = warm.materialize().unwrap().files.clone();
+    assert_eq!(files.len(), 4);
+    for file in files {
+        assert_eq!(file.category, FileCategory::Resource);
+        assert!(matches!(&file.payload, FilePayload::ExternalResource(value)
+            if value.byte_length == 6 && value.image_metadata.is_none()));
+        assert_eq!(
+            file.content_hash.unwrap().as_slice(),
+            blake3::hash(&bytes).as_bytes()
+        );
+        assert_eq!(warm.read_resource(&file.relative_path).unwrap(), bytes);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn project_ingestion_rejects_external_symlinks_and_recursive_link_loops() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("secret.xml"), "outside").unwrap();
+    let link = directory.path().join("resource.xml");
+    symlink(outside.path().join("secret.xml"), &link).unwrap();
+    let Err(error) = ProjectHost::scan_quick(directory.path(), 1) else {
+        panic!("external source link must be rejected");
+    };
+    assert!(error.contains("escapes the project root"));
+    fs::remove_file(&link).unwrap();
+    fs::write(outside.path().join("main.erb"), "@SYSTEM_TITLE\nRETURN\n").unwrap();
+    let legacy_link = directory.path().join("main.erb");
+    symlink(outside.path().join("main.erb"), &legacy_link).unwrap();
+    assert!(ProjectHost::scan_quick(directory.path(), 1).is_ok());
+    fs::remove_file(legacy_link).unwrap();
+    fs::create_dir(directory.path().join("data")).unwrap();
+    fs::write(directory.path().join("data/private.txt"), "private").unwrap();
+    symlink(directory.path().join("data/private.txt"), &link).unwrap();
+    let Err(error) = ProjectHost::scan_quick(directory.path(), 1) else {
+        panic!("data overlay must not be exposed through a resource alias");
+    };
+    assert!(error.contains("writable or private storage"));
+    fs::remove_file(&link).unwrap();
+    symlink(directory.path(), directory.path().join("loop")).unwrap();
+    let Err(error) = ProjectHost::scan_quick(directory.path(), 1) else {
+        panic!("source link loop must be rejected");
+    };
+    assert!(error.contains("cannot scan project"));
+}
+
+#[test]
+fn native_source_index_accepts_browser_index_data_names_and_codes() {
+    for (category, code) in [("als", 6), ("erd", 7)] {
+        let mut entry = serde_json::json!({
+            "category": category,
+            "signature": "10:1",
+            "hash": "00".repeat(32),
+            "size": 10,
+        });
+        let named: SourceIndexEntry = serde_json::from_value(entry.clone()).unwrap();
+        assert_eq!(named.category, code);
+        entry["category"] = code.into();
+        let numbered: SourceIndexEntry = serde_json::from_value(entry).unwrap();
+        assert_eq!(numbered.category, named.category);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn data_resources_recheck_authorization_before_read_prefix_and_export() {
+    use std::os::unix::fs::symlink;
+    for private in ["data", ".rustyera"] {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("seed.xml");
+        fs::write(&source, "<seed>same inode and contents</seed>").unwrap();
+        let mut host = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+        host.materialize().unwrap();
+        fs::create_dir_all(directory.path().join(private)).unwrap();
+        let moved = directory.path().join(private).join("seed.xml");
+        fs::rename(&source, &moved).unwrap();
+        symlink(moved, source).unwrap();
+        for result in [
+            host.read_resource("seed.xml"),
+            host.read_resource_prefix("seed.xml", 8),
+        ] {
+            assert!(result.unwrap_err().contains("writable or private storage"));
+        }
+        let mut exported = Vec::new();
+        assert!(
+            host.write_full_manifest_with_progress_and_cancel(&mut exported, None, None)
+                .unwrap_err()
+                .contains("writable or private storage")
+        );
+    }
 }

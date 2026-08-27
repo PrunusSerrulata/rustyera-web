@@ -98,9 +98,7 @@ where
 {
     let stored = StoredSourceIndexCategory::deserialize(deserializer)?;
     match stored {
-        StoredSourceIndexCategory::Code(code) if code <= FileCategory::Configuration as u8 => {
-            Ok(code)
-        }
+        StoredSourceIndexCategory::Code(code) if code <= FileCategory::Erd as u8 => Ok(code),
         StoredSourceIndexCategory::Name(name) => match name.as_str() {
             "csv" => Ok(FileCategory::Csv as u8),
             "erh" => Ok(FileCategory::Erh as u8),
@@ -108,6 +106,8 @@ where
             "resource_manifest" => Ok(FileCategory::ResourceManifest as u8),
             "resource" => Ok(FileCategory::Resource as u8),
             "configuration" => Ok(FileCategory::Configuration as u8),
+            "als" => Ok(FileCategory::Als as u8),
+            "erd" => Ok(FileCategory::Erd as u8),
             _ => Err(serde::de::Error::custom(
                 "unknown project source-index category",
             )),
@@ -305,7 +305,10 @@ impl ProjectReloadSelector {
         if matches!(self, Self::All) {
             return true;
         }
-        if !matches!(category, FileCategory::Erb | FileCategory::Erh) {
+        if !matches!(
+            category,
+            FileCategory::Erb | FileCategory::Erh | FileCategory::Als | FileCategory::Erd
+        ) {
             return false;
         }
         match self {
@@ -1127,11 +1130,19 @@ impl ProjectHost {
         let mut scripts = self
             .indexed_files
             .iter()
-            .filter(|file| matches!(file.category, FileCategory::Erb | FileCategory::Erh))
+            .filter(|file| {
+                matches!(
+                    file.category,
+                    FileCategory::Erb | FileCategory::Erh | FileCategory::Als | FileCategory::Erd
+                )
+            })
             .map(|file| file.relative_path.clone())
             .collect::<BTreeSet<_>>();
         for (path, category) in project_entries(&self.root, &canonical_roots)? {
-            if matches!(category, FileCategory::Erb | FileCategory::Erh) {
+            if matches!(
+                category,
+                FileCategory::Erb | FileCategory::Erh | FileCategory::Als | FileCategory::Erd
+            ) {
                 scripts.insert(relative_path(&self.root, &path)?);
             }
         }
@@ -1452,6 +1463,7 @@ impl ProjectHost {
     fn resource_path(&self, relative_path: &str) -> Result<PathBuf, String> {
         let relative = validate_relative_path(relative_path).map_err(|error| error.to_string())?;
         let path = self.root.join(relative);
+        validate_source_path(&self.root, &path, FileCategory::Resource)?;
         let canonical = path
             .canonicalize()
             .map_err(|error| format!("cannot open resource: {error}"))?;

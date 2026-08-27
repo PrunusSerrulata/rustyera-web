@@ -5,6 +5,7 @@ pub(super) fn project_entries(
     canonical_roots: &BTreeSet<String>,
 ) -> Result<Vec<(PathBuf, FileCategory)>, String> {
     let mut entries = Vec::new();
+    let mut paths = BTreeSet::new();
     for entry in WalkDir::new(root)
         .follow_links(true)
         .sort_by_file_name()
@@ -16,10 +17,57 @@ pub(super) fn project_entries(
             continue;
         }
         if let Some(category) = classify(root, entry.path(), canonical_roots)? {
+            validate_source_path(root, entry.path(), category)?;
+            let relative = relative_path(root, entry.path())?;
+            if !paths.insert(relative.to_lowercase()) {
+                return Err(format!("project path normalization collision: {relative}"));
+            }
             entries.push((entry.into_path(), category));
         }
     }
     Ok(entries)
+}
+
+pub(super) fn validate_source_path(
+    root: &Path,
+    path: &Path,
+    category: FileCategory,
+) -> Result<(), String> {
+    let data_resource = category == FileCategory::Resource
+        && path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "xml" | "txt" | "db" | "sqlite"
+                )
+            });
+    // Keep legacy source-link behavior while restricting the newly authorized inputs.
+    if !matches!(category, FileCategory::Als | FileCategory::Erd) && !data_resource {
+        return Ok(());
+    }
+    let resolved = path
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve project source: {error}"))?;
+    let relative = resolved
+        .strip_prefix(root)
+        .map_err(|_| "project source path escapes the project root".to_owned())?;
+    if data_resource
+        && relative.components().next().is_some_and(|component| {
+            matches!(
+                component
+                    .as_os_str()
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .as_str(),
+                ".git" | ".rustyera" | "sav" | "save" | "saves" | "data" | "logs" | "log"
+            )
+        })
+    {
+        return Err("project resource points into writable or private storage".into());
+    }
+    Ok(())
 }
 
 pub(super) struct ProgressGate<'a> {
@@ -166,7 +214,15 @@ pub(super) fn normalized_file_bytes(
     }
     normalized_project_text(relative_path, &bytes, category)
         .map(String::into_bytes)
-        .ok_or_else(|| format!("{} is not valid UTF-8, Windows-31J, or GBK", path.display()))
+        .ok_or_else(|| {
+            if relative_path.eq_ignore_ascii_case("reraconfig.toml")
+                || matches!(category, FileCategory::Als | FileCategory::Erd)
+            {
+                format!("{relative_path} is not valid UTF-8")
+            } else {
+                format!("{} is not valid UTF-8, Windows-31J, or GBK", path.display())
+            }
+        })
 }
 
 pub(super) fn normalize_resource_manifest(text: &str) -> String {
@@ -222,7 +278,9 @@ pub(super) fn normalized_project_text(
     bytes: &[u8],
     category: FileCategory,
 ) -> Option<String> {
-    let text = if relative_path.eq_ignore_ascii_case("reraconfig.toml") {
+    let text = if relative_path.eq_ignore_ascii_case("reraconfig.toml")
+        || matches!(category, FileCategory::Als | FileCategory::Erd)
+    {
         std::str::from_utf8(bytes)
             .ok()
             .map(|text| text.strip_prefix('\u{feff}').unwrap_or(text).to_owned())
@@ -364,6 +422,14 @@ pub(super) fn classify(
     if matches!(name.as_str(), "reraconfig.toml" | "setting.json") {
         return Ok(Some(FileCategory::Configuration));
     }
+    if matches!(extension.as_str(), "xml" | "txt" | "db" | "sqlite")
+        && !matches!(
+            first.as_str(),
+            ".git" | ".rustyera" | "sav" | "save" | "saves" | "data" | "logs" | "log"
+        )
+    {
+        return Ok(Some(FileCategory::Resource));
+    }
     if first == "resources" {
         return Ok(if extension == "csv" {
             Some(FileCategory::ResourceManifest)
@@ -387,12 +453,22 @@ pub(super) fn classify(
         "csv" => FileCategory::Csv,
         "erh" => FileCategory::Erh,
         "erb" => FileCategory::Erb,
+        "als" => FileCategory::Als,
+        "erd" => FileCategory::Erd,
         "config" => FileCategory::Configuration,
         _ => return Ok(None),
     };
-    if matches!(category, FileCategory::Erh | FileCategory::Erb)
-        && canonical_roots.contains("erb")
+    if matches!(
+        category,
+        FileCategory::Erh | FileCategory::Erb | FileCategory::Erd
+    ) && canonical_roots.contains("erb")
         && first != "erb"
+    {
+        return Ok(None);
+    }
+    if category == FileCategory::Als
+        && (canonical_roots.contains("csv") || canonical_roots.contains("erb"))
+        && !matches!(first.as_str(), "csv" | "erb")
     {
         return Ok(None);
     }
@@ -441,6 +517,7 @@ pub(super) fn read_file(
     path: &Path,
     category: FileCategory,
 ) -> Result<SubmittedFile, String> {
+    validate_source_path(root, path, category)?;
     let relative_path = path
         .strip_prefix(root)
         .map_err(|_| "project path escaped its root".to_owned())?
@@ -467,7 +544,9 @@ pub(super) fn read_file(
         )
     } else {
         let text = normalized_project_text(&relative_path, &bytes, category).ok_or_else(|| {
-            if relative_path.eq_ignore_ascii_case("reraconfig.toml") {
+            if relative_path.eq_ignore_ascii_case("reraconfig.toml")
+                || matches!(category, FileCategory::Als | FileCategory::Erd)
+            {
                 format!("{relative_path} is not valid UTF-8")
             } else {
                 format!("{relative_path} is not valid UTF-8, Windows-31J, or GBK")
@@ -492,6 +571,7 @@ pub(super) fn materialize_indexed_file(
         .source_path
         .clone()
         .unwrap_or_else(|| root.join(&indexed.relative_path));
+    validate_source_path(root, &path, indexed.category)?;
     let signature_matches = indexed.source_signature.is_some_and(|expected| {
         fs::metadata(&path).is_ok_and(|metadata| metadata_signature(&metadata) == expected)
     });
@@ -510,6 +590,7 @@ pub(super) fn stable_read_file(
     path: &Path,
     category: FileCategory,
 ) -> Result<(SubmittedFile, [u64; 5]), String> {
+    validate_source_path(root, path, category)?;
     let relative = relative_path(root, path)?;
     stable_read(
         &relative,
@@ -577,6 +658,7 @@ pub(super) fn scan_indexed_entry(
     category: FileCategory,
     previous: &BTreeMap<String, SourceIndexEntry>,
 ) -> Result<(IndexedFile, SourceIndexEntry), String> {
+    validate_source_path(root, path, category)?;
     let relative_path = relative_path(root, path)?;
     let metadata =
         fs::metadata(path).map_err(|error| format!("cannot stat {relative_path}: {error}"))?;

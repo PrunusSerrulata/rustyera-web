@@ -17,6 +17,17 @@ const RESOURCE_SUFFIXES = new Set([
 ]);
 const AUDIO_SUFFIXES = new Set(["wav", "mp3", "ogg", "opus", "aac", "m4a", "flac"]);
 const FONT_SUFFIXES = new Set(["otf", "ttc", "ttf", "woff", "woff2"]);
+const DATA_RESOURCE_SUFFIXES = new Set(["xml", "txt", "db", "sqlite"]);
+const MUTABLE_RESOURCE_ROOTS = new Set([
+  ".git",
+  ".rustyera",
+  "sav",
+  "save",
+  "saves",
+  "data",
+  "logs",
+  "log",
+]);
 
 export function classify(path: string, roots: ReadonlySet<string>): string | undefined {
   const parts = path.split("/");
@@ -24,19 +35,29 @@ export function classify(path: string, roots: ReadonlySet<string>): string | und
   const suffix = parts.at(-1)?.split(".").at(-1)?.toLowerCase() ?? "";
   const name = parts.at(-1)?.toLowerCase() ?? "";
   if (name === "reraconfig.toml" || name === "setting.json") return "configuration";
+  if (DATA_RESOURCE_SUFFIXES.has(suffix) && !MUTABLE_RESOURCE_ROOTS.has(first)) return "resource";
   if (first === "resources") {
     if (suffix === "csv") return "resource_manifest";
     return RESOURCE_SUFFIXES.has(suffix) ? "resource" : undefined;
   }
   if (first === "sound") return AUDIO_SUFFIXES.has(suffix) ? "resource" : undefined;
   if (first === "font") return FONT_SUFFIXES.has(suffix) ? "resource" : undefined;
-  if ((suffix === "erb" || suffix === "erh") && roots.has("erb") && first !== "erb") return;
+  if (["erb", "erh", "erd"].includes(suffix) && roots.has("erb") && first !== "erb") return;
+  if (
+    suffix === "als" &&
+    (roots.has("csv") || roots.has("erb")) &&
+    first !== "csv" &&
+    first !== "erb"
+  )
+    return;
   if (suffix === "csv" && roots.has("csv") && first !== "csv") return;
   if (suffix === "config" && roots.has("csv") && parts.length > 1 && first !== "csv") return;
   const categories: Record<string, string> = {
     csv: "csv",
     erb: "erb",
     erh: "erh",
+    als: "als",
+    erd: "erd",
     config: "configuration",
   };
   return categories[suffix];

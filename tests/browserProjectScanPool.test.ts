@@ -404,3 +404,35 @@ describe("browser project scan worker batches", () => {
     expect(worker.terminate).toHaveBeenCalledOnce();
   });
 });
+
+it("transfers ALS/ERD scan results without treating their rows as script source", async () => {
+  const replies: any[] = [];
+  const handler = createBrowserProjectScanHandler((message) => replies.push(message));
+  for (const [id, suffix] of ["als", "erd"].entries()) {
+    await handler({
+      data: {
+        id,
+        relativePath: `ERB/BUFF.${suffix}`,
+        topLevel: ["erb"],
+        bytes: new TextEncoder().encode("10,索引\n"),
+      },
+    } as MessageEvent);
+    expect(replies[id]).toMatchObject({
+      id,
+      ok: true,
+      result: {
+        category: suffix,
+        payload: { type: "utf8", value: "10,索引\n" },
+      },
+    });
+  }
+  await handler({
+    data: {
+      id: 3,
+      relativePath: "ERB/BUFF.als",
+      bytes: Uint8Array.of(0x82, 0xa0),
+    },
+  } as MessageEvent);
+  expect(replies.at(-1)).toMatchObject({ id: 3, ok: false });
+  expect(replies.at(-1).error).toContain("ERB/BUFF.als 不是有效的 UTF-8 文件");
+});

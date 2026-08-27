@@ -90,6 +90,8 @@ function manifestIdentityHex(manifest: {
     resource_manifest: 3,
     resource: 4,
     configuration: 5,
+    als: 6,
+    erd: 7,
   };
   const encoder = new TextEncoder();
   const identity: number[] = [];
@@ -174,7 +176,11 @@ describe("browser project font resources", () => {
         payload: { type: "external", byteLength: bytes.byteLength },
       });
     }
-    expect(scanBrowserProjectFile("font/license.txt", new Uint8Array(), new Set())).toBeUndefined();
+    expect(scanBrowserProjectFile("font/license.txt", new Uint8Array(), new Set())).toMatchObject({
+      relative_path: "font/license.txt",
+      category: "resource",
+      payload: { type: "external", byteLength: 0 },
+    });
   });
 
   it("materializes font resources for full project exports and page registration", async () => {
@@ -1438,4 +1444,119 @@ it("does not bind mutable storage before compatibility resolution", async () => 
     new SaveDirectoryHandle("game") as unknown as FileSystemDirectoryHandle,
   );
   await expect(project.dataRoot()).rejects.toThrow();
+});
+
+describe("ALS and ERD project ingestion", () => {
+  it.each(["names.als", "nested/names.ERD"])("requires UTF-8 for %s", (path) => {
+    expect(() => scanBrowserProjectFile(path, Uint8Array.of(0x82, 0xa0), new Set())).toThrow(
+      `${path} 不是有效的 UTF-8 文件`,
+    );
+    const text = "10,索引\r\n";
+    const bytes = new TextEncoder().encode(`\uFEFF${text}`);
+    const scanned = scanBrowserProjectFile(path, bytes, new Set());
+    expect(scanned?.payload).toEqual({ type: "utf8", value: text });
+    expect(scanned?.content_hash).toEqual(blake3(new TextEncoder().encode(text)));
+    expect(scanned?.content_hash).not.toEqual(blake3(bytes));
+  });
+
+  it("keeps ALS/ERD categories through warm source-index reuse, hydration and scoped reload", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const erb = await root.getDirectoryHandle("ERB", { create: true });
+    const nested = await erb.getDirectoryHandle("indices", { create: true });
+    const csv = await root.getDirectoryHandle("CSV", { create: true });
+    await writeFixtureFile(nested, "BUFF.erd", "10,主名\n");
+    await writeFixtureFile(nested, "BUFF.als", "11,别名\n");
+    await writeFixtureFile(csv, "TRAIN.als", "12,训练\n");
+    const cold = await referenceProject(root as any, 1, "game", true).scanQuick();
+    const project = referenceProject(root as any, 1, "game", true);
+    const warm = await project.scanQuick();
+    expect(warm.files.map((file) => file.category)).toEqual(["als", "als", "erd"]);
+    expect(warm.files.map((file) => file.content_hash)).toEqual(
+      cold.files.map((file) => file.content_hash),
+    );
+    expect(project.sourceIndexStats().reusedFiles).toBe(3);
+    expect(warm.files.every((file) => file.payload.type === "utf8" && !file.payload.value)).toBe(
+      true,
+    );
+    expect((await project.materialize()).files).toEqual(cold.files);
+    expect((await project.projectReloadTargets()).scripts).toContain("ERB/indices/BUFF.erd");
+
+    await writeFixtureFile(nested, "BUFF.als", "13,更新\n");
+    await nested.removeEntry("BUFF.erd");
+    await writeFixtureFile(nested, "MATRIX@2.erd", "10,新索引\n");
+    const reload = await project.reloadRequest({ type: "folder", path: "ERB/indices" });
+    expect(reload.changes).toHaveLength(3);
+    expect(reload.changes).toContainEqual({
+      type: "remove",
+      relative_path: "ERB/indices/BUFF.erd",
+      category: "erd",
+    });
+    project.finalizeReload(true);
+    const updated = await project.materialize();
+    expect(updated.files.map((file) => file.relative_path)).toEqual([
+      "CSV/TRAIN.als",
+      "ERB/indices/BUFF.als",
+      "ERB/indices/MATRIX@2.erd",
+    ]);
+    expect(manifestIdentityHex(updated)).not.toBe(manifestIdentityHex(cold));
+  });
+
+  it("applies canonical roots without treating index data as executable source", () => {
+    const roots = new Set(["csv", "erb"]);
+    const bytes = new TextEncoder().encode("10,entry\n");
+    for (const path of ["ERB/nested/name.erd", "ERB/nested/name.als", "CSV/TRAIN.als"])
+      expect(scanBrowserProjectFile(path, bytes, roots)?.category).toBe(
+        path.endsWith(".erd") ? "erd" : "als",
+      );
+    for (const path of ["loose.erd", "CSV/name.erd", "notes/name.als"])
+      expect(scanBrowserProjectFile(path, bytes, roots)).toBeUndefined();
+    expect(scanBrowserProjectFile("flat.als", bytes, new Set())?.category).toBe("als");
+  });
+
+  it("rejects normalized name collisions before a source-index entry can overwrite another", async () => {
+    const root = new SaveDirectoryHandle("game");
+    await writeFixtureFile(root, "BUFF.erd", "10,one\n");
+    await writeFixtureFile(root, "buff.erd", "11,two\n");
+    await expect(referenceProject(root as any).scanQuick()).rejects.toThrow("项目路径归一化冲突");
+  });
+});
+
+describe("read-only project data resource inventory", () => {
+  it("retains raw XML/text/database bytes and hashes across cold, warm and full manifests", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const plugins = await root.getDirectoryHandle("plugins", { create: true });
+    const bytes = Uint8Array.of(0xef, 0xbb, 0xbf, 0x0d, 0x0a, 0xff);
+    for (const suffix of ["xml", "txt", "db", "sqlite", "dll"])
+      await writeFixtureFile(plugins, `fixture.${suffix}`, bytes);
+    const saves = await root.getDirectoryHandle("sav", { create: true });
+    await writeFixtureFile(saves, "txt00.txt", "user save");
+    const cold = await referenceProject(root as any, 1, "game", true).scanQuick();
+    const project = referenceProject(root as any, 1, "game", true);
+    const warm = await project.scanQuick();
+    expect(warm.files).toEqual(cold.files);
+    expect(warm.files.map((file) => file.relative_path)).toEqual([
+      "plugins/fixture.db",
+      "plugins/fixture.sqlite",
+      "plugins/fixture.txt",
+      "plugins/fixture.xml",
+    ]);
+    for (const file of warm.files) {
+      expect(file).toMatchObject({
+        category: "resource",
+        payload: { type: "external", byteLength: bytes.byteLength },
+      });
+      expect(file.content_hash).toEqual(blake3(bytes));
+      expect(await project.readResource(file.relative_path)).toEqual(bytes);
+    }
+    expect((await project.materialize()).files).toEqual(cold.files);
+    const storage = new SaveDirectoryHandle("opfs");
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    try {
+      const full = await project.stageFullManifest();
+      expect(full.totalBytes).toBeGreaterThan(bytes.length * 4);
+      await full.release();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

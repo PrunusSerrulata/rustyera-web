@@ -39,6 +39,10 @@ const requestedSpec = specIndex >= 0 ? arguments_[specIndex + 1] : undefined;
 const configuredSpec = requestedSpec;
 const specName = configuredSpec ? path.basename(configuredSpec) : undefined;
 const specProfiles = {
+  "snake-ingestion.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_INGESTION",
+    copyProject: true,
+  },
   "snake-profile.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_PROFILE",
     copyProject: true,

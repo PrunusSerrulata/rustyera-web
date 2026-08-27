@@ -1050,6 +1050,8 @@ fn decode_file_category(value: u8) -> Result<FileCategory, String> {
         3 => Ok(FileCategory::ResourceManifest),
         4 => Ok(FileCategory::Resource),
         5 => Ok(FileCategory::Configuration),
+        6 => Ok(FileCategory::Als),
+        7 => Ok(FileCategory::Erd),
         _ => Err("browser project file category is invalid".into()),
     }
 }
@@ -1146,6 +1148,28 @@ mod tests {
                 if resource.byte_length == 1234
                     && resource.image_metadata.as_ref().is_some_and(|value| value.width == 640)
         ));
+    }
+
+    #[test]
+    fn index_data_categories_survive_binary_and_streamed_manifests() {
+        let identity = era_runtime_protocol::CompatibilityIdentity::default();
+        let encoded_identity = serde_json::to_vec(&identity).unwrap();
+        let mut bytes = b"RERMAN02".to_vec();
+        bytes.extend_from_slice(&1_u64.to_le_bytes());
+        bytes.extend_from_slice(&2_u32.to_le_bytes());
+        bytes.extend_from_slice(&u32::try_from(encoded_identity.len()).unwrap().to_le_bytes());
+        bytes.extend_from_slice(&encoded_identity);
+        append_file(&mut bytes, 6, b"ERB/BUFF.als", 0, b"10,alias\n", &[6; 32]);
+        append_file(&mut bytes, 7, b"ERB/BUFF.erd", 0, b"10,main\n", &[7; 32]);
+        let manifest = decode_browser_manifest(&bytes).unwrap();
+        assert_eq!(manifest.files[0].category, FileCategory::Als);
+        assert_eq!(manifest.files[1].category, FileCategory::Erd);
+        let mut upload = ProjectManifestUpload::default();
+        upload.begin(1, 2, identity, 1024).unwrap();
+        for file in &manifest.files {
+            upload.append(file.clone()).unwrap();
+        }
+        assert_eq!(upload.finish().unwrap(), manifest);
     }
 
     #[test]
