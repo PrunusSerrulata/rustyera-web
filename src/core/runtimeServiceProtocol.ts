@@ -165,7 +165,7 @@ export function validateServiceRequest(request: RuntimeServiceRequest): unknown 
   }
 }
 
-function isBoundedUnsignedInteger(value: unknown, maximum: number): value is ServiceInteger {
+export function isBoundedUnsignedInteger(value: unknown, maximum: number): value is ServiceInteger {
   return (
     (typeof value === "bigint" || (typeof value === "number" && Number.isInteger(value))) &&
     value >= 0 &&

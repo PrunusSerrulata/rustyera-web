@@ -275,52 +275,87 @@ describe("canvas resource replay", () => {
     release();
   });
 
-  it("holds pending bitmap pixels across request budgets and releases them after late cancellation", async () => {
-    const pool = new CanvasReplayBudget();
-    let finish!: (bitmap: ImageBitmap) => void;
-    vi.stubGlobal(
-      "createImageBitmap",
-      vi.fn(
-        () =>
-          new Promise<ImageBitmap>((resolve) => {
-            finish = resolve;
-          }),
-      ),
-    );
-    const encoded = new Uint8Array(24);
-    encoded.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-    new DataView(encoded.buffer).setUint32(8, 13);
-    encoded.set([0x49, 0x48, 0x44, 0x52], 12);
-    new DataView(encoded.buffer).setUint32(16, 8192);
-    new DataView(encoded.buffer).setUint32(20, 8192);
+  it.each([false, true])(
+    "holds pending bitmap pixels across late cancellation with bigint=%s",
+    async (wasm) => {
+      const pool = new CanvasReplayBudget();
+      let finish!: (bitmap: ImageBitmap) => void;
+      vi.stubGlobal(
+        "createImageBitmap",
+        vi.fn(
+          () =>
+            new Promise<ImageBitmap>((resolve) => {
+              finish = resolve;
+            }),
+        ),
+      );
+      const encoded = new Uint8Array(24);
+      encoded.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      new DataView(encoded.buffer).setUint32(8, 13);
+      encoded.set([0x49, 0x48, 0x44, 0x52], 12);
+      new DataView(encoded.buffer).setUint32(16, 8192);
+      new DataView(encoded.buffer).setUint32(20, 8192);
+      const renderer = createCanvasReplayRenderer();
+      const context = document.createElement("canvas").getContext("2d")!;
+      let active = true;
+      const pending = renderer.replay(
+        context,
+        {
+          canvas_id: 1,
+          revision: 1,
+          size: { width: 10, height: 10 },
+          commands: [
+            {
+              type: "load_encoded_image",
+              encoded: wasm ? Array.from(encoded, BigInt) : [...encoded],
+            },
+          ],
+        },
+        new Set([1]),
+        {},
+        1,
+        { budget: pool.fork(), active: () => active, strict: true },
+      );
+      const rejected = expect(pending).rejects.toMatchObject({ category: "stale_projection" });
+      await waitFor(() => vi.mocked(createImageBitmap).mock.calls.length === 1);
+      active = false;
+      renderer.clear();
+      expect(() => pool.fork().reserve(1, 1)).toThrow("pixel budget");
+      const close = vi.fn();
+      finish({ width: 8192, height: 8192, close } as unknown as ImageBitmap);
+      await rejected;
+      expect(close).toHaveBeenCalledOnce();
+      expect(contexts[0].drawnImages).toHaveLength(0);
+      const release = pool.fork().reserve(8192, 8192);
+      release();
+    },
+  );
+
+  it.each([-1n, 256n, "1"])("rejects encoded canvas byte %s before decoding", async (byte) => {
     const renderer = createCanvasReplayRenderer();
+    const decode = vi.fn();
+    vi.stubGlobal("createImageBitmap", decode);
     const context = document.createElement("canvas").getContext("2d")!;
-    let active = true;
-    const pending = renderer.replay(
-      context,
-      {
-        canvas_id: 1,
-        revision: 1,
-        size: { width: 10, height: 10 },
-        commands: [{ type: "load_encoded_image", encoded: [...encoded] }],
-      },
-      new Set([1]),
-      {},
-      1,
-      { budget: pool.fork(), active: () => active, strict: true },
-    );
-    const rejected = expect(pending).rejects.toMatchObject({ category: "stale_projection" });
-    await waitFor(() => vi.mocked(createImageBitmap).mock.calls.length === 1);
-    active = false;
-    renderer.clear();
-    expect(() => pool.fork().reserve(1, 1)).toThrow("pixel budget");
-    const close = vi.fn();
-    finish({ width: 8192, height: 8192, close } as unknown as ImageBitmap);
-    await rejected;
-    expect(close).toHaveBeenCalledOnce();
-    expect(contexts[0].drawnImages).toHaveLength(0);
-    const release = pool.fork().reserve(8192, 8192);
-    release();
+    try {
+      await expect(
+        renderer.replay(
+          context,
+          {
+            canvas_id: 1,
+            revision: 1,
+            size: { width: 2, height: 2 },
+            commands: [{ type: "load_encoded_image", encoded: [byte] as any }],
+          },
+          new Set([1]),
+          {},
+          1,
+          { budget: new CanvasReplayBudget(), active: () => true, strict: true },
+        ),
+      ).rejects.toMatchObject({ category: "invalid_request" });
+      expect(decode).not.toHaveBeenCalled();
+    } finally {
+      renderer.clear();
+    }
   });
 
   it("accounts retained HTML canvas surfaces together until the measurement is disposed", async () => {

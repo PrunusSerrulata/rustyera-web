@@ -31,7 +31,11 @@ import {
   projectRectangleShape,
   projectSpaceShape,
 } from "@/core/shapeProjection";
-import { RuntimeServiceError, serviceInteger } from "@/core/runtimeServiceProtocol";
+import {
+  RuntimeServiceError,
+  isBoundedUnsignedInteger,
+  serviceInteger,
+} from "@/core/runtimeServiceProtocol";
 
 export type {
   HtmlMeasurementBinding,
@@ -480,10 +484,10 @@ function spriteDimensions(
   if (
     !Array.isArray(sprite.size) ||
     sprite.size.length !== 2 ||
-    sprite.size.some((value) => !Number.isSafeInteger(value) || value <= 0 || value > 1_048_576)
+    sprite.size.some((value) => !isBoundedUnsignedInteger(value, 1_048_576) || value <= 0)
   )
     throw new RuntimeServiceError("invalid_request", "HTML sprite has no valid natural dimensions");
-  return [sprite.size[0], sprite.size[1]];
+  return [Number(sprite.size[0]), Number(sprite.size[1])];
 }
 
 function validateMedia(document: CanonicalHtmlDocument, resources: HtmlMeasurementResources): void {
@@ -752,7 +756,7 @@ function cloneResources(resources: HtmlMeasurementResources): HtmlMeasurementRes
       if (command.type === "load_encoded_image") {
         if (
           !Array.isArray(command.encoded) ||
-          command.encoded.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
+          command.encoded.some((byte) => !isBoundedUnsignedInteger(byte, 255))
         )
           throw new RuntimeServiceError(
             "invalid_request",

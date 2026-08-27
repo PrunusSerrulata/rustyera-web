@@ -1,4 +1,9 @@
-import { RuntimeServiceError, serviceInteger } from "@/core/runtimeServiceProtocol";
+import {
+  RuntimeServiceError,
+  isBoundedUnsignedInteger,
+  serviceInteger,
+  type ServiceInteger,
+} from "@/core/runtimeServiceProtocol";
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import { acquireResourceUrl, type ResourceUrlLease } from "@/core/resources";
 import type { FrontendBridge } from "@/core/types";
@@ -131,7 +136,7 @@ export type CanvasReplayCommand =
   | { type: "set_font"; style_bits: unknown; size: unknown; family: string }
   | { type: "draw_line"; start: WirePoint; end: WirePoint }
   | { type: "draw_text"; text: string; point: WirePoint }
-  | { type: "load_encoded_image"; encoded: number[] }
+  | { type: "load_encoded_image"; encoded: ServiceInteger[] }
   | {
       type: "draw_sprite";
       name: string;
@@ -298,21 +303,31 @@ async function replayCommands(
         context.fillText(command.text, numeric(command.point.x), numeric(command.point.y));
         break;
       case "load_encoded_image": {
+        if (!Array.isArray(command.encoded))
+          throw new RuntimeServiceError("invalid_request", "encoded canvas image is not bytes");
         if (command.encoded.length > MAXIMUM_ENCODED_IMAGE_BYTES)
           throw new RuntimeServiceError(
             "resource_limit",
             "encoded canvas image exceeds the frontend budget",
           );
+        const encoded = Uint8Array.from(command.encoded, (byte) => {
+          if (!isBoundedUnsignedInteger(byte, 255))
+            throw new RuntimeServiceError(
+              "invalid_request",
+              "encoded canvas image has an invalid byte",
+            );
+          return Number(byte);
+        });
         let metadata: { width: number; height: number } | undefined;
         let release: (() => void) | undefined;
         let bitmap: ImageBitmap | undefined;
         const releaseDecoder = control.budget.reserveDecoder();
         try {
           if (control.strict) {
-            metadata = decodeImageMetadata(new Uint8Array(command.encoded));
+            metadata = decodeImageMetadata(encoded);
             release = control.budget.reserve(metadata.width, metadata.height, depth);
           }
-          bitmap = await createImageBitmap(new Blob([new Uint8Array(command.encoded)]));
+          bitmap = await createImageBitmap(new Blob([encoded]));
           assertActive(control);
           if (metadata && (metadata.width !== bitmap.width || metadata.height !== bitmap.height))
             throw new RuntimeServiceError(

@@ -3,7 +3,11 @@ import type { InjectionKey } from "vue";
 import { CanvasReplayBudget, type CanvasReplayResources } from "@/components/canvasReplayRenderer";
 import { HTML_MEASUREMENT_LIMITS, type HtmlQueryStyle } from "@/core/htmlMeasurement";
 import { acquireResourceUrl, type ResourceUrlLease } from "@/core/resources";
-import { RuntimeServiceError, type ProjectionQueryContext } from "@/core/runtimeServiceProtocol";
+import {
+  RuntimeServiceError,
+  type ProjectionQueryContext,
+  type ServiceInteger,
+} from "@/core/runtimeServiceProtocol";
 import type { FrontendBridge, Preferences } from "@/core/types";
 
 export interface HtmlMeasurementGuard {
@@ -13,7 +17,7 @@ export interface HtmlMeasurementGuard {
 }
 export interface HtmlMeasurementResources extends CanvasReplayResources {
   sprites?: (NonNullable<CanvasReplayResources["sprites"]>[number] & {
-    size?: readonly number[];
+    size?: readonly ServiceInteger[];
   })[];
 }
 export interface HtmlMeasurementBinding {

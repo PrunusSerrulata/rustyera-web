@@ -560,51 +560,68 @@ describe("bounded offscreen HTML measurement", () => {
     expect(viewport.querySelector(".html-measurement-host")).toBeNull();
   });
 
-  it("returns frozen sprite natural dimensions rather than atlas or requested dimensions", async () => {
+  it.each([false, true])(
+    "returns frozen sprite natural dimensions with bigint=%s",
+    async (wasm) => {
+      const binding = measurementBinding(viewport);
+      binding.resources.sprites = [
+        {
+          name: "PORTRAIT",
+          size: wasm ? [20n, 10n] : [20, 10],
+          frames: [{ resource_id: "atlas.png", source_rectangle: [12, 14, 20, 10] }],
+        },
+      ];
+      vi.mocked(binding.resourceBridge.readImageMetadata).mockResolvedValue({
+        width: 300,
+        height: 200,
+        format: "png",
+        animated: false,
+      });
+      const release = vi.fn();
+      vi.spyOn(htmlResourceUrls, "acquireResourceUrl").mockReturnValue({
+        url: Promise.resolve("blob:frozen"),
+        release,
+      });
+      vi.stubGlobal(
+        "Image",
+        class {
+          src = "";
+          naturalWidth = 300;
+          naturalHeight = 200;
+          decode = vi.fn().mockResolvedValue(undefined);
+        },
+      );
+      const provider = new HtmlMeasurementProvider();
+      const pending = provider.measureImageSlot(imageProbe(), binding, {
+        signal: new AbortController().signal,
+        assertCurrent() {},
+      });
+      binding.resources.sprites[0].size = [999, 999];
+      binding.resources.sprites = [];
+      expect(await pending).toEqual({
+        context: binding.context,
+        type: "loaded",
+        naturalWidth: 20,
+        naturalHeight: 10,
+      });
+      expect(binding.resourceBridge.readImageMetadata).toHaveBeenCalledWith("atlas.png");
+      expect(release).toHaveBeenCalledOnce();
+      expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    },
+  );
+
+  it.each([0n, -1n, 1_048_577n, "20"])("rejects invalid natural sprite width %s", async (width) => {
     const binding = measurementBinding(viewport);
     binding.resources.sprites = [
-      {
-        name: "PORTRAIT",
-        size: [20, 10],
-        frames: [{ resource_id: "atlas.png", source_rectangle: [12, 14, 20, 10] }],
-      },
+      { name: "portrait", size: [width, 10n] as any, frames: [{ resource_id: "atlas.png" }] },
     ];
-    vi.mocked(binding.resourceBridge.readImageMetadata).mockResolvedValue({
-      width: 300,
-      height: 200,
-      format: "png",
-      animated: false,
-    });
-    const release = vi.fn();
-    vi.spyOn(htmlResourceUrls, "acquireResourceUrl").mockReturnValue({
-      url: Promise.resolve("blob:frozen"),
-      release,
-    });
-    vi.stubGlobal(
-      "Image",
-      class {
-        src = "";
-        naturalWidth = 300;
-        naturalHeight = 200;
-        decode = vi.fn().mockResolvedValue(undefined);
-      },
-    );
-    const provider = new HtmlMeasurementProvider();
-    const pending = provider.measureImageSlot(imageProbe(), binding, {
-      signal: new AbortController().signal,
-      assertCurrent() {},
-    });
-    binding.resources.sprites[0].size = [999, 999];
-    binding.resources.sprites = [];
-    expect(await pending).toEqual({
-      context: binding.context,
-      type: "loaded",
-      naturalWidth: 20,
-      naturalHeight: 10,
-    });
-    expect(binding.resourceBridge.readImageMetadata).toHaveBeenCalledWith("atlas.png");
-    expect(release).toHaveBeenCalledOnce();
-    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    await expect(
+      new HtmlMeasurementProvider().measureImageSlot(imageProbe(), binding, {
+        signal: new AbortController().signal,
+        assertCurrent() {},
+      }),
+    ).rejects.toMatchObject({ category: "invalid_request" });
+    expect(binding.resourceBridge.readImageMetadata).not.toHaveBeenCalled();
   });
 
   it.each(["permission", "hash changed", "decode"])(
