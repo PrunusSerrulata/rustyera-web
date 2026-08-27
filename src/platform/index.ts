@@ -11,5 +11,7 @@ export function platformBridge(): FrontendBridge {
 
 export function platformFrontendVersion(): string {
   const version = import.meta.env.VITE_RUSTYERA_FRONTEND_VERSION;
-  return `${version}-${window.__TAURI_INTERNALS__ ? "tauri" : "wasm"}`;
+  if (window.__TAURI_INTERNALS__) return `${version}-tauri`;
+  const commit = import.meta.env.VITE_RUSTYERA_FRONTEND_COMMIT?.slice(0, 8);
+  return `${version}-wasm${commit ? ` (${commit})` : ""}`;
 }

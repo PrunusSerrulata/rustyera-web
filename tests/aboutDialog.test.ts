@@ -1,12 +1,18 @@
 import { readFileSync } from "node:fs";
 
 import { mount } from "@vue/test-utils";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import AboutDialog from "@/components/AboutDialog.vue";
 
 describe("AboutDialog", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
   it("shows authorship, frontend/core versions, and license", async () => {
+    vi.stubEnv("VITE_RUSTYERA_FRONTEND_COMMIT", undefined);
     const wrapper = mount(AboutDialog, {
       attachTo: document.body,
       props: { open: true, coreVersion: import.meta.env.VITE_RUSTYERA_CORE_VERSION },
@@ -14,7 +20,7 @@ describe("AboutDialog", () => {
 
     expect(document.body.textContent).toContain("PrunusSerrulata");
     expect(document.body.textContent).toContain("前端版本");
-    expect(document.body.textContent).toContain("0.9.0-wasm");
+    expect(document.body.querySelectorAll(".about-details dd")[1]?.textContent).toBe("0.9.0-wasm");
     expect(document.body.textContent).toContain("core 版本");
     const coreRevision = readFileSync("rustyera-core.rev", "utf8").trim().slice(0, 8);
     expect(document.body.textContent).toContain(`0.8.0 (${coreRevision})`);
@@ -39,16 +45,33 @@ describe("AboutDialog", () => {
   });
 
   it("shows the Tauri release suffix in the desktop host", () => {
-    window.__TAURI_INTERNALS__ = {};
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    vi.stubEnv("VITE_RUSTYERA_FRONTEND_COMMIT", "abcd1234567890abcdef1234567890abcdef123456");
     const wrapper = mount(AboutDialog, {
       attachTo: document.body,
       props: { open: true, coreVersion: import.meta.env.VITE_RUSTYERA_CORE_VERSION },
     });
 
-    expect(document.body.textContent).toContain("0.9.0-tauri");
+    expect(document.body.querySelectorAll(".about-details dd")[1]?.textContent).toBe("0.9.0-tauri");
 
     wrapper.unmount();
-    delete window.__TAURI_INTERNALS__;
+  });
+
+  it.each([
+    ["abcd1234567890abcdef1234567890abcdef123456", "0.9.0-wasm (abcd1234)"],
+    ["", "0.9.0-wasm"],
+  ])("shows the Pages commit when provided (%s)", (commit, expectedVersion) => {
+    vi.stubEnv("VITE_RUSTYERA_FRONTEND_COMMIT", commit);
+    const wrapper = mount(AboutDialog, {
+      attachTo: document.body,
+      props: { open: true, coreVersion: import.meta.env.VITE_RUSTYERA_CORE_VERSION },
+    });
+
+    expect(document.body.querySelectorAll(".about-details dd")[1]?.textContent).toBe(
+      expectedVersion,
+    );
+
+    wrapper.unmount();
   });
 
   it("shows only defined fields for the loaded game", () => {

@@ -52,7 +52,12 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
-    exclude: [...configDefaults.exclude, "tests/e2e/**", "tests/tauri/**"],
+    exclude: [
+      ...configDefaults.exclude,
+      ".rustyera/test-runs/**",
+      "tests/e2e/**",
+      "tests/tauri/**",
+    ],
     setupFiles: ["./tests/setup.ts"],
   },
 });

@@ -337,9 +337,9 @@ select {
 
 .about-details {
   display: grid;
-  grid-template-columns: max-content 1fr;
+  grid-template-columns: max-content minmax(0, 1fr);
   gap: 0.55rem 1.25rem;
-  min-width: 24rem;
+  min-width: 0;
   margin: 0.5rem 0 1rem;
 }
 .about-details dt {
@@ -347,6 +347,7 @@ select {
 }
 .about-details dd {
   margin: 0;
+  overflow-wrap: anywhere;
 }
 .about-details a {
   color: #7dd3fc;

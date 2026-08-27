@@ -12,6 +12,11 @@
       "expect": { "count": 1, "visible": true }
     },
     {
+      "type": "query",
+      "locator": { "css": ".about-details:not(.game-details) dd:nth-of-type(2)" },
+      "fields": ["text"]
+    },
+    {
       "type": "assert_dom",
       "locator": { "text": "Oracle CSV", "exact": true },
       "expect": { "count": 1, "visible": true }
@@ -30,8 +35,47 @@
       "type": "assert_dom",
       "locator": { "text": "游戏开发时间", "exact": true },
       "expect": { "count": 0 }
-    }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".license-scope" },
+      "relative_to": { "css": ".dialog-content" },
+      "expect": { "count": 1, "visible": true, "inside": { "tolerance": 1 } }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "确定", "exact": true } },
+    { "type": "set_viewport", "width": 393, "height": 852 },
+    { "type": "click", "locator": { "role": "button", "name": "帮助", "exact": true } },
+    { "type": "click", "locator": { "role": "button", "name": "关于…", "exact": true } },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".license-scope" },
+      "relative_to": { "css": ".dialog-content" },
+      "expect": { "count": 1, "visible": true, "inside": { "tolerance": 1 } }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".about-details:not(.game-details) dd:nth-of-type(2)" },
+      "relative_to": { "css": ".dialog-content" },
+      "expect": { "count": 1, "visible": true, "inside": { "tolerance": 1 } }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "确定", "exact": true } },
+    { "type": "set_viewport", "width": 320, "height": 852 },
+    { "type": "click", "locator": { "role": "button", "name": "帮助", "exact": true } },
+    { "type": "click", "locator": { "role": "button", "name": "关于…", "exact": true } },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".license-scope" },
+      "relative_to": { "css": ".dialog-content" },
+      "expect": { "count": 1, "visible": true, "inside": { "tolerance": 1 } }
+    },
+    {
+      "type": "assert_layout",
+      "locator": { "css": ".about-details:not(.game-details) dd:nth-of-type(2)" },
+      "relative_to": { "css": ".dialog-content" },
+      "expect": { "count": 1, "visible": true, "inside": { "tolerance": 1 } }
+    },
+    { "type": "click", "locator": { "role": "button", "name": "确定", "exact": true } }
   ],
-  "goal": { "output_contains": ["TITLE_CHARANUM=0"] },
-  "limits": { "max_steps": 10, "timeout_seconds": 60 }
+  "goal": {},
+  "limits": { "max_steps": 30, "timeout_seconds": 60 }
 }

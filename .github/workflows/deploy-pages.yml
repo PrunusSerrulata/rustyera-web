@@ -29,6 +29,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      VITE_RUSTYERA_FRONTEND_COMMIT: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v7
       - name: Configure GitHub Pages

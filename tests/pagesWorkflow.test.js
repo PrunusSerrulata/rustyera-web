@@ -59,6 +59,12 @@ describe("GitHub Pages deployment workflow", () => {
     expect(workflow).toContain("id-token: write");
   });
 
+  it("shares the Web repository commit with every build and test step", () => {
+    expect(buildJob).toMatch(
+      /\n {4}env:\n {6}VITE_RUSTYERA_FRONTEND_COMMIT: \$\{\{ github\.sha \}\}\n {4}steps:/,
+    );
+  });
+
   it("optimizes multi-table wasm-bindgen output with reference types enabled", () => {
     expect(wasmManifest).toContain("[package.metadata.wasm-pack.profile.release]");
     expect(wasmManifest).toMatch(
