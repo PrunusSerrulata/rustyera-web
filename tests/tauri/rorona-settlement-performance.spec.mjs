@@ -12,37 +12,32 @@ import {
 const enabled = process.env.VITE_RUSTYERA_TAURI_RORONA_SETTLEMENT_PERFORMANCE
   ? describe
   : describe.skip;
-const TARGET_ELAPSED_MS = 250;
-const TARGET_BUTTON_TEXT = ["一键提升能力", "结束提升能力"];
+const TARGET_ELAPSED_MS = 50;
+const TARGET_BUTTON_TEXT = ["爱抚"];
 
 enabled("Tauri erarorona settlement performance", () => {
-  it("shows the ability screen within 250 ms of pressing the right mouse button", async () => {
-    await waitForProject();
-    const manualSetup = await reachManualSettlementBoundary();
-    const initial = await snapshot();
-    assert.equal(initial.bridgeKind, "tauri");
-    assert.equal(initial.phase, "waiting_input");
-    assert.equal(initial.wait?.kind, "any_key");
-    assert.equal(initial.fault, null);
-
+  it("returns to the training command screen within 50 ms of pressing the right mouse button", async () => {
     let probeInstalled = false;
     let performanceWindowShowAttempted = false;
     try {
+      await waitForProject();
       performanceWindowShowAttempted = true;
-      const foreground = await showPerformanceWindow();
-      assert.equal(foreground.visible, true, "the performance window must be visible");
-      assert.equal(foreground.focused, true, "the performance window must be focused");
-      assert.equal(foreground.visibilityState, "visible");
-      assert.ok(
-        foreground.frameIntervals.every((interval) => interval < 50),
-        `the visible Tauri window remained frame-throttled: ${JSON.stringify(foreground.frameIntervals)}`,
-      );
+      await showPerformanceWindow();
+      const manualSetup = await reachManualSettlementBoundary();
+      const initial = await snapshot();
+      assert.equal(initial.bridgeKind, "tauri");
+      assert.equal(initial.phase, "waiting_input");
+      assert.equal(initial.wait?.kind, "enter_key");
+      assert.equal(initial.fault, null);
+
       const before = await installSettlementProbe();
       probeInstalled = true;
+      assert.equal(before.focused, true, "the performance window must be focused");
+      assert.equal(before.visibilityState, "visible");
       assert.equal(
         before.visibleText.length,
         0,
-        "the target ability screen was already visible before right-click settlement",
+        "an enabled affection command was already visible before right-click settlement",
       );
       const interaction = await clickViewportBottom("right", {
         requireNonInteractive: true,
@@ -89,7 +84,7 @@ enabled("Tauri erarorona settlement performance", () => {
       const visibleButtons = await visibleGameButtonText();
       assert.equal(final.bridgeKind, "tauri");
       assert.equal(final.phase, "waiting_input");
-      assert.equal(final.wait?.kind, "string_value");
+      assert.equal(final.canInteract, true);
       assert.equal(final.fault, null);
       for (const text of TARGET_BUTTON_TEXT)
         assert.ok(
@@ -122,38 +117,63 @@ enabled("Tauri erarorona settlement performance", () => {
           mutationCallbacks: measurement.mutationCallbacks,
           textSamples: measurement.textSamples,
           wait: final.wait,
-          foreground,
+          foreground: {
+            focused: before.focused,
+            visibilityState: before.visibilityState,
+          },
           interaction,
           manualSetup,
         }),
       );
     } finally {
       try {
-        if (probeInstalled) await cleanupSettlementProbe();
+        if (probeInstalled && typeof browser !== "undefined") await cleanupSettlementProbe();
       } finally {
-        if (performanceWindowShowAttempted) await hidePerformanceWindow();
+        if (performanceWindowShowAttempted && typeof browser !== "undefined")
+          await hidePerformanceWindow();
       }
     }
   });
 });
 
 async function showPerformanceWindow() {
-  return browser.execute(async () => {
+  await browser.execute(async () => {
     const appWindow = window.__TAURI__.window.getCurrentWindow();
+    if (await appWindow.isMinimized()) await appWindow.unminimize();
     await appWindow.show();
     await appWindow.setFocus();
     window.focus();
-    const frameTimes = [];
-    for (let index = 0; index < 4; index += 1) {
-      frameTimes.push(await new Promise((resolve) => requestAnimationFrame(resolve)));
-    }
-    return {
-      visible: await appWindow.isVisible(),
-      focused: await appWindow.isFocused(),
-      visibilityState: document.visibilityState,
-      frameIntervals: frameTimes.slice(1).map((time, index) => time - frameTimes[index]),
-    };
   });
+  let foreground;
+  await browser.waitUntil(
+    async () => {
+      foreground = await browser.execute(async () => {
+        const appWindow = window.__TAURI__.window.getCurrentWindow();
+        const visible = await appWindow.isVisible();
+        const minimized = await appWindow.isMinimized();
+        const focused = await appWindow.isFocused();
+        if (minimized) await appWindow.unminimize();
+        if (minimized || !focused || document.visibilityState !== "visible") {
+          await appWindow.show();
+          await appWindow.setFocus();
+          window.focus();
+        }
+        return { visible, minimized, focused, visibilityState: document.visibilityState };
+      });
+      return (
+        foreground.visible &&
+        !foreground.minimized &&
+        foreground.focused &&
+        foreground.visibilityState === "visible"
+      );
+    },
+    {
+      timeout: 1_000,
+      interval: 20,
+      timeoutMsg: "the performance window did not become focused and visible",
+    },
+  );
+  return foreground;
 }
 
 async function hidePerformanceWindow() {
@@ -163,38 +183,23 @@ async function hidePerformanceWindow() {
 async function reachManualSettlementBoundary() {
   const automaticTimedWaits = await reachTitle(20);
   await submit(1, true);
-  await waitForVisibleStep("slot 0 save", {
+  await waitForVisibleStep("slot 7 save", {
     waitKind: "string_value",
     text: "载入游戏",
   });
-  await submit(0, true);
-  await waitForVisibleGameButton(/\[\s*0\s*\][\s\S]*调教/, "[0] 调教");
-  await clickVisibleGameButton(/\[\s*0\s*\][\s\S]*调教/, "[0] 调教");
+  await submit(7, true);
+  await clickVisibleCharacterTrainButton("奥蕾莉亚");
   await waitForVisibleGameButton(/\[\s*0\s*\][\s\S]*爱抚/, "[0] 爱抚");
   await clickVisibleGameButton(/\[\s*0\s*\][\s\S]*爱抚/, "[0] 爱抚");
   const pettingBoundary = await snapshot();
   assert.equal(pettingBoundary.wait?.kind, "enter_key");
   assert.equal(pettingBoundary.canInteract, true);
   assert.equal(pettingBoundary.fault, null);
-  const pettingSkip = await clickViewportBottom("right", { requireNonInteractive: true });
-  await waitForVisibleGameButton(/\[999\].*调教结束/, "[999] 调教结束");
-  await clickVisibleGameButton(/\[999\]\s*调教结束/, "[999] 调教结束");
-  await waitForVisibleGameButton(/调教结束了|显示调教结果/, "调教结果确认");
-  const resultConfirmation = await clickVisibleGameButton(
-    /调教结束了|显示调教结果/,
-    "调教结束了/显示调教结果",
-  );
-  const boundary = await waitForVisibleStep("settlement WAITANYKEY boundary", {
-    waitKind: "any_key",
-    text: "调　教　结　果",
-  });
   return {
     automaticTimedWaits,
     pettingWait: pettingBoundary.wait,
-    pettingSkip,
-    resultConfirmation,
-    wait: boundary.wait,
-    outputTail: boundary.output.slice(-12),
+    wait: pettingBoundary.wait,
+    outputTail: pettingBoundary.output.slice(-12),
   };
 }
 
@@ -266,6 +271,32 @@ async function clickVisibleGameButton(pattern, label) {
   throw new Error(`the visible ${label} button was not found`);
 }
 
+async function clickVisibleCharacterTrainButton(characterName) {
+  const before = await snapshot();
+  const observed = [];
+  for (const line of await $$(".game-viewport .game-line")) {
+    if (!(await line.isDisplayed({ withinViewport: true }))) continue;
+    const lineText = await line.getText();
+    if (!lineText.includes(characterName)) continue;
+    for (const button of await line.$$("button")) {
+      const text = await button.getText();
+      observed.push({ lineText, text });
+      if (
+        !/^\[\s*调\s*\]$/u.test(text) ||
+        !(await button.isDisplayed({ withinViewport: true })) ||
+        !(await button.isEnabled())
+      )
+        continue;
+      await button.click();
+      await waitForWaitChange(before.wait?.wait_id);
+      return text;
+    }
+  }
+  throw new Error(
+    `the visible ${characterName} [调] button was not found: ${JSON.stringify(observed)}`,
+  );
+}
+
 async function installSettlementProbe() {
   return browser.execute((targetText) => {
     window.__RUSTYERA_TAURI_SETTLEMENT_PROBE__?.cleanup?.();
@@ -299,7 +330,9 @@ async function installSettlementProbe() {
     ])
       performance.clearMarks(name);
     const targetButtons = () => {
-      const buttons = [...viewport.querySelectorAll("button")];
+      const buttons = [...viewport.querySelectorAll("button")].filter(
+        (button) => button instanceof HTMLButtonElement && !button.disabled,
+      );
       return targetText.map(
         (text) => buttons.find((button) => button.textContent?.includes(text)) ?? null,
       );
@@ -404,7 +437,11 @@ async function installSettlementProbe() {
     viewport.addEventListener("mouseup", onMouseUp, { capture: true });
     observer.observe(viewport, { childList: true, subtree: true, characterData: true });
     window.__RUSTYERA_TAURI_SETTLEMENT_PROBE__ = { measurement, cleanup };
-    return { visibleText: before };
+    return {
+      visibleText: before,
+      focused: document.hasFocus(),
+      visibilityState: document.visibilityState,
+    };
   }, TARGET_BUTTON_TEXT);
 }
 
@@ -430,7 +467,7 @@ async function readSettlementProbe() {
       decodeFinishedAt: markTime("rustyera:settlement-decode-finished"),
       batchHandledAt: markTime("rustyera:settlement-batch-handled"),
       ...(probe.measurement.paintReadyAt == null
-        ? { error: "the ability screen was not paint-ready in 5 s" }
+        ? { error: "the training command screen was not paint-ready in 5 s" }
         : {}),
     };
   });

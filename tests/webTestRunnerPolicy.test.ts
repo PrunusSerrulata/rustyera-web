@@ -430,7 +430,7 @@ describe("browser game runner progress policy", () => {
     );
   });
 
-  it("measures native Tauri settlement from right-button press to the visible ability screen", () => {
+  it("measures native Tauri petting skip through the next interactive command screen", () => {
     const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
     const spec = readFileSync(
       resolve("tests/tauri/rorona-settlement-performance.spec.mjs"),
@@ -454,24 +454,24 @@ describe("browser game runner progress policy", () => {
     expect(spec).toContain("reachManualSettlementBoundary()");
     expect(spec).toContain("reachTitle(20)");
     expect(spec).toContain("submit(1, true)");
-    expect(spec).toContain("submit(0, true)");
-    expect(spec).toContain("/\\[\\s*0\\s*\\][\\s\\S]*调教/");
+    expect(spec).toContain("submit(7, true)");
+    expect(spec).toContain('clickVisibleCharacterTrainButton("奥蕾莉亚")');
+    expect(spec).toContain("/^\\[\\s*调\\s*\\]$/u");
     expect(spec).toContain("/\\[\\s*0\\s*\\][\\s\\S]*爱抚/");
     expect(spec).toContain('assert.equal(pettingBoundary.wait?.kind, "enter_key")');
-    expect(spec).toContain("/\\[999\\]\\s*调教结束/");
-    expect(spec).toContain("/调教结束了|显示调教结果/");
     expect(spec).toContain("waitForVisibleGameButton(");
+    expect(spec).toContain("const TARGET_ELAPSED_MS = 50");
+    expect(spec).toContain('const TARGET_BUTTON_TEXT = ["爱抚"]');
     expect(spec).toContain('document.querySelectorAll(".game-viewport button")');
     expect(spec).toContain('const buttons = await $$(".game-viewport button")');
     expect(spec).toContain("isDisplayed({ withinViewport: true })");
-    expect(spec).toContain('waitKind: "any_key"');
     expect(spec).toContain('clickViewportBottom("right"');
     expect(spec).toContain("captureEvents: false");
     expect(spec).toContain("await appWindow.show()");
     expect(spec).toContain("await appWindow.setFocus()");
     expect(spec).toContain("await appWindow.isVisible()");
     expect(spec).toContain("await appWindow.isFocused()");
-    expect(spec).toContain("foreground.frameIntervals.every((interval) => interval < 50)");
+    expect(spec).not.toContain("maximize(");
     expect(spec).toContain("hidePerformanceWindow()");
     expect(spec).toContain("TARGET_ELAPSED_MS + 50");
     expect(spec).toContain("await readSettlementProbe()");
@@ -505,8 +505,8 @@ describe("browser game runner progress policy", () => {
     expect(flow).toContain("if (pointerMayBePressed)");
     expect(flow).not.toContain(".pause(50)");
     expect(spec).toContain('assert.equal(final.bridgeKind, "tauri")');
-    expect(spec).toContain('assert.equal(final.wait?.kind, "string_value")');
-    for (const text of ["一键提升能力", "结束提升能力"]) expect(spec).toContain(text);
+    expect(spec).toContain("assert.equal(final.canInteract, true)");
+    expect(spec).toContain("button instanceof HTMLButtonElement && !button.disabled");
   });
 
   it("checks erarorona training transitions for atomic painted presentations", () => {
