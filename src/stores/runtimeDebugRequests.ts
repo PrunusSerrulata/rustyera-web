@@ -14,6 +14,52 @@ export class RuntimeDebugRequestState {
   grantRefreshNeeded = false;
   private variableRefreshId = 0;
   private readonly pending = new Map<string, PendingDebugRequest>();
+  private readonly submissions = new Map<object, (error: Error) => void>();
+  private readonly earlyReplies = new Map<string, () => Promise<void>>();
+
+  async submit<T>(
+    send: () => Promise<number | bigint>,
+    register: (messageId: number | bigint) => T | Promise<T>,
+  ): Promise<T> {
+    const submission = {};
+    let retire!: (error: Error) => void;
+    const retired = new Promise<never>((_resolve, reject) => {
+      retire = reject;
+    });
+    this.submissions.set(submission, retire);
+    try {
+      const messageId = await Promise.race([send(), retired]);
+      if (!this.submissions.has(submission))
+        throw new Error("debug request was retired with its runtime timeline");
+      const response = Promise.resolve(register(messageId));
+      // An early error may reject the waiter while its normal handler is still completing.
+      void response.catch(() => undefined);
+      const key = String(messageId);
+      const replay = this.earlyReplies.get(key);
+      this.earlyReplies.delete(key);
+      this.finishSubmission(submission);
+      await replay?.();
+      return response;
+    } finally {
+      this.finishSubmission(submission);
+    }
+  }
+
+  deferReply(correlationId: number | bigint | undefined, handle: () => Promise<void>): boolean {
+    if (correlationId == null || this.submissions.size === 0) return false;
+    const key = String(correlationId);
+    if (this.pending.has(key)) return false;
+    if (this.earlyReplies.has(key)) throw new Error("duplicate early debug reply");
+    if (this.earlyReplies.size >= 64) throw new Error("early debug reply limit exceeded");
+    // Never block the pump on submitDebug: its native response can arrive first.
+    this.earlyReplies.set(key, handle);
+    return true;
+  }
+
+  private finishSubmission(submission: object): void {
+    this.submissions.delete(submission);
+    if (this.submissions.size === 0) this.earlyReplies.clear();
+  }
 
   register(messageId: number | bigint, grant: any, commandType: string | undefined): void {
     this.pending.set(String(messageId), { grant, commandType });
@@ -71,6 +117,9 @@ export class RuntimeDebugRequestState {
     this.surfaceResumePending = false;
     this.grantRefreshNeeded = false;
     const cancellation = new Error("debug request was retired with its runtime timeline");
+    for (const retire of this.submissions.values()) retire(cancellation);
+    this.submissions.clear();
+    this.earlyReplies.clear();
     for (const request of this.pending.values()) {
       if (request.timer != null) window.clearTimeout(request.timer);
       request.reject?.(cancellation);

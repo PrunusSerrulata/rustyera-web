@@ -2624,6 +2624,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function handleDebug(message: any, correlationId?: number | bigint): Promise<void> {
+    if (
+      message.type === "error" &&
+      debugRequests.deferReply(correlationId, () => handleDebug(message, correlationId))
+    )
+      return;
     if (message.type === "grant") {
       debugRequests.pausePending = false;
       debugRequests.grantRefreshNeeded = false;
@@ -2652,6 +2657,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } else if (message.type === "response") {
       const request = debugRequests.take(correlationId);
       const response = message.value;
+      if (!request)
+        debugRequests.deferReply(correlationId, async () => {
+          debugRequests.take(correlationId)?.resolve?.(response);
+        });
+      // Apply presentation in receive order; only completion waits for registration.
+      // Replaying the response after a newer stopped event would restore an old stop.
       const fiber = runtimeDebug.applyResponse(response);
       if (response.type === "fiber_page") {
         if (stackOpen.value && fiber)
@@ -2718,27 +2729,35 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function debugCommand(command: any): Promise<void> {
     if (!debugGrant.value || diagnosisExporting.value) return;
     const grant = debugGrant.value.token;
-    const messageId = await submitObservedDebug(
-      transportValue({
-        type: "request",
-        value: { grant, command },
-      }),
+    await debugRequests.submit(
+      () =>
+        submitObservedDebug(
+          transportValue({
+            type: "request",
+            value: { grant, command },
+          }),
+        ),
+      (messageId) => debugRequests.register(messageId, grant, command?.type),
     );
-    debugRequests.register(messageId, grant, command?.type);
   }
 
   async function debugRequest(command: any, timeoutMs = 10_000): Promise<any> {
     if (!debugGrant.value) throw new Error("debug grant 尚未就绪");
     const grant = debugGrant.value.token;
-    const messageId = await submitObservedDebug(
-      transportValue({
-        type: "request",
-        value: { grant, command },
-      }),
+    return debugRequests.submit(
+      () =>
+        submitObservedDebug(
+          transportValue({
+            type: "request",
+            value: { grant, command },
+          }),
+        ),
+      (messageId) => {
+        const response = debugRequests.wait(messageId, grant, command?.type, timeoutMs);
+        schedulePump(0);
+        return response;
+      },
     );
-    const response = debugRequests.wait(messageId, grant, command?.type, timeoutMs);
-    schedulePump(0);
-    return response;
   }
 
   async function inspectTypedWatches(watches: string[]): Promise<Record<string, unknown>> {

@@ -527,7 +527,7 @@ describe("runtime store debug-presentation-reload", () => {
     expect(store.logs).toEqual([]);
   });
 
-  it.each(["resume", "newer_stop", "faulted"])(
+  it.each(["resume", "newer_stop", "faulted", "early_response", "early_error", "early_newer_stop"])(
     "keeps typed BigInt inspection bound to its exact stop: %s",
     async (ending) => {
       vi.stubEnv("VITE_RUSTYERA_TEST", "1");
@@ -562,12 +562,15 @@ describe("runtime store debug-presentation-reload", () => {
           response({ type: "accepted" });
           pending.push(debugEvent("stopped", { stop, reason: { type: "pause_requested" } }));
         } else if (command.type === "list_fibers") {
-          response({ type: "fiber_page", value: { stop, fibers: [], next_cursor: null } });
+          response({
+            type: "fiber_page",
+            value: { stop: command.stop, fibers: [], next_cursor: null },
+          });
         } else if (command.type === "list_variables") {
           response({
             type: "variable_page",
             value: {
-              stop,
+              stop: command.stop,
               variables: [
                 { name: "RESULT", symbol_key: [1], storage: "global", dimensions: [100] },
               ],
@@ -575,20 +578,50 @@ describe("runtime store debug-presentation-reload", () => {
             },
           });
         } else if (command.type === "read_variable") {
-          response({
-            type: "variable_value",
-            value: {
-              reference: command.value,
-              value: { type: "integer", value: -9223372036854775808n },
-            },
-          });
-          if (ending === "newer_stop")
+          if (ending === "early_error")
+            pending.push(
+              debugEvent(
+                "error",
+                { code: "invalid_request", message: "actual read rejection" },
+                id,
+              ),
+            );
+          else
+            response({
+              type: "variable_value",
+              value: {
+                reference: command.value,
+                value: { type: "integer", value: -9223372036854775808n },
+              },
+            });
+          if (ending === "newer_stop" || ending === "early_newer_stop")
             pending.push(
               debugEvent("stopped", {
                 stop: { ...stop, pause_epoch: stop.pause_epoch + 1n },
                 reason: { type: "pause_requested" },
               }),
             );
+          if (ending.startsWith("early_")) {
+            // Model native pump delivery before submit_debug's IPC promise returns its ID.
+            await new Promise((resolve) => window.setTimeout(resolve, 32));
+            const records = (window.__RUSTYERA_TEST__!.snapshot().serviceEvidence as any).records;
+            expect(
+              records.some(
+                (row: any) =>
+                  row.channel === "debug" &&
+                  row.direction === "receive" &&
+                  String(row.correlationId) === String(id),
+              ),
+            ).toBe(true);
+            expect(
+              records.some(
+                (row: any) =>
+                  row.channel === "debug" &&
+                  row.direction === "send" &&
+                  String(row.messageId) === String(id),
+              ),
+            ).toBe(false);
+          }
         } else if (command.type === "continue") {
           pending.push(
             runtimeEvent("state_changed", {
@@ -623,7 +656,13 @@ describe("runtime store debug-presentation-reload", () => {
       const continues = bridge.submitDebug.mock.calls.filter(
         ([message]: any[]) => message.value?.command?.type === "continue",
       );
-      if (ending === "resume" || ending === "faulted") {
+      if (ending === "early_error") {
+        expect(String(failure)).toContain("actual read rejection");
+        expect(continues).toHaveLength(1);
+        expect(continues[0][0].value.command.stop).toEqual(stop);
+        expect(store.canInteract).toBe(true);
+        expect(store.presentation.inputWait).toEqual(wait);
+      } else if (ending !== "newer_stop" && ending !== "early_newer_stop") {
         expect(failure).toBeUndefined();
         expect(result.values["RESULT:0"]).toMatchObject({
           present: true,
@@ -648,6 +687,35 @@ describe("runtime store debug-presentation-reload", () => {
       }
     },
   );
+
+  it("handles an early production pause error before register-only submission completes", async () => {
+    const grant = { grant_id: { high: 1, low: 1 }, program_generation: 1 };
+    const store = await storeWithInputWait(
+      { kind: "integer_value", wait_id: 7, submission_token: { epoch: 2, id: 7 } },
+      [debugEvent("grant", { token: grant })],
+    );
+    const pending: any[] = [];
+    const setupSubmissions = bridge.submitDebug.mock.calls.length;
+    let nextId = 47;
+    bridge.pump.mockImplementation(async () => ({ ...emptyBatch(), events: pending.splice(0) }));
+    bridge.submitDebug.mockImplementation(async () => {
+      const id = nextId++;
+      pending.push(debugEvent("error", { code: "invalid_request", message: "pause rejected" }, id));
+      await new Promise((resolve) => window.setTimeout(resolve, 32));
+      return id;
+    });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let done = false;
+      const pausing = store.openDebugDialog("console").finally(() => {
+        done = true;
+      });
+      await advanceUntil(() => done);
+      await pausing;
+      expect(bridge.submitDebug).toHaveBeenCalledTimes(setupSubmissions + attempt + 1);
+    }
+    expect(store.logs.filter((entry) => entry.message === "pause rejected")).toHaveLength(2);
+    expect(store.debugStop).toBeNull();
+  });
 
   it("continues after the last debugger surface closes without enabling single-step mode", async () => {
     const grant = { grant_id: { high: 1, low: 1 }, program_generation: 1 };
