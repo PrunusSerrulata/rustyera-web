@@ -38,6 +38,7 @@ import {
   injectInGameSaveFlow,
   injectInteractionAssistFlow,
   nativeFirefoxCapabilities,
+  focusNativeBrowser,
   runtimeProgressDiagnostic,
   runtimeProgressSignature,
   terminalRuntimeRejection,
@@ -202,8 +203,6 @@ try {
     // SafariDriver can report maximize success while a window minimized by the previous run stays
     // non-interactive. Setting a concrete rect restores it according to the WebDriver window API.
     await browser.setWindowSize(1280, 900);
-    await browser.execute(() => window.focus());
-    await browser.pause(200);
   }
   if (browserName === "firefox") {
     console.log(
@@ -253,6 +252,10 @@ try {
     snapshotMonitorError = error;
     await browser?.deleteSession().catch(() => undefined);
   });
+  if (browserName === "safari" || snakeServiceLifecycle) {
+    compatibilityStage = "establishing native browser foreground";
+    await focusNativeBrowser(browser, browserName);
+  }
   compatibilityStage = "waiting for frontend test control";
   await browser.waitUntil(
     () => browser.execute(() => typeof window.__RUSTYERA_TEST__?.snapshot === "function"),

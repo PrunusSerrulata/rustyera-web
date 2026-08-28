@@ -17,6 +17,7 @@ import {
   installRemoteFileSystem,
   loadScenario,
   nativeFirefoxCapabilities,
+  focusNativeBrowser,
   publishCrossHostArtifacts,
   resolveLocator,
   runtimeProgressDiagnostic,
@@ -28,6 +29,73 @@ import {
 import { SNAKE_DATA_MARKERS } from "../scripts/snake-data-test-support.mjs";
 
 describe("web game test scenario", () => {
+  it("activates the native app before selecting and observing its automation window", async () => {
+    const calls = [];
+    const execute = vi.fn(async (...args) => calls.push(["activate", ...args]));
+    const browser = {
+      getWindowHandle: async () => {
+        calls.push(["handle"]);
+        return "automation";
+      },
+      switchToWindow: async (handle) => calls.push(["switch", handle]),
+      execute: async (read) =>
+        runInNewContext(`(${read})()`, {
+          document: { visibilityState: "visible", hasFocus: () => true },
+        }),
+      waitUntil: async (read, options) => {
+        calls.push(["observe", options.timeout, options.interval]);
+        expect(await read()).toBe(true);
+      },
+    };
+    await focusNativeBrowser(browser, "safari", { platform: "darwin", execute });
+    expect(calls).toEqual([
+      [
+        "activate",
+        "/usr/bin/osascript",
+        ["-e", 'tell application id "com.apple.Safari" to activate'],
+        { timeout: 3_000 },
+      ],
+      ["handle"],
+      ["switch", "automation"],
+      ["observe", 3_000, 50],
+    ]);
+    execute.mockClear();
+    await focusNativeBrowser(browser, "firefox", { platform: "linux", execute });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each(["activation", "switch", "hidden", "unfocused", "unsupported"])(
+    "rejects a failed %s foreground prerequisite without retrying input",
+    async (failure) => {
+      const execute = vi.fn(async () => {
+        if (failure === "activation") throw new Error("activation");
+      });
+      const browser = {
+        getWindowHandle: async () => "automation",
+        switchToWindow: async () => {
+          if (failure === "switch") throw new Error("switch");
+        },
+        execute: async (read) =>
+          runInNewContext(`(${read})()`, {
+            document: {
+              visibilityState: failure === "hidden" ? "hidden" : "visible",
+              hasFocus: () => failure !== "unfocused",
+            },
+          }),
+        waitUntil: async (read, options) => {
+          if (!(await read())) throw new Error(options.timeoutMsg);
+        },
+      };
+      await expect(
+        focusNativeBrowser(browser, failure === "unsupported" ? "unknown" : "safari", {
+          platform: "darwin",
+          execute,
+        }),
+      ).rejects.toThrow();
+      expect(execute.mock.calls.length).toBeLessThanOrEqual(1);
+    },
+  );
+
   it("rejects a missing remote directory before storage traversal starts", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "rustyera-remote-directory-"));
     const remoteWindow = {};

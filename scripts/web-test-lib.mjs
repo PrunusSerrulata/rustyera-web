@@ -17,8 +17,38 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 import { blake3 } from "@noble/hashes/blake3.js";
+
+/** Activate only the selected native browser, then select its actual automation window. */
+export async function focusNativeBrowser(
+  browser,
+  name,
+  { platform = process.platform, execute = promisify(execFile) } = {},
+) {
+  const application = { safari: "com.apple.Safari", firefox: "org.mozilla.firefox" }[name];
+  if (!application) throw new Error("unsupported native browser foreground target");
+  if (platform === "darwin")
+    await execute(
+      "/usr/bin/osascript",
+      ["-e", `tell application id "${application}" to activate`],
+      {
+        timeout: 3_000,
+      },
+    );
+  const handle = await browser.getWindowHandle();
+  await browser.switchToWindow(handle);
+  await browser.waitUntil(
+    () => browser.execute(() => document.visibilityState === "visible" && document.hasFocus()),
+    {
+      timeout: 3_000,
+      interval: 50,
+      timeoutMsg: "native browser window is not visible and focused",
+    },
+  );
+}
 
 export {
   goalStatus,
