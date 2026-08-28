@@ -262,8 +262,33 @@ export async function runServiceOracleCapture(client, config, inputs) {
       inspectError = { name: error.name, message: error.message };
     }
     const final = await read();
-    if (!captureTerminal(final))
+    if (!captureTerminal(final)) {
+      const frontier = (state) => ({
+        phase: state.phase,
+        runtimeEpoch: state.runtimeEpoch,
+        canInteract: state.canInteract,
+        wait: state.wait,
+        output: state.output,
+        fault: state.fault,
+        debug: state.debug,
+      });
+      await writeFile(
+        path.join(config.outputDirectory, "inspection-frontier.json"),
+        `${JSON.stringify(
+          {
+            before: frontier(terminal),
+            after: frontier(final),
+            inspect,
+            inspectError,
+            records: final.serviceEvidence.records.filter((row) => row.channel === "debug"),
+          },
+          null,
+          2,
+        )}\n`,
+        { flag: "wx" },
+      );
       throw new Error("case left terminal observation during typed inspection");
+    }
     await record("complete", final, {
       request: config.request,
       ...(inspect ? { inspect } : {}),
