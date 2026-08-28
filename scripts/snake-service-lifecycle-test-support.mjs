@@ -1,4 +1,5 @@
 /* global document, HTMLElement, window */
+import { submitSnakePrompt } from "./snake-data-test-support.mjs";
 import { runLifecycleRaces } from "./snake-service-lifecycle-races.mjs";
 
 const TARGET = "button=SNAKE_LIFECYCLE_TARGET";
@@ -143,8 +144,7 @@ export async function hoverLifecycleTarget(browser) {
 export async function runSnakeServiceLifecycleClient(browser, bridgeKind, options) {
   const initial = await waitStage(browser, bridgeKind, "SNAKE_LIFECYCLE_START");
   const input = await browser.$(".prompt-bar input");
-  await input.setValue("1");
-  await (await browser.$(".prompt-bar button[type=submit]")).click();
+  await submitSnakePrompt(browser, "1");
   let state = await waitStage(
     browser,
     bridgeKind,

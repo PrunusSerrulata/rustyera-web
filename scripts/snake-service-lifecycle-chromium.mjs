@@ -179,6 +179,9 @@ function playwrightLifecycleAdapter(browser, context, page) {
     moveTo: () => target.hover(),
     scrollIntoView: () => target.scrollIntoViewIfNeeded(),
     waitForDisplayed: ({ timeout = 5000 } = {}) => target.waitFor({ state: "visible", timeout }),
+    async waitForEnabled() {
+      if (!(await target.isEnabled())) throw new Error("lifecycle input is disabled");
+    },
     $: async (selector) => element(locator(target, selector)),
   });
   return {
