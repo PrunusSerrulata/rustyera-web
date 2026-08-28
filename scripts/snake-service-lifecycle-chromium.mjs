@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* global window */
-import { appendFile, mkdir, realpath } from "node:fs/promises";
+import { appendFile, mkdir, readFile, realpath } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
@@ -28,7 +29,7 @@ await mkdir(output, { recursive: false });
 const sourceCopy = await isolatedProject(project, { cleanSaves: true });
 const successorCopy = await isolatedProject(successor, { cleanSaves: true });
 const repository = fileURLToPath(new URL("..", import.meta.url));
-let server, browser, gate, monitor, page;
+let server, browser, gate, monitor, page, chromeProcess;
 let failure;
 try {
   server = await createLoopbackViteServer({
@@ -36,21 +37,38 @@ try {
     mode: "test",
     define: { "import.meta.env.VITE_RUSTYERA_TEST": JSON.stringify("1") },
   });
-  // Explicit installed binary only. Headful windows provide real focus transitions.
-  browser = await chromium.launch({ executablePath, headless: false });
-  const context = await browser.newContext({
-    locale: "zh-CN",
-    viewport: { width: 1280, height: 900 },
-    reducedMotion: "reduce",
-  });
-  page = await context.newPage();
-  // Playwright defaults to simulated focus even in headful mode. Restore native focus before
-  // installing observers; only subsequent real window transitions may satisfy the blur check.
-  await (
-    await context.newCDPSession(page)
-  ).send("Emulation.setFocusEmulationEnabled", {
-    enabled: false,
-  });
+  // noDefaults applies only to the attached default context. Never install Playwright's
+  // per-session focus override, including in the independent native probe window.
+  const profile = path.join(output, "chromium-profile");
+  await mkdir(profile);
+  chromeProcess = spawn(
+    executablePath,
+    [
+      `--user-data-dir=${profile}`,
+      "--remote-debugging-address=127.0.0.1",
+      "--remote-debugging-port=0",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-background-networking",
+      "--disable-component-update",
+      "--disable-sync",
+      "--disable-extensions",
+      "--password-store=basic",
+      "--use-mock-keychain",
+      "--lang=zh-CN",
+      "--window-size=1280,900",
+      "about:blank",
+    ],
+    { stdio: ["ignore", "ignore", "pipe"] },
+  );
+  chromeProcess.stderr.pipe(process.stderr);
+  const endpoint = await nativeBrowserEndpoint(chromeProcess, profile);
+  browser = await chromium.connectOverCDP(endpoint, { noDefaults: true, timeout: 10000 });
+  const context = browser.contexts()[0];
+  if (!context) throw new Error("native Chromium did not provide its default context");
+  page = context.pages()[0] ?? (await context.newPage());
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.bringToFront();
   await page.addInitScript(() => {
     Object.defineProperty(window, "showDirectoryPicker", { configurable: true, value: undefined });
   });
@@ -136,7 +154,11 @@ try {
         try {
           await browser?.close();
         } finally {
-          await server?.close();
+          try {
+            await stopNativeBrowser(chromeProcess);
+          } finally {
+            await server?.close();
+          }
         }
       }
     }
@@ -178,16 +200,18 @@ function playwrightLifecycleAdapter(browser, context, page) {
     releaseActions: async () => {},
     getWindowHandle: async () => active,
     async newWindow(url) {
-      const next = await browser.newContext();
-      const nextPage = await next.newPage();
-      await (
-        await next.newCDPSession(nextPage)
-      ).send("Emulation.setFocusEmulationEnabled", {
-        enabled: false,
-      });
-      await nextPage.goto(url);
+      const control = await browser.newBrowserCDPSession();
+      let nextPage;
+      try {
+        [nextPage] = await Promise.all([
+          context.waitForEvent("page", { timeout: 5000 }),
+          control.send("Target.createTarget", { url, newWindow: true, background: false }),
+        ]);
+      } finally {
+        await control.detach();
+      }
       active = "focus-probe";
-      windows.set(active, { context: next, page: nextPage });
+      windows.set(active, { context, page: nextPage });
       await nextPage.bringToFront();
     },
     async switchToWindow(handle) {
@@ -198,7 +222,57 @@ function playwrightLifecycleAdapter(browser, context, page) {
     async closeWindow() {
       const old = windows.get(active);
       windows.delete(active);
-      await old.context.close();
+      await old.page.close();
     },
   };
+}
+
+async function nativeBrowserEndpoint(child, profile) {
+  let launchError;
+  const failed = (error) => {
+    launchError = error;
+  };
+  child.on("error", failed);
+  try {
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      if (launchError) throw launchError;
+      if (child.exitCode != null || child.signalCode != null)
+        throw new Error("native Chromium exited before its loopback endpoint became available");
+      try {
+        const lines = (await readFile(path.join(profile, "DevToolsActivePort"), "utf8")).split(
+          "\n",
+        );
+        const port = Number(lines[0]);
+        if (Number.isInteger(port) && port > 0 && port <= 65535) return `http://127.0.0.1:${port}`;
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error("native Chromium loopback endpoint did not become available within 10s");
+  } finally {
+    child.off("error", failed);
+  }
+}
+
+async function stopNativeBrowser(child) {
+  if (!child?.pid || child.exitCode != null || child.signalCode != null) return;
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  child.kill("SIGTERM");
+  let timer;
+  try {
+    await Promise.race([
+      exited,
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, 2000);
+      }),
+    ]);
+    if (child.exitCode == null && child.signalCode == null) {
+      child.kill("SIGKILL");
+      await exited;
+    }
+  } finally {
+    clearTimeout(timer);
+  }
 }
