@@ -482,7 +482,7 @@ export async function runSnakeServiceLifecycleClient(browser, bridgeKind, option
       } else if (index === 5) {
         await hoverLifecycleTarget(browser);
         try {
-          await observeRealWindowBlur(browser);
+          await observeRealWindowBlur(browser, { nativeFocusWindow: bridgeKind === "tauri" });
         } catch (error) {
           blocked.push({ stage: "window-blur", host: bridgeKind, reason: String(error) });
         }
@@ -601,24 +601,31 @@ export function assertBlurPointer(state, observation, measuredGeometry) {
   return { index: 5, observed: "0/0/", blur: observation.blurCount, mode: "cleared-after-blur" };
 }
 
-async function observeRealWindowBlur(browser) {
+export async function observeRealWindowBlur(browser, { nativeFocusWindow = false } = {}) {
   const original = await browser.getWindowHandle();
   const before = await browser.execute(() => window.__RUSTYERA_SERVICE_TRACE__.observed.blurCount);
   let temporary;
   try {
-    await browser.newWindow("about:blank", {
-      type: "window",
-      windowName: "RustyEra lifecycle focus probe",
+    // The high-level Classic helper uses window.open and the last unordered handle.
+    // Use the native command's exact handle instead of guessing the newly created window.
+    const created = await browser.createWindow("window");
+    temporary = created.handle;
+    if (!temporary || temporary === original || created.type !== "window")
+      throw new Error("host did not create an independent native focus window");
+    await browser.switchToWindow(temporary);
+    // The explicit Tauri provider activates its native window itself. Browser drivers
+    // (notably Safari) additionally need a visible control to request actual window focus.
+    if (!nativeFocusWindow) {
+      await browser.url(
+        `data:text/html;charset=utf-8,${encodeURIComponent('<!doctype html><title>RustyEra focus probe</title><button id="native-focus-target">Focus this test window</button>')}`,
+      );
+      await (await browser.$("#native-focus-target")).click();
+    }
+    await browser.waitUntil(() => browser.execute(() => document.hasFocus()), {
+      timeout: 3000,
+      interval: 50,
+      timeoutMsg: "native focus window did not receive focus",
     });
-    temporary = await browser.getWindowHandle();
-    if (temporary === original) throw new Error("host did not create an independent focus target");
-    await browser.switchToWindow(original);
-    const after = await browser.execute(() => ({
-      count: window.__RUSTYERA_SERVICE_TRACE__.observed.blurCount,
-      focused: document.hasFocus(),
-    }));
-    if (after.count <= before || !after.focused)
-      throw new Error("native focus change did not produce a trusted blur and restored focus");
   } finally {
     if (temporary && temporary !== original) {
       await browser.switchToWindow(temporary);
@@ -626,4 +633,18 @@ async function observeRealWindowBlur(browser) {
     }
     await browser.switchToWindow(original);
   }
+  await browser.waitUntil(
+    async () => {
+      const after = await browser.execute(() => ({
+        count: window.__RUSTYERA_SERVICE_TRACE__.observed.blurCount,
+        focused: document.hasFocus(),
+      }));
+      return after.count > before && after.focused;
+    },
+    {
+      timeout: 3000,
+      interval: 50,
+      timeoutMsg: "native focus change did not produce a trusted blur and restored focus",
+    },
+  );
 }

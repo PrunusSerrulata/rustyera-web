@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global document, window */
+/* global window */
 import { appendFile, mkdir, readFile, realpath } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -191,6 +191,7 @@ function playwrightLifecycleAdapter(browser, context, page) {
   });
   return {
     execute: (callback, value) => current().evaluate(callback, value),
+    url: (url) => current().goto(url),
     $: async (selector) => element(locator(current(), selector)),
     keys: (key) => current().keyboard.press(key),
     async waitUntil(accept, { timeout, interval = 50, timeoutMsg }) {
@@ -208,24 +209,25 @@ function playwrightLifecycleAdapter(browser, context, page) {
     },
     releaseActions: async () => {},
     getWindowHandle: async () => active,
-    async newWindow(url) {
+    async createWindow(type) {
+      if (type !== "window") throw new Error("lifecycle requires a native window");
       const control = await browser.newBrowserCDPSession();
       let nextPage;
       try {
         [nextPage] = await Promise.all([
           context.waitForEvent("page", { timeout: 5000 }),
-          control.send("Target.createTarget", { url, newWindow: true, background: false }),
+          control.send("Target.createTarget", {
+            url: "about:blank",
+            newWindow: true,
+            background: false,
+          }),
         ]);
       } finally {
         await control.detach();
       }
-      active = "focus-probe";
-      windows.set(active, { context, page: nextPage });
-      await nextPage.bringToFront();
-      // Native window activation is asynchronous. Observe the actual transfer before switching
-      // back; otherwise a rapid pair of activation requests can leave the first window focused.
-      await nextPage.waitForFunction(() => document.hasFocus(), undefined, { timeout: 3000 });
-      await page.waitForFunction(() => !document.hasFocus(), undefined, { timeout: 3000 });
+      const handle = "focus-probe";
+      windows.set(handle, { context, page: nextPage });
+      return { handle, type: "window" };
     },
     async switchToWindow(handle) {
       if (!windows.has(handle)) throw new Error("unknown lifecycle window");

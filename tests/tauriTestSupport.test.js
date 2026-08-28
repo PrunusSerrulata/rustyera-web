@@ -19,6 +19,7 @@ import {
   assertBlurPointer,
   hoverLifecycleTarget,
   installPointerObservation,
+  observeRealWindowBlur,
   setLifecyclePrompt,
   lifecycleViewport,
 } from "../scripts/snake-service-lifecycle-test-support.mjs";
@@ -820,6 +821,72 @@ describe("snake service lifecycle assertions", () => {
       window.__RUSTYERA_SERVICE_TRACE__.dispose();
       delete window.__RUSTYERA_SERVICE_TRACE__;
     }
+  });
+  function focusBrowser(created = { handle: "native-probe", type: "window" }, blurCount = 1) {
+    const actions = [];
+    const browser = {
+      getWindowHandle: async () => "main",
+      url: async (url) => {
+        expect(decodeURIComponent(url)).toContain('id="native-focus-target"');
+        actions.push(["navigate-probe"]);
+      },
+      $: async (selector) => {
+        expect(selector).toBe("#native-focus-target");
+        return { click: async () => actions.push(["click-probe"]) };
+      },
+      createWindow: async (type) => {
+        if (type !== "window") throw new TypeError("WebDriver createWindow expects a string type");
+        return created;
+      },
+      // No legacy newWindow/getWindowHandles fallback: its last handle is not authoritative.
+      switchToWindow: async (handle) => actions.push(["switch", handle]),
+      closeWindow: async () => actions.push(["close"]),
+      execute: vi
+        .fn()
+        .mockResolvedValueOnce(0)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce({ count: blurCount, focused: true }),
+      async waitUntil(accept, { timeoutMsg }) {
+        if (!(await accept())) throw new Error(timeoutMsg);
+      },
+    };
+    return { browser, actions };
+  }
+  it("uses the native creation handle and verifies focus transfer before restoring the game", async () => {
+    const { browser, actions } = focusBrowser();
+    await observeRealWindowBlur(browser);
+    expect(actions).toEqual([
+      ["switch", "native-probe"],
+      ["navigate-probe"],
+      ["click-probe"],
+      ["switch", "native-probe"],
+      ["close"],
+      ["switch", "main"],
+    ]);
+  });
+  it("rejects a tab substitute while closing only the newly created target", async () => {
+    const { browser, actions } = focusBrowser({ handle: "native-tab", type: "tab" });
+    await expect(observeRealWindowBlur(browser)).rejects.toThrow("independent native focus window");
+    expect(actions).toEqual([["switch", "native-tab"], ["close"], ["switch", "main"]]);
+  });
+  it("uses the explicit native focus window without navigating an auxiliary data document", async () => {
+    const { browser, actions } = focusBrowser();
+    await observeRealWindowBlur(browser, { nativeFocusWindow: true });
+    expect(actions).toEqual([
+      ["switch", "native-probe"],
+      ["switch", "native-probe"],
+      ["close"],
+      ["switch", "main"],
+    ]);
+    const noBlur = focusBrowser(undefined, 0);
+    await expect(
+      observeRealWindowBlur(noBlur.browser, { nativeFocusWindow: true }),
+    ).rejects.toThrow("trusted blur");
+  });
+  it("does not accept a focused game without a trusted blur observation", async () => {
+    const { browser, actions } = focusBrowser(undefined, 0);
+    await expect(observeRealWindowBlur(browser)).rejects.toThrow("trusted blur");
+    expect(actions.slice(-3)).toEqual([["switch", "native-probe"], ["close"], ["switch", "main"]]);
   });
   it("reveals a clipped target before moving the real pointer after resize", async () => {
     let visible = false;
