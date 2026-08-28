@@ -2826,7 +2826,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       !debugGrant.value ||
       debugStopToken(debugStop.value) ||
       debugRequests.pausePending ||
-      !["running", "waiting_input", "waiting_external"].includes(phase.value)
+      !["running", "waiting_input", "waiting_external", "faulted"].includes(phase.value)
     )
       return;
     debugRequests.pausePending = true;

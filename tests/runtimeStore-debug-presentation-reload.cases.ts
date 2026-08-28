@@ -527,7 +527,7 @@ describe("runtime store debug-presentation-reload", () => {
     expect(store.logs).toEqual([]);
   });
 
-  it.each(["resume", "newer_stop"])(
+  it.each(["resume", "newer_stop", "faulted"])(
     "keeps typed BigInt inspection bound to its exact stop: %s",
     async (ending) => {
       vi.stubEnv("VITE_RUSTYERA_TEST", "1");
@@ -539,7 +539,17 @@ describe("runtime store debug-presentation-reload", () => {
         runtime_revision: 8n,
       };
       const wait = { kind: "integer_value", wait_id: 7n, submission_token: { epoch: 2n, id: 7n } };
-      const store = await storeWithInputWait(wait, [debugEvent("grant", { token: grant })]);
+      const fault = { code: "vm_fault", message: "fixture failure must remain visible" };
+      const store = await storeWithInputWait(wait, [
+        debugEvent("grant", { token: grant }),
+        ...(ending === "faulted"
+          ? [
+              runtimeEvent("wait_changed", { type: "closed" }),
+              runtimeEvent("fault", fault),
+              runtimeEvent("state_changed", { phase: "faulted", epoch: 2n }),
+            ]
+          : []),
+      ]);
       let nextId = 20;
       const pending: any[] = [];
       bridge.pump.mockImplementation(async () => ({ ...emptyBatch(), events: pending.splice(0) }));
@@ -580,7 +590,12 @@ describe("runtime store debug-presentation-reload", () => {
               }),
             );
         } else if (command.type === "continue") {
-          pending.push(runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2n }));
+          pending.push(
+            runtimeEvent("state_changed", {
+              phase: ending === "faulted" ? "faulted" : "waiting_input",
+              epoch: 2n,
+            }),
+          );
           response({ type: "accepted" });
         } else throw new Error(`unexpected debug command ${command.type}`);
         return id;
@@ -608,7 +623,7 @@ describe("runtime store debug-presentation-reload", () => {
       const continues = bridge.submitDebug.mock.calls.filter(
         ([message]: any[]) => message.value?.command?.type === "continue",
       );
-      if (ending === "resume") {
+      if (ending === "resume" || ending === "faulted") {
         expect(failure).toBeUndefined();
         expect(result.values["RESULT:0"]).toMatchObject({
           present: true,
@@ -618,8 +633,14 @@ describe("runtime store debug-presentation-reload", () => {
         expect(result.stop.pause_epoch).toBe("9007199254740993");
         expect(continues).toHaveLength(1);
         expect(continues[0][0].value.command.stop).toEqual(stop);
-        expect(store.canInteract).toBe(true);
-        expect(store.presentation.inputWait).toEqual(wait);
+        if (ending === "faulted") {
+          expect(store.phase).toBe("faulted");
+          expect(store.fault).toEqual(fault);
+          expect(store.canInteract).toBe(false);
+        } else {
+          expect(store.canInteract).toBe(true);
+          expect(store.presentation.inputWait).toEqual(wait);
+        }
       } else {
         expect(String(failure)).toContain("typed watch stop or session changed");
         expect(continues).toHaveLength(0);
