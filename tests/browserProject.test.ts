@@ -209,6 +209,16 @@ describe("browser project font resources", () => {
     await expect(project.materialize()).resolves.toMatchObject({
       files: [{ payload: { type: "external", byteLength: 3 } }],
     });
+
+    // Portable directory imports retain the manifest hash, without the scanner's change token.
+    project.useImportedManifest(manifest);
+    const storage = new SaveDirectoryHandle("opfs");
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    const spool = await project.stageFullManifest();
+    expect(await spool.read(0, spool.totalBytes)).toHaveLength(spool.totalBytes);
+    await spool.release();
+    await writeFixtureFile(fonts, "Project.ttf", Uint8Array.of(3, 2, 1));
+    await expect(project.stageFullManifest()).rejects.toThrow("资源在项目扫描后发生变化");
   });
 });
 

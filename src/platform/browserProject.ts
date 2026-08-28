@@ -947,9 +947,13 @@ export class BrowserProject {
     if (!handle) throw new Error(`未知资源：${source.relative_path}`);
     const file = await handle.getFile();
     const signature = `${file.size}:${file.lastModified}`;
+    // FileList imports authorize resource bytes by length/hash but do not retain a filesystem
+    // change token. Validate any recorded token, then always verify the complete content below.
+    const identity = this.resourceIdentities.get(key);
     if (
+      !identity ||
       file.size !== source.payload.byteLength ||
-      this.resourceIdentities.get(key)?.signature !== signature
+      (identity.signature != null && identity.signature !== signature)
     )
       throw new Error(`资源在项目扫描后发生变化：${source.relative_path}`);
     const hasher = blake3.create();
