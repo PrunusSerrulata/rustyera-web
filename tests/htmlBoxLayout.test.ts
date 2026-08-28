@@ -449,8 +449,42 @@ describe("bounded offscreen HTML measurement", () => {
     );
     expect(result.advancePx).toBe(9);
     expect(result.cuts).toEqual([{ id: 7, advancePx: 6 }]);
-    expect(regular).toEqual(["normal", "normal"]);
+    expect(regular).toEqual(["normal"]);
     expect(register).not.toHaveBeenCalled();
+    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it("measures all independent prefixes in one settled font layout", async () => {
+    let fontWidth = 12;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      queueMicrotask(() => {
+        fontWidth = fontWidth === 12 ? 9 : 12;
+        callback(0);
+      });
+      return 1;
+    });
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return new DOMRect(0, 0, (this.textContent?.length ?? 0) * fontWidth, 16);
+    });
+    const result = await new HtmlMeasurementProvider().measure(
+      {
+        document: queryText("AAAA"),
+        mode: "text_part",
+        cuts: [0, 1, 2, 3, 4].map((offset) => ({
+          id: offset,
+          textNodePath: [0],
+          decodedUtf8Offset: offset,
+          decodedUtf16Offset: offset,
+        })),
+        style: queryStyle(),
+      },
+      measurementBinding(viewport),
+      { signal: new AbortController().signal, assertCurrent() {} },
+    );
+    expect(result.advancePx).toBe(36);
+    expect(result.cuts.map((cut) => cut.advancePx)).toEqual([0, 9, 18, 27, 36]);
     expect(viewport.querySelector(".html-measurement-host")).toBeNull();
   });
 

@@ -1,4 +1,4 @@
-import { createApp, nextTick, toRaw, type App } from "vue";
+import { createApp, h, nextTick, toRaw, type App } from "vue";
 
 import { CanvasReplayBudget } from "@/components/canvasReplayRenderer";
 import HtmlMeasurementHost from "@/components/HtmlMeasurementHost.vue";
@@ -75,9 +75,7 @@ export class HtmlMeasurementProvider {
     const cuts = cloneBounded(probe.cuts);
     return this.schedule(probe.style, binding, guard, async (style, frozen, current) => {
       let work = inspectHtmlDocument(document, frozen.replaceFullWidthSpaces).work;
-      const complete = await this.render(document, style, frozen, current, "part");
-      current.assertCurrent();
-      const measuredCuts: { id: number; advancePx: number }[] = [];
+      const documents = [document];
       for (const cut of cuts) {
         current.assertCurrent();
         const prefix = htmlPrefixDocument(document, cut);
@@ -87,11 +85,16 @@ export class HtmlMeasurementProvider {
             "resource_limit",
             "HTML prefix work exceeds the per-probe budget",
           );
-        const measured = await this.render(prefix, style, frozen, current, "part");
-        current.assertCurrent();
-        measuredCuts.push({ id: cut.id, advancePx: measured.advancePx });
+        documents.push(prefix);
       }
-      return { ...complete, cuts: measuredCuts };
+      // Shape each prefix independently, but read every width from one settled DOM layout.
+      // Mounting/unmounting between cuts can mix fallback-font epochs in native browsers.
+      const measured = await this.render(documents, style, frozen, current, "part");
+      current.assertCurrent();
+      return {
+        ...measured[0],
+        cuts: cuts.map((cut, index) => ({ id: cut.id, advancePx: measured[index + 1].advancePx })),
+      };
     });
   }
 
@@ -233,6 +236,13 @@ export class HtmlMeasurementProvider {
   }
 
   private render(
+    documents: CanonicalHtmlDocument[],
+    style: HtmlQueryStyle,
+    binding: HtmlMeasurementBinding,
+    guard: HtmlMeasurementGuard,
+    mode: "part",
+  ): Promise<HtmlMeasurementResult[]>;
+  private render(
     document: CanonicalHtmlDocument,
     style: HtmlQueryStyle,
     binding: HtmlMeasurementBinding,
@@ -247,20 +257,24 @@ export class HtmlMeasurementProvider {
     mode: "part" | "document",
   ): Promise<HtmlMeasurementResult>;
   private async render(
-    document: CanonicalHtmlDocument,
+    document: CanonicalHtmlDocument | CanonicalHtmlDocument[],
     style: HtmlQueryStyle,
     binding: HtmlMeasurementBinding,
     guard: HtmlMeasurementGuard,
     mode: "part" | "document" | "ready",
-  ): Promise<HtmlMeasurementResult | void> {
+  ): Promise<HtmlMeasurementResult | HtmlMeasurementResult[] | void> {
     guard.assertCurrent();
     validateBinding(binding, style);
-    const inspected = inspectHtmlDocument(document, binding.replaceFullWidthSpaces);
-    validateMedia(document, binding.resources);
-    validateSlots(
-      document,
-      binding.preferences.fontSizeOverridePx ?? style.base.font_millipixels / 1000,
-    );
+    const documents = Array.isArray(document) ? document : [document];
+    const inspected = documents.map((part) => {
+      const result = inspectHtmlDocument(part, binding.replaceFullWidthSpaces);
+      validateMedia(part, binding.resources);
+      validateSlots(
+        part,
+        binding.preferences.fontSizeOverridePx ?? style.base.font_millipixels / 1000,
+      );
+      return result;
+    });
     const scope = new HtmlMeasurementScope(binding, style, guard, this.budget.fork());
     this.activeScope = scope;
     let app: App<Element> | undefined;
@@ -303,11 +317,19 @@ export class HtmlMeasurementProvider {
       host.style.setProperty("--game-size", host.style.fontSize);
       host.style.setProperty("--game-line-height", `${scope.state.gameLineHeightPx}px`);
       binding.viewport.append(host);
-      app = createApp(HtmlMeasurementHost, {
-        document,
-        style,
-        projection: scope,
-        documentMode: mode === "document",
+      app = createApp({
+        render: () =>
+          h(
+            "div",
+            documents.map((part) =>
+              h(HtmlMeasurementHost, {
+                document: part,
+                style,
+                projection: scope,
+                documentMode: mode === "document",
+              }),
+            ),
+          ),
       });
       const renderErrors: unknown[] = [];
       app.config.errorHandler = (error: unknown) => {
@@ -336,8 +358,8 @@ export class HtmlMeasurementProvider {
       await scope.settle();
       await scope.wait(nextTick());
       if (renderErrors.length) throw renderErrors[0];
-      const line = host.querySelector<HTMLElement>("[data-html-measurement-line]");
-      if (!line)
+      const lines = host.querySelectorAll<HTMLElement>("[data-html-measurement-line]");
+      if (lines.length !== documents.length)
         throw new RuntimeServiceError(
           "backend_failure",
           "HTML measurement renderer did not mount its line",
@@ -346,21 +368,25 @@ export class HtmlMeasurementProvider {
         scope.assertCurrent();
         return;
       }
-      const width = finitePixels(line.getBoundingClientRect().width);
-      const firstRow = readFirstRow(
-        line,
-        document,
-        binding.replaceFullWidthSpaces,
-        scope.state.gameLineHeightPx,
-      );
+      // No await between these reads: all independent text shapes share one font/layout epoch.
+      const results = [...lines].map((line, index) => {
+        const width = finitePixels(line.getBoundingClientRect().width);
+        const firstRow = readFirstRow(
+          line,
+          documents[index],
+          binding.replaceFullWidthSpaces,
+          scope.state.gameLineHeightPx,
+        );
+        return {
+          context: { ...binding.context },
+          advancePx: mode === "document" ? firstRow.advancePx : width,
+          cuts: [],
+          textNodes: inspected[index].textNodes,
+          firstRow,
+        };
+      });
       scope.assertCurrent();
-      return {
-        context: { ...binding.context },
-        advancePx: mode === "document" ? firstRow.advancePx : width,
-        cuts: [],
-        textNodes: inspected.textNodes,
-        firstRow,
-      };
+      return Array.isArray(document) ? results : results[0];
     } finally {
       if (frame != null) cancelAnimationFrame(frame);
       scope.dispose();
