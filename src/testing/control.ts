@@ -115,7 +115,7 @@ export function installWebTestControl(pinia: Pinia): void {
     mediaPlacements: () => presentationMedia(store.presentation),
     mediaReplay: (resourceName) => mediaReplay(store.presentation.resources, resourceName),
     inspect: (watches) => store.inspectWatches(watches),
-    inspectTyped: (watches) => store.inspectTypedWatches(watches),
+    inspectTyped: async (watches) => serialize(await store.inspectTypedWatches(watches)),
     exportSnapshot: () => store.exportSnapshot("normal"),
     exportTraditionalSave: () => store.exportTraditionalSaveForTest(),
     async replaceProjectSource(relativePath, expected, replacement) {

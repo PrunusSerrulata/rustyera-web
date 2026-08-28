@@ -269,7 +269,7 @@ export async function storeWithPendingCompiledCacheWrite(write: Promise<void>) {
 
 export async function storeWithInputWait(
   wait: Record<string, unknown>,
-  extraEvents: ReturnType<typeof runtimeEvent>[] = [],
+  extraEvents: (ReturnType<typeof runtimeEvent> | ReturnType<typeof debugEvent>)[] = [],
 ) {
   bridge.pump.mockResolvedValueOnce({
     ...emptyBatch(),

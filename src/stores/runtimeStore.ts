@@ -2755,12 +2755,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
       await pauseDebug();
       await waitUntil(() => debugStopToken(debugStop.value) != null, 10_000, "typed debug stop");
     }
-    const stop = debugStopToken(debugStop.value);
-    const stopIdentity = JSON.stringify(transportValue(stop));
+    const stop = { ...debugStopToken(debugStop.value) };
     const current = () =>
       lifecycle === lifecycleGeneration &&
       sameServiceInteger(epoch, runtimeEpoch.value) &&
-      JSON.stringify(transportValue(debugStopToken(debugStop.value))) === stopIdentity;
+      ["session_epoch", "pause_epoch", "program_generation", "runtime_revision"].every((field) =>
+        sameServiceInteger(stop[field], debugStopToken(debugStop.value)?.[field]),
+      );
     try {
       return await readTypedWatches(watches, stop, debugRequest, () => {
         if (!current()) throw new Error("typed watch stop or session changed");

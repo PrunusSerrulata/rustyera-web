@@ -1,3 +1,5 @@
+import { getActivePinia } from "pinia";
+import { installWebTestControl } from "@/testing/control";
 import { bridge } from "./runtimeStoreTestSupport";
 import { watch } from "vue";
 import { HtmlMeasurementProvider } from "@/platform/htmlMeasurement";
@@ -524,6 +526,107 @@ describe("runtime store debug-presentation-reload", () => {
     });
     expect(store.logs).toEqual([]);
   });
+
+  it.each(["resume", "newer_stop"])(
+    "keeps typed BigInt inspection bound to its exact stop: %s",
+    async (ending) => {
+      vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+      const grant = { grant_id: { high: 1n, low: 1n }, program_generation: 9007199254740993n };
+      const stop = {
+        session_epoch: 2n,
+        pause_epoch: 9007199254740993n,
+        program_generation: grant.program_generation,
+        runtime_revision: 8n,
+      };
+      const wait = { kind: "integer_value", wait_id: 7n, submission_token: { epoch: 2n, id: 7n } };
+      const store = await storeWithInputWait(wait, [debugEvent("grant", { token: grant })]);
+      let nextId = 20;
+      const pending: any[] = [];
+      bridge.pump.mockImplementation(async () => ({ ...emptyBatch(), events: pending.splice(0) }));
+      bridge.submitDebug.mockImplementation(async (message: any) => {
+        const id = nextId++;
+        const command = message.value.command;
+        const response = (value: unknown) => pending.push(debugEvent("response", value, id));
+        if (command.type === "pause") {
+          pending.push(runtimeEvent("state_changed", { phase: "debug_paused", epoch: 2n }));
+          response({ type: "accepted" });
+          pending.push(debugEvent("stopped", { stop, reason: { type: "pause_requested" } }));
+        } else if (command.type === "list_fibers") {
+          response({ type: "fiber_page", value: { stop, fibers: [], next_cursor: null } });
+        } else if (command.type === "list_variables") {
+          response({
+            type: "variable_page",
+            value: {
+              stop,
+              variables: [
+                { name: "RESULT", symbol_key: [1], storage: "global", dimensions: [100] },
+              ],
+              next_cursor: null,
+            },
+          });
+        } else if (command.type === "read_variable") {
+          response({
+            type: "variable_value",
+            value: {
+              reference: command.value,
+              value: { type: "integer", value: -9223372036854775808n },
+            },
+          });
+          if (ending === "newer_stop")
+            pending.push(
+              debugEvent("stopped", {
+                stop: { ...stop, pause_epoch: stop.pause_epoch + 1n },
+                reason: { type: "pause_requested" },
+              }),
+            );
+        } else if (command.type === "continue") {
+          pending.push(runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2n }));
+          response({ type: "accepted" });
+        } else throw new Error(`unexpected debug command ${command.type}`);
+        return id;
+      });
+      let result: any,
+        failure: unknown,
+        done = false;
+      installWebTestControl(getActivePinia()!);
+      const inspecting = window
+        .__RUSTYERA_TEST__!.inspectTyped(["RESULT:0"])
+        .then(
+          (value) => {
+            result = value;
+          },
+          (error) => {
+            failure = error;
+          },
+        )
+        .finally(() => {
+          done = true;
+          delete window.__RUSTYERA_TEST__;
+        });
+      await advanceUntil(() => done, 100);
+      await inspecting;
+      const continues = bridge.submitDebug.mock.calls.filter(
+        ([message]: any[]) => message.value?.command?.type === "continue",
+      );
+      if (ending === "resume") {
+        expect(failure).toBeUndefined();
+        expect(result.values["RESULT:0"]).toMatchObject({
+          present: true,
+          value: { type: "integer", value: "-9223372036854775808" },
+        });
+        expect(() => JSON.stringify(result)).not.toThrow();
+        expect(result.stop.pause_epoch).toBe("9007199254740993");
+        expect(continues).toHaveLength(1);
+        expect(continues[0][0].value.command.stop).toEqual(stop);
+        expect(store.canInteract).toBe(true);
+        expect(store.presentation.inputWait).toEqual(wait);
+      } else {
+        expect(String(failure)).toContain("typed watch stop or session changed");
+        expect(continues).toHaveLength(0);
+        expect(store.debugStop.stop.pause_epoch).toBe(stop.pause_epoch + 1n);
+      }
+    },
+  );
 
   it("continues after the last debugger surface closes without enabling single-step mode", async () => {
     const grant = { grant_id: { high: 1, low: 1 }, program_generation: 1 };
