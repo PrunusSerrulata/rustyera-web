@@ -155,7 +155,10 @@ try {
       (await realpath("/Applications/Safari.app/Contents/MacOS/Safari"))
   )
     throw new Error("Safari capture artifact must identify the installed Safari executable");
-  const firefoxCapabilities = nativeFirefoxCapabilities();
+  // Real window blur cannot be established in a headless session. Other flows keep their default.
+  const firefoxCapabilities = nativeFirefoxCapabilities(process.platform, {
+    headless: !snakeServiceLifecycle,
+  });
   if (snakeServiceOracle && browserName === "firefox")
     firefoxCapabilities["moz:firefoxOptions"] = {
       ...firefoxCapabilities["moz:firefoxOptions"],

@@ -148,8 +148,8 @@ describe("web game test scenario", () => {
     });
   });
 
-  it("uses the native Firefox application path on macOS", () => {
-    const capabilities = nativeFirefoxCapabilities("darwin");
+  it.each([true, false])("uses native Firefox on macOS with headless=%s", (headless) => {
+    const capabilities = nativeFirefoxCapabilities("darwin", { headless });
     expect(capabilities.webSocketUrl).toBeUndefined();
     expect(capabilities.pageLoadStrategy).toBe("none");
     expect(capabilities["wdio:enforceWebDriverClassic"]).toBe(true);
@@ -158,7 +158,7 @@ describe("web game test scenario", () => {
       geckoDriverVersion: "0.37.1",
     });
     expect(capabilities["moz:firefoxOptions"]).toEqual({
-      args: ["-headless"],
+      args: headless ? ["-headless"] : [],
       binary: "/Applications/Firefox.app/Contents/MacOS/firefox",
     });
   });

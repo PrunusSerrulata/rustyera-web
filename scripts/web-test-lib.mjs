@@ -393,8 +393,8 @@ export function injectInteractionAssistFlow(source) {
   return source.replace(anchor, `${anchor}${interactionLoop}`);
 }
 
-export function nativeFirefoxCapabilities(platform = process.platform) {
-  const options = { args: ["-headless"] };
+export function nativeFirefoxCapabilities(platform = process.platform, { headless = true } = {}) {
+  const options = { args: headless ? ["-headless"] : [] };
   if (platform === "darwin") {
     options.binary = "/Applications/Firefox.app/Contents/MacOS/firefox";
   }
