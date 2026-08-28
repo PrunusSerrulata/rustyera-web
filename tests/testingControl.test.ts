@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { inputReplaySummary, isStableObservationCandidate } from "@/testing/control";
+import {
+  configureServiceLifecycle,
+  takeServiceLifecycleDiagnosisExportPath,
+} from "@/testing/serviceLifecycle";
 import { RuntimeEvidence, readTypedWatches } from "@/testing/runtimeEvidence";
 import { blake3 } from "@noble/hashes/blake3.js";
 
@@ -314,5 +318,56 @@ describe("Web test observation boundaries", () => {
     expect(inputReplaySummary(Uint8Array.of(0xff))).toEqual({
       replayParseError: "input replay is not valid UTF-8",
     });
+  });
+});
+
+describe("test-only diagnosis export destination", () => {
+  afterEach(() => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    configureServiceLifecycle({});
+    vi.unstubAllEnvs();
+  });
+
+  it("consumes once and clears unused destinations on the next session configuration", () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    configureServiceLifecycle({ diagnosisExportPath: "/isolated/first/diagnosis.tar.zst" });
+    expect(takeServiceLifecycleDiagnosisExportPath()).toBe("/isolated/first/diagnosis.tar.zst");
+    expect(takeServiceLifecycleDiagnosisExportPath()).toBeUndefined();
+    configureServiceLifecycle({ diagnosisExportPath: "/isolated/old/diagnosis.tar.zst" });
+    configureServiceLifecycle({ projectPaths: ["/isolated/new/project"] });
+    expect(takeServiceLifecycleDiagnosisExportPath()).toBeUndefined();
+  });
+
+  it("rejects non-test configuration and never exposes a path outside test builds", () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    configureServiceLifecycle({ diagnosisExportPath: "/isolated/diagnosis.tar.zst" });
+    vi.stubEnv("VITE_RUSTYERA_TEST", "");
+    expect(() =>
+      configureServiceLifecycle({ diagnosisExportPath: "/isolated/other.tar.zst" }),
+    ).toThrow("requires a test build");
+    expect(takeServiceLifecycleDiagnosisExportPath()).toBeUndefined();
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    expect(takeServiceLifecycleDiagnosisExportPath()).toBeUndefined();
+  });
+
+  it.each([
+    "",
+    "relative.tar.zst",
+    "/",
+    "/isolated/",
+    "/isolated//file",
+    "/isolated/./file",
+    "/isolated/../file",
+    "/isolated/\0file",
+    "/" + "a".repeat(32768),
+    null,
+    4,
+  ])("rejects invalid destination %# without keeping the previous session path", (invalid) => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    configureServiceLifecycle({ diagnosisExportPath: "/isolated/old.tar.zst" });
+    expect(() => configureServiceLifecycle({ diagnosisExportPath: invalid as string })).toThrow(
+      "absolute normalized isolated file path",
+    );
+    expect(takeServiceLifecycleDiagnosisExportPath()).toBeUndefined();
   });
 });

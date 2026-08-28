@@ -23,6 +23,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open, save }));
 vi.mock("@/platform/diagnosis", () => ({ streamDiagnosisArchiveInWorker }));
 
 import { TauriBridge } from "@/platform/tauriBridge";
+import { configureServiceLifecycle } from "@/testing/serviceLifecycle";
 import { sfntFont } from "./fontFixture";
 
 function mockNativeProject(metrics: Record<string, unknown>): void {
@@ -48,6 +49,8 @@ describe("Tauri project restart", () => {
   });
 
   afterEach(() => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    configureServiceLifecycle({});
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     window.__RUSTYERA_TEST_DOWNLOADS__ = undefined;
@@ -364,7 +367,8 @@ describe("Tauri project restart", () => {
 
   it("publishes native export identity only after the actual archive is committed", async () => {
     vi.stubEnv("VITE_RUSTYERA_TEST", "1");
-    vi.stubEnv("VITE_RUSTYERA_TAURI_EXPORT_PATH", "/tmp/identity.tar.zst");
+    vi.stubEnv("VITE_RUSTYERA_TAURI_EXPORT_PATH", "/tmp/fixed-fallback.tar.zst");
+    configureServiceLifecycle({ diagnosisExportPath: "/tmp/identity.tar.zst" });
     const committed = deferred<void>();
     invoke.mockImplementation(async (command, args) => {
       if (command === "inspect_project_file_identity")
@@ -382,8 +386,12 @@ describe("Tauri project restart", () => {
         };
       if (command === "write_export_chunk" && args.complete) await committed.promise;
     });
-    streamDiagnosisArchiveInWorker.mockResolvedValue(20);
-    const pending = new TauriBridge().saveDiagnosis("identity.tar.zst", diagnosisInput());
+    streamDiagnosisArchiveInWorker.mockImplementation(async (_input, write) => {
+      await write(Uint8Array.of(1, 2));
+      return 20;
+    });
+    const bridge = new TauriBridge();
+    const pending = bridge.saveDiagnosis("identity.tar.zst", diagnosisInput());
     await flushMicrotasks();
     expect(window.__RUSTYERA_TEST_DOWNLOADS__).toBeUndefined();
     committed.resolve();
@@ -391,6 +399,54 @@ describe("Tauri project restart", () => {
     expect(window.__RUSTYERA_TEST_DOWNLOADS__?.at(-1)?.projectIdentity?.files[0].byteLength).toBe(
       80,
     );
+    expect(save).not.toHaveBeenCalled();
+    expect(commandCalls("inspect_project_file_identity")[0]?.[1]).toEqual({
+      bytes: { $rustyeraBytes: "Aw==" },
+    });
+    expect(commandCalls("write_export_chunk")).toEqual([
+      [
+        "write_export_chunk",
+        {
+          path: "/tmp/identity.tar.zst",
+          bytes: { $rustyeraBytes: "AQI=" },
+          reset: true,
+          complete: false,
+        },
+      ],
+      [
+        "write_export_chunk",
+        {
+          path: "/tmp/identity.tar.zst",
+          bytes: { $rustyeraBytes: "" },
+          reset: false,
+          complete: true,
+        },
+      ],
+    ]);
+    await expect(bridge.saveDiagnosis("fallback.tar.zst", diagnosisInput())).resolves.toBe(true);
+    expect(commandCalls("write_export_chunk").at(-1)?.[1]).toMatchObject({
+      path: "/tmp/fixed-fallback.tar.zst",
+      complete: true,
+    });
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("consumes a failed diagnosis destination and publishes no false download", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    vi.stubEnv("VITE_RUSTYERA_TAURI_EXPORT_PATH", "");
+    configureServiceLifecycle({ diagnosisExportPath: "/tmp/failed.tar.zst" });
+    invoke.mockRejectedValueOnce(new Error("native identity inspection failed"));
+    const bridge = new TauriBridge();
+    await expect(bridge.saveDiagnosis("failed.tar.zst", diagnosisInput())).rejects.toThrow(
+      "native identity inspection failed",
+    );
+    expect(commandCalls("cancel_export")).toHaveLength(1);
+    expect(commandCalls("write_export_chunk")).toHaveLength(0);
+    expect(streamDiagnosisArchiveInWorker).not.toHaveBeenCalled();
+    expect(window.__RUSTYERA_TEST_DOWNLOADS__).toBeUndefined();
+    save.mockResolvedValue(undefined);
+    await expect(bridge.saveDiagnosis("next.tar.zst", diagnosisInput())).resolves.toBe(false);
+    expect(save).toHaveBeenCalledWith({ defaultPath: "next.tar.zst" });
   });
 
   it("keeps the previous project when opening a replacement fails", async () => {

@@ -429,14 +429,16 @@ try {
       timeout: 20_000,
       interval: 50,
     });
-    // Supply the isolated project path only after creating the native session.
+    // The fresh run directory owns this one-use archive; no case path enters the build.
     await browser.execute(
-      (projectPath) => {
+      (projectPath, diagnosisExportPath) => {
         window.__RUSTYERA_TEST__.configureServiceLifecycle({
           projectPaths: [projectPath],
+          diagnosisExportPath,
         });
       },
       project,
+      path.join(path.dirname(project), "service-oracle-diagnosis.tar.zst"),
     );
   }
 

@@ -1,4 +1,7 @@
-import { nextServiceLifecycleProject } from "@/testing/serviceLifecycle";
+import {
+  nextServiceLifecycleProject,
+  takeServiceLifecycleDiagnosisExportPath,
+} from "@/testing/serviceLifecycle";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { invoke } from "@tauri-apps/api/core";
@@ -563,7 +566,8 @@ export class TauriBridge implements FrontendBridge {
   ): Promise<boolean> {
     const testPath =
       import.meta.env.VITE_RUSTYERA_TEST === "1"
-        ? import.meta.env.VITE_RUSTYERA_TAURI_EXPORT_PATH
+        ? (takeServiceLifecycleDiagnosisExportPath() ??
+          import.meta.env.VITE_RUSTYERA_TAURI_EXPORT_PATH)
         : undefined;
     const path = testPath || (await save({ defaultPath: name }));
     if (!path) return false;

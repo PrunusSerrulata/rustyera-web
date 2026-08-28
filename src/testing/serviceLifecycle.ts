@@ -2,6 +2,7 @@
 export interface ServiceLifecycleConfiguration {
   gate?: { resourceId: string; sha256: string; byteLength: number; url: string };
   projectPaths?: string[];
+  diagnosisExportPath?: string;
 }
 
 type DecodeObservation = {
@@ -17,10 +18,25 @@ let sequence = 0;
 let failure: string | null = null;
 const records: Array<Record<string, unknown>> = [];
 const projectPaths: string[] = [];
+let diagnosisExportPath: string | undefined;
 
 export function configureServiceLifecycle(value: ServiceLifecycleConfiguration): void {
   if (import.meta.env.VITE_RUSTYERA_TEST !== "1")
     throw new Error("service lifecycle configuration requires a test build");
+  // A new session/configuration must never inherit an unused export destination.
+  diagnosisExportPath = undefined;
+  if (
+    value.diagnosisExportPath !== undefined &&
+    (typeof value.diagnosisExportPath !== "string" ||
+      !value.diagnosisExportPath.startsWith("/") ||
+      value.diagnosisExportPath.length > 32768 ||
+      value.diagnosisExportPath.includes("\0") ||
+      value.diagnosisExportPath
+        .split("/")
+        .slice(1)
+        .some((part) => !part || part === "." || part === ".."))
+  )
+    throw new Error("diagnosis export needs an absolute normalized isolated file path");
   if (value.gate) {
     const gate = value.gate;
     const url = new URL(gate.url);
@@ -54,12 +70,21 @@ export function configureServiceLifecycle(value: ServiceLifecycleConfiguration):
       throw new Error("lifecycle picker needs at most two absolute isolated project paths");
     projectPaths.splice(0, projectPaths.length, ...value.projectPaths);
   }
+  diagnosisExportPath = value.diagnosisExportPath;
   configuration = { gate: value.gate ? { ...value.gate } : undefined };
 }
 
 /** The real native open-project command still validates and reads the selected directory. */
 export function nextServiceLifecycleProject(fallback: string): string {
   return import.meta.env.VITE_RUSTYERA_TEST === "1" ? (projectPaths.shift() ?? fallback) : fallback;
+}
+
+/** Only substitutes the save-dialog destination; native archive writes remain unchanged. */
+export function takeServiceLifecycleDiagnosisExportPath(): string | undefined {
+  const path = diagnosisExportPath;
+  // Consume before any asynchronous work, including failed/cancelled exports.
+  diagnosisExportPath = undefined;
+  return import.meta.env.VITE_RUSTYERA_TEST === "1" ? path : undefined;
 }
 
 export function serviceLifecycleSnapshot(): Record<string, unknown> {
