@@ -93,11 +93,17 @@ export async function runServiceOracleCapture(client, config, inputs) {
   const readyMarker = serviceOracleReadyMarker(config);
   const bridge = config.family === "tauri" ? "tauri" : "browser";
   const read = () => client.execute(() => window.__RUSTYERA_TEST__.snapshot());
+  const progress = (stage) =>
+    console.log(JSON.stringify({ type: "service-oracle-stage", case: config.selected.id, stage }));
   const wait = async (predicate, label, timeout = 30000) => {
+    progress(`waiting: ${label}`);
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
       const snapshot = await read();
-      if (predicate(snapshot)) return snapshot;
+      if (predicate(snapshot)) {
+        progress(`observed: ${label}`);
+        return snapshot;
+      }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     throw new Error(`${label} exceeded ${timeout}ms`);
@@ -118,6 +124,7 @@ export async function runServiceOracleCapture(client, config, inputs) {
       `actual profile ${profile.profile} differs from requested ${config.expectedProfile}`,
     );
   // Export while the initial input is stable; an error case may later be unexportable.
+  progress("requesting actual project identity export");
   await client.execute(async () => {
     await window.__RUSTYERA_TEST__.exportDiagnosis();
     return true;
