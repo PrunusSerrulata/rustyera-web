@@ -4,3 +4,6 @@
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
 *.sav binary -eol
+
+# Unified diff blank context lines consist of a required single space.
+tools/tauri-native-webdriver/native-input.patch whitespace=-blank-at-eol
