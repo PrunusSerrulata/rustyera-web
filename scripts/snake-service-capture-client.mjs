@@ -22,6 +22,15 @@ export function captureTerminal(snapshot) {
   return null;
 }
 
+export function serviceOracleExportReady(snapshot) {
+  if (Array.isArray(snapshot?.lastDownload?.projectIdentityFiles)) return true;
+  if (snapshot?.diagnosis?.exporting === false && snapshot.diagnosis.result)
+    throw new Error(
+      `project identity export ended without committed evidence: ${snapshot.diagnosis.result}`,
+    );
+  return false;
+}
+
 const normalReadyMarker = "S04_ORACLE_READY";
 const hazardReadyMarker = "S04_NO_PROGRESS_READY";
 const noProgressCase = "s04-lines-no-progress";
@@ -129,10 +138,7 @@ export async function runServiceOracleCapture(client, config, inputs) {
     await window.__RUSTYERA_TEST__.exportDiagnosis();
     return true;
   });
-  const identified = await wait(
-    (snapshot) => Array.isArray(snapshot.lastDownload?.projectIdentityFiles),
-    "actual project identity export",
-  );
+  const identified = await wait(serviceOracleExportReady, "actual project identity export");
   const byPath = new Map(inputs.fixtureFiles.map((row) => [row.path, row]));
   const submittedPayloads = [];
   const actualPaths = new Set();

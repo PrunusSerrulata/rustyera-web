@@ -50,6 +50,7 @@ import {
   captureTerminal,
   runServiceOracleCapture,
   serviceOracleReady,
+  serviceOracleExportReady,
   serviceOracleReadyMarker,
 } from "../scripts/snake-service-capture-client.mjs";
 
@@ -1508,6 +1509,14 @@ describe("real service capture producer boundaries", () => {
     expect(() =>
       selectCaptureCase({ cases: [fixture.cases[0], fixture.cases[0]] }, "first"),
     ).toThrow("duplicate");
+  });
+
+  it("stops a finished diagnosis without committed identity instead of waiting for the watchdog", () => {
+    expect(serviceOracleExportReady({ diagnosis: { exporting: true, result: "" } })).toBe(false);
+    expect(serviceOracleExportReady({ lastDownload: { projectIdentityFiles: [] } })).toBe(true);
+    expect(() =>
+      serviceOracleExportReady({ diagnosis: { exporting: false, result: "detached buffer" } }),
+    ).toThrow("project identity export ended without committed evidence: detached buffer");
   });
 
   it("never turns missing completion or an actual fault into a completed entry", () => {
