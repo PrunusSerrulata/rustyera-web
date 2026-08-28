@@ -8,7 +8,10 @@ import { fileURLToPath } from "node:url";
 
 import { remote } from "webdriverio";
 
-import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs";
+import {
+  captureCompleteTauriSnapshot,
+  startCompleteSnapshotMonitor,
+} from "./tauri-test-support.mjs";
 import {
   CaptureWriter,
   captureConfiguration,
@@ -142,6 +145,19 @@ const snapshotDirectory = path.join(
 const snapshotPath = path.join(snapshotDirectory, "snapshots.ndjson");
 mkdirSync(snapshotDirectory, { recursive: true });
 console.log(JSON.stringify({ browser: browserName, type: "snapshot-log", path: snapshotPath }));
+
+async function persistCompatibilityEvidence(name, packet) {
+  const directory = path.join(snapshotDirectory, name);
+  mkdirSync(directory);
+  const writer = new CaptureWriter(directory);
+  try {
+    await writer.record(packet);
+    return { ...(await writer.close()), path: writer.path };
+  } catch (error) {
+    await writer.abort(error);
+    throw error;
+  }
+}
 
 try {
   server = await createLoopbackViteServer({
@@ -497,21 +513,14 @@ try {
           },
         });
         // Driver warnings share stdout, so the complete result must have its own file.
-        const writer = new CaptureWriter(snapshotDirectory);
-        try {
-          await writer.record({
-            browser: browserName,
-            type: "snake-service-lifecycle",
-            ...lifecycle,
-          });
-          const artifact = await writer.close();
-          console.log(
-            JSON.stringify({ browser: browserName, type: "snake-service-lifecycle", artifact }),
-          );
-        } catch (error) {
-          await writer.abort(error);
-          throw error;
-        }
+        const artifact = await persistCompatibilityEvidence("lifecycle", {
+          browser: browserName,
+          type: "snake-service-lifecycle",
+          ...lifecycle,
+        });
+        console.log(
+          JSON.stringify({ browser: browserName, type: "snake-service-lifecycle", artifact }),
+        );
       } finally {
         console.log(JSON.stringify({ type: "lifecycle-image-stream", ...gate.status() }));
         await gate.close();
@@ -969,6 +978,26 @@ try {
     );
   }
 } catch (error) {
+  // Preserve a failure between periodic ticks before disposing the native session.
+  try {
+    let snapshot, snapshotError;
+    try {
+      snapshot = await captureCompleteTauriSnapshot(browser);
+    } catch (cause) {
+      snapshotError = String(cause);
+    }
+    const artifact = await persistCompatibilityEvidence("failure", {
+      browser: browserName,
+      stage: compatibilityStage,
+      error: String(error),
+      lifecycleEvidence: error?.lifecycleEvidence,
+      snapshot,
+      snapshotError,
+    });
+    console.error(JSON.stringify({ type: "browser-compat-failure-artifact", artifact }));
+  } catch (cause) {
+    console.error(JSON.stringify({ type: "failure-artifact-error", error: String(cause) }));
+  }
   console.error(
     JSON.stringify({
       browser: browserName,

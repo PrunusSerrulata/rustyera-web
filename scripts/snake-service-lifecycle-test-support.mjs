@@ -64,21 +64,39 @@ async function installObservation(browser) {
     const observed = { pointer: null, blurCount: 0, events: [] };
     const pointer = (event) => {
       if (event.pointerType === "touch") return;
-      observed.pointer = { x: event.clientX, y: event.clientY };
-      observed.events.push({ type: event.type, ...observed.pointer });
+      const point = { x: event.clientX, y: event.clientY };
+      if (event.type !== "pointerout" && event.type !== "pointercancel") observed.pointer = point;
+      observed.events.push({
+        type: event.type,
+        ...point,
+        trusted: event.isTrusted,
+        focused: document.hasFocus(),
+      });
       if (observed.events.length > 32) observed.events.shift();
     };
     const blur = (event) => {
       if (event.isTrusted) observed.blurCount += 1;
+      observed.events.push({
+        type: event.type,
+        trusted: event.isTrusted,
+        focused: document.hasFocus(),
+      });
+      if (observed.events.length > 32) observed.events.shift();
     };
-    for (const type of ["pointermove", "pointerdown", "pointerup"])
+    for (const type of ["pointermove", "pointerdown", "pointerup", "pointerout", "pointercancel"])
       window.addEventListener(type, pointer, true);
     window.addEventListener("blur", blur);
     // This observer records actual DOM input only; it never dispatches events or changes runtime state.
     window.__RUSTYERA_SERVICE_TRACE__ = {
       observed,
       dispose() {
-        for (const type of ["pointermove", "pointerdown", "pointerup"])
+        for (const type of [
+          "pointermove",
+          "pointerdown",
+          "pointerup",
+          "pointerout",
+          "pointercancel",
+        ])
           window.removeEventListener(type, pointer, true);
         window.removeEventListener("blur", blur);
       },
@@ -227,8 +245,19 @@ export async function runSnakeServiceLifecycleClient(browser, bridgeKind, option
       );
       if (index === 5) {
         if (!blocked.length) {
-          if (!state.output.includes("SNAKE_LIFECYCLE_POINTER_5=0/0/"))
-            throw new Error("real blur did not clear the pointer before a fresh pointer event");
+          if (!state.output.includes("SNAKE_LIFECYCLE_POINTER_5=0/0/")) {
+            const error = new Error(
+              "real blur did not clear the pointer before a fresh pointer event",
+            );
+            error.lifecycleEvidence = {
+              pointerOutput: state.output.filter((line) =>
+                line.startsWith("SNAKE_LIFECYCLE_POINTER_5="),
+              ),
+              observation: await browser.execute(() => window.__RUSTYERA_SERVICE_TRACE__.observed),
+              samples,
+            };
+            throw error;
+          }
           samples.push({
             index,
             observed: "0/0/",
