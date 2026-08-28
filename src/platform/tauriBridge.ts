@@ -581,6 +581,11 @@ export class TauriBridge implements FrontendBridge {
               }),
             )
           : undefined;
+      // The worker takes ownership of these buffers. Retain only the bounded test evidence
+      // before transfer, and publish it only after the native archive commit succeeds.
+      const downloadEvidence = projectIdentity
+        ? { projectMagic: input.projectFile.slice(0, 8), inputReplay: input.inputReplay.slice() }
+        : undefined;
       const totalBytes = await streamDiagnosisArchiveInWorker(
         input,
         async (chunk) => {
@@ -605,9 +610,8 @@ export class TauriBridge implements FrontendBridge {
           name,
           bytes: new Uint8Array(),
           size: totalBytes,
-          projectMagic: input.projectFile.slice(0, 8),
+          ...downloadEvidence,
           projectIdentity,
-          inputReplay: new Uint8Array(input.inputReplay),
         });
       reportProgress?.({ completed: totalBytes, total: totalBytes });
       return true;

@@ -386,7 +386,11 @@ describe("Tauri project restart", () => {
         };
       if (command === "write_export_chunk" && args.complete) await committed.promise;
     });
-    streamDiagnosisArchiveInWorker.mockImplementation(async (_input, write) => {
+    streamDiagnosisArchiveInWorker.mockImplementation(async (input, write) => {
+      // Match real Worker ownership transfer, which invalidates the caller's views.
+      structuredClone(input, {
+        transfer: [input.snapshot.buffer, input.projectFile.buffer, input.inputReplay.buffer],
+      });
       await write(Uint8Array.of(1, 2));
       return 20;
     });
