@@ -42,15 +42,7 @@ export async function runSnakeDataClient(activeBrowser, expectedBridge) {
   );
   if (initial.bridgeKind !== expectedBridge)
     throw new Error(`snake data fixture requires ${expectedBridge}, found ${initial.bridgeKind}`);
-  const input = await activeBrowser.$(".prompt-bar input");
-  await input.waitForDisplayed({ timeout: 5_000 });
-  await input.waitForEnabled({ timeout: 5_000 });
-  await input.setValue("1");
-  if (activeBrowser.capabilities?.browserName?.toLowerCase() === "safari") {
-    // SafariDriver can acknowledge a pointer click without submitting the form. setValue leaves
-    // the real prompt focused, so use its supported native Enter path, not a synthetic event.
-    await activeBrowser.keys("Enter");
-  } else await (await activeBrowser.$(".prompt-bar button[type=submit]")).click();
+  await submitSnakePrompt(activeBrowser, "1");
   let final;
   await activeBrowser.waitUntil(
     async () => {
@@ -66,4 +58,16 @@ export async function runSnakeDataClient(activeBrowser, expectedBridge) {
     { timeout: 60_000, interval: 100, timeoutMsg: "snake data pipeline did not complete" },
   );
   return assertSnakeDataState(final, expectedBridge);
+}
+
+export async function submitSnakePrompt(activeBrowser, value) {
+  const input = await activeBrowser.$(".prompt-bar input");
+  await input.waitForDisplayed({ timeout: 5_000 });
+  await input.waitForEnabled({ timeout: 5_000 });
+  await input.setValue(value);
+  if (activeBrowser.capabilities?.browserName?.toLowerCase() === "safari") {
+    // SafariDriver can acknowledge a pointer click without submitting the form. setValue leaves
+    // the real prompt focused, so use its supported native Enter path, not a synthetic event.
+    await activeBrowser.keys("Enter");
+  } else await (await activeBrowser.$(".prompt-bar button[type=submit]")).click();
 }

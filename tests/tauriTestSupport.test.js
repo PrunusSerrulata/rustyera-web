@@ -8,6 +8,7 @@ import {
 } from "../scripts/snake-service-lifecycle-test-support.mjs";
 import {
   assertSnakeServiceState,
+  runSnakeServicesClient,
   SNAKE_SERVICE_MARKERS,
 } from "../scripts/snake-services-test-support.mjs";
 /* global document, structuredClone, window */
@@ -138,6 +139,61 @@ describe("snake data client test support", () => {
       expect(browser.execute).toHaveBeenCalledTimes(3);
     },
   );
+});
+
+describe("snake service client prompt submission", () => {
+  it.each(["firefox", "safari", "wry"])("uses real prompt actions on %s", async (browserName) => {
+    const states = [
+      {
+        canInteract: true,
+        wait: { kind: "integer_value", wait_id: "1" },
+        output: ["SNAKE_SERVICES_START"],
+      },
+      {
+        canInteract: true,
+        wait: { kind: "integer_value", wait_id: "2" },
+        output: ["SNAKE_POINTER_READY"],
+      },
+      {
+        canInteract: true,
+        wait: { kind: "integer_value", wait_id: "3" },
+        output: [...SNAKE_SERVICE_MARKERS, "SNAKE_POINTER=1/-2/41", "SNAKE_SERVICES_READY"],
+      },
+    ].map((state) => ({ ...state, bridgeKind: "browser" }));
+    const input = { waitForDisplayed: vi.fn(), waitForEnabled: vi.fn(), setValue: vi.fn() };
+    const submit = { click: vi.fn() };
+    const target = {
+      waitForDisplayed: vi.fn(),
+      waitForEnabled: vi.fn(),
+      moveTo: vi.fn(),
+      click: vi.fn(),
+    };
+    const browser = {
+      capabilities: { browserName },
+      keys: vi.fn(),
+      execute: vi.fn(async () => states.shift()),
+      waitUntil: async (predicate) => {
+        expect(await predicate()).toBe(true);
+      },
+      $: async (selector) =>
+        ({
+          ".prompt-bar input": input,
+          ".prompt-bar button[type=submit]": submit,
+          "button=SNAKE_POINTER_TARGET": target,
+        })[selector],
+    };
+    await runSnakeServicesClient(browser, "browser");
+    expect(input.setValue).toHaveBeenCalledWith("1");
+    expect(target.moveTo).toHaveBeenCalledOnce();
+    expect(target.click).toHaveBeenCalledOnce();
+    if (browserName === "safari") {
+      expect(browser.keys).toHaveBeenCalledWith("Enter");
+      expect(submit.click).not.toHaveBeenCalled();
+    } else {
+      expect(submit.click).toHaveBeenCalledOnce();
+      expect(browser.keys).not.toHaveBeenCalled();
+    }
+  });
 });
 
 describe("Tauri end-to-end test support", () => {

@@ -1,5 +1,5 @@
 /* global window */
-import { runSnakeDataClient } from "./snake-data-test-support.mjs";
+import { runSnakeDataClient, submitSnakePrompt } from "./snake-data-test-support.mjs";
 
 export const SNAKE_SERVICE_MARKERS = Object.freeze([
   "SNAKE_HTML=0/0/0/1/1/1/1",
@@ -50,11 +50,7 @@ async function waitStage(browser, bridgeKind, marker, previousWait) {
 // The wrapper owns the independent complete five-second DOM/runtime monitor.
 export async function runSnakeServicesClient(browser, bridgeKind) {
   const initial = await waitStage(browser, bridgeKind, "SNAKE_SERVICES_START");
-  const input = await browser.$(".prompt-bar input");
-  await input.waitForDisplayed({ timeout: 5_000 });
-  await input.waitForEnabled({ timeout: 5_000 });
-  await input.setValue("1");
-  await (await browser.$(".prompt-bar button[type=submit]")).click();
+  await submitSnakePrompt(browser, "1");
   const pointer = await waitStage(browser, bridgeKind, "SNAKE_POINTER_READY", initial.wait.wait_id);
   const target = await browser.$("button=SNAKE_POINTER_TARGET");
   await target.waitForDisplayed({ timeout: 5_000 });
