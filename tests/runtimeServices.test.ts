@@ -964,6 +964,119 @@ describe("realized viewport identity", () => {
 });
 
 describe("late viewport acknowledgements", () => {
+  it("invalidates candidates on submission failure without clearing a newer session", async () => {
+    let messageId = 0;
+    const send = vi.fn(async () => ++messageId);
+    const viewport = new RuntimeViewportState(send);
+    const measurement = {
+      width: 300,
+      height: 200,
+      lineColumns: 30,
+      chromeWidth: 0,
+      chromeHeight: 0,
+    };
+    const expected = {
+      presentationRevision: 1,
+      environmentRevision: 1,
+      projectionSpaceRevision: 1,
+    };
+    await viewport.observe(measurement, true, 1, "");
+    const olderSubmission = deferred<number>();
+    send.mockReturnValueOnce(olderSubmission.promise);
+    const older = viewport.observe({ ...measurement, width: 301 }, true, 1, "");
+    const failure = new Error("submission failed after transport delivery");
+    send.mockRejectedValueOnce(failure);
+    await expect(viewport.observe({ ...measurement, width: 302 }, true, 1, "")).rejects.toBe(
+      failure,
+    );
+    olderSubmission.resolve(42);
+    await older;
+    viewport.reject("unrelated");
+    expect(viewport.matches(expected, 1, measurement)).toBe(false);
+    expect(
+      viewport.matches({ ...expected, environmentRevision: 2, projectionSpaceRevision: 2 }, 1, {
+        ...measurement,
+        width: 301,
+      }),
+    ).toBe(false);
+    await viewport.observe(measurement, true, 1, "");
+    expect(
+      viewport.matches(
+        { ...expected, environmentRevision: 4, projectionSpaceRevision: 4 },
+        1,
+        measurement,
+      ),
+    ).toBe(true);
+    let rejectSend!: (error: Error) => void;
+    send.mockReturnValueOnce(
+      new Promise<number>((_resolve, reject) => {
+        rejectSend = reject;
+      }),
+    );
+    const pending = viewport.observe({ ...measurement, width: 301 }, true, 1, "");
+    viewport.reset();
+    await viewport.observe(measurement, true, 1, "");
+    rejectSend(failure);
+    await expect(pending).rejects.toBe(failure);
+    expect(viewport.matches(expected, 1, measurement)).toBe(true);
+  });
+
+  it.each(["before", "after"])(
+    "restores environment 5 only when candidate 6 is rejected %s submission returns",
+    async (rejectionOrder) => {
+      let messageId = 32;
+      const send = vi.fn(async () => ++messageId);
+      const viewport = new RuntimeViewportState(send);
+      const measurement = {
+        width: 325,
+        height: 430,
+        lineColumns: 40,
+        chromeWidth: 0,
+        chromeHeight: 0,
+      };
+      for (let revision = 1; revision <= 5; revision += 1)
+        await viewport.observe(
+          { ...measurement, height: measurement.height + 5 - revision },
+          true,
+          45,
+          "",
+          "font-one",
+        );
+      const expected = {
+        presentationRevision: 50,
+        environmentRevision: 5,
+        projectionSpaceRevision: 5,
+      };
+      expect(viewport.matches(expected, 50, measurement, "font-one")).toBe(true);
+      const gate = deferred<number>();
+      send.mockReturnValueOnce(gate.promise);
+      const pending = viewport.observe({ ...measurement, width: 327 }, true, 45, "2", "font-one");
+      // Input advances canonical presentation while this geometry observation is in flight.
+      expect(viewport.matches(expected, 50, measurement, "font-one")).toBe(false);
+      if (rejectionOrder === "before") {
+        viewport.reject("39");
+        expect(viewport.matches(expected, 50, measurement, "font-one")).toBe(false);
+      }
+      gate.resolve(39);
+      await pending;
+      if (rejectionOrder === "after") {
+        // Merely submitting the newer candidate cannot authorize an older query context.
+        expect(viewport.matches(expected, 50, measurement, "font-one")).toBe(false);
+        viewport.reject("39");
+      }
+      expect(viewport.matches(expected, 50, measurement, "font-one")).toBe(true);
+      expect(viewport.matches(expected, 50, { ...measurement, width: 327 }, "font-one")).toBe(
+        false,
+      );
+      expect(viewport.matches(expected, 50, measurement, "font-two")).toBe(false);
+      expect(
+        viewport.matches({ ...expected, environmentRevision: 6 }, 50, measurement, "font-one"),
+      ).toBe(false);
+      await viewport.observe(measurement, true, 50, "", "font-one");
+      expect(send).toHaveBeenCalledTimes(6);
+    },
+  );
+
   it("cannot confirm an observation rejected before its submission acknowledgement", async () => {
     const gate = deferred<number>();
     const viewport = new RuntimeViewportState(() => gate.promise);

@@ -8,23 +8,27 @@ import {
 } from "@/core/runtimeServiceProtocol";
 import type { GameViewportMeasurement } from "@/platform/viewportMeasurement";
 
+interface ViewportObservation {
+  environmentRevision: number;
+  projectionSpaceRevision: number;
+  width: number;
+  height: number;
+  lineColumns: number;
+  textBox: string;
+  styleIdentity: string;
+  messageId: string;
+}
+
 export class RuntimeViewportState {
   readonly measurement = ref<GameViewportMeasurement>();
   readonly pendingMessages = new Set<string>();
   private environmentRevision = 1;
+  private invalidatedThroughRevision = 0;
   private generation = 0;
-  private latestSubmittedRevision = 0;
   private readonly rejectedMessages = new Set<string>();
-  private observation?: {
-    environmentRevision: number;
-    projectionSpaceRevision: number;
-    width: number;
-    height: number;
-    lineColumns: number;
-    textBox: string;
-    styleIdentity: string;
-    messageId: string;
-  };
+  private readonly submittedObservations = new Map<number, ViewportObservation>();
+  private readonly pendingRevisions = new Set<number>();
+  private observation?: ViewportObservation;
 
   constructor(private readonly send: (message: RuntimeMessage) => Promise<number | bigint>) {}
 
@@ -52,7 +56,7 @@ export class RuntimeViewportState {
       return;
     const generation = this.generation;
     const revision = this.environmentRevision++;
-    this.latestSubmittedRevision = revision;
+    this.pendingRevisions.add(revision);
     this.observation = undefined;
     const messageId = await this.send({
       type: "projection_observation",
@@ -72,10 +76,22 @@ export class RuntimeViewportState {
           origin_y: 0,
         },
       },
+    }).catch((error: unknown) => {
+      if (generation === this.generation) {
+        this.pendingRevisions.delete(revision);
+        // A transport failure does not prove that core rejected the observation.
+        this.invalidatedThroughRevision = this.environmentRevision - 1;
+        this.submittedObservations.clear();
+        this.observation = undefined;
+      }
+      throw error;
     });
-    if (generation !== this.generation || this.rejectedMessages.delete(String(messageId))) return;
-    if (revision === this.latestSubmittedRevision) {
-      this.observation = {
+    if (generation !== this.generation) return;
+    this.pendingRevisions.delete(revision);
+    if (revision <= this.invalidatedThroughRevision) return;
+    const rejected = this.rejectedMessages.delete(String(messageId));
+    if (!rejected) {
+      this.submittedObservations.set(revision, {
         environmentRevision: revision,
         projectionSpaceRevision: revision,
         width: measurement.width,
@@ -84,10 +100,29 @@ export class RuntimeViewportState {
         textBox,
         styleIdentity,
         messageId: String(messageId),
-      };
+      });
+      if (this.submittedObservations.size > 256)
+        this.submittedObservations.delete(Math.min(...this.submittedObservations.keys()));
     }
+    this.selectObservation();
+    if (rejected) return;
     if (this.pendingMessages.size >= 256) this.pendingMessages.clear();
     this.pendingMessages.add(String(messageId));
+  }
+
+  private selectObservation(): void {
+    let latest: ViewportObservation | undefined;
+    for (const candidate of this.submittedObservations.values())
+      if (!latest || candidate.environmentRevision > latest.environmentRevision) latest = candidate;
+    // A rejected candidate never became core's environment. Keep its predecessor,
+    // but do not expose it while any newer submission is still unresolved.
+    this.observation = latest;
+    if (latest)
+      for (const revision of this.pendingRevisions)
+        if (revision > latest.environmentRevision) {
+          this.observation = undefined;
+          break;
+        }
   }
 
   matches(
@@ -113,7 +148,9 @@ export class RuntimeViewportState {
     if (this.rejectedMessages.size >= 256)
       this.rejectedMessages.delete(this.rejectedMessages.values().next().value!);
     this.rejectedMessages.add(messageId);
-    if (this.observation?.messageId === messageId) this.observation = undefined;
+    for (const [revision, candidate] of this.submittedObservations)
+      if (candidate.messageId === messageId) this.submittedObservations.delete(revision);
+    this.selectObservation();
   }
 
   chrome(measurement = this.measurement.value): { width: number; height: number } {
@@ -143,7 +180,9 @@ export class RuntimeViewportState {
     this.observation = undefined;
     this.pendingMessages.clear();
     this.rejectedMessages.clear();
+    this.submittedObservations.clear();
+    this.pendingRevisions.clear();
     this.environmentRevision = 1;
-    this.latestSubmittedRevision = 0;
+    this.invalidatedThroughRevision = 0;
   }
 }
