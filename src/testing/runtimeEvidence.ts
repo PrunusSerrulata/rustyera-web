@@ -18,6 +18,11 @@ export class RuntimeEvidence {
       direction: "receive",
       ...event,
       message: this.prepareMessage(event.message),
+      // Both real bridge hosts separate exported chunk bytes from the JSON message.
+      dataBytes:
+        event.message.type === "state_export_chunk"
+          ? this.prepareBulkBytes(event.dataBytes)
+          : event.dataBytes,
       sessionGeneration,
     });
   }
@@ -29,8 +34,12 @@ export class RuntimeEvidence {
       return message;
     const entry = message as { type?: string; value?: { data?: unknown } };
     if (entry.type !== "state_import_chunk" && entry.type !== "state_export_chunk") return message;
-    const data = entry.value?.data;
-    if (!(data instanceof Uint8Array) && !Array.isArray(data)) return message;
+    return { ...entry, value: { ...entry.value, data: this.prepareBulkBytes(entry.value?.data) } };
+  }
+
+  private prepareBulkBytes(data: unknown): unknown {
+    if (!this.enabled || this.failure !== null) return data;
+    if (!(data instanceof Uint8Array) && !Array.isArray(data)) return data;
     try {
       if (data.length > 16 * 1024 * 1024)
         throw new Error("bulk observation exceeds its byte limit");
@@ -46,15 +55,9 @@ export class RuntimeEvidence {
               return byte;
             });
       return {
-        ...entry,
-        value: {
-          ...entry.value,
-          data: {
-            observation: "bulk_bytes_digest",
-            byteLength: bytes.byteLength,
-            blake3: [...blake3(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
-          },
-        },
+        observation: "bulk_bytes_digest",
+        byteLength: bytes.byteLength,
+        blake3: [...blake3(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
       };
     } catch {
       this.failure = "unserializable_observation";

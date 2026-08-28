@@ -62,10 +62,21 @@ describe("runtime evidence observations", () => {
         value: { transfer_id: 7n, offset: 0, data: transferred },
       },
     });
+    evidence.receive({
+      channel: "runtime",
+      epoch: 2n,
+      sequence: 5n,
+      messageId: 10n,
+      message: {
+        type: "state_export_chunk",
+        value: { transfer_id: 7n, offset: 0, data: [] },
+      },
+      dataBytes: transferred,
+    });
     const snapshot = evidence.snapshot() as any;
     expect(snapshot.overflow).toBe(false);
     for (const row of snapshot.records)
-      expect(row.message.value.data).toEqual({
+      expect(row.dataBytes ?? row.message.value.data).toEqual({
         observation: "bulk_bytes_digest",
         byteLength: transferred.byteLength,
         blake3: digest,
