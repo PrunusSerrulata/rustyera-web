@@ -209,3 +209,7 @@ and complete observable state needed for exact comparison and failure reporting.
 
 Reference comparison checks normalized output added since the prior stable wait, wait kind, and
 watches. DOM and frontend-only assertions are never projected onto Emuera.
+
+To use a previously installed Chromium without downloading a browser, add
+`--chromium-executable /absolute/path/to/chromium` to `npm run test:game -- run ...`
+(or `serve`). The default browser selection is unchanged when the option is absent.

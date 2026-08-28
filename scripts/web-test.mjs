@@ -237,7 +237,11 @@ async function execute(args) {
       server: { watch: { ignored: ["**/.rustyera/**"] } },
     });
     const port = viteServerPort(server);
-    browser = await chromium.launch({ headless: true });
+    const executablePath = args.chromium_executable
+      ? path.resolve(args.chromium_executable)
+      : undefined;
+    if (executablePath) await access(executablePath);
+    browser = await chromium.launch({ headless: true, executablePath });
     const context = await browser.newContext({
       locale: "zh-CN",
       viewport: scenario.viewport,
