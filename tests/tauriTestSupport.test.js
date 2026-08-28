@@ -19,6 +19,7 @@ import {
   assertBlurPointer,
   hoverLifecycleTarget,
   installPointerObservation,
+  setLifecyclePrompt,
   lifecycleViewport,
 } from "../scripts/snake-service-lifecycle-test-support.mjs";
 import {
@@ -313,6 +314,35 @@ describe("snake data client test support", () => {
 });
 
 describe("snake service client prompt submission", () => {
+  it("observes actual native prompt text and focus before moving the pointer", async () => {
+    document.body.innerHTML = '<form class="prompt-bar"><input></form>';
+    const element = document.querySelector("input");
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const input = { waitForEnabled: vi.fn(), setValue: vi.fn() };
+    const browser = {
+      execute: async (read) => read(),
+      waitUntil: async (ready) => {
+        expect(await ready()).toBe(false);
+        element.value = "2";
+        element.focus();
+        expect(await ready()).toBe(true);
+      },
+    };
+    try {
+      await setLifecyclePrompt(browser, input, "2");
+      expect(input.setValue).toHaveBeenCalledExactlyOnceWith("2");
+      browser.waitUntil = async (ready, options) => {
+        element.value = "";
+        expect(await ready()).toBe(false);
+        throw new Error(options.timeoutMsg);
+      };
+      await expect(setLifecyclePrompt(browser, input, "2")).rejects.toThrow('actual={"value":""');
+    } finally {
+      focused.mockRestore();
+      document.body.innerHTML = "";
+    }
+  });
+
   it.each([
     ["firefox", "41"],
     ["safari", "41"],

@@ -398,6 +398,41 @@ export async function hoverLifecycleTarget(browser) {
   await target.moveTo();
 }
 
+export async function setLifecyclePrompt(browser, input, value) {
+  await input.waitForEnabled({ timeout: 3_000 });
+  await input.setValue(value);
+  let observed;
+  await browser
+    .waitUntil(
+      async () => {
+        observed = await browser.execute(() => {
+          const input = document.querySelector(".prompt-bar input");
+          return {
+            value: input?.value,
+            enabled: input && !input.disabled,
+            focused: document.activeElement === input,
+            documentFocused: document.hasFocus(),
+          };
+        });
+        return (
+          observed?.enabled &&
+          observed.focused &&
+          observed.documentFocused &&
+          observed.value === value
+        );
+      },
+      {
+        timeout: 3_000,
+        interval: 50,
+        timeoutMsg: `native lifecycle prompt did not accept ${JSON.stringify(value)}`,
+      },
+    )
+    .catch((error) => {
+      error.message += `; actual=${JSON.stringify(observed)}`;
+      throw error;
+    });
+}
+
 /** Called inside the existing real-host runner and its uninterrupted five-second full snapshot monitor. */
 export async function runSnakeServiceLifecycleClient(browser, bridgeKind, options) {
   const initial = await waitStage(browser, bridgeKind, "SNAKE_LIFECYCLE_START");
@@ -422,7 +457,7 @@ export async function runSnakeServiceLifecycleClient(browser, bridgeKind, option
   await installPointerObservation(browser);
   try {
     for (let index = 0; index < 6; index += 1) {
-      await input.setValue(String(index));
+      await setLifecyclePrompt(browser, input, String(index));
       if (index === 0) await hoverLifecycleTarget(browser);
       else if (index === 1) await moveInside(browser);
       else if (index === 2) await (await browser.$("#menu-file")).moveTo();
@@ -462,7 +497,7 @@ export async function runSnakeServiceLifecycleClient(browser, bridgeKind, option
           async () => (await lifecycleViewport(browser)).scrollTop < before.scrollTop,
           { timeout: 3_000, interval: 100, timeoutMsg: "PageUp did not scroll the real viewport" },
         );
-        await input.setValue(String(index));
+        await setLifecyclePrompt(browser, input, String(index));
       }
       const beforeQuery = await snapshot(browser);
       const evidenceStart = {
