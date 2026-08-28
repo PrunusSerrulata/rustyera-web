@@ -177,6 +177,7 @@ function playwrightLifecycleAdapter(browser, context, page) {
     setValue: (value) => target.fill(value),
     click: () => target.click(),
     moveTo: () => target.hover(),
+    scrollIntoView: () => target.scrollIntoViewIfNeeded(),
     waitForDisplayed: ({ timeout = 5000 } = {}) => target.waitFor({ state: "visible", timeout }),
     $: async (selector) => element(locator(target, selector)),
   });

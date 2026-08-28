@@ -2,7 +2,10 @@ import {
   observePendingCanvas,
   assertCancelledLifecycle,
 } from "../scripts/snake-service-lifecycle-races.mjs";
-import { assertLifecyclePointer } from "../scripts/snake-service-lifecycle-test-support.mjs";
+import {
+  assertLifecyclePointer,
+  hoverLifecycleTarget,
+} from "../scripts/snake-service-lifecycle-test-support.mjs";
 import {
   assertSnakeServiceState,
   SNAKE_SERVICE_MARKERS,
@@ -391,6 +394,18 @@ describe("snake service client assertions", () => {
 });
 
 describe("snake service lifecycle assertions", () => {
+  it("reveals a clipped target before moving the real pointer after resize", async () => {
+    let visible = false;
+    const target = {
+      async scrollIntoView() {
+        visible = true;
+      },
+      async moveTo() {
+        if (!visible) throw new Error("pointer would hit the input overlay");
+      },
+    };
+    await expect(hoverLifecycleTarget({ $: async () => target })).resolves.toBeUndefined();
+  });
   const geometry = {
     pointer: { x: 30, y: 50 },
     viewport: { left: 10, top: 20, clientLeft: 0, clientTop: 0, width: 300, height: 200 },

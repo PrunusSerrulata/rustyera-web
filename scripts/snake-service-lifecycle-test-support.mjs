@@ -131,6 +131,14 @@ async function moveInside(browser) {
   ]);
 }
 
+export async function hoverLifecycleTarget(browser) {
+  const target = await browser.$(TARGET);
+  // WebDriver can move to a clipped element's center without reporting an out-of-bounds error.
+  // Scroll the nested game viewport explicitly before requesting the real pointer move.
+  await target.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+  await target.moveTo();
+}
+
 /** Called inside the existing real-host runner and its uninterrupted five-second full snapshot monitor. */
 export async function runSnakeServiceLifecycleClient(browser, bridgeKind, options) {
   const initial = await waitStage(browser, bridgeKind, "SNAKE_LIFECYCLE_START");
@@ -157,7 +165,7 @@ export async function runSnakeServiceLifecycleClient(browser, bridgeKind, option
   try {
     for (let index = 0; index < 6; index += 1) {
       await input.setValue(String(index));
-      if (index === 0) await (await browser.$(TARGET)).moveTo();
+      if (index === 0) await hoverLifecycleTarget(browser);
       else if (index === 1) await moveInside(browser);
       else if (index === 2) await (await browser.$("#menu-file")).moveTo();
       else if (index === 3) {
@@ -180,9 +188,9 @@ export async function runSnakeServiceLifecycleClient(browser, bridgeKind, option
             timeoutMsg: "real window resize did not alter the game viewport",
           },
         );
-        await (await browser.$(TARGET)).moveTo();
+        await hoverLifecycleTarget(browser);
       } else if (index === 5) {
-        await (await browser.$(TARGET)).moveTo();
+        await hoverLifecycleTarget(browser);
         try {
           await observeRealWindowBlur(browser);
         } catch (error) {
