@@ -391,6 +391,10 @@ try {
     taskDeadline,
     () => deadlineDiagnostic(),
   );
+  // The standalone service hard-codes ten HTTP retries. Once connected, retrying a
+  // rejected native action hides its real error and defeats the five-second watchdog.
+  browser.options.connectionRetryCount = 0;
+  browser.options.connectionRetryTimeout = 5_000;
   globalThis.browser = browser;
   globalThis.$ = browser.$.bind(browser);
   globalThis.$$ = browser.$$.bind(browser);
