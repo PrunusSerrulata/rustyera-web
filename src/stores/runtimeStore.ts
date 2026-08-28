@@ -1421,6 +1421,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     serviceRequests.enterEpoch(epoch);
     try {
       const lease = serviceRequests.begin(request.request_id, epoch);
+      let preparedProjectionContext: ProjectionQueryContext | undefined;
       const prepareProjection = async (
         expected: ProjectionQueryContext,
         lease: RuntimeServiceLease,
@@ -1445,6 +1446,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
             "stale_projection",
             "viewport observation does not match the query",
           );
+        preparedProjectionContext = expected;
         return { ...presentation, resources: presentation.resources };
       };
       await handleRuntimeService(request, correlationId, {
@@ -1512,7 +1514,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
         projection: {
           prepare: prepareProjection,
           matches: (expected) => active() && projectionMatches(expected),
-          pointer: () => pointerObservation.sample(epoch),
+          pointer: () => {
+            if (preparedProjectionContext)
+              testEvidence.pointerSample({
+                requestId: request.request_id,
+                epoch,
+                sessionGeneration: runtimeSessionObservationGeneration,
+                context: preparedProjectionContext,
+              });
+            return pointerObservation.sample(epoch);
+          },
           canvas: (query, projected, lease) =>
             canvasPixels.sample(query, projected.resources, resources, lease, () => {
               const current = currentPresentation().resources.canvases?.find((canvas: any) =>

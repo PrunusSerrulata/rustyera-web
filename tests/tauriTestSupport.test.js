@@ -1,3 +1,4 @@
+/* global console */
 import {
   nativeWebdriverOption,
   validateNativeWebdriverSource,
@@ -14,7 +15,11 @@ import {
 } from "../scripts/snake-service-lifecycle-races.mjs";
 import {
   assertLifecyclePointer,
+  assertSampledLifecyclePointer,
+  assertBlurPointer,
   hoverLifecycleTarget,
+  installPointerObservation,
+  lifecycleViewport,
 } from "../scripts/snake-service-lifecycle-test-support.mjs";
 import {
   assertSnakeServiceState,
@@ -28,6 +33,7 @@ import { Buffer } from "node:buffer";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { gunzipSync } from "node:zlib";
+import { Encoder } from "cbor-x";
 import {
   CaptureWriter,
   hashFile,
@@ -307,58 +313,111 @@ describe("snake data client test support", () => {
 });
 
 describe("snake service client prompt submission", () => {
-  it.each(["firefox", "safari", "wry"])("uses real prompt actions on %s", async (browserName) => {
-    const states = [
-      {
-        canInteract: true,
-        wait: { kind: "integer_value", wait_id: "1" },
-        output: ["SNAKE_SERVICES_START"],
-      },
-      {
-        canInteract: true,
-        wait: { kind: "integer_value", wait_id: "2" },
-        output: ["SNAKE_POINTER_READY"],
-      },
-      {
-        canInteract: true,
-        wait: { kind: "integer_value", wait_id: "3" },
-        output: [...SNAKE_SERVICE_MARKERS, "SNAKE_POINTER=1/-2/41", "SNAKE_SERVICES_READY"],
-      },
-    ].map((state) => ({ ...state, bridgeKind: "browser" }));
-    const input = { waitForDisplayed: vi.fn(), waitForEnabled: vi.fn(), setValue: vi.fn() };
-    const submit = { click: vi.fn() };
-    const target = {
-      waitForDisplayed: vi.fn(),
-      waitForEnabled: vi.fn(),
-      moveTo: vi.fn(),
-      click: vi.fn(),
-    };
-    const browser = {
-      capabilities: { browserName },
-      keys: vi.fn(),
-      execute: vi.fn(async () => states.shift()),
-      waitUntil: async (predicate) => {
-        expect(await predicate()).toBe(true);
-      },
-      $: async (selector) =>
-        ({
-          ".prompt-bar input": input,
-          ".prompt-bar button[type=submit]": submit,
-          "button=SNAKE_POINTER_TARGET": target,
-        })[selector],
-    };
-    await runSnakeServicesClient(browser, "browser");
-    expect(input.setValue).toHaveBeenCalledWith("1");
-    expect(target.moveTo).toHaveBeenCalledOnce();
-    expect(target.click).toHaveBeenCalledOnce();
-    if (browserName === "safari") {
-      expect(browser.keys).toHaveBeenCalledWith("Enter");
-      expect(submit.click).not.toHaveBeenCalled();
-    } else {
-      expect(submit.click).toHaveBeenCalledOnce();
-      expect(browser.keys).not.toHaveBeenCalled();
-    }
-  });
+  it.each([
+    ["firefox", "41"],
+    ["safari", "41"],
+    ["wry", "41"],
+    ["wry", ""],
+  ])(
+    "uses real prompt actions on %s and preserves button expectation %s",
+    async (browserName, buttonValue) => {
+      document.body.innerHTML =
+        '<main class="game-viewport"><button aria-label="SNAKE_POINTER_TARGET">SNAKE_POINTER_TARGET</button></main>';
+      const states = [
+        {
+          canInteract: true,
+          wait: { kind: "integer_value", wait_id: "1" },
+          output: ["SNAKE_SERVICES_START"],
+        },
+        {
+          canInteract: true,
+          wait: { kind: "integer_value", wait_id: "2" },
+          output: ["SNAKE_POINTER_READY"],
+        },
+        {
+          canInteract: true,
+          wait: { kind: "integer_value", wait_id: "3" },
+          output: [
+            ...SNAKE_SERVICE_MARKERS,
+            `SNAKE_POINTER=1/-2/${buttonValue}`,
+            "SNAKE_SERVICES_READY",
+          ],
+          serviceEvidence: {
+            sessionGeneration: 1,
+            records: [
+              { index: 0, message: { type: "service_request", value: { request_id: "7" } } },
+            ],
+            pointerSamples: [{ requestId: "7", context: { presentationRevision: "3" } }],
+          },
+        },
+      ].map((state) => ({ ...state, bridgeKind: "browser" }));
+      let stage = 0;
+      window.__RUSTYERA_TEST__ = { snapshot: () => states[stage] };
+      const input = { waitForDisplayed: vi.fn(), waitForEnabled: vi.fn(), setValue: vi.fn() };
+      const submit = {
+        click: vi.fn(() => {
+          stage = 1;
+        }),
+      };
+      const target = {
+        waitForDisplayed: vi.fn(),
+        waitForEnabled: vi.fn(),
+        moveTo: vi.fn(() => {
+          expect(window.__RUSTYERA_POINTER_OBSERVATION__).toBeTypeOf("function");
+        }),
+        click: vi.fn(() => {
+          stage = 2;
+        }),
+      };
+      const browser = {
+        capabilities: { browserName },
+        keys: vi.fn(() => {
+          stage = 1;
+        }),
+        execute: vi.fn(async (callback, ...args) => callback(...args)),
+        waitUntil: async (predicate) => {
+          expect(await predicate()).toBe(true);
+        },
+        $: async (selector) =>
+          ({
+            ".prompt-bar input": input,
+            ".prompt-bar button[type=submit]": submit,
+            "button=SNAKE_POINTER_TARGET": target,
+          })[selector],
+      };
+      if (buttonValue) await runSnakeServicesClient(browser, "browser");
+      else {
+        const log = vi.spyOn(console, "error").mockImplementation(() => {});
+        try {
+          await expect(runSnakeServicesClient(browser, "browser")).rejects.toThrow(
+            "script value 41",
+          );
+          expect(log).toHaveBeenCalledOnce();
+          const report = JSON.parse(log.mock.calls[0][0]);
+          expect(report.type).toBe("snake-services-pointer-failure");
+          expect(report.evidence.beforeClick.observation.targetSelector).toBe(
+            '.game-viewport button[aria-label="SNAKE_POINTER_TARGET"]',
+          );
+          expect(report.evidence.afterClick.target.label).toBe("SNAKE_POINTER_TARGET");
+          expect(report.evidence.failure.state.serviceEvidence).toEqual(states[2].serviceEvidence);
+        } finally {
+          log.mockRestore();
+        }
+      }
+      expect(window.__RUSTYERA_POINTER_OBSERVATION__).toBeUndefined();
+      expect(window.__RUSTYERA_SERVICE_TRACE__).toBeUndefined();
+      expect(input.setValue).toHaveBeenCalledWith("1");
+      expect(target.moveTo).toHaveBeenCalledOnce();
+      expect(target.click).toHaveBeenCalledOnce();
+      if (browserName === "safari") {
+        expect(browser.keys).toHaveBeenCalledWith("Enter");
+        expect(submit.click).not.toHaveBeenCalled();
+      } else {
+        expect(submit.click).toHaveBeenCalledOnce();
+        expect(browser.keys).not.toHaveBeenCalled();
+      }
+    },
+  );
 });
 
 describe("Tauri end-to-end test support", () => {
@@ -511,6 +570,7 @@ describe("Tauri end-to-end test support", () => {
           failure: null,
           bytes: 20,
           records: [{ messageId: "1", message: { type: "advance_time" } }],
+          pointerSamples: [],
         },
         serviceLifecycle: { enabled: true, failure: null, records: [{ phase: "start" }] },
       },
@@ -521,6 +581,7 @@ describe("Tauri end-to-end test support", () => {
       message: { type: "advance_time" },
     });
     second.runtime.serviceEvidence.bytes = 40;
+    second.runtime.serviceEvidence.pointerSamples.push({ index: 0, requestId: "3" });
     second.runtime.serviceLifecycle.records.push({ phase: "settled" });
     expect(() => assertSnapshotProgress(first, second)).toThrow(/identical/);
     expect(second.runtime.serviceEvidence.records).toHaveLength(2);
@@ -684,6 +745,52 @@ describe("snake service client assertions", () => {
 });
 
 describe("snake service lifecycle assertions", () => {
+  it("observes resized viewport geometry even when the old cursor left the window", async () => {
+    const observation = {
+      pointer: null,
+      focused: true,
+      visible: true,
+      viewport: { width: 700, height: 398, scrollTop: 2022 },
+    };
+    window.__RUSTYERA_POINTER_OBSERVATION__ = () => observation;
+    try {
+      const browser = { execute: async (read) => read() };
+      expect(await lifecycleViewport(browser)).toEqual(observation.viewport);
+      observation.focused = false;
+      await expect(lifecycleViewport(browser)).rejects.toThrow("visible focused document");
+    } finally {
+      delete window.__RUSTYERA_POINTER_OBSERVATION__;
+    }
+  });
+
+  it("defaults to the lifecycle target and freezes independent target geometry", async () => {
+    document.body.innerHTML =
+      '<main class="game-viewport"><button aria-label="SNAKE_LIFECYCLE_TARGET">target</button></main>';
+    const target = document.querySelector("button");
+    let top = 20;
+    target.getBoundingClientRect = () => ({
+      left: 10,
+      top,
+      right: 50,
+      bottom: top + 15,
+      width: 40,
+      height: 15,
+    });
+    await installPointerObservation({ execute: async (callback, ...args) => callback(...args) });
+    try {
+      const before = window.__RUSTYERA_POINTER_OBSERVATION__();
+      top = 50;
+      const after = window.__RUSTYERA_POINTER_OBSERVATION__();
+      expect(before.targetSelector).toBe('button[aria-label="SNAKE_LIFECYCLE_TARGET"]');
+      expect(before.target.top).toBe(20);
+      expect(after.target.top).toBe(50);
+      expect(before.pointer).toBeNull();
+      expect(before.targetHovered).toBe(false);
+    } finally {
+      window.__RUSTYERA_SERVICE_TRACE__.dispose();
+      delete window.__RUSTYERA_SERVICE_TRACE__;
+    }
+  });
   it("reveals a clipped target before moving the real pointer after resize", async () => {
     let visible = false;
     const target = {
@@ -696,6 +803,230 @@ describe("snake service lifecycle assertions", () => {
     };
     await expect(hoverLifecycleTarget({ $: async () => target })).resolves.toBeUndefined();
   });
+  it("requires zero after a real blur without a later pointer event", () => {
+    const observation = { blurCount: 1, events: [{ type: "blur", trusted: true }] };
+    const state = (value) => ({ output: [`SNAKE_LIFECYCLE_POINTER_5=${value}`] });
+    expect(assertBlurPointer(state("0/0/"), observation, null).mode).toBe("cleared-after-blur");
+    expect(() => assertBlurPointer(state("20/-170/41"), observation, null)).toThrow(
+      "did not clear",
+    );
+    observation.events.push({
+      type: "pointerout",
+      trusted: true,
+      focused: true,
+      relatedTargetPresent: true,
+      x: 30,
+      y: 50,
+    });
+    expect(assertBlurPointer(state("0/0/"), observation, null).mode).toBe("cleared-after-blur");
+    expect(() => assertBlurPointer(state("0/0/"), { events: [] }, null)).toThrow("trusted blur");
+  });
+  it("compares a native post-blur move against its pre-query geometry, not an old position", () => {
+    const observation = {
+      blurCount: 2,
+      events: [
+        { type: "pointermove", trusted: true, focused: true, x: 1, y: 2 },
+        { type: "blur", trusted: true },
+        { type: "pointermove", trusted: true, focused: true, x: 30, y: 50 },
+      ],
+    };
+    const geometry = {
+      viewport: { left: 10, top: 20, clientLeft: 0, clientTop: 0, height: 200 },
+      targetHovered: true,
+    };
+    const state = (value) => ({ output: [`SNAKE_LIFECYCLE_POINTER_5=${value}`] });
+    expect(assertBlurPointer(state("20/-170/41"), observation, geometry).mode).toBe(
+      "fresh-pointer-after-blur",
+    );
+    expect(() => assertBlurPointer(state("0/0/"), observation, geometry)).toThrow("pointer 5");
+    observation.events.push({ type: "pointercancel", trusted: true });
+    expect(assertBlurPointer(state("0/0/"), observation, null).mode).toBe("cleared-after-blur");
+    observation.events.pop();
+    observation.events.at(-1).trusted = false;
+    expect(() => assertBlurPointer(state("20/-170/41"), observation, geometry)).toThrow(
+      "trusted event",
+    );
+  });
+  function sampledPointerState() {
+    const encoder = new Encoder({ useRecords: false });
+    const payload = (values) => [
+      ...encoder.encode(new Map(values.map((value, index) => [index, value]))),
+    ];
+    const records = [],
+      pointerSamples = [];
+    for (let index = 0; index < 3; index += 1) {
+      const focused = index !== 1;
+      const coordinates = focused ? [20 + index, -170 + index, "41"] : [0, 0, ""];
+      records.push({
+        index: index * 2,
+        epoch: "2",
+        sessionGeneration: 4,
+        direction: "receive",
+        message: {
+          type: "service_request",
+          value: {
+            request_id: String(index + 10),
+            kind: "input_state",
+            operation: "pointer_state",
+            operation_version: { major: 1, minor: 0 },
+            payload: payload([3, 5, 7]),
+          },
+        },
+      });
+      pointerSamples.push({
+        index,
+        requestId: String(index + 10),
+        epoch: "2",
+        sessionGeneration: 4,
+        wireIndex: index * 2 + 1,
+        context: { presentationRevision: 3, environmentRevision: 5, projectionSpaceRevision: 7 },
+        observation: {
+          focused,
+          visible: true,
+          sequence: index + 1,
+          blurCount: 1,
+          targetHovered: true,
+          pointer: focused
+            ? {
+                x: 30 + index,
+                y: 50 + index,
+                trusted: true,
+                focused: true,
+                visible: true,
+                sequence: index + 1,
+              }
+            : null,
+          viewport: { left: 10, top: 20, clientLeft: 0, clientTop: 0, width: 300, height: 200 },
+        },
+      });
+      records.push({
+        index: index * 2 + 1,
+        epoch: "2",
+        sessionGeneration: 4,
+        direction: "send",
+        message: {
+          type: "service_response",
+          value: {
+            request_id: String(index + 10),
+            result: { type: "ready", payload: payload([...coordinates, 3, 5, 7]) },
+          },
+        },
+      });
+    }
+    return {
+      runtimeEpoch: "2",
+      output: ["SNAKE_LIFECYCLE_POINTER_5=20/0/41"],
+      serviceEvidence: {
+        enabled: true,
+        overflow: false,
+        failure: null,
+        sessionGeneration: 4,
+        records,
+        pointerSamples,
+      },
+    };
+  }
+  it("binds X, Y and button separately to frozen query-time DOM observations", () => {
+    const state = sampledPointerState();
+    expect(
+      assertSampledLifecyclePointer(state, 5, { wireIndex: 0, sampleIndex: 0 }).expected,
+    ).toEqual({ x: 20, y: 0, buttonValue: "41" });
+    state.output = ["SNAKE_LIFECYCLE_POINTER_5=20/-170/41"];
+    expect(() => assertSampledLifecyclePointer(state, 5, { wireIndex: 0, sampleIndex: 0 })).toThrow(
+      "pointer 5",
+    );
+  });
+  it("decodes captured Chromium decimal request bytes alongside numeric reply bytes", () => {
+    const state = sampledPointerState();
+    state.output = ["SNAKE_LIFECYCLE_POINTER_0=118/-28/41"];
+    // The actual bridge request is BigInt-backed before RuntimeEvidence's JSON conversion.
+    for (const record of state.serviceEvidence.records) {
+      if (record.direction === "receive")
+        record.message.value.payload = ["163", "0", "25", "1", "11", "1", "4", "2", "4"];
+      else
+        record.message.value.result.payload = [
+          166, 0, 24, 118, 1, 56, 27, 2, 98, 52, 49, 3, 25, 1, 11, 4, 4, 5, 4,
+        ];
+    }
+    for (const sample of state.serviceEvidence.pointerSamples) {
+      sample.context = {
+        presentationRevision: 267,
+        environmentRevision: 4,
+        projectionSpaceRevision: 4,
+      };
+      sample.observation.focused = true;
+      sample.observation.pointer = {
+        x: 118.76000213623047,
+        y: 818.5900268554688,
+        trusted: true,
+        focused: true,
+        visible: true,
+        sequence: sample.observation.sequence,
+      };
+      sample.observation.viewport = {
+        left: 0,
+        top: 39.09375,
+        clientLeft: 0,
+        clientTop: 0,
+        width: 1280,
+        height: 808,
+      };
+    }
+    expect(
+      assertSampledLifecyclePointer(state, 0, { wireIndex: 0, sampleIndex: 0 }).expected,
+    ).toEqual({ x: 118, y: -28, buttonValue: "41" });
+  });
+  it.each([
+    true,
+    false,
+    null,
+    undefined,
+    -1,
+    256,
+    0.5,
+    NaN,
+    "",
+    " 0",
+    "0 ",
+    "00",
+    "+0",
+    "-0",
+    "-1",
+    "256",
+    "1.0",
+    "1e2",
+    "0xff",
+    "1n",
+  ])("rejects invalid pointer evidence byte %s without coercion", (value) => {
+    for (const direction of ["receive", "send"]) {
+      const state = sampledPointerState();
+      const record = state.serviceEvidence.records.find((entry) => entry.direction === direction);
+      const payload =
+        direction === "receive"
+          ? record.message.value.payload
+          : record.message.value.result.payload;
+      payload[0] = value;
+      expect(() =>
+        assertSampledLifecyclePointer(state, 5, { wireIndex: 0, sampleIndex: 0 }),
+      ).toThrow("invalid CBOR bytes");
+    }
+  });
+  it.each(["sessionGeneration", "requestId", "revision", "order", "duplicate", "untrusted"])(
+    "rejects %s drift in query-time evidence",
+    (kind) => {
+      const state = sampledPointerState();
+      const samples = state.serviceEvidence.pointerSamples;
+      if (kind === "sessionGeneration") samples[0].sessionGeneration += 1;
+      if (kind === "requestId") samples[0].requestId = "99";
+      if (kind === "revision") samples[0].context.environmentRevision += 1;
+      if (kind === "order") samples[0].wireIndex = 0;
+      if (kind === "duplicate") samples.push(structuredClone(samples[0]));
+      if (kind === "untrusted") samples[0].observation.pointer.trusted = false;
+      expect(() =>
+        assertSampledLifecyclePointer(state, 5, { wireIndex: 0, sampleIndex: 0 }),
+      ).toThrow();
+    },
+  );
   const geometry = {
     pointer: { x: 30, y: 50 },
     viewport: { left: 10, top: 20, clientLeft: 0, clientTop: 0, width: 300, height: 200 },

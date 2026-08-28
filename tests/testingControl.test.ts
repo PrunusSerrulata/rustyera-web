@@ -1,10 +1,112 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { inputReplaySummary, isStableObservationCandidate } from "@/testing/control";
 import { RuntimeEvidence, readTypedWatches } from "@/testing/runtimeEvidence";
 import { blake3 } from "@noble/hashes/blake3.js";
 
 describe("runtime evidence observations", () => {
+  afterEach(() => {
+    delete window.__RUSTYERA_POINTER_OBSERVATION__;
+  });
+
+  it("freezes independent DOM samples at the query boundary without changing wire indices", () => {
+    const evidence = new RuntimeEvidence(true);
+    const context = {
+      presentationRevision: 3n,
+      environmentRevision: 4n,
+      projectionSpaceRevision: 5n,
+    };
+    const observation = { sequence: 1, focused: false, visible: true, pointer: null as unknown };
+    window.__RUSTYERA_POINTER_OBSERVATION__ = () => observation;
+    evidence.receive(
+      {
+        channel: "runtime",
+        epoch: 2n,
+        sequence: 1n,
+        messageId: 11n,
+        message: { type: "service_request", value: { request_id: 9n } },
+      },
+      7,
+    );
+    evidence.pointerSample({ requestId: 9n, epoch: 2n, sessionGeneration: 7, context });
+    observation.sequence = 2;
+    observation.focused = true;
+    observation.pointer = { x: 30, y: 50 };
+    evidence.sent(
+      "runtime",
+      { type: "service_response", value: { request_id: 9n } },
+      12n,
+      2n,
+      11n,
+      7,
+    );
+    evidence.pointerSample({ requestId: 10n, epoch: 2n, sessionGeneration: 7, context });
+    context.presentationRevision = 99n;
+    const snapshot = evidence.snapshot(7) as any;
+    expect(snapshot.records.map((row: any) => row.index)).toEqual([0, 1]);
+    expect(snapshot.pointerSamples).toEqual([
+      {
+        index: 0,
+        wireIndex: 1,
+        requestId: "9",
+        epoch: "2",
+        sessionGeneration: 7,
+        context: {
+          presentationRevision: "3",
+          environmentRevision: "4",
+          projectionSpaceRevision: "5",
+        },
+        observation: { sequence: 1, focused: false, visible: true, pointer: null },
+      },
+      {
+        index: 1,
+        wireIndex: 2,
+        requestId: "10",
+        epoch: "2",
+        sessionGeneration: 7,
+        context: {
+          presentationRevision: "3",
+          environmentRevision: "4",
+          projectionSpaceRevision: "5",
+        },
+        observation: { sequence: 2, focused: true, visible: true, pointer: { x: 30, y: 50 } },
+      },
+    ]);
+    snapshot.pointerSamples[0].observation.focused = true;
+    expect((evidence.snapshot() as any).pointerSamples[0].observation.focused).toBe(false);
+  });
+
+  it("bounds pointer observations and never lets observer failure affect execution", () => {
+    const identity = {
+      requestId: 1,
+      epoch: 2,
+      sessionGeneration: 3,
+      context: { presentationRevision: 1, environmentRevision: 1, projectionSpaceRevision: 1 },
+    };
+    const observer = vi.fn(() => ({ pointer: null }));
+    window.__RUSTYERA_POINTER_OBSERVATION__ = observer;
+    new RuntimeEvidence(false).pointerSample(identity);
+    expect(observer).not.toHaveBeenCalled();
+    const bounded = new RuntimeEvidence(true, 4096, 1);
+    bounded.pointerSample(identity);
+    bounded.sent("runtime", { type: "service_response" }, 1, 2);
+    expect(bounded.snapshot()).toMatchObject({
+      overflow: true,
+      failure: "observation_limit",
+      records: [],
+    });
+    expect((bounded.snapshot() as any).pointerSamples).toHaveLength(1);
+    const failed = new RuntimeEvidence(true);
+    window.__RUSTYERA_POINTER_OBSERVATION__ = () => {
+      throw new Error("DOM unavailable");
+    };
+    expect(() => failed.pointerSample(identity)).not.toThrow();
+    expect(failed.snapshot()).toMatchObject({
+      overflow: true,
+      failure: "unserializable_observation",
+      pointerSamples: [],
+    });
+  });
   it("preserves exact service integers and bytes without exposing mutable records", () => {
     const evidence = new RuntimeEvidence(true);
     const payload = Uint8Array.of(0xa1, 0, 1);

@@ -102,7 +102,9 @@ export function snapshotProgressSignature(snapshot) {
       const evidence = runtime[field];
       if (evidence && typeof evidence === "object") {
         projected[field] = Object.fromEntries(
-          Object.entries(evidence).filter(([key]) => key !== "records" && key !== "bytes"),
+          Object.entries(evidence).filter(
+            ([key]) => !["records", "pointerSamples", "bytes"].includes(key),
+          ),
         );
       }
     }

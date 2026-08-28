@@ -137,7 +137,12 @@ try {
   }
   await appendFile(
     path.join(output, "failure.json"),
-    JSON.stringify({ error: String(error), snapshot, snapshotError }),
+    JSON.stringify({
+      error: String(error),
+      lifecycleEvidence: error.lifecycleEvidence,
+      snapshot,
+      snapshotError,
+    }),
   );
   throw error;
 } finally {

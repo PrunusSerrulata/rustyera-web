@@ -1,9 +1,18 @@
+import type { ProjectionQueryContext, ServiceInteger } from "@/core/runtimeServiceProtocol";
 import type { WebEvent } from "@/core/types";
 import { blake3 } from "@noble/hashes/blake3.js";
+
+declare global {
+  interface Window {
+    /** Test-runner-owned, read-only DOM observation; never a source of runtime values. */
+    __RUSTYERA_POINTER_OBSERVATION__?: () => unknown;
+  }
+}
 
 /** Bounded observations only: capture failure must never change execution or invent a reply. */
 export class RuntimeEvidence {
   private readonly records: string[] = [];
+  private readonly pointerSamples: string[] = [];
   private bytes = 0;
   private failure: string | null = null;
 
@@ -84,6 +93,27 @@ export class RuntimeEvidence {
     });
   }
 
+  /** Called synchronously immediately before the real pointer provider samples, after projection
+   * preparation. Keep these DOM observations separate from the immutable wire-record sequence. */
+  pointerSample(identity: {
+    requestId: ServiceInteger;
+    epoch: ServiceInteger;
+    sessionGeneration: number;
+    context: ProjectionQueryContext;
+  }): void {
+    if (!this.enabled || this.failure !== null) return;
+    try {
+      const observe = window.__RUSTYERA_POINTER_OBSERVATION__;
+      if (!observe) return;
+      this.record(
+        { ...identity, wireIndex: this.records.length, observation: observe() },
+        this.pointerSamples,
+      );
+    } catch {
+      this.failure = "unserializable_observation";
+    }
+  }
+
   snapshot(sessionGeneration = 0): Record<string, unknown> {
     return {
       version: 1,
@@ -93,14 +123,15 @@ export class RuntimeEvidence {
       failure: this.failure,
       bytes: this.bytes,
       records: this.records.map((record) => JSON.parse(record)),
+      pointerSamples: this.pointerSamples.map((record) => JSON.parse(record)),
     };
   }
 
-  private record(value: unknown): void {
+  private record(value: unknown, destination = this.records): void {
     if (!this.enabled || this.failure !== null) return;
     try {
       const record = JSON.stringify(
-        { index: this.records.length, ...(value as object) },
+        { index: destination.length, ...(value as object) },
         (_key, item) => {
           if (typeof item === "bigint") return item.toString();
           if (item instanceof Uint8Array) return [...item];
@@ -108,11 +139,14 @@ export class RuntimeEvidence {
         },
       );
       const length = new TextEncoder().encode(record).length;
-      if (this.records.length >= this.maximumRecords || this.bytes + length > this.maximumBytes) {
+      if (
+        this.records.length + this.pointerSamples.length >= this.maximumRecords ||
+        this.bytes + length > this.maximumBytes
+      ) {
         this.failure = "observation_limit";
         return;
       }
-      this.records.push(record);
+      destination.push(record);
       this.bytes += length;
     } catch {
       this.failure = "unserializable_observation";

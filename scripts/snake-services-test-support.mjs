@@ -1,5 +1,6 @@
 /* global window */
 import { runSnakeDataClient, submitSnakePrompt } from "./snake-data-test-support.mjs";
+import { installPointerObservation } from "./snake-service-lifecycle-test-support.mjs";
 
 export const SNAKE_SERVICE_MARKERS = Object.freeze([
   "SNAKE_HTML=0/0/0/1/1/1/1",
@@ -55,12 +56,54 @@ export async function runSnakeServicesClient(browser, bridgeKind) {
   const target = await browser.$("button=SNAKE_POINTER_TARGET");
   await target.waitForDisplayed({ timeout: 5_000 });
   await target.waitForEnabled({ timeout: 5_000 });
-  await target.moveTo();
-  await target.click();
-  return assertSnakeServiceState(
-    await waitStage(browser, bridgeKind, "SNAKE_SERVICES_READY", pointer.wait.wait_id),
-    bridgeKind,
+  await installPointerObservation(
+    browser,
+    '.game-viewport button[aria-label="SNAKE_POINTER_TARGET"]',
   );
+  const evidence = {};
+  try {
+    await target.moveTo();
+    evidence.beforeClick = await browser.execute(() => {
+      const state = window.__RUSTYERA_TEST__?.snapshot();
+      return {
+        observation: window.__RUSTYERA_POINTER_OBSERVATION__(),
+        runtimeEpoch: state?.runtimeEpoch,
+        sessionGeneration: state?.serviceEvidence?.sessionGeneration,
+        wireIndex: state?.serviceEvidence?.records.length,
+        sampleIndex: state?.serviceEvidence?.pointerSamples.length,
+      };
+    });
+    await target.click();
+    evidence.afterClick = await browser.execute(() => window.__RUSTYERA_POINTER_OBSERVATION__());
+    const state = await waitStage(
+      browser,
+      bridgeKind,
+      "SNAKE_SERVICES_READY",
+      pointer.wait.wait_id,
+    );
+    return assertSnakeServiceState(state, bridgeKind);
+  } catch (error) {
+    try {
+      evidence.failure = await browser.execute(() => ({
+        observation: window.__RUSTYERA_POINTER_OBSERVATION__(),
+        state: window.__RUSTYERA_TEST__?.snapshot(),
+      }));
+    } catch (observationError) {
+      evidence.observationError = String(observationError);
+    }
+    error.servicePointerEvidence = evidence;
+    // WebDriver abbreviates nested snapshot objects. Emit one complete JSON record so the
+    // real request/reply and query-time DOM samples survive a fast failure between watchdog ticks.
+    console.error(
+      JSON.stringify({ type: "snake-services-pointer-failure", error: String(error), evidence }),
+    );
+    throw error;
+  } finally {
+    await browser.execute(() => {
+      window.__RUSTYERA_SERVICE_TRACE__?.dispose();
+      delete window.__RUSTYERA_SERVICE_TRACE__;
+    });
+  }
 }
 
 export async function runSnakeBatch1Client(browser, bridgeKind) {
