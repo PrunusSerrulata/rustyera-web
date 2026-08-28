@@ -48,7 +48,9 @@ describe("Tauri project restart", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+    window.__RUSTYERA_TEST_DOWNLOADS__ = undefined;
     Reflect.deleteProperty(document, "fonts");
   });
 
@@ -358,6 +360,37 @@ describe("Tauri project restart", () => {
         },
       ],
     ]);
+  });
+
+  it("publishes native export identity only after the actual archive is committed", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    vi.stubEnv("VITE_RUSTYERA_TAURI_EXPORT_PATH", "/tmp/identity.tar.zst");
+    const committed = deferred<void>();
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "inspect_project_file_identity")
+        return {
+          projectRevision: 1,
+          files: [
+            {
+              relativePath: "csv/GAMEBASE.CSV",
+              category: "csv",
+              contentHash: "a".repeat(64),
+              payloadKind: "utf8",
+              byteLength: 80,
+            },
+          ],
+        };
+      if (command === "write_export_chunk" && args.complete) await committed.promise;
+    });
+    streamDiagnosisArchiveInWorker.mockResolvedValue(20);
+    const pending = new TauriBridge().saveDiagnosis("identity.tar.zst", diagnosisInput());
+    await flushMicrotasks();
+    expect(window.__RUSTYERA_TEST_DOWNLOADS__).toBeUndefined();
+    committed.resolve();
+    await expect(pending).resolves.toBe(true);
+    expect(window.__RUSTYERA_TEST_DOWNLOADS__?.at(-1)?.projectIdentity?.files[0].byteLength).toBe(
+      80,
+    );
   });
 
   it("keeps the previous project when opening a replacement fails", async () => {

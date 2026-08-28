@@ -3,11 +3,41 @@ import { expect, it } from "vitest";
 
 import type { BrowserManifest } from "@/platform/browserProject";
 import {
+  normalizeProjectFileIdentity,
   normalizeProjectFileManifest,
   projectFileManifestTransfers,
   runtimeWorkerResultTransfers,
   takeProjectFileManifestOwnership,
 } from "@/platform/projectFileManifestTransfer";
+
+it("normalizes actual exported UTF-8 byte lengths and rejects incomplete identity records", () => {
+  const file = {
+    relativePath: "csv/GAMEBASE.CSV",
+    category: "csv",
+    contentHash: "a".repeat(64),
+    payloadKind: "utf8",
+    byteLength: 80n,
+  };
+  expect(normalizeProjectFileIdentity({ projectRevision: 1n, files: [file] })).toEqual({
+    projectRevision: 1,
+    files: [{ ...file, byteLength: 80 }],
+  });
+  expect(() => normalizeProjectFileIdentity({ projectRevision: 1, files: [file, file] })).toThrow(
+    "重复",
+  );
+  expect(() =>
+    normalizeProjectFileIdentity({
+      projectRevision: 1,
+      files: [{ ...file, byteLength: undefined }],
+    }),
+  ).toThrow("字节长度");
+  expect(() =>
+    normalizeProjectFileIdentity({
+      projectRevision: 1,
+      files: [{ ...file, payloadKind: "external_resource" }],
+    }),
+  ).toThrow("内容无效");
+});
 
 it("normalizes the WASM project-file projection into browser-owned resource descriptors", () => {
   const manifest = normalizeProjectFileManifest({

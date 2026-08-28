@@ -225,6 +225,7 @@ function downloadSummary(download?: {
   size?: number;
   projectMagic?: Uint8Array;
   projectManifest?: import("@/platform/browserProject").BrowserManifest;
+  projectIdentity?: import("@/platform/projectFileManifestTransfer").ProjectFileIdentitySummary;
   inputReplay?: Uint8Array;
 }): unknown {
   if (!download) return null;
@@ -261,6 +262,17 @@ function downloadSummary(download?: {
         }
       : {}),
     ...replay,
+    ...(download.projectIdentity
+      ? {
+          projectRevision: download.projectIdentity.projectRevision,
+          projectHashes: Object.fromEntries(
+            download.projectIdentity.files
+              .filter((file) => file.category !== "resource")
+              .map((file) => [file.relativePath, file.contentHash]),
+          ),
+          projectIdentityFiles: download.projectIdentity.files,
+        }
+      : {}),
   };
 }
 

@@ -22,6 +22,9 @@ use era_runtime_protocol::{
 use erabasic_vm::VmConfig;
 use serde::{Deserialize, Serialize};
 
+mod project_file_identity;
+pub use project_file_identity::{ProjectFileIdentitySummary, inspect_project_file_identity};
+
 const DEFAULT_ENVELOPE_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAXIMUM_TRANSFER_BYTES: u64 = 1024 * 1024 * 1024;

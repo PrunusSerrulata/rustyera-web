@@ -48,6 +48,7 @@ interface Window {
     size?: number;
     projectMagic?: Uint8Array;
     projectManifest?: import("@/platform/browserProject").BrowserManifest;
+    projectIdentity?: import("@/platform/projectFileManifestTransfer").ProjectFileIdentitySummary;
     inputReplay?: Uint8Array;
   }>;
 }

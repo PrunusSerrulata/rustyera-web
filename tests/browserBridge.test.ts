@@ -1374,6 +1374,37 @@ describe("browser startup bridge", () => {
     expect(progress).toHaveBeenLastCalledWith({ completed: 2, total: 2 });
   });
 
+  it("observes exported payload identities instead of compact source placeholders", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    const identity = {
+      projectRevision: 1n,
+      files: [
+        {
+          relativePath: "csv/GAMEBASE.CSV",
+          category: "csv",
+          contentHash: "a".repeat(64),
+          payloadKind: "utf8",
+          byteLength: 80n,
+        },
+      ],
+    };
+    respond = (method) => {
+      if (method !== "projectFileIdentity") throw new Error(`unexpected observation ${method}`);
+      return identity;
+    };
+    streamDiagnosisArchiveInWorker.mockResolvedValue(20);
+    const input = diagnosisInput();
+    await expect(new BrowserBridge().saveDiagnosis("identity.tar.zst", input)).resolves.toBe(true);
+    expect(window.__RUSTYERA_TEST_DOWNLOADS__?.at(-1)?.projectIdentity?.files[0]).toMatchObject({
+      relativePath: "csv/GAMEBASE.CSV",
+      byteLength: 80,
+      contentHash: identity.files[0].contentHash,
+    });
+    expect(
+      requests.find((row) => row.message.method === "projectFileIdentity")?.message.args[0],
+    ).toEqual(input.projectFile);
+  });
+
   it("falls back to download chunks when OPFS export initialization fails", async () => {
     const originalNavigator = globalThis.navigator;
     const originalUrl = globalThis.URL;

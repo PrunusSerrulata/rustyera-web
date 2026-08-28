@@ -25,6 +25,7 @@ type WasmModule = {
     finishProjectManifest(): bigint;
     cancelProjectManifest(): void;
     projectFileManifest(bytes: Uint8Array): unknown;
+    projectFileIdentity(bytes: Uint8Array): unknown;
     beginProjectFile(totalBytes: number): void;
     appendProjectFile(bytes: Uint8Array): void;
     finishProjectFile(): unknown;
@@ -106,6 +107,9 @@ self.onmessage = async (event: MessageEvent) => {
           break;
         case "projectFileManifest":
           result = runtime.projectFileManifest(args[0] as Uint8Array);
+          break;
+        case "projectFileIdentity":
+          result = runtime.projectFileIdentity(args[0] as Uint8Array);
           break;
         case "loadProjectFile":
           result = await loadProjectFileInWorker(

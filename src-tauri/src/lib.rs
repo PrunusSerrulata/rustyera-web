@@ -71,6 +71,17 @@ struct StagedManifestDescriptor {
     total_bytes: u64,
 }
 
+#[tauri::command]
+async fn inspect_project_file_identity(
+    bytes: Value,
+) -> Result<era_web_bridge::ProjectFileIdentitySummary, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        era_web_bridge::inspect_project_file_identity(&decode_ipc_bytes(bytes)?)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 fn emit_scanning_progress(app: &AppHandle, completed: usize, total: usize) {
     let _ = app.emit(
         "project-progress",
@@ -795,6 +806,7 @@ pub fn run() {
             submit_runtime,
             submit_runtime_and_pump,
             stage_full_project_manifest,
+            inspect_project_file_identity,
             read_full_project_manifest_chunk,
             release_full_project_manifest,
             submit_debug,

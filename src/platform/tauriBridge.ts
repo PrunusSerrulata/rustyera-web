@@ -8,6 +8,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import type { DiagnosisArchiveInput, DiagnosisArchiveProgress } from "@/core/diagnosis";
 import { streamDiagnosisArchiveInWorker } from "@/platform/diagnosis";
+import { normalizeProjectFileIdentity } from "@/platform/projectFileManifestTransfer";
 import { ProjectFontRegistry, type ProjectFontSource } from "@/platform/projectFonts";
 import {
   decodeIpcResponse,
@@ -568,6 +569,14 @@ export class TauriBridge implements FrontendBridge {
     if (!path) return false;
     let first = true;
     try {
+      const projectIdentity =
+        import.meta.env.VITE_RUSTYERA_TEST === "1"
+          ? normalizeProjectFileIdentity(
+              await invoke("inspect_project_file_identity", {
+                bytes: encodeIpcBytes(input.projectFile),
+              }),
+            )
+          : undefined;
       const totalBytes = await streamDiagnosisArchiveInWorker(
         input,
         async (chunk) => {
@@ -587,6 +596,15 @@ export class TauriBridge implements FrontendBridge {
         reset: first,
         complete: true,
       });
+      if (projectIdentity)
+        (window.__RUSTYERA_TEST_DOWNLOADS__ ??= []).push({
+          name,
+          bytes: new Uint8Array(),
+          size: totalBytes,
+          projectMagic: input.projectFile.slice(0, 8),
+          projectIdentity,
+          inputReplay: new Uint8Array(input.inputReplay),
+        });
       reportProgress?.({ completed: totalBytes, total: totalBytes });
       return true;
     } catch (error) {

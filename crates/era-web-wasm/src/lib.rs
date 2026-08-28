@@ -625,6 +625,15 @@ impl WasmRuntime {
         )
     }
 
+    /// Inspect bounded embedded payload identities without changing the active session.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid or oversized complete project export.
+    #[wasm_bindgen(js_name = projectFileIdentity)]
+    pub fn project_file_identity(&self, bytes: &js_sys::Uint8Array) -> Result<JsValue, JsValue> {
+        to_js(era_web_bridge::inspect_project_file_identity(&bytes.to_vec()).map_err(js_error)?)
+    }
+
     /// Begin receiving one project file in bounded chunks.
     ///
     /// # Errors

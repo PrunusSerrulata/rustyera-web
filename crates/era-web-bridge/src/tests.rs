@@ -679,6 +679,20 @@ fn decoded_project_file_load_projects_and_stages_a_valid_manifest() {
         ],
     };
     let project_file = export_project_file(&manifest);
+    let observed = inspect_project_file_identity(&project_file).unwrap();
+    assert_eq!(observed.project_revision, 1);
+    assert_eq!(observed.files[0].byte_length as usize, source.len());
+    assert_eq!(
+        observed.files[0].content_hash,
+        blake3::hash(source.as_bytes()).to_hex().to_string()
+    );
+    assert_eq!(observed.files[0].payload_kind, "utf8");
+    assert_eq!(observed.files[1].byte_length as usize, resource.len());
+    assert_eq!(
+        observed.files[1].content_hash,
+        blake3::hash(&resource).to_hex().to_string()
+    );
+    assert!(inspect_project_file_identity(b"not a project").is_err());
     let decoded = era_runtime::decode_project_file(&project_file, project_file.len()).unwrap();
     let mut target = negotiated_web_session();
 
