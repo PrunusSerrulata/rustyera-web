@@ -1,26 +1,45 @@
 /* global window */
 
-export function lifecycleRecords(state) {
+export function lifecycleSession(state) {
   if (
     !state?.serviceEvidence?.enabled ||
     !Number.isSafeInteger(state.serviceEvidence.sessionGeneration) ||
     state.serviceEvidence.sessionGeneration < 0 ||
     state.serviceEvidence.overflow ||
     state.serviceEvidence.failure ||
-    !state.serviceLifecycle?.enabled ||
-    state.serviceLifecycle.failure
+    !/^(?:0|[1-9]\d*)$/.test(String(state.runtimeEpoch))
   )
-    throw new Error("complete real lifecycle/transport evidence is required");
+    throw new Error("complete real transport session evidence is required");
   return {
-    wire: state.serviceEvidence.records,
-    decode: state.serviceLifecycle.records,
     sessionGeneration: state.serviceEvidence.sessionGeneration,
     epoch: String(state.runtimeEpoch),
   };
 }
 
+export function lifecycleRecords(state) {
+  const session = lifecycleSession(state);
+  if (!state.serviceLifecycle?.enabled || state.serviceLifecycle.failure)
+    throw new Error("complete real lifecycle/transport evidence is required");
+  return {
+    ...session,
+    wire: state.serviceEvidence.records,
+    decode: state.serviceLifecycle.records,
+  };
+}
+
 function sameSession(row, session) {
   return row.sessionGeneration === session.sessionGeneration && String(row.epoch) === session.epoch;
+}
+
+export function lifecycleRestartReady(state, previousSession) {
+  return Boolean(
+    !state?.fault &&
+    state?.projectLoading === false &&
+    state.canInteract &&
+    state.wait?.kind === "integer_value" &&
+    state.output?.includes("SNAKE_LIFECYCLE_START") &&
+    !sameSession(lifecycleSession(state), previousSession),
+  );
 }
 
 export function observePendingCanvas(state, sourceUrl, afterIndex) {
@@ -177,11 +196,12 @@ async function restart(browser) {
   await (await (await browser.$(".menu-popup")).$("button=重新开始")).click();
   const confirm = await browser.$("[role=dialog][aria-label='重新开始游戏'] .danger");
   await confirm.waitForDisplayed({ timeout: 3_000 });
+  // The old prompt/output remain observable while restart is being scheduled. Capture its
+  // composite identity immediately before confirmation; a new transport may reuse the epoch.
+  const previousSession = lifecycleSession(await snapshot(browser));
   await confirm.click();
-  return wait(
-    browser,
-    "restart did not create a fresh lifecycle session",
-    (state) => state.canInteract && state.output.includes("SNAKE_LIFECYCLE_START"),
+  return wait(browser, "restart did not create a fresh lifecycle session", (state) =>
+    lifecycleRestartReady(state, previousSession),
   );
 }
 

@@ -12,6 +12,8 @@ import {
 import {
   observePendingCanvas,
   assertCancelledLifecycle,
+  lifecycleRestartReady,
+  lifecycleSession,
 } from "../scripts/snake-service-lifecycle-races.mjs";
 import {
   assertLifecyclePointer,
@@ -1658,6 +1660,44 @@ describe("real lifecycle race evidence assertions", () => {
       sessionGeneration: epoch === "21" ? 5 : 4,
     },
     serviceLifecycle: { enabled: true, failure: null, records: decode },
+  });
+
+  it("waits past retained old prompts and new-session loading until a fresh integer wait", () => {
+    const previous = { sessionGeneration: 4, epoch: "20" };
+    const oldReady = {
+      ...state(),
+      projectLoading: false,
+      canInteract: true,
+      wait: { kind: "integer_value" },
+      output: ["SNAKE_LIFECYCLE_START"],
+    };
+    expect(lifecycleRestartReady(oldReady, previous)).toBe(false);
+    const newReady = {
+      ...oldReady,
+      // Restart may reuse the numeric epoch, so session generation must remain part of identity.
+      serviceEvidence: { ...oldReady.serviceEvidence, sessionGeneration: 5 },
+    };
+    expect(lifecycleRestartReady({ ...newReady, projectLoading: true }, previous)).toBe(false);
+    expect(lifecycleRestartReady({ ...newReady, canInteract: false }, previous)).toBe(false);
+    expect(lifecycleRestartReady({ ...newReady, wait: { kind: "void" } }, previous)).toBe(false);
+    expect(lifecycleRestartReady({ ...newReady, output: [] }, previous)).toBe(false);
+    expect(lifecycleRestartReady(newReady, previous)).toBe(true);
+    // The first restart precedes arming the image gate, so decoder observations are not enabled.
+    const beforeGate = {
+      ...newReady,
+      serviceLifecycle: { enabled: false, failure: null, records: [] },
+    };
+    expect(lifecycleSession(beforeGate)).toEqual({ sessionGeneration: 5, epoch: "20" });
+    expect(lifecycleRestartReady(beforeGate, previous)).toBe(true);
+    expect(() => observePendingCanvas(beforeGate, sourceUrl, 7)).toThrow(
+      "complete real lifecycle/transport evidence",
+    );
+    for (const invalid of [
+      { ...beforeGate, runtimeEpoch: undefined },
+      { ...beforeGate, serviceEvidence: { ...beforeGate.serviceEvidence, enabled: false } },
+      { ...beforeGate, serviceEvidence: { ...beforeGate.serviceEvidence, overflow: true } },
+    ])
+      expect(() => lifecycleSession(invalid)).toThrow("transport session evidence");
   });
 
   it("requires actual pending service, source authorization and unfinished physical decode", () => {
