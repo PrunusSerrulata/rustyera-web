@@ -53,6 +53,7 @@ import {
 import {
   assertSnapshotProgress,
   captureCompleteTauriSnapshot,
+  focusCurrentTauriWindow,
   resolveTauriBinary,
   snapshotProgressSignature,
   startTauriSessionMonitor,
@@ -361,6 +362,75 @@ describe("snake service client prompt submission", () => {
 });
 
 describe("Tauri end-to-end test support", () => {
+  function foregroundBrowser(events, switchFailure) {
+    return {
+      getWindowHandle: vi.fn(async () => {
+        events.push("get-window");
+        return "current-native-window";
+      }),
+      switchToWindow: vi.fn(async (handle) => {
+        events.push(`switch:${handle}`);
+        if (switchFailure) throw new Error("native window rejected");
+      }),
+      execute: vi.fn(async (callback) => {
+        events.push("observe-document");
+        return callback();
+      }),
+      waitUntil: vi.fn(async (predicate, options) => {
+        events.push("wait-foreground");
+        if (!(await predicate())) throw new Error(options.timeoutMsg);
+      }),
+    };
+  }
+
+  it("establishes native foreground through the current handle before observing document focus", async () => {
+    const visible = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const events = [];
+    const browser = foregroundBrowser(events, false);
+    try {
+      await expect(focusCurrentTauriWindow(browser)).resolves.toBe("current-native-window");
+      expect(events).toEqual([
+        "get-window",
+        "switch:current-native-window",
+        "wait-foreground",
+        "observe-document",
+      ]);
+      expect(browser.waitUntil).toHaveBeenCalledWith(
+        expect.any(Function),
+        expect.objectContaining({
+          timeout: 3_000,
+          interval: 50,
+        }),
+      );
+    } finally {
+      visible.mockRestore();
+      focused.mockRestore();
+    }
+  });
+
+  it.each(["rejected", "hidden", "unfocused"])(
+    "rejects %s native foreground without retrying window commands",
+    async (reason) => {
+      const visible = vi
+        .spyOn(document, "visibilityState", "get")
+        .mockReturnValue(reason === "hidden" ? "hidden" : "visible");
+      const focused = vi.spyOn(document, "hasFocus").mockReturnValue(reason !== "unfocused");
+      const browser = foregroundBrowser([], reason === "rejected");
+      try {
+        await expect(focusCurrentTauriWindow(browser)).rejects.toThrow(
+          reason === "rejected" ? "native window rejected" : "visible and focused",
+        );
+        expect(browser.getWindowHandle).toHaveBeenCalledOnce();
+        expect(browser.switchToWindow).toHaveBeenCalledOnce();
+        expect(browser.waitUntil).toHaveBeenCalledTimes(reason === "rejected" ? 0 : 1);
+      } finally {
+        visible.mockRestore();
+        focused.mockRestore();
+      }
+    },
+  );
+
   it.each([
     ["win32", "era-web-tauri.exe"],
     ["linux", "era-web-tauri"],

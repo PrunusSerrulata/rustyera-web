@@ -4,6 +4,23 @@ import path from "node:path";
 
 const SNAPSHOT_INTERVAL_MS = 5_000;
 
+/** Establish foreground once through the session's real native window command before test input. */
+export async function focusCurrentTauriWindow(browser) {
+  const handle = await browser.getWindowHandle();
+  if (typeof handle !== "string" || !handle)
+    throw new Error("native foreground setup requires the current WebDriver window handle");
+  await browser.switchToWindow(handle);
+  await browser.waitUntil(
+    () => browser.execute(() => document.visibilityState === "visible" && document.hasFocus()),
+    {
+      timeout: 3_000,
+      interval: 50,
+      timeoutMsg: "current native WebDriver window did not become visible and focused",
+    },
+  );
+  return handle;
+}
+
 export function resolveTauriBinary(targetDirectory, release, platform = process.platform) {
   if (typeof targetDirectory !== "string" || !path.isAbsolute(targetDirectory))
     throw new Error("Cargo metadata must provide an absolute target_directory");

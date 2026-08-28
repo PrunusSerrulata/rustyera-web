@@ -21,6 +21,7 @@ import { promisify } from "node:util";
 import Mocha from "mocha";
 
 import {
+  focusCurrentTauriWindow,
   resolveTauriBinary,
   startTauriSessionMonitor,
 } from "./tauri-test-support.mjs";
@@ -417,6 +418,12 @@ try {
     },
   });
 
+  if (nativeProvider) {
+    activeStage = "establishing the current native WebDriver window foreground";
+    const handle = await focusCurrentTauriWindow(browser);
+    console.log(JSON.stringify({ type: "tauri-native-window-focused", handle }));
+  }
+
   if (reuseBuild) {
     await browser.waitUntil(() => browser.execute(() => Boolean(window.__RUSTYERA_TEST__)), {
       timeout: 20_000,
@@ -459,6 +466,36 @@ try {
   }
 } catch (error) {
   runError = error;
+  if (nativeProvider && process.platform === "darwin") {
+    // Read the OS foreground owner before cleanup destroys the failed test window. This does
+    // not activate anything; DOM focus alone cannot identify an external focus interruption.
+    try {
+      const { stdout } = await promisify(execFile)(
+        "/usr/bin/osascript",
+        [
+          "-l",
+          "JavaScript",
+          "-e",
+          'ObjC.import("AppKit"); var app = $.NSWorkspace.sharedWorkspace.frontmostApplication; JSON.stringify({name: ObjC.unwrap(app.localizedName), bundle: ObjC.unwrap(app.bundleIdentifier), pid: app.processIdentifier});',
+        ],
+        { timeout: 3_000 },
+      );
+      console.error(
+        JSON.stringify({
+          type: "tauri-failure-foreground",
+          stage: activeStage,
+          application: JSON.parse(stdout),
+        }),
+      );
+    } catch (diagnosticError) {
+      console.error(
+        JSON.stringify({
+          type: "tauri-failure-foreground-unavailable",
+          error: String(diagnosticError),
+        }),
+      );
+    }
+  }
 } finally {
   try {
     await monitor?.stop();
