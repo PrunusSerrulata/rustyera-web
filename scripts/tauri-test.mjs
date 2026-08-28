@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global window */
 
 import {
   access,
@@ -20,11 +21,19 @@ import { promisify } from "node:util";
 import Mocha from "mocha";
 
 import {
+  resolveTauriBinary,
+  startTauriSessionMonitor,
+} from "./tauri-test-support.mjs";
+import {
+  buildContract,
+  recordBuiltArtifact,
+  reusableArtifact,
+  reusableBuildEnvironment,
+} from "./tauri-build-cache.mjs";
+import {
   nativeWebdriverOption,
   validateNativeWebdriverSource,
 } from "./tauri-native-webdriver-support.mjs";
-
-import { resolveTauriBinary, startTauriSessionMonitor } from "./tauri-test-support.mjs";
 import {
   allowsServiceOracleFault,
   recordServiceOracleWatchdog,
@@ -45,6 +54,9 @@ const specIndex = arguments_.indexOf("--spec");
 const stateIndex = arguments_.indexOf("--state");
 const stateTypeIndex = arguments_.indexOf("--state-type");
 const releaseRequested = arguments_.includes("--release");
+const requireReuseBuild = arguments_.includes("--require-reuse-build");
+const reuseBuild = requireReuseBuild || arguments_.includes("--reuse-build");
+const buildOnly = arguments_.includes("--build-only");
 const configuredProject =
   projectIndex >= 0 ? arguments_[projectIndex + 1] : process.env.ERATW_PROJECT;
 let project = path.resolve(repository, configuredProject ?? "../games/eraTW");
@@ -267,6 +279,7 @@ const environment = {
     ]),
   ),
 };
+const buildEnvironment = reusableBuildEnvironment(environment, specName, state, reuseBuild);
 
 const snapshotLogDirectory = path.resolve(repository, ".rustyera/test-runs/tauri-snapshots");
 await mkdir(snapshotLogDirectory, { recursive: true });
@@ -284,28 +297,54 @@ const metadata = await promisify(execFile)(
   { cwd: repository, env: environment, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
 );
 const binary = resolveTauriBinary(JSON.parse(metadata.stdout).target_directory, release);
-activeStage = "building the Tauri webdriver binary";
-await run(
-  process.execPath,
-  [
-    cargoLocal,
-    ...packageArguments,
-    "run",
-    "tauri",
-    "--",
-    "build",
-    ...(release ? [] : ["--debug"]),
-    "--no-bundle",
-    "--features",
-    "webdriver",
-    "--config",
-    "src-tauri/tauri.webdriver.conf.json",
-    ...(nativeProvider?.cargoArguments ?? []),
-  ],
-  { ...environment, RUSTYERA_CARGO: packageCommand },
-  taskDeadline,
-  () => deadlineDiagnostic(),
-);
+const buildArguments = [
+  cargoLocal,
+  ...packageArguments,
+  "run",
+  "tauri",
+  "--",
+  "build",
+  ...(release ? [] : ["--debug"]),
+  "--no-bundle",
+  "--features",
+  "webdriver",
+  "--config",
+  "src-tauri/tauri.webdriver.conf.json",
+  ...(nativeProvider?.cargoArguments ?? []),
+];
+const contractOptions = {
+  repository,
+  binary,
+  args: buildArguments,
+  environment: buildEnvironment,
+  provider: nativeProvider?.provenance,
+};
+const manifestPath = `${binary}.webdriver-build.json`;
+const contract = reuseBuild ? await buildContract(contractOptions) : undefined;
+let artifact = contract
+  ? await reusableArtifact(manifestPath, contract, binary, { required: requireReuseBuild })
+  : undefined;
+if (artifact) {
+  console.log(
+    JSON.stringify({ type: "tauri-build-reused", manifestPath, binary: artifact.binary }),
+  );
+} else {
+  activeStage = "building the Tauri webdriver binary (no GUI session yet)";
+  console.log(JSON.stringify({ type: "tauri-build-start", stage: activeStage, binary }));
+  await run(
+    process.execPath,
+    buildArguments,
+    { ...buildEnvironment, RUSTYERA_CARGO: packageCommand },
+    taskDeadline,
+    () => deadlineDiagnostic(),
+  );
+  if (contract) {
+    if ((await buildContract(contractOptions)).sha256 !== contract.sha256)
+      throw new Error("Tauri build inputs changed during compilation; artifact is not reusable");
+    artifact = await recordBuiltArtifact(manifestPath, contract, binary);
+  }
+  console.log(JSON.stringify({ type: "tauri-build-complete", binary, identity: artifact?.binary }));
+}
 if (nativeProvider) {
   const current = await validateNativeWebdriverSource(nativeProvider.provenance.source, {
     manifestDirectory: nativeProviderManifestDirectory,
@@ -316,6 +355,14 @@ if (nativeProvider) {
 }
 await access(binary);
 console.log(JSON.stringify({ type: "tauri-test-binary", path: binary }));
+if (buildOnly) {
+  await new Promise((resolve, reject) => {
+    snapshotLog.once("error", reject);
+    snapshotLog.end(resolve);
+  });
+  console.log(JSON.stringify({ type: "tauri-build-only-complete", guiStarted: false }));
+  process.exit(0);
+}
 environment.RUSTYERA_SERVICE_CAPTURE_NATIVE_BINARY = binary;
 Object.assign(process.env, environment);
 const { cleanupWdioSession, createTauriCapabilities, startWdioSession } =
@@ -338,6 +385,7 @@ let runError;
 let finalizationError;
 try {
   activeStage = "starting the embedded WebDriver session";
+  console.log(JSON.stringify({ type: "tauri-gui-start", binary }));
   browser = await withinDeadline(
     startWdioSession(capabilities, { maxInstances: 1 }),
     taskDeadline,
@@ -364,6 +412,22 @@ try {
       console.log(message);
     },
   });
+
+  if (reuseBuild) {
+    await browser.waitUntil(() => browser.execute(() => Boolean(window.__RUSTYERA_TEST__)), {
+      timeout: 20_000,
+      interval: 50,
+    });
+    // Supply the isolated project path only after creating the native session.
+    await browser.execute(
+      (projectPath) => {
+        window.__RUSTYERA_TEST__.configureServiceLifecycle({
+          projectPaths: [projectPath],
+        });
+      },
+      project,
+    );
+  }
 
   const specs = configuredSpec
     ? [path.resolve(repository, configuredSpec)]

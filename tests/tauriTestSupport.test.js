@@ -3,6 +3,12 @@ import {
   validateNativeWebdriverSource,
 } from "../scripts/tauri-native-webdriver-support.mjs";
 import {
+  fileIdentity,
+  recordBuiltArtifact,
+  reusableArtifact,
+  reusableBuildEnvironment,
+} from "../scripts/tauri-build-cache.mjs";
+import {
   observePendingCanvas,
   assertCancelledLifecycle,
 } from "../scripts/snake-service-lifecycle-races.mjs";
@@ -56,6 +62,160 @@ afterEach(() => {
   vi.useRealTimers();
   document.body.replaceChildren();
   delete window.__RUSTYERA_TEST__;
+});
+
+describe("verified Tauri build reuse", () => {
+  it("keeps per-run picker inputs out of the reusable build without changing the test environment", () => {
+    const first = {
+      PATH: "/tools",
+      VITE_RUSTYERA_TAURI_NATIVE_INPUT: "1",
+      VITE_RUSTYERA_TEST_PROJECT: "/first/project",
+      VITE_RUSTYERA_TEST_PROJECT_FILE: "/first/cache",
+      VITE_RUSTYERA_TAURI_EXPORT_PATH: "/first/export",
+    };
+    const second = {
+      PATH: "/tools",
+      VITE_RUSTYERA_TAURI_SNAKE_SERVICES: "1",
+      VITE_RUSTYERA_TEST_PROJECT: "/second/project",
+      VITE_RUSTYERA_TEST_PROJECT_FILE: "/second/cache",
+    };
+    expect(reusableBuildEnvironment(first, "native-input.spec.mjs", undefined, true)).toEqual(
+      reusableBuildEnvironment(second, "snake-services.spec.mjs", undefined, true),
+    );
+    expect(first.VITE_RUSTYERA_TEST_PROJECT).toBe("/first/project");
+    expect(reusableBuildEnvironment(first, "other.spec.mjs", undefined, false)).toEqual(first);
+    expect(() => reusableBuildEnvironment(first, "other.spec.mjs", undefined, true)).toThrow(
+      "supported",
+    );
+    expect(() => reusableBuildEnvironment(first, "snake-data.spec.mjs", "/state", true)).toThrow(
+      "without --state",
+    );
+  });
+
+  it("rejects strict cache misses before compilation and reports changed environment names", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "tauri-required-cache-"));
+    try {
+      const binary = path.join(directory, "binary");
+      const manifest = path.join(directory, "manifest.json");
+      const contract = {
+        sha256: "original",
+        inputs: { environment: { PATH: "/original" }, webSources: [] },
+      };
+      await expect(
+        reusableArtifact(manifest, contract, binary, { required: true }),
+      ).rejects.toThrow("manifest missing or invalid; no build was started");
+      await writeFile(binary, "verified");
+      const recorded = await recordBuiltArtifact(manifest, contract, binary);
+      expect(await reusableArtifact(manifest, contract, binary, { required: true })).toEqual(
+        recorded,
+      );
+      const changed = {
+        sha256: "changed",
+        inputs: { ...contract.inputs, environment: { PATH: "/changed" } },
+      };
+      await expect(reusableArtifact(manifest, changed, binary, { required: true })).rejects.toThrow(
+        "environment.PATH",
+      );
+      await writeFile(binary, "replaced");
+      await expect(
+        reusableArtifact(manifest, contract, binary, { required: true }),
+      ).rejects.toThrow("executable missing or hash mismatch; no build was started");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses only a completed matching build and rejects source drift or replaced executables", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "tauri-build-reuse-"));
+    try {
+      const binary = path.join(directory, "binary");
+      const manifest = path.join(directory, "manifest.json");
+      const contract = { sha256: "source-and-toolchain-identity" };
+      await writeFile(binary, "executable-one");
+      expect(await reusableArtifact(manifest, contract, binary)).toBeUndefined();
+      const recorded = await recordBuiltArtifact(manifest, contract, binary);
+      expect(await reusableArtifact(manifest, contract, binary)).toEqual(recorded);
+      expect(
+        await reusableArtifact(manifest, { sha256: "changed-source" }, binary),
+      ).toBeUndefined();
+      const inputs = {
+        args: ["build", "--features", "webdriver"],
+        webSources: [
+          ["scripts/tauri-test.mjs", "old-harness"],
+          ["src/main.ts", "same-app"],
+          ["scripts/tauri-test-support.mjs", "old-runtime-helper"],
+          ["scripts/vite-wasm-plugin.ts", "same-vite-input"],
+          ["scripts/snake-service-lifecycle-races.mjs", "old-race-helper"],
+          ["scripts/snake-services-test-support.mjs", "old-services-helper"],
+          ["scripts/browser-compat-test.mjs", "old-browser-runner"],
+          ["scripts/web-test-lib.mjs", "old-browser-helper"],
+        ],
+        coreSources: [["crates/runtime.rs", "same-core"]],
+        environment: { RUSTFLAGS: "same-flags" },
+        provider: { sha256: "same-provider" },
+      };
+      const withSources = { sha256: "with-sources", inputs };
+      await recordBuiltArtifact(manifest, withSources, binary);
+      const changedHarness = structuredClone(withSources);
+      changedHarness.sha256 = "changed-harness";
+      changedHarness.inputs.webSources[0][1] = "fixed-retry-policy";
+      expect(await reusableArtifact(manifest, changedHarness, binary)).toBeDefined();
+      const changedRuntimeHelper = structuredClone(changedHarness);
+      changedRuntimeHelper.sha256 = "changed-runtime-helper";
+      changedRuntimeHelper.inputs.webSources[2][1] = "native-foreground-precondition";
+      changedRuntimeHelper.inputs.webSources[4][1] = "transport-identity-before-image-gate";
+      expect(await reusableArtifact(manifest, changedRuntimeHelper, binary)).toBeDefined();
+      for (const index of [5, 6, 7]) {
+        const changedNodeHelper = structuredClone(changedRuntimeHelper);
+        changedNodeHelper.inputs.webSources[index][1] = "node-only-observation-or-foreground";
+        expect(await reusableArtifact(manifest, changedNodeHelper, binary)).toBeDefined();
+      }
+      const changedApp = structuredClone(changedRuntimeHelper);
+      changedApp.inputs.webSources[1][1] = "different-app";
+      expect(await reusableArtifact(manifest, changedApp, binary)).toBeUndefined();
+      const changedBuild = structuredClone(changedHarness);
+      changedBuild.inputs.args.push("--release");
+      expect(await reusableArtifact(manifest, changedBuild, binary)).toBeUndefined();
+      for (const change of [
+        (value) => {
+          value.inputs.coreSources[0][1] = "different-core";
+        },
+        (value) => {
+          value.inputs.environment.RUSTFLAGS = "different-flags";
+        },
+        (value) => {
+          value.inputs.provider.sha256 = "different-provider";
+        },
+        (value) => {
+          value.inputs.webSources[3][1] = "different-vite-input";
+        },
+      ]) {
+        const changed = structuredClone(changedRuntimeHelper);
+        change(changed);
+        expect(await reusableArtifact(manifest, changed, binary)).toBeUndefined();
+      }
+      await writeFile(binary, "replaced-during-helper-repair");
+      expect(await reusableArtifact(manifest, changedRuntimeHelper, binary)).toBeUndefined();
+      await recordBuiltArtifact(manifest, contract, binary);
+      await writeFile(binary, "executable-two");
+      expect(await reusableArtifact(manifest, contract, binary)).toBeUndefined();
+      await rm(binary);
+      expect(await reusableArtifact(manifest, contract, binary)).toBeUndefined();
+      await expect(recordBuiltArtifact(manifest, contract, binary)).rejects.toThrow(
+        "did not produce",
+      );
+      await writeFile(manifest, "{truncated");
+      expect(await reusableArtifact(manifest, contract, binary)).toBeUndefined();
+      await writeFile(manifest, "null");
+      expect(await reusableArtifact(manifest, contract, binary)).toBeUndefined();
+      await writeFile(binary, "actual");
+      const link = path.join(directory, "link");
+      await symlink(binary, link);
+      await expect(fileIdentity(link)).rejects.toThrow("not a regular file");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("snake data client test support", () => {

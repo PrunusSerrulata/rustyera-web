@@ -2,6 +2,32 @@
 
 ## Required stack
 
+### Reusing the snake acceptance executable
+
+For the opt-in `snake-*.spec.mjs` profiles and `native-input.spec.mjs`, pass `--reuse-build`.
+The official runner still builds through the Tauri CLI with the same webdriver configuration;
+do not substitute a direct Cargo build with a different feature set. The runner fingerprints the
+Web/core sources, publish pin and locks, Cargo configuration, public assets, build environment,
+toolchain, and explicit native provider, then checks the executable hash. Missing, changed or
+incomplete provenance causes a build; a replaced executable is never reused. Keep dependency
+installations and builds serial while this executable is in use.
+
+The reusable build contains no real fixture path. After native session creation the runner supplies
+the fresh isolated directory through `configureServiceLifecycle({projectPaths})`; the spec still
+clicks the visible open action and exercises real Rust filesystem commands. State imports and other
+specs are not eligible. `--build-only` finishes the same official build without opening a GUI, so
+static build gates and subsequent native probes can share one verified artifact. Logs explicitly
+separate build start/completion, cache reuse, and GUI session startup.
+
+For capture matrices that must not compile, use `--require-reuse-build`. It performs the same
+identity checks but rejects a cache miss before building, identifying changed contract fields.
+Keep the tool environment consistent with the verified build; do not relax environment checks
+to accept a different compiler or SDK.
+
+For the current snake batch, a reclaimed outer PTY response is not a reason to rebuild: use the
+persisted completed command result, logs and artifact identity. Real build/test failures and the
+five-second watchdog still fail normally.
+
 Run `npm run test:tauri -- --project PROJECT`. The runner must:
 
 1. resolve and verify a real Era project directory;
