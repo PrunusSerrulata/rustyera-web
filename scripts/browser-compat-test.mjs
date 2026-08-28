@@ -9,7 +9,11 @@ import { fileURLToPath } from "node:url";
 import { remote } from "webdriverio";
 
 import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs";
-import { captureConfiguration, prepareCaptureInputs } from "./snake-service-capture-io.mjs";
+import {
+  CaptureWriter,
+  captureConfiguration,
+  prepareCaptureInputs,
+} from "./snake-service-capture-io.mjs";
 import {
   allowsServiceOracleFault,
   recordServiceOracleWatchdog,
@@ -492,9 +496,22 @@ try {
               throw new Error(`independent lifecycle picker failed: ${selection.error}`);
           },
         });
-        console.log(
-          JSON.stringify({ browser: browserName, type: "snake-service-lifecycle", ...lifecycle }),
-        );
+        // Driver warnings share stdout, so the complete result must have its own file.
+        const writer = new CaptureWriter(snapshotDirectory);
+        try {
+          await writer.record({
+            browser: browserName,
+            type: "snake-service-lifecycle",
+            ...lifecycle,
+          });
+          const artifact = await writer.close();
+          console.log(
+            JSON.stringify({ browser: browserName, type: "snake-service-lifecycle", artifact }),
+          );
+        } catch (error) {
+          await writer.abort(error);
+          throw error;
+        }
       } finally {
         console.log(JSON.stringify({ type: "lifecycle-image-stream", ...gate.status() }));
         await gate.close();
