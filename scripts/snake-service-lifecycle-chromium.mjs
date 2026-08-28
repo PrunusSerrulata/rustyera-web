@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global window */
+/* global document, window */
 import { appendFile, mkdir, readFile, realpath } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -213,6 +213,10 @@ function playwrightLifecycleAdapter(browser, context, page) {
       active = "focus-probe";
       windows.set(active, { context, page: nextPage });
       await nextPage.bringToFront();
+      // Native window activation is asynchronous. Observe the actual transfer before switching
+      // back; otherwise a rapid pair of activation requests can leave the first window focused.
+      await nextPage.waitForFunction(() => document.hasFocus(), undefined, { timeout: 3000 });
+      await page.waitForFunction(() => !document.hasFocus(), undefined, { timeout: 3000 });
     },
     async switchToWindow(handle) {
       if (!windows.has(handle)) throw new Error("unknown lifecycle window");
