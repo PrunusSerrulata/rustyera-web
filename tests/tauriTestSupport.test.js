@@ -1,4 +1,8 @@
 import {
+  nativeWebdriverOption,
+  validateNativeWebdriverSource,
+} from "../scripts/tauri-native-webdriver-support.mjs";
+import {
   observePendingCanvas,
   assertCancelledLifecycle,
 } from "../scripts/snake-service-lifecycle-races.mjs";
@@ -945,5 +949,151 @@ describe("real lifecycle race evidence assertions", () => {
         true,
       ),
     ).toThrow("stale reply");
+  });
+});
+
+describe("explicit native WebDriver source binding", () => {
+  const upstreamChecksum = "30c5bffe978c41b06ad44a5f4b5b543405918cf316b98756c678a6431061f2e9";
+  const row = (file, text) => ({
+    path: file,
+    bytes: Buffer.byteLength(text),
+    sha256: sha256(text),
+  });
+
+  async function fixture(run, cargoVersion = "1.2.0") {
+    const root = await mkdtemp(path.join(tmpdir(), "rustyera-native-provider-"));
+    const provider = path.join(root, "provider space");
+    const manifests = path.join(root, "trusted");
+    const cargo = `[package]\nname = "tauri-plugin-wdio-webdriver"\nversion = "${cargoVersion}"\n`;
+    const originalSource = "original provider\n";
+    const nativeSource = "native overlay\n";
+    try {
+      await mkdir(path.join(provider, "src"), { recursive: true });
+      await mkdir(manifests);
+      await writeFile(path.join(provider, "Cargo.toml"), cargo);
+      await writeFile(path.join(provider, "src/lib.rs"), nativeSource);
+      await writeFile(
+        path.join(manifests, "original-inventory.json"),
+        JSON.stringify({
+          package: "tauri-plugin-wdio-webdriver",
+          version: "1.2.0",
+          registryChecksum: upstreamChecksum,
+          files: [row("Cargo.toml", cargo), row("src/lib.rs", originalSource)],
+        }),
+      );
+      await writeFile(
+        path.join(manifests, "overlay-manifest.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          upstreamPackage: "tauri-plugin-wdio-webdriver",
+          upstreamVersion: "1.2.0",
+          files: [row("src/lib.rs", nativeSource)],
+        }),
+      );
+      await run({
+        provider,
+        manifests,
+        nativeSource,
+        validate: () =>
+          validateNativeWebdriverSource(provider, {
+            manifestDirectory: manifests,
+            platform: "darwin",
+          }),
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it("does not add an override to ordinary test commands on any platform", () => {
+    expect(nativeWebdriverOption(["--spec", "example.spec.mjs"], "linux")).toBeUndefined();
+    expect(nativeWebdriverOption(["--native-webdriver-source", "/source space"], "darwin")).toBe(
+      "/source space",
+    );
+  });
+
+  it.each([
+    [["--native-webdriver-source"], "darwin", /requires a path/],
+    [["--native-webdriver-source", "--project", "/game"], "darwin", /requires a path/],
+    [
+      ["--native-webdriver-source", "/one", "--native-webdriver-source", "/two"],
+      "darwin",
+      /only once/,
+    ],
+    [["--native-webdriver-source", "/one"], "linux", /only on macOS/],
+  ])("rejects malformed or unsupported opt-in arguments %#", (args, platform, message) => {
+    expect(() => nativeWebdriverOption(args, platform)).toThrow(message);
+  });
+
+  it("binds the overlaid source and preserves one escaped Cargo argument", async () => {
+    await fixture(async ({ validate }) => {
+      const result = await validate();
+      expect(result.cargoArguments).toEqual([
+        "--",
+        "--config",
+        `patch.crates-io.tauri-plugin-wdio-webdriver.path=${JSON.stringify(result.provenance.source)}`,
+      ]);
+      expect(result.provenance).toMatchObject({
+        package: "tauri-plugin-wdio-webdriver",
+        version: "1.2.0",
+        upstreamChecksum,
+        fileCount: 2,
+      });
+      expect(result.provenance.materializedInventorySha256).toMatch(/^[0-9a-f]{64}$/);
+    });
+  });
+
+  it.each(["modified", "missing", "extra"])("rejects a %s materialized input", async (kind) => {
+    await fixture(async ({ provider, validate }) => {
+      if (kind === "modified") await writeFile(path.join(provider, "src/lib.rs"), "tampered\n");
+      if (kind === "missing") await rm(path.join(provider, "src/lib.rs"));
+      if (kind === "extra") await writeFile(path.join(provider, "unexpected.rs"), "extra\n");
+      await expect(validate()).rejects.toThrow(/identity mismatch|missing or unexpected/);
+    });
+  });
+
+  it("rejects symlinked input even if its target has the expected bytes", async () => {
+    await fixture(async ({ provider, manifests, nativeSource, validate }) => {
+      const target = path.join(manifests, "native.rs");
+      await writeFile(target, nativeSource);
+      await rm(path.join(provider, "src/lib.rs"));
+      await symlink(target, path.join(provider, "src/lib.rs"));
+      await expect(validate()).rejects.toThrow(/symlinks/);
+    });
+  });
+
+  it("rejects empty-directory nesting independently of the file count", async () => {
+    await fixture(async ({ provider, validate }) => {
+      await mkdir(path.join(provider, ...Array.from({ length: 17 }, () => "nested")), {
+        recursive: true,
+      });
+      await expect(validate()).rejects.toThrow(/nesting is too deep/);
+    });
+  });
+
+  it("rejects a source file that grew beyond the byte cap before hashing", async () => {
+    await fixture(async ({ provider, validate }) => {
+      await writeFile(path.join(provider, "src/lib.rs"), Buffer.alloc(2 * 1024 * 1024 + 1));
+      await expect(validate()).rejects.toThrow(/bounded regular file/);
+    });
+  });
+
+  it("rejects an unsafe or duplicate trusted overlay row", async () => {
+    for (const kind of ["unsafe", "duplicate"]) {
+      await fixture(async ({ manifests, validate }) => {
+        const filename = path.join(manifests, "overlay-manifest.json");
+        const manifest = JSON.parse(await readFile(filename, "utf8"));
+        if (kind === "unsafe") manifest.files[0].path = "../outside";
+        else manifest.files.push(manifest.files[0]);
+        await writeFile(filename, JSON.stringify(manifest));
+        await expect(validate()).rejects.toThrow(/unsafe file path|duplicate file path/);
+      });
+    }
+  });
+
+  it("checks Cargo package identity even when the supplied file digest matches", async () => {
+    await fixture(async ({ validate }) => {
+      await expect(validate()).rejects.toThrow(/Cargo package must be/);
+    }, "9.9.9");
   });
 });

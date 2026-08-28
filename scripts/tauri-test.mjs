@@ -19,6 +19,11 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import Mocha from "mocha";
 
+import {
+  nativeWebdriverOption,
+  validateNativeWebdriverSource,
+} from "./tauri-native-webdriver-support.mjs";
+
 import { resolveTauriBinary, startTauriSessionMonitor } from "./tauri-test-support.mjs";
 import {
   allowsServiceOracleFault,
@@ -33,6 +38,8 @@ let lastCompleteSnapshot;
 const monitorObservation = { sequence: 0, runtime: undefined };
 globalThis.__RUSTYERA_TAURI_MONITOR_OBSERVATION__ = monitorObservation;
 const arguments_ = process.argv.slice(2);
+const requestedNativeProvider = nativeWebdriverOption(arguments_);
+const nativeProviderManifestDirectory = path.join(repository, "tools/tauri-native-webdriver");
 const projectIndex = arguments_.indexOf("--project");
 const specIndex = arguments_.indexOf("--spec");
 const stateIndex = arguments_.indexOf("--state");
@@ -47,6 +54,10 @@ const requestedSpec = specIndex >= 0 ? arguments_[specIndex + 1] : undefined;
 const configuredSpec = requestedSpec;
 const specName = configuredSpec ? path.basename(configuredSpec) : undefined;
 const specProfiles = {
+  "native-input.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_NATIVE_INPUT",
+    copyProject: true,
+  },
   "snake-service-oracle.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_SERVICE_ORACLE",
     copyProject: true,
@@ -164,6 +175,15 @@ if (!["traditional_save", "vm_snapshot"].includes(configuredStateType))
 if (stateTypeIndex >= 0 && !configuredState) throw new Error("--state-type requires --state");
 if (process.platform === "win32" && !npmExecPath)
   throw new Error("npm_execpath is required to launch package scripts on Windows");
+if (specName === "native-input.spec.mjs" && !requestedNativeProvider)
+  throw new Error("native input probe requires explicit --native-webdriver-source");
+const nativeProvider = requestedNativeProvider
+  ? await validateNativeWebdriverSource(path.resolve(repository, requestedNativeProvider), {
+      manifestDirectory: nativeProviderManifestDirectory,
+    })
+  : undefined;
+if (nativeProvider)
+  console.log(JSON.stringify({ ...nativeProvider.provenance, stage: "before-build" }));
 await access(project);
 if (state) await access(state);
 if (specProfile?.copyProject) {
@@ -224,6 +244,7 @@ const environment = {
   VITE_RUSTYERA_TAURI_TEST: "1",
   VITE_RUSTYERA_TEST_PROJECT: project,
   RUSTYERA_LIFECYCLE_REPLACEMENT_PROJECT: lifecycleReplacementProject ?? "",
+  RUSTYERA_NATIVE_WEBDRIVER_SOURCE: nativeProvider?.provenance.source ?? "",
   RUSTYERA_SERVICE_CAPTURE_SOURCE_PROJECT: originalProject,
   VITE_RUSTYERA_TEST_PROJECT_FILE:
     specName === "diagnosis.spec.mjs"
@@ -279,11 +300,20 @@ await run(
     "webdriver",
     "--config",
     "src-tauri/tauri.webdriver.conf.json",
+    ...(nativeProvider?.cargoArguments ?? []),
   ],
   { ...environment, RUSTYERA_CARGO: packageCommand },
   taskDeadline,
   () => deadlineDiagnostic(),
 );
+if (nativeProvider) {
+  const current = await validateNativeWebdriverSource(nativeProvider.provenance.source, {
+    manifestDirectory: nativeProviderManifestDirectory,
+  });
+  if (JSON.stringify(current.provenance) !== JSON.stringify(nativeProvider.provenance))
+    throw new Error("native WebDriver source or trusted manifests changed during the build");
+  console.log(JSON.stringify({ ...current.provenance, stage: "after-build" }));
+}
 await access(binary);
 console.log(JSON.stringify({ type: "tauri-test-binary", path: binary }));
 environment.RUSTYERA_SERVICE_CAPTURE_NATIVE_BINARY = binary;
