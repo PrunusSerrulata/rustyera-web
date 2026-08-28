@@ -1105,7 +1105,8 @@ describe("pointer canonical button observation", () => {
       clientHeight: { configurable: true, value: 200 },
     });
     vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue({ left: 10, top: 20 } as DOMRect);
-    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     let hit: Element = child;
     Object.defineProperty(document, "elementFromPoint", {
       configurable: true,
@@ -1119,16 +1120,43 @@ describe("pointer canonical button observation", () => {
     expect(pointer.sample(2).buttonValue).toBe("");
     hit = viewport;
     viewport.dispatchEvent(new Event("scroll"));
-    expect(pointer.sample(1).buttonValue).toBe("");
+    // Firefox may report the old hover location in a layout-driven pointerout.
+    window.dispatchEvent(
+      new MouseEvent("pointerout", { clientX: 199, clientY: 150, relatedTarget: viewport }),
+    );
+    expect(pointer.sample(1)).toEqual({ x: 20, y: -170, buttonValue: "" });
     hit = child;
     Object.defineProperty(viewport, "clientHeight", { configurable: true, value: 250 });
     window.dispatchEvent(new Event("resize"));
     expect(pointer.sample(1).y).toBe(-220);
     window.dispatchEvent(new Event("blur"));
+    window.dispatchEvent(
+      new MouseEvent("pointerout", { clientX: 30, clientY: 50, relatedTarget: child }),
+    );
     expect(pointer.sample(1)).toEqual({ x: 0, y: 0, buttonValue: "" });
     window.dispatchEvent(new MouseEvent("pointermove", { clientX: 30, clientY: 50 }));
     window.dispatchEvent(new MouseEvent("pointerout", { relatedTarget: null }));
     expect(pointer.sample(1).buttonValue).toBe("");
+    for (const type of ["pointermove", "pointerdown", "pointerup"]) {
+      focus.mockReturnValue(false);
+      window.dispatchEvent(new Event("blur"));
+      window.dispatchEvent(new MouseEvent(type, { clientX: 199, clientY: 150 }));
+      focus.mockReturnValue(true);
+      window.dispatchEvent(new Event("focus"));
+      // An event delivered in the background cannot reappear when keyboard focus returns.
+      expect(pointer.sample(1)).toEqual({ x: 0, y: 0, buttonValue: "" });
+      window.dispatchEvent(new MouseEvent(type, { clientX: 30, clientY: 50 }));
+      expect(pointer.sample(1)).toEqual({ x: 20, y: -220, buttonValue: "42" });
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new MouseEvent(type, { clientX: 199, clientY: 150 }));
+      expect(pointer.sample(1)).toEqual({ x: 0, y: 0, buttonValue: "" });
+      visibility.mockReturnValue("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(pointer.sample(1)).toEqual({ x: 0, y: 0, buttonValue: "" });
+      window.dispatchEvent(new MouseEvent(type, { clientX: 30, clientY: 50 }));
+      expect(pointer.sample(1)).toEqual({ x: 20, y: -220, buttonValue: "42" });
+    }
     unregister();
   });
 

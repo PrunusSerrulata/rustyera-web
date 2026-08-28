@@ -91,20 +91,26 @@ export class RuntimePointerObservation {
     if (document.visibilityState !== "visible") this.clear();
   };
   private readonly observe = (event: PointerEvent): void => {
+    if (!document.hasFocus() || document.visibilityState !== "visible") {
+      this.clear();
+      return;
+    }
     if (event.pointerType === "touch") return;
     if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY))
       this.position = { x: event.clientX, y: event.clientY };
   };
   private readonly outside = (event: PointerEvent): void => {
+    // Layout/scroll can emit boundary events with an older position (notably in Firefox).
+    // Only move/down/up update coordinates; a boundary event can only invalidate them.
     if (event.relatedTarget == null) this.clear();
-    else this.observe(event);
   };
 
   sample(epoch: ServiceInteger): PointerObservation {
     const viewport = this.viewport();
     if (!viewport?.isConnected || viewport.clientWidth <= 0 || viewport.clientHeight <= 0)
       throw new RuntimeServiceError("stale_projection", "game viewport is unavailable");
-    if (!this.position || !document.hasFocus()) return { x: 0, y: 0, buttonValue: "" };
+    if (!this.position || !document.hasFocus() || document.visibilityState !== "visible")
+      return { x: 0, y: 0, buttonValue: "" };
     // Recompute both geometry and hit testing on every query, including after scroll/resize.
     const rect = viewport.getBoundingClientRect();
     const localX = this.position.x - rect.left - viewport.clientLeft;
