@@ -10,7 +10,7 @@ import {
   recordServiceOracleWatchdog,
   runServiceOracleCapture,
 } from "./snake-service-capture-client.mjs";
-import { installRemoteFileSystem, isolatedProject } from "./web-test-lib.mjs";
+import { isolatedProject } from "./web-test-lib.mjs";
 import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs";
 import { createLoopbackViteServer, viteServerPort } from "./vite-test-server.mjs";
 
@@ -43,7 +43,17 @@ try {
   });
   await context.grantPermissions(["local-fonts"], { origin: url });
   page = await context.newPage();
-  await installRemoteFileSystem(page, fixture.project);
+  // Use the real directory FileList path. The remote handle adapter requires file-serving
+  // middleware, which this standalone capture server does not provide.
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "showDirectoryPicker", { configurable: true, value: undefined });
+  });
+  page.on("filechooser", (chooser) => {
+    void chooser.setFiles(fixture.project).catch((error) => {
+      monitorFailure = error;
+      void page.close();
+    });
+  });
   await page.goto(url);
   await page.waitForFunction(() => window.__RUSTYERA_TEST__ != null);
   monitor = startCompleteSnapshotMonitor(
