@@ -145,18 +145,7 @@ export function startTauriSessionMonitor(
         const captured = await captureCompleteTauriSnapshot(browser);
         const snapshot = { ...captured, operation: snapshotContext() };
         const runtime = captured.runtime;
-        await onSnapshot?.(snapshot);
-        if (runtime?.fault != null && !allowFault()) {
-          throw new Error(`${label} runtime faulted: ${JSON.stringify(snapshot)}`);
-        }
-        const terminalRejection = runtime?.logs?.find((entry) =>
-          /command rejected \[(?:VersionMismatch|ProtocolMismatch)\]/.test(String(entry?.message)),
-        );
-        if (terminalRejection) {
-          throw new Error(
-            `${label} runtime rejected the configured state: ${JSON.stringify(snapshot)}`,
-          );
-        }
+        // Persist the failure frontier before an observer or terminal-state check can throw.
         await output(
           JSON.stringify({
             type: eventType,
@@ -164,6 +153,18 @@ export function startTauriSessionMonitor(
             ...snapshot,
           }),
         );
+        await onSnapshot?.(snapshot);
+        if (runtime?.fault != null && !allowFault()) {
+          throw new Error(`${label} runtime faulted: ${JSON.stringify(runtime.fault)}`);
+        }
+        const terminalRejection = runtime?.logs?.find((entry) =>
+          /command rejected \[(?:VersionMismatch|ProtocolMismatch)\]/.test(String(entry?.message)),
+        );
+        if (terminalRejection) {
+          throw new Error(
+            `${label} runtime rejected the configured state: ${JSON.stringify(terminalRejection)}`,
+          );
+        }
         assertSnapshotProgress(previousSnapshot, snapshot, label);
         previousSnapshot = snapshot;
         if (stopAfterNextCapture) {

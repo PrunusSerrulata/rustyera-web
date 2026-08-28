@@ -274,10 +274,12 @@ describe("Tauri end-to-end test support", () => {
     ],
   ])("fails the monitor for terminal runtime state %#", async (runtime, expected) => {
     const browser = { execute: vi.fn(async () => ({ document: [], runtime })) };
-    const monitor = startTauriSessionMonitor(browser, { interval: 1, output: vi.fn() });
+    const output = vi.fn();
+    const monitor = startTauriSessionMonitor(browser, { interval: 1, output });
 
     await expect(monitor.failure).rejects.toThrow(expected);
     await expect(monitor.stop()).rejects.toThrow(expected);
+    expect(JSON.parse(output.mock.calls[0][0])).toMatchObject({ document: [], runtime });
   });
 
   it("fails exactly when the shared deadline is reached", async () => {
