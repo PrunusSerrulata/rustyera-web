@@ -40,6 +40,15 @@ export interface HtmlRenderState {
   interactionEnabled(interaction: unknown): false;
   activate(token: unknown): Promise<void>;
 }
+type HtmlMeasurementPhase =
+  | "vue-flush"
+  | "media-settle"
+  | "media-work"
+  | "font-load"
+  | "font-ready"
+  | "image-metadata"
+  | "image-url"
+  | "image-decode";
 export interface HtmlMeasurementProjection {
   readonly state: HtmlRenderState;
   readonly resourceBridge: FrontendBridge;
@@ -47,7 +56,7 @@ export interface HtmlMeasurementProjection {
   readonly budget: CanvasReplayBudget;
   assertCurrent(): void;
   active(): boolean;
-  wait<T>(promise: Promise<T>): Promise<T>;
+  wait<T>(promise: Promise<T>, phase?: HtmlMeasurementPhase): Promise<T>;
   track(promise: Promise<unknown>): void;
   acquireImage(
     resourceId: string,
@@ -66,6 +75,7 @@ export class HtmlMeasurementScope implements HtmlMeasurementProjection {
   private readonly controller = new AbortController();
   readonly signal = this.controller.signal;
   private readonly pending = new Set<Promise<unknown>>();
+  private readonly waitPhases = new Map<symbol, HtmlMeasurementPhase>();
   private readonly releases = new Set<() => void>();
   private failure?: RuntimeServiceError;
   private imageCount = 0;
@@ -110,9 +120,13 @@ export class HtmlMeasurementScope implements HtmlMeasurementProjection {
     this.relayAbort = () => this.controller.abort();
     guard.signal.addEventListener("abort", this.relayAbort, { once: true });
     this.timeout = setTimeout(() => {
+      const owner = binding.viewport.ownerDocument;
+      const phase = [...new Set(this.waitPhases.values())].sort().join(",") || "render";
       this.failure ??= new RuntimeServiceError(
         "backend_failure",
-        "HTML fonts or media did not settle within the measurement deadline",
+        "HTML fonts or media did not settle within the measurement deadline; " +
+          `phase=${phase}; visibilityState=${owner.visibilityState}; ` +
+          `hasFocus=${owner.hasFocus()}; fonts.status=${owner.fonts?.status ?? "unavailable"}`,
       );
       this.controller.abort();
     }, 10_000);
@@ -146,8 +160,12 @@ export class HtmlMeasurementScope implements HtmlMeasurementProjection {
     }
   }
 
-  async wait<T>(promise: Promise<T>): Promise<T> {
+  async wait<T>(promise: Promise<T>, phase: HtmlMeasurementPhase = "media-work"): Promise<T> {
     this.assertCurrent();
+    // Media may wait concurrently with the renderer. Keep only still-pending phases rather
+    // than letting one completed child overwrite the phase of another unfinished operation.
+    const token = Symbol();
+    this.waitPhases.set(token, phase);
     let abort: (() => void) | undefined;
     const cancellation = new Promise<never>((_resolve, reject) => {
       abort = () =>
@@ -162,6 +180,7 @@ export class HtmlMeasurementScope implements HtmlMeasurementProjection {
       this.assertCurrent();
       return value;
     } finally {
+      this.waitPhases.delete(token);
       if (abort) this.signal.removeEventListener("abort", abort);
     }
   }
@@ -183,7 +202,7 @@ export class HtmlMeasurementScope implements HtmlMeasurementProjection {
 
   async settle(): Promise<void> {
     this.assertCurrent();
-    while (this.pending.size) await this.wait(Promise.all([...this.pending]));
+    while (this.pending.size) await this.wait(Promise.all([...this.pending]), "media-settle");
     this.assertCurrent();
   }
 
@@ -211,7 +230,10 @@ export class HtmlMeasurementScope implements HtmlMeasurementProjection {
           "resource_limit",
           "HTML image count exceeds the measurement budget",
         );
-      const metadata = await this.wait(this.resourceBridge.readImageMetadata(resourceId));
+      const metadata = await this.wait(
+        this.resourceBridge.readImageMetadata(resourceId),
+        "image-metadata",
+      );
       if (
         !Number.isSafeInteger(metadata.width) ||
         !Number.isSafeInteger(metadata.height) ||
@@ -230,11 +252,11 @@ export class HtmlMeasurementScope implements HtmlMeasurementProjection {
         revision,
         this.binding.resourceGeneration,
       );
-      const url = await this.wait(lease.url);
+      const url = await this.wait(lease.url, "image-url");
       if (released) throw new RuntimeServiceError("stale_projection", "HTML image was retired");
       decoded = new Image();
       decoded.src = url;
-      await this.wait(decoded.decode());
+      await this.wait(decoded.decode(), "image-decode");
       if (released) throw new RuntimeServiceError("stale_projection", "HTML image was retired");
       if (
         decoded.naturalWidth !== metadata.width ||

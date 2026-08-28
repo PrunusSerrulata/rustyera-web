@@ -417,6 +417,7 @@ describe("bounded offscreen HTML measurement", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     viewport.remove();
     if (originalFonts) Object.defineProperty(document, "fonts", originalFonts);
     else Reflect.deleteProperty(document, "fonts");
@@ -456,33 +457,62 @@ describe("bounded offscreen HTML measurement", () => {
 
   it("measures all independent prefixes in one settled font layout", async () => {
     let fontWidth = 12;
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      queueMicrotask(() => {
-        fontWidth = fontWidth === 12 ? 9 : 12;
-        callback(0);
-      });
-      return 1;
+    let finishLoad!: () => void;
+    let finishReady!: () => void;
+    fontLoad.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishLoad = () => {
+          fontWidth = 10;
+          resolve();
+        };
+      }),
+    );
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: {
+        load: fontLoad,
+        ready: new Promise<void>((resolve) => {
+          finishReady = () => {
+            fontWidth = 9;
+            resolve();
+          };
+        }),
+      },
     });
     vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function (
       this: HTMLElement,
     ) {
       return new DOMRect(0, 0, (this.textContent?.length ?? 0) * fontWidth, 16);
     });
-    const result = await new HtmlMeasurementProvider().measure(
-      {
-        document: queryText("AAAA"),
-        mode: "text_part",
-        cuts: [0, 1, 2, 3, 4].map((offset) => ({
-          id: offset,
-          textNodePath: [0],
-          decodedUtf8Offset: offset,
-          decodedUtf16Offset: offset,
-        })),
-        style: queryStyle(),
-      },
-      measurementBinding(viewport),
-      { signal: new AbortController().signal, assertCurrent() {} },
-    );
+    let completed = false;
+    const pending = new HtmlMeasurementProvider()
+      .measure(
+        {
+          document: queryText("AAAA"),
+          mode: "text_part",
+          cuts: [0, 1, 2, 3, 4].map((offset) => ({
+            id: offset,
+            textNodePath: [0],
+            decodedUtf8Offset: offset,
+            decodedUtf16Offset: offset,
+          })),
+          style: queryStyle(),
+        },
+        measurementBinding(viewport),
+        { signal: new AbortController().signal, assertCurrent() {} },
+      )
+      .then((result) => {
+        completed = true;
+        return result;
+      });
+    await flushPromises();
+    expect(fontLoad).toHaveBeenCalledOnce();
+    expect(completed).toBe(false);
+    finishLoad();
+    await flushPromises();
+    expect(completed).toBe(false);
+    finishReady();
+    const result = await pending;
     expect(result.advancePx).toBe(36);
     expect(result.cuts.map((cut) => cut.advancePx)).toEqual([0, 9, 18, 27, 36]);
     expect(viewport.querySelector(".html-measurement-host")).toBeNull();
@@ -562,6 +592,81 @@ describe("bounded offscreen HTML measurement", () => {
       provider.measure(probe, measurementBinding(viewport), guard),
     ).rejects.toMatchObject({ category: "backend_failure" });
     expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it("identifies blocked font-ready at the unchanged deadline and disposes its projection", async () => {
+    // Leave Vue's microtasks and flushPromises' scheduler real; only advance the scope deadline.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: {
+        load: fontLoad,
+        ready: new Promise<void>(() => {}),
+        status: "loading",
+      },
+    });
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const frame = vi.fn(() => 17);
+    vi.stubGlobal("requestAnimationFrame", frame);
+    const returned = vi.fn();
+    const pending = new HtmlMeasurementProvider().measure(
+      { document: queryText("x"), mode: "text_part", cuts: [], style: queryStyle() },
+      measurementBinding(viewport),
+      { signal: new AbortController().signal, assertCurrent() {} },
+    );
+    const rejected = expect(pending.then(returned)).rejects.toMatchObject({
+      category: "backend_failure",
+      message:
+        "HTML fonts or media did not settle within the measurement deadline; " +
+        "phase=font-ready; visibilityState=hidden; hasFocus=false; fonts.status=loading",
+    });
+    await flushPromises();
+    expect(fontLoad).toHaveBeenCalledOnce();
+    expect(frame).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(viewport.querySelector(".html-measurement-host")).not.toBeNull();
+    expect(cancelAnimationFrame).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(returned).not.toHaveBeenCalled();
+    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    expect(cancelAnimationFrame).not.toHaveBeenCalled();
+  });
+
+  it("measures a hidden unfocused document without requesting an animation frame", async () => {
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const frame = vi.fn(() => 17);
+    vi.stubGlobal("requestAnimationFrame", frame);
+    const provider = new HtmlMeasurementProvider();
+    const measured = vi.fn();
+    const pending = provider
+      .measure(
+        {
+          document: queryText("fi"),
+          mode: "text_part",
+          cuts: [{ id: 7, textNodePath: [0], decodedUtf8Offset: 1, decodedUtf16Offset: 1 }],
+          style: queryStyle(),
+        },
+        measurementBinding(viewport),
+        { signal: new AbortController().signal, assertCurrent() {} },
+      )
+      .then(measured);
+    try {
+      await flushPromises();
+      expect(frame).not.toHaveBeenCalled();
+      expect(measured).toHaveBeenCalledWith(
+        expect.objectContaining({
+          advancePx: 9,
+          cuts: [{ id: 7, advancePx: 6 }],
+        }),
+      );
+      expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    } finally {
+      provider.clear();
+      await pending;
+    }
   });
 
   function imageProbe(source = "portrait") {
@@ -703,56 +808,66 @@ describe("bounded offscreen HTML measurement", () => {
     },
   );
 
-  it("retires an image decoding request on clear and allows the next generation to measure", async () => {
-    const binding = measurementBinding(viewport);
-    binding.resources.sprites = [
-      { name: "portrait", size: [20, 10], frames: [{ resource_id: "declared.png" }] },
-    ];
-    vi.mocked(binding.resourceBridge.readImageMetadata).mockResolvedValue({
-      width: 20,
-      height: 10,
-      format: "png",
-      animated: false,
-    });
-    const release = vi.fn();
-    vi.spyOn(htmlResourceUrls, "acquireResourceUrl").mockReturnValue({
-      url: Promise.resolve("blob:declared"),
-      release,
-    });
-    let finish!: () => void;
-    const decode = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          finish = resolve;
-        }),
-    );
-    vi.stubGlobal(
-      "Image",
-      class {
-        src = "";
-        naturalWidth = 20;
-        naturalHeight = 10;
-        decode = decode;
-      },
-    );
-    const provider = new HtmlMeasurementProvider();
-    const guard = { signal: new AbortController().signal, assertCurrent() {} };
-    const pending = provider.measureImageSlot(imageProbe(), binding, guard);
-    const rejected = expect(pending).rejects.toMatchObject({ category: "stale_projection" });
-    await flushPromises();
-    expect(decode).toHaveBeenCalledOnce();
-    provider.clear();
-    await rejected;
-    expect(release).toHaveBeenCalledOnce();
-    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
-    finish();
-    const result = await provider.measure(
-      { document: queryText("fi"), style: queryStyle(), mode: "text_part", cuts: [] },
-      measurementBinding(viewport),
-      guard,
-    );
-    expect(result.advancePx).toBe(9);
-  });
+  it.each(["clear", "deadline"])(
+    "retires an image decoding request on %s and allows another measurement",
+    async (reason) => {
+      if (reason === "deadline") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const binding = measurementBinding(viewport);
+      binding.resources.sprites = [
+        { name: "portrait", size: [20, 10], frames: [{ resource_id: "declared.png" }] },
+      ];
+      vi.mocked(binding.resourceBridge.readImageMetadata).mockResolvedValue({
+        width: 20,
+        height: 10,
+        format: "png",
+        animated: false,
+      });
+      const release = vi.fn();
+      vi.spyOn(htmlResourceUrls, "acquireResourceUrl").mockReturnValue({
+        url: Promise.resolve("blob:declared"),
+        release,
+      });
+      let finish!: () => void;
+      const decode = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      vi.stubGlobal(
+        "Image",
+        class {
+          src = "";
+          naturalWidth = 20;
+          naturalHeight = 10;
+          decode = decode;
+        },
+      );
+      const provider = new HtmlMeasurementProvider();
+      const guard = { signal: new AbortController().signal, assertCurrent() {} };
+      const pending = provider.measureImageSlot(imageProbe(), binding, guard);
+      const rejected = expect(pending).rejects.toMatchObject({
+        category: reason === "clear" ? "stale_projection" : "backend_failure",
+        ...(reason === "deadline"
+          ? { message: expect.stringContaining("phase=image-decode,media-settle;") }
+          : {}),
+      });
+      await flushPromises();
+      expect(decode).toHaveBeenCalledOnce();
+      if (reason === "clear") provider.clear();
+      else await vi.advanceTimersByTimeAsync(10_000);
+      await rejected;
+      expect(release).toHaveBeenCalledOnce();
+      expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+      finish();
+      const result = await provider.measure(
+        { document: queryText("fi"), style: queryStyle(), mode: "text_part", cuts: [] },
+        measurementBinding(viewport),
+        guard,
+      );
+      expect(result.advancePx).toBe(9);
+    },
+  );
 
   it("rejects absent or inconsistent cut offsets before creating any DOM", async () => {
     const provider = new HtmlMeasurementProvider();

@@ -279,7 +279,6 @@ export class HtmlMeasurementProvider {
     this.activeScope = scope;
     let app: App<Element> | undefined;
     let host: HTMLDivElement | undefined;
-    let frame: number | undefined;
     try {
       scope.assertCurrent();
       host = window.document.createElement("div");
@@ -336,7 +335,7 @@ export class HtmlMeasurementProvider {
         renderErrors.push(error);
       };
       app.mount(host);
-      await scope.wait(nextTick());
+      await scope.wait(nextTick(), "vue-flush");
       if (renderErrors.length) throw renderErrors[0];
       if (host.querySelectorAll("*").length > HTML_MEASUREMENT_LIMITS.domNodes)
         throw new RuntimeServiceError(
@@ -345,18 +344,11 @@ export class HtmlMeasurementProvider {
         );
       await scope.settle();
       scope.assertCurrent();
-      await scope.wait(nextTick());
+      await scope.wait(nextTick(), "vue-flush");
       await loadFonts(host, scope);
       scope.assertCurrent();
-      await scope.wait(
-        new Promise<void>((resolve) => {
-          frame = requestAnimationFrame(() => resolve());
-        }),
-      );
-      frame = undefined;
-      scope.assertCurrent();
       await scope.settle();
-      await scope.wait(nextTick());
+      await scope.wait(nextTick(), "vue-flush");
       if (renderErrors.length) throw renderErrors[0];
       const lines = host.querySelectorAll<HTMLElement>("[data-html-measurement-line]");
       if (lines.length !== documents.length)
@@ -368,6 +360,7 @@ export class HtmlMeasurementProvider {
         scope.assertCurrent();
         return;
       }
+      // Geometry reads flush layout without a paint tick, which an occluded WebView can suspend.
       // No await between these reads: all independent text shapes share one font/layout epoch.
       const results = [...lines].map((line, index) => {
         const width = finitePixels(line.getBoundingClientRect().width);
@@ -388,7 +381,6 @@ export class HtmlMeasurementProvider {
       scope.assertCurrent();
       return Array.isArray(document) ? results : results[0];
     } finally {
-      if (frame != null) cancelAnimationFrame(frame);
       scope.dispose();
       try {
         app?.unmount();
@@ -812,8 +804,8 @@ async function loadFonts(host: HTMLElement, scope: HtmlMeasurementScope): Promis
       `${style.fontStyle || "normal"} ${style.fontWeight || "normal"} ${style.fontSize} ${style.fontFamily}`;
     samples.set(font, (samples.get(font) ?? "") + (segment.textContent ?? ""));
   }
-  for (const [font, text] of samples) await scope.wait(fonts.load(font, text));
-  await scope.wait(fonts.ready);
+  for (const [font, text] of samples) await scope.wait(fonts.load(font, text), "font-load");
+  await scope.wait(fonts.ready, "font-ready");
 }
 
 function readFirstRow(
