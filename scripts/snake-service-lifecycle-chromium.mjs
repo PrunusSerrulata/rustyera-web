@@ -180,7 +180,8 @@ function playwrightLifecycleAdapter(browser, context, page) {
       : root.locator(selector);
   const element = (target) => ({
     setValue: (value) => target.fill(value),
-    click: () => target.click(),
+    // WebDriver $ selects the first matching element; mirror that for repeated UI controls.
+    click: () => target.first().click(),
     moveTo: () => target.hover(),
     scrollIntoView: () => target.scrollIntoViewIfNeeded(),
     waitForDisplayed: ({ timeout = 5000 } = {}) => target.waitFor({ state: "visible", timeout }),

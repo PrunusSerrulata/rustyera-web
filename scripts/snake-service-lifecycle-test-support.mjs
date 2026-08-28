@@ -245,6 +245,7 @@ export async function installPointerObservation(
     // Validate the selector before installing any event listeners.
     document.querySelector(targetSelector);
     const observed = { pointer: null, blurCount: 0, sequence: 0, events: [] };
+    const pendingKeys = new Map();
     const describeElement = (element) =>
       element instanceof HTMLElement
         ? {
@@ -254,6 +255,15 @@ export async function installPointerObservation(
             label: element.getAttribute("aria-label"),
           }
         : null;
+    const targetScope = (target) => {
+      if (target === document) return "document";
+      if (target === window) return "window";
+      const viewport = document.querySelector(".game-viewport");
+      if (target === viewport) return "viewport";
+      return target instanceof HTMLElement && viewport?.contains(target)
+        ? "viewport-descendant"
+        : "other";
+    };
     const record = (event) => {
       const entry = {
         sequence: ++observed.sequence,
@@ -262,10 +272,15 @@ export async function installPointerObservation(
         focused: document.hasFocus(),
         visible: document.visibilityState === "visible",
         target: describeElement(event.target),
+        targetScope: targetScope(event.target),
         activeElement: describeElement(document.activeElement),
       };
       observed.events.push(entry);
-      if (observed.events.length > 32) observed.events.shift();
+      if (observed.events.length > 32) {
+        const removed = observed.events.shift();
+        window.clearTimeout(pendingKeys.get(removed.sequence));
+        pendingKeys.delete(removed.sequence);
+      }
       return entry;
     };
     const pointer = (event) => {
@@ -291,9 +306,46 @@ export async function installPointerObservation(
       record(event);
       if (document.visibilityState !== "visible") observed.pointer = null;
     };
+    const keyboard = (event) => {
+      const entry = Object.assign(record(event), {
+        key: event.key,
+        code: event.code,
+        repeat: event.repeat,
+        defaultPrevented: null,
+        dispatchComplete: false,
+      });
+      // A capture listener (and even its microtask) can precede later handlers. Read the final
+      // cancellation state in the next task, without preventing or redispatching the event.
+      pendingKeys.set(
+        entry.sequence,
+        window.setTimeout(() => {
+          pendingKeys.delete(entry.sequence);
+          entry.defaultPrevented = event.defaultPrevented;
+          entry.dispatchComplete = true;
+          entry.activeElementAfterDispatch = describeElement(document.activeElement);
+          entry.viewportScrollTopAfterDispatch =
+            document.querySelector(".game-viewport")?.scrollTop;
+        }, 0),
+      );
+    };
+    const scroll = (event) => {
+      const scrolling =
+        event.target === document || event.target === window
+          ? (document.scrollingElement ?? document.documentElement)
+          : event.target;
+      Object.assign(record(event), {
+        scrollTop: scrolling?.scrollTop,
+        scrollHeight: scrolling?.scrollHeight,
+        clientHeight: scrolling?.clientHeight,
+        viewportScrollTop: document.querySelector(".game-viewport")?.scrollTop,
+      });
+    };
     for (const type of ["pointermove", "pointerdown", "pointerup", "pointerout", "pointercancel"])
       window.addEventListener(type, pointer, true);
     window.addEventListener("blur", blur);
+    window.addEventListener("keydown", keyboard, true);
+    window.addEventListener("keyup", keyboard, true);
+    window.addEventListener("scroll", scroll, true);
     document.addEventListener("visibilitychange", visibility);
     // This callback only reads independent DOM input/geometry, synchronously at the actual sample.
     // Runtime return values are not available here and never supply the expected position.
@@ -322,6 +374,7 @@ export async function installPointerObservation(
         },
         hit: describeElement(hit),
         activeElement: describeElement(document.activeElement),
+        viewportFocused: document.activeElement === viewport,
         targetSelector,
         target: targetRect
           ? {
@@ -353,6 +406,11 @@ export async function installPointerObservation(
         ])
           window.removeEventListener(type, pointer, true);
         window.removeEventListener("blur", blur);
+        window.removeEventListener("keydown", keyboard, true);
+        window.removeEventListener("keyup", keyboard, true);
+        window.removeEventListener("scroll", scroll, true);
+        for (const timer of pendingKeys.values()) window.clearTimeout(timer);
+        pendingKeys.clear();
         document.removeEventListener("visibilitychange", visibility);
         delete window.__RUSTYERA_POINTER_OBSERVATION__;
       },
@@ -369,6 +427,84 @@ export async function lifecycleViewport(browser) {
     // does not require a pointer; the subsequent real hover and service samples verify it.
     return result.viewport;
   });
+}
+
+export async function pageUpLifecycleViewport(browser, expectedWait) {
+  const evidence = {};
+  try {
+    // Resize can place the ordinary compatibility warnings over the viewport center.
+    // Dismiss through their visible controls; logs remain intact and errors are not dismissed.
+    const warnings = () =>
+      browser.execute(
+        () =>
+          document.querySelectorAll(".corner-notifications .log-notification.warning > button")
+            .length,
+      );
+    for (let dismissed = 0; await warnings(); dismissed += 1) {
+      if (dismissed === 16) throw new Error("PageUp warning dismissal did not converge");
+      const count = await warnings();
+      await (await browser.$(".corner-notifications .log-notification.warning > button")).click();
+      await browser.waitUntil(async () => (await warnings()) < count, {
+        timeout: 3_000,
+        interval: 50,
+        timeoutMsg: "PageUp warning close did not update the visible UI",
+      });
+    }
+    await (await browser.$(".game-viewport")).click();
+    if ((await snapshot(browser)).wait.wait_id !== expectedWait)
+      throw new Error("viewport focus unexpectedly advanced the game");
+    evidence.before = await browser.execute(() => window.__RUSTYERA_POINTER_OBSERVATION__());
+    if (!evidence.before.focused || !evidence.before.visible || !evidence.before.viewportFocused)
+      throw new Error("PageUp requires the visible game viewport to have actual DOM focus");
+    await browser.keys("PageUp");
+    await browser.waitUntil(
+      async () => (await lifecycleViewport(browser)).scrollTop < evidence.before.viewport.scrollTop,
+      { timeout: 3_000, interval: 100, timeoutMsg: "PageUp did not scroll the real viewport" },
+    );
+  } catch (error) {
+    try {
+      evidence.failure = await browser.execute(() => ({
+        observation: window.__RUSTYERA_POINTER_OBSERVATION__(),
+        state: window.__RUSTYERA_TEST__?.snapshot(),
+      }));
+      const after = evidence.failure.observation;
+      const events = after.events.filter(
+        (event) => event.sequence > (evidence.before?.sequence ?? after.sequence),
+      );
+      const key = events.find(
+        (event) => event.type === "keydown" && event.key === "PageUp" && event.trusted,
+      );
+      if (!evidence.before) evidence.reason = "viewport_precondition_incomplete";
+      else if (
+        !evidence.before.focused ||
+        !evidence.before.visible ||
+        !evidence.before.viewportFocused
+      )
+        evidence.reason = "viewport_not_focused";
+      else if (!key) evidence.reason = "trusted_pageup_not_in_retained_events";
+      else if (!key.dispatchComplete) evidence.reason = "pageup_dispatch_not_observed_complete";
+      else if (key.defaultPrevented) evidence.reason = "pageup_canceled";
+      else if (key.targetScope !== "viewport") evidence.reason = "pageup_target_changed";
+      else if (
+        events.some(
+          (event) =>
+            event.type === "scroll" &&
+            event.targetScope === "viewport" &&
+            event.scrollTop < evidence.before.viewport.scrollTop,
+        ) &&
+        after.viewport.scrollTop >= evidence.before.viewport.scrollTop
+      )
+        evidence.reason = "viewport_scrolled_then_rebounded";
+      else evidence.reason = "viewport_scroll_not_observed";
+    } catch (observationError) {
+      evidence.observationError = String(observationError);
+    }
+    error.lifecyclePageUpEvidence = evidence;
+    console.error(
+      JSON.stringify({ type: "snake-lifecycle-pageup-failure", error: String(error), evidence }),
+    );
+    throw error;
+  }
 }
 
 async function moveInside(browser) {
@@ -395,6 +531,9 @@ export async function hoverLifecycleTarget(browser) {
   // WebDriver can move to a clipped element's center without reporting an out-of-bounds error.
   // Scroll the nested game viewport explicitly before requesting the real pointer move.
   await target.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+  // A native driver may emit no move when the OS cursor already occupies the target.
+  // Establish a distinct real position after installing the observer, then hover the fixture.
+  await moveInside(browser);
   await target.moveTo();
 }
 
@@ -487,16 +626,7 @@ export async function runSnakeServiceLifecycleClient(browser, bridgeKind, option
           blocked.push({ stage: "window-blur", host: bridgeKind, reason: String(error) });
         }
       } else {
-        const viewport = await browser.$(".game-viewport");
-        await viewport.click();
-        if ((await snapshot(browser)).wait.wait_id !== state.wait.wait_id)
-          throw new Error("viewport focus unexpectedly advanced the game");
-        const before = await lifecycleViewport(browser);
-        await browser.keys("PageUp");
-        await browser.waitUntil(
-          async () => (await lifecycleViewport(browser)).scrollTop < before.scrollTop,
-          { timeout: 3_000, interval: 100, timeoutMsg: "PageUp did not scroll the real viewport" },
-        );
+        await pageUpLifecycleViewport(browser, state.wait.wait_id);
         await setLifecyclePrompt(browser, input, String(index));
       }
       const beforeQuery = await snapshot(browser);

@@ -22,6 +22,7 @@ import {
   observeRealWindowBlur,
   setLifecyclePrompt,
   lifecycleViewport,
+  pageUpLifecycleViewport,
 } from "../scripts/snake-service-lifecycle-test-support.mjs";
 import {
   assertSnakeServiceState,
@@ -822,6 +823,175 @@ describe("snake service lifecycle assertions", () => {
       delete window.__RUSTYERA_SERVICE_TRACE__;
     }
   });
+  it("records cancellation after dispatch, distinguishes scroll targets, and bounds pending observations", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    document.body.innerHTML = '<main class="game-viewport"></main>';
+    const viewport = document.querySelector("main");
+    const listeners = vi.spyOn(window, "addEventListener");
+    await installPointerObservation({ execute: async (callback, ...args) => callback(...args) });
+    try {
+      const keydown = listeners.mock.calls.find(([type]) => type === "keydown")[1];
+      const scroll = listeners.mock.calls.find(([type]) => type === "scroll")[1];
+      // Unit-only callback input is explicitly untrusted; no DOM/native event is dispatched.
+      const event = {
+        type: "keydown",
+        target: viewport,
+        isTrusted: false,
+        key: "PageUp",
+        code: "PageUp",
+        repeat: false,
+        defaultPrevented: false,
+      };
+      keydown(event);
+      const beforeDispatch = window.__RUSTYERA_POINTER_OBSERVATION__();
+      expect(beforeDispatch.events[0]).toMatchObject({
+        targetScope: "viewport",
+        trusted: false,
+        defaultPrevented: null,
+        dispatchComplete: false,
+      });
+      event.defaultPrevented = true;
+      await vi.runOnlyPendingTimersAsync();
+      expect(window.__RUSTYERA_POINTER_OBSERVATION__().events[0]).toMatchObject({
+        defaultPrevented: true,
+        dispatchComplete: true,
+      });
+      expect(beforeDispatch.events[0].defaultPrevented).toBeNull();
+      scroll({ type: "scroll", target: viewport, isTrusted: false });
+      scroll({ type: "scroll", target: document, isTrusted: false });
+      expect(
+        window
+          .__RUSTYERA_POINTER_OBSERVATION__()
+          .events.slice(-2)
+          .map((row) => row.targetScope),
+      ).toEqual(["viewport", "document"]);
+      for (let index = 0; index < 40; index += 1) keydown(event);
+      expect(window.__RUSTYERA_POINTER_OBSERVATION__().events).toHaveLength(32);
+      expect(vi.getTimerCount()).toBe(32);
+    } finally {
+      window.__RUSTYERA_SERVICE_TRACE__.dispose();
+      delete window.__RUSTYERA_SERVICE_TRACE__;
+      listeners.mockRestore();
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    "scrolled",
+    "scrolled-with-warnings",
+    "focus",
+    "canceled",
+    "retargeted",
+    "rebounded",
+    "missing-key",
+  ])("keeps the PageUp action and distinguishes %s evidence", async (mode) => {
+    const scrolled = mode.startsWith("scrolled");
+    const notifications = document.createElement("div");
+    notifications.className = "corner-notifications";
+    if (mode === "scrolled-with-warnings") {
+      for (const level of ["warning", "warning", "error"]) {
+        const notice = document.createElement("aside");
+        notice.className = `log-notification ${level}`;
+        const close = document.createElement("button");
+        close.addEventListener("click", () => notice.remove());
+        notice.append(close);
+        notifications.append(notice);
+      }
+    }
+    document.body.append(notifications);
+    const before = {
+      focused: true,
+      visible: true,
+      viewportFocused: mode !== "focus",
+      sequence: 10,
+      viewport: { scrollTop: 200 },
+      events: [],
+    };
+    const key = {
+      sequence: 11,
+      type: "keydown",
+      key: "PageUp",
+      trusted: true,
+      targetScope: mode === "retargeted" ? "other" : "viewport",
+      dispatchComplete: true,
+      defaultPrevented: mode === "canceled",
+    };
+    const after = {
+      ...before,
+      sequence: 13,
+      viewport: { scrollTop: scrolled ? 100 : 200 },
+      events: mode === "missing-key" ? [] : [key],
+    };
+    if (mode === "rebounded")
+      after.events.push(
+        { sequence: 12, type: "scroll", targetScope: "viewport", scrollTop: 100 },
+        { sequence: 13, type: "scroll", targetScope: "viewport", scrollTop: 200 },
+      );
+    const state = {
+      wait: { wait_id: "25" },
+      serviceEvidence: { records: [{ index: 0 }], pointerSamples: [] },
+    };
+    let observation = before;
+    window.__RUSTYERA_POINTER_OBSERVATION__ = () => observation;
+    window.__RUSTYERA_TEST__ = { snapshot: () => state };
+    const click = vi.fn();
+    const browser = {
+      $: async (selector) => {
+        if (selector.includes(".log-notification.warning"))
+          return { click: async () => document.querySelector(selector).click() };
+        expect(selector).toBe(".game-viewport");
+        expect(notifications.querySelectorAll(".warning")).toHaveLength(0);
+        return { click };
+      },
+      execute: async (callback) => callback(),
+      keys: vi.fn(async (value) => {
+        expect(value).toBe("PageUp");
+        observation = after;
+      }),
+      waitUntil: vi.fn(async (predicate, options) => {
+        if (options.timeoutMsg.includes("warning close")) {
+          expect(await predicate()).toBe(true);
+          return;
+        }
+        expect(options).toEqual({
+          timeout: 3000,
+          interval: 100,
+          timeoutMsg: "PageUp did not scroll the real viewport",
+        });
+        if (!(await predicate())) throw new Error(options.timeoutMsg);
+      }),
+    };
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      if (scrolled) {
+        await pageUpLifecycleViewport(browser, "25");
+        expect(log).not.toHaveBeenCalled();
+        if (mode === "scrolled-with-warnings")
+          expect(notifications.querySelector(".error")).not.toBeNull();
+      } else {
+        await expect(pageUpLifecycleViewport(browser, "25")).rejects.toThrow("PageUp");
+        const report = JSON.parse(log.mock.calls[0][0]);
+        expect(report.type).toBe("snake-lifecycle-pageup-failure");
+        expect(report.evidence.reason).toBe(
+          {
+            focus: "viewport_not_focused",
+            canceled: "pageup_canceled",
+            retargeted: "pageup_target_changed",
+            rebounded: "viewport_scrolled_then_rebounded",
+            "missing-key": "trusted_pageup_not_in_retained_events",
+          }[mode],
+        );
+        expect(report.evidence.failure.state).toEqual(state);
+        expect(report.evidence.failure.observation).toEqual(observation);
+      }
+      expect(click).toHaveBeenCalledOnce();
+      expect(browser.keys).toHaveBeenCalledTimes(mode === "focus" ? 0 : 1);
+    } finally {
+      notifications.remove();
+      delete window.__RUSTYERA_POINTER_OBSERVATION__;
+      log.mockRestore();
+    }
+  });
   function focusBrowser(created = { handle: "native-probe", type: "window" }, blurCount = 1) {
     const actions = [];
     const browser = {
@@ -888,17 +1058,25 @@ describe("snake service lifecycle assertions", () => {
     await expect(observeRealWindowBlur(browser)).rejects.toThrow("trusted blur");
     expect(actions.slice(-3)).toEqual([["switch", "native-probe"], ["close"], ["switch", "main"]]);
   });
-  it("reveals a clipped target before moving the real pointer after resize", async () => {
-    let visible = false;
+  it("reveals the target and establishes a distinct pointer before hovering", async () => {
+    const actions = [];
     const target = {
       async scrollIntoView() {
-        visible = true;
+        actions.push("scroll");
       },
       async moveTo() {
-        if (!visible) throw new Error("pointer would hit the input overlay");
+        actions.push("hover");
       },
     };
-    await expect(hoverLifecycleTarget({ $: async () => target })).resolves.toBeUndefined();
+    await hoverLifecycleTarget({
+      $: async () => target,
+      execute: async () => ({ x: 20, y: 30 }),
+      performActions: async (events) => {
+        expect(events[0].actions[0]).toMatchObject({ type: "pointerMove", x: 20, y: 30 });
+        actions.push("move-inside");
+      },
+    });
+    expect(actions).toEqual(["scroll", "move-inside", "hover"]);
   });
   it("requires zero after a real blur without a later pointer event", () => {
     const observation = { blurCount: 1, events: [{ type: "blur", trusted: true }] };
