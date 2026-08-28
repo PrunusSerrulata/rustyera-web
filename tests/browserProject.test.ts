@@ -3,6 +3,8 @@ import { storagePattern } from "@/platform/storagePattern";
 import { referenceCompatibility, snakeCompatibility } from "./compatibilityTestSupport";
 import { describe, expect, it, vi } from "vitest";
 import { blake3 } from "@noble/hashes/blake3.js";
+import { compatibilityCbor } from "@/core/compatibility";
+import { encodeServicePayload } from "@/core/serviceCodec";
 
 import {
   BrowserProject,
@@ -215,7 +217,9 @@ describe("browser project font resources", () => {
     const storage = new SaveDirectoryHandle("opfs");
     vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
     const spool = await project.stageFullManifest();
-    expect(await spool.read(0, spool.totalBytes)).toHaveLength(spool.totalBytes);
+    const encoded = await spool.read(0, spool.totalBytes);
+    const compatibility = encodeServicePayload(compatibilityCbor(manifest.compatibility));
+    expect(encoded.slice(-compatibility.length - 1)).toEqual(Uint8Array.of(2, ...compatibility));
     await spool.release();
     await writeFixtureFile(fonts, "Project.ttf", Uint8Array.of(3, 2, 1));
     await expect(project.stageFullManifest()).rejects.toThrow("资源在项目扫描后发生变化");

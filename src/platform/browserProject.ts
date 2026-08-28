@@ -906,7 +906,10 @@ export class BrowserProject {
       }
       await write(Uint8Array.of(0x02));
       await write(
-        new Encoder({ useRecords: false }).encode(compatibilityCbor(manifest.compatibility)),
+        // Integer-keyed protocol maps must not acquire cbor-x's explicit-Map extension tag.
+        new Encoder({ useRecords: false, mapsAsObjects: false }).encode(
+          compatibilityCbor(manifest.compatibility),
+        ),
       );
       await writer.close();
     } catch (error) {
