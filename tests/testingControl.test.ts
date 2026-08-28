@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { inputReplaySummary, isStableObservationCandidate } from "@/testing/control";
 import { RuntimeEvidence, readTypedWatches } from "@/testing/runtimeEvidence";
+import { blake3 } from "@noble/hashes/blake3.js";
 
 describe("runtime evidence observations", () => {
   it("preserves exact service integers and bytes without exposing mutable records", () => {
@@ -37,6 +38,39 @@ describe("runtime evidence observations", () => {
     const disabled = new RuntimeEvidence(false, 1, 1);
     disabled.sent("runtime", { type: "start" }, 1n, 2n);
     expect(disabled.snapshot()).toMatchObject({ enabled: false, overflow: false, records: [] });
+  });
+
+  it("retains bounded bulk-byte identity after Worker transfer without altering service bytes", () => {
+    const evidence = new RuntimeEvidence(true, 4096);
+    const bytes = new Uint8Array(4 * 1024 * 1024).fill(19);
+    const digest = [...blake3(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const prepared = evidence.prepareMessage({
+      type: "state_import_chunk",
+      value: { transfer_id: 7n, offset: 0, data: bytes },
+    });
+    // Node's structuredClone creates its own realm's view; a received browser message uses the
+    // receiving realm's Uint8Array. Preserve the transfer while modeling that actual boundary.
+    const transferred = new Uint8Array(structuredClone(bytes, { transfer: [bytes.buffer] }).buffer);
+    evidence.sent("runtime", prepared, 8n, 2n);
+    evidence.receive({
+      channel: "runtime",
+      epoch: 2n,
+      sequence: 4n,
+      messageId: 9n,
+      message: {
+        type: "state_export_chunk",
+        value: { transfer_id: 7n, offset: 0, data: transferred },
+      },
+    });
+    const snapshot = evidence.snapshot() as any;
+    expect(snapshot.overflow).toBe(false);
+    for (const row of snapshot.records)
+      expect(row.message.value.data).toEqual({
+        observation: "bulk_bytes_digest",
+        byteLength: transferred.byteLength,
+        blake3: digest,
+      });
+    expect(bytes.byteLength).toBe(0);
   });
 
   it("distinguishes reused wire identities across actual frontend session generations", () => {

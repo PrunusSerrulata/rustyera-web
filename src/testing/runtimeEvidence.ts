@@ -1,4 +1,5 @@
 import type { WebEvent } from "@/core/types";
+import { blake3 } from "@noble/hashes/blake3.js";
 
 /** Bounded observations only: capture failure must never change execution or invent a reply. */
 export class RuntimeEvidence {
@@ -13,7 +14,52 @@ export class RuntimeEvidence {
   ) {}
 
   receive(event: WebEvent, sessionGeneration = 0): void {
-    this.record({ direction: "receive", ...event, sessionGeneration });
+    this.record({
+      direction: "receive",
+      ...event,
+      message: this.prepareMessage(event.message),
+      sessionGeneration,
+    });
+  }
+
+  /** Snapshot bulk transfers before Worker ownership detaches the source buffer. Service CBOR and
+   * typed values remain complete; only file/snapshot chunks use an explicit length/hash observation. */
+  prepareMessage(message: unknown): unknown {
+    if (!this.enabled || this.failure !== null || message == null || typeof message !== "object")
+      return message;
+    const entry = message as { type?: string; value?: { data?: unknown } };
+    if (entry.type !== "state_import_chunk" && entry.type !== "state_export_chunk") return message;
+    const data = entry.value?.data;
+    if (!(data instanceof Uint8Array) && !Array.isArray(data)) return message;
+    try {
+      if (data.length > 16 * 1024 * 1024)
+        throw new Error("bulk observation exceeds its byte limit");
+      const bytes =
+        data instanceof Uint8Array
+          ? data
+          : Uint8Array.from(data, (value) => {
+              if (typeof value !== "number" && typeof value !== "bigint")
+                throw new Error("invalid bulk byte type");
+              const byte = Number(value);
+              if (!Number.isInteger(byte) || byte < 0 || byte > 255)
+                throw new Error("invalid bulk byte");
+              return byte;
+            });
+      return {
+        ...entry,
+        value: {
+          ...entry.value,
+          data: {
+            observation: "bulk_bytes_digest",
+            byteLength: bytes.byteLength,
+            blake3: [...blake3(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+          },
+        },
+      };
+    } catch {
+      this.failure = "unserializable_observation";
+      return null;
+    }
   }
 
   sent(
@@ -27,7 +73,7 @@ export class RuntimeEvidence {
     this.record({
       direction: "send",
       channel,
-      message,
+      message: this.prepareMessage(message),
       messageId,
       epoch,
       correlationId,

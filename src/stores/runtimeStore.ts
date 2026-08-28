@@ -3069,6 +3069,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       telemetry.milestones.startSubmittedMs == null;
     if (startupStart) telemetry.milestones.startSubmittedMs = startupTelemetryState.elapsedMs();
     const transported = transportValue(message);
+    const observedMessage = testEvidence.prepareMessage(transported);
     if (
       bridge.kind === "tauri" &&
       message.type === "input" &&
@@ -3081,7 +3082,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       if (batch) {
         testEvidence.sent(
           "runtime",
-          transported,
+          observedMessage,
           batch.submittedMessageId,
           observedEpoch,
           correlationId,
@@ -3098,7 +3099,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const messageId = await submission;
     testEvidence.sent(
       "runtime",
-      transported,
+      observedMessage,
       messageId,
       observedEpoch,
       correlationId,
