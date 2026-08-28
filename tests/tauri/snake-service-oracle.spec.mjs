@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import {
   captureConfiguration,
   prepareCaptureInputs,
@@ -33,6 +34,50 @@ enabled("real Tauri exact service oracle capture", () => {
     );
     await $(".welcome .primary").click();
     const client = webdriverCaptureClient(browser);
+    const geometry = async (stage) => {
+      const value = await browser.execute(() => ({
+        innerWidth: window.innerWidth,
+        innerHeight: window.innerHeight,
+        nodes: [
+          "html",
+          "body",
+          "#app",
+          ".app-shell",
+          ".game-area",
+          ".game-viewport",
+          ".prompt-bar",
+          ".prompt-bar input",
+          ".status-bar",
+          ".menu-row",
+        ].map((selector) => {
+          const node = document.querySelector(selector);
+          if (!node) return { selector, missing: true };
+          const box = node.getBoundingClientRect();
+          const style = getComputedStyle(node);
+          return {
+            selector,
+            width: box.width,
+            height: box.height,
+            clientWidth: node.clientWidth,
+            scrollWidth: node.scrollWidth,
+            minWidth: style.minWidth,
+            columns: style.gridTemplateColumns,
+            display: style.display,
+            text: node === document.querySelector(".prompt-bar") ? node.textContent : undefined,
+          };
+        }),
+      }));
+      console.log(JSON.stringify({ type: "tauri-oracle-geometry", stage, ...value }));
+      for (const selector of [".game-area", ".game-viewport"]) {
+        const node = value.nodes.find((entry) => entry.selector === selector);
+        assert.ok(node && !node.missing, `${stage}: missing ${selector}`);
+        assert.ok(
+          node.width <= value.innerWidth + 0.5,
+          `${stage}: ${selector} overflows the window`,
+        );
+      }
+      return value.nodes.find((entry) => entry.selector === ".game-viewport").clientWidth;
+    };
     client.submit = async (value) => {
       // Native archive export is a separate foreground boundary from initial project opening.
       // Restore the session window explicitly; the provider still rejects unfocused input.
@@ -40,8 +85,11 @@ enabled("real Tauri exact service oracle capture", () => {
       const input = await browser.$(".prompt-bar input");
       await input.waitForDisplayed({ timeout: 5000 });
       await input.waitForEnabled({ timeout: 5000 });
+      const width = await geometry("before-input");
       await input.setValue(value);
+      assert.equal(await geometry("after-fill"), width, "typing changed the viewport width");
       await browser.keys("Enter");
+      assert.equal(await geometry("after-submit"), width, "submitting changed the viewport width");
     };
     const capture = await runServiceOracleCapture(client, config, inputs);
     console.log(JSON.stringify({ type: "snake-service-oracle-capture", ...capture }));
