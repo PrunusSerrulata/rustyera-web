@@ -42,6 +42,8 @@ let projectedLineColumns = -1;
 let keyedRuntimeEpoch = "";
 let bottomFollowRevision = 0;
 let followingBottom = false;
+let preserveNfViewport = false;
+let nfUserScrolled = false;
 const keyedLines = new Map<number, { id: string; key: string; mediaLayout?: string }>();
 type RangeExtractor = (range: Range) => number[];
 const activeRangeExtractor = shallowRef<RangeExtractor>(defaultRangeExtractor);
@@ -50,10 +52,45 @@ watch(
   () => store.runtimeEpoch,
   (runtimeEpoch) => {
     const epoch = String(runtimeEpoch);
-    if (epoch !== keyedRuntimeEpoch) keyedLines.clear();
+    if (epoch !== keyedRuntimeEpoch) {
+      keyedLines.clear();
+      preserveNfViewport = false;
+      nfUserScrolled = false;
+    }
     keyedRuntimeEpoch = epoch;
   },
   { immediate: true, flush: "sync" },
+);
+
+watch(
+  () => store.presentation.inputWait,
+  async (wait) => {
+    if (wait == null) return;
+    const preserve =
+      wait.viewport_policy === "preserve_user_viewport" || wait.viewport_policy === 1;
+    if (preserve) {
+      if (!preserveNfViewport) nfUserScrolled = !isAtBottom();
+      preserveNfViewport = true;
+      return;
+    }
+    preserveNfViewport = false;
+    nfUserScrolled = false;
+    bottomFollowRevision += 1;
+    const revision = bottomFollowRevision;
+    followingBottom = true;
+    selectTerminalRange();
+    await nextTick();
+    if (revision !== bottomFollowRevision) return;
+    goBottom();
+    await nextAnimationFrame();
+    if (revision !== bottomFollowRevision) return;
+    if (viewport.value) viewport.value.scrollTop = viewport.value.scrollHeight;
+    followingBottom = false;
+    releaseTerminalRange();
+  },
+  // Apply the policy before the pre-flush history watcher observes a snapshot
+  // that publishes both a new tail and its NF wait in one reactive commit.
+  { flush: "sync" },
 );
 
 function lineRenderKey(index: number): string {
@@ -179,8 +216,10 @@ watch(
     // Equal-length dynamic-map refreshes replace the tail with new line IDs without
     // counting as new history. Keep following them only when the old frame was at bottom;
     // an intentionally scrolled-back viewport must remain untouched.
+    if (preserveNfViewport) nfUserScrolled = !isAtBottom();
     const shouldFollow =
-      historyRevision !== previousHistoryRevision || followingBottom || isAtBottom();
+      !(preserveNfViewport && nfUserScrolled) &&
+      (historyRevision !== previousHistoryRevision || followingBottom || isAtBottom());
     bottomFollowRevision += 1;
     followAfterRender = shouldFollow;
     if (shouldFollow) selectTerminalRange();
@@ -244,6 +283,7 @@ function releaseTerminalRange(): void {
 }
 
 function releaseTerminalRangeOnScrollBack(): void {
+  if (preserveNfViewport) nfUserScrolled = !isAtBottom();
   if (!followingBottom && !isAtBottom()) releaseTerminalRange();
 }
 

@@ -46,6 +46,7 @@ const store = reactive({
     htmlIsland: [],
     tooltip: {},
     settings: {},
+    inputWait: undefined as any,
   },
   continueFromViewport,
   projectViewport,
@@ -102,6 +103,7 @@ describe("game viewport", () => {
       { line_id: 1, alignment: "left", runs: [], text_background_eligible: false },
     ];
     store.presentation.settings = {};
+    store.presentation.inputWait = undefined;
     store.useMouse = true;
     store.scrollHeight = 1;
     virtualState.items = [];
@@ -369,6 +371,44 @@ describe("game viewport", () => {
     await wrapper.get("main").trigger("scroll");
 
     expect(virtualOptions.value.value.rangeExtractor).toBe(defaultRangeExtractor);
+    wrapper.unmount();
+  });
+
+  it("preserves an NF scroll-back chain through a closed wait and resumes following on ordinary input", async () => {
+    const wrapper = shallowMount(GameViewport);
+    const viewport = wrapper.get<HTMLElement>("main").element;
+    let scrollTop = 40;
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 50 },
+      scrollHeight: { configurable: true, value: 200 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+    scrollToIndex.mockClear();
+
+    store.presentation.inputWait = { viewport_policy: "preserve_user_viewport" };
+    store.presentation.historyRevision += 1;
+    await nextTick();
+    await flushPromises();
+    expect(scrollTop).toBe(40);
+    expect(scrollToIndex).not.toHaveBeenCalled();
+
+    store.presentation.inputWait = undefined;
+    store.presentation.historyRevision += 1;
+    await nextTick();
+    await flushPromises();
+    expect(scrollTop).toBe(40);
+
+    store.presentation.inputWait = { viewport_policy: "follow_output" };
+    await nextTick();
+    await flushPromises();
+    expect(scrollToIndex).toHaveBeenCalled();
+    expect(scrollTop).toBe(200);
     wrapper.unmount();
   });
 
