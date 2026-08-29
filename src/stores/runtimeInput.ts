@@ -18,6 +18,7 @@ interface RuntimeInputContext {
   sampleMonotonic(): number;
   phase(): string;
   logWarning(message: string): void;
+  signalMessageSkip(): Promise<void>;
 }
 
 export class RuntimeInputState {
@@ -70,19 +71,9 @@ export class RuntimeInputState {
       return;
     }
     this.messageSkipRequested = true;
-    // Reference Emuera raises MesSkip on mouse-down, not only when a subsequent WAIT is answered.
-    // This ordered device event lets a running EraBasic animation observe MESSKIP immediately.
-    await this.context.send({
-      type: "device_state_changed",
-      value: {
-        device: "mouse",
-        code: 2,
-        pressed: true,
-        x: 0,
-        y: 0,
-        monotonic_time_ns: this.context.sampleMonotonic(),
-      },
-    });
+    // Reference Emuera raises MesSkip on mouse-down. The store either reuses the
+    // real secondary-button event or emits a balanced touch-accessibility pair.
+    await this.context.signalMessageSkip();
     await this.settleMessageSkipRequest();
   }
 

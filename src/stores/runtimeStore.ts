@@ -232,6 +232,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const traditionalSaveTransferError = traditionalSaves.error;
   const traditionalSaveOverwriteSlot = traditionalSaves.overwriteSlot;
   const heldKeys = new Set<number>();
+  const heldMouseButtons = new Set<number>();
+  const heldMousePositions = new Map<number, readonly [number, number]>();
+  const keyToggleStates = new Map<number, boolean>();
+  let deviceSubmissionTail: Promise<void> = Promise.resolve();
+  let deviceSubmissionFailure: { generation: number; error: unknown } | undefined;
+  let deviceSynchronizationPending = true;
+  let deviceEventSequence = 0;
+  let deviceGeneration = 0;
   const testAudioPlayback = new Map<string, { starts: number; active: number }>();
   const audio = new AudioEngine(
     bridge,
@@ -331,6 +339,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     send,
     sampleMonotonic: () => testEnvironment.sampleMonotonic(),
     phase: () => phase.value,
+    signalMessageSkip,
     logWarning: (message) =>
       log("warning", message, true, isNonNotifiedInputWarning(message) ? "none" : "all"),
   });
@@ -570,12 +579,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
       preferences.value = loadedPreferences;
     }
     audio.setPreferences(preferences.value);
-    document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("keyup", onKeyUp);
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("keyup", onKeyUp, true);
+    document.addEventListener("mousedown", onMouseDown, true);
+    document.addEventListener("mouseup", onMouseUp, true);
     pointerObservation.start();
-    document.addEventListener("visibilitychange", sendClientState);
-    window.addEventListener("focus", sendClientState);
-    window.addEventListener("blur", sendClientState);
+    document.addEventListener("visibilitychange", onClientStateBoundary);
+    window.addEventListener("focus", onClientStateBoundary);
+    window.addEventListener("blur", onClientStateBoundary);
     window.addEventListener("resize", onResize);
     initialized = true;
     if (bridge.prewarmRuntimeOnInitialize) {
@@ -602,14 +613,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
       .catch((error) => log("warning", `释放 Runtime host 资源失败：${String(error)}`));
     if (initialized) {
       initialized = false;
-      document.removeEventListener("keydown", onKeyDown);
-      document.removeEventListener("keyup", onKeyUp);
-      document.removeEventListener("visibilitychange", sendClientState);
-      window.removeEventListener("focus", sendClientState);
-      window.removeEventListener("blur", sendClientState);
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("keyup", onKeyUp, true);
+      document.removeEventListener("mousedown", onMouseDown, true);
+      document.removeEventListener("mouseup", onMouseUp, true);
+      document.removeEventListener("visibilitychange", onClientStateBoundary);
+      window.removeEventListener("focus", onClientStateBoundary);
+      window.removeEventListener("blur", onClientStateBoundary);
       window.removeEventListener("resize", onResize);
     }
-    heldKeys.clear();
+    resetDeviceInputState(true);
   }
 
   function onResize(): void {
@@ -892,6 +905,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } else if (debugRequests.pauseWanted) {
       await requestPendingDebugPause();
     }
+    await awaitDeviceSubmissions();
     await settlePendingGameInput();
   }
 
@@ -1379,6 +1393,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (!sameServiceInteger(epoch, runtimeEpoch.value)) {
       pointerObservation.clear();
       htmlMeasurements.clear();
+      resetDeviceInputState(false);
     }
     runtimeEpoch.value = epoch;
     serviceRequests.enterEpoch(epoch);
@@ -1453,6 +1468,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         bridge,
         currentPresentation,
         heldKeys,
+        pumpDevices,
         clock: () => testEnvironment.clock,
         nextEntropy: () => testEnvironment.nextEntropy(),
         send: (message, correlation) =>
@@ -1842,6 +1858,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (!preserveProjectLoad) finishProjectLoad();
     runtimePump.setReady(false);
     phase.value = "negotiating";
+    resetDeviceInputState(false);
     runtimeEpoch.value = 0;
     testEnvironment.resetTimeAdvance();
     runtimeConfiguration.reset();
@@ -3076,6 +3093,155 @@ export const useRuntimeStore = defineStore("runtime", () => {
     });
   }
 
+  function resetDeviceInputState(clearPhysicalState: boolean): void {
+    deviceGeneration += 1;
+    deviceEventSequence = 0;
+    deviceSubmissionFailure = undefined;
+    deviceSynchronizationPending = true;
+    if (!clearPhysicalState) return;
+    heldKeys.clear();
+    heldMouseButtons.clear();
+    heldMousePositions.clear();
+    keyToggleStates.clear();
+  }
+
+  function queueDeviceState(
+    device: "keyboard" | "mouse",
+    code: number,
+    pressed: boolean,
+    toggle: boolean,
+    repeat: boolean,
+    x = 0,
+    y = 0,
+  ): Promise<void> {
+    if (!runtimePump.ready || !Number.isInteger(code) || code < 0 || code > 255)
+      return Promise.resolve();
+    const generation = deviceGeneration;
+    const eventSequence = ++deviceEventSequence;
+    const message: RuntimeMessage = {
+      type: "device_state_changed",
+      value: {
+        event_sequence: eventSequence,
+        toggle,
+        repeat,
+        device,
+        code,
+        pressed,
+        x: Math.max(-2147483648, Math.min(2147483647, Math.trunc(x))),
+        y: Math.max(-2147483648, Math.min(2147483647, Math.trunc(y))),
+        monotonic_time_ns: testEnvironment.sampleMonotonic(),
+      },
+    };
+    const submission = deviceSubmissionTail.then(async () => {
+      if (generation !== deviceGeneration || !runtimePump.ready) return;
+      if (deviceSubmissionFailure?.generation === generation) throw deviceSubmissionFailure.error;
+      await send(message);
+    });
+    deviceSubmissionTail = submission.catch((error) => {
+      if (generation !== deviceGeneration) return;
+      if (!deviceSubmissionFailure) {
+        deviceSubmissionFailure = { generation, error };
+        log("warning", `设备状态提交失败：${String(error)}`, true, "none");
+      }
+    });
+    return deviceSubmissionTail;
+  }
+
+  function synchronizeHeldDeviceState(): Promise<void> {
+    if (!deviceSynchronizationPending || !runtimePump.ready || BigInt(runtimeEpoch.value) === 0n)
+      return deviceSubmissionTail;
+    deviceSynchronizationPending = false;
+    for (const code of [...heldKeys].sort((left, right) => left - right))
+      void queueDeviceState("keyboard", code, true, keyToggleStates.get(code) ?? false, false);
+    for (const code of [...heldMouseButtons].sort((left, right) => left - right)) {
+      const [x, y] = heldMousePositions.get(code) ?? [0, 0];
+      void queueDeviceState("mouse", code, true, false, false, x, y);
+    }
+    return deviceSubmissionTail;
+  }
+
+  async function awaitDeviceSubmissions(): Promise<void> {
+    await synchronizeHeldDeviceState();
+    await deviceSubmissionTail;
+    if (deviceSubmissionFailure?.generation === deviceGeneration)
+      throw deviceSubmissionFailure.error;
+  }
+
+  function observePhysicalDeviceState(
+    device: "keyboard" | "mouse",
+    code: number,
+    pressed: boolean,
+    toggle: boolean,
+    repeat: boolean,
+    x = 0,
+    y = 0,
+  ): Promise<void> {
+    if (!Number.isInteger(code) || code < 0 || code > 255) return Promise.resolve();
+    // Synchronize the state before this edge. Events observed while no session
+    // was ready remain represented by the held sets and are replayed first.
+    void synchronizeHeldDeviceState();
+    if (device === "keyboard") {
+      keyToggleStates.set(code, toggle);
+      if (pressed) heldKeys.add(code);
+      else heldKeys.delete(code);
+    } else if (pressed) {
+      heldMouseButtons.add(code);
+      heldMousePositions.set(code, [x, y]);
+    } else {
+      heldMouseButtons.delete(code);
+      heldMousePositions.delete(code);
+    }
+    return queueDeviceState(device, code, pressed, toggle, repeat, x, y);
+  }
+
+  async function pumpDevices(
+    epoch: ServiceInteger,
+    afterEventSequence: ServiceInteger,
+  ): Promise<ServiceInteger> {
+    const generation = deviceGeneration;
+    // A zero-delay task yields to keyboard, mouse, blur and visibility callbacks
+    // already queued for this browser/WebView pump. It is an event boundary, not
+    // a timing approximation.
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    await awaitDeviceSubmissions();
+    if (generation !== deviceGeneration || !sameServiceInteger(epoch, runtimeEpoch.value))
+      throw new RuntimeServiceError("stale_projection", "device pump epoch changed");
+    if (BigInt(afterEventSequence) > BigInt(deviceEventSequence))
+      throw new RuntimeServiceError(
+        "invalid_request",
+        "device pump watermark exceeds submitted events",
+      );
+    return deviceEventSequence;
+  }
+
+  async function signalMessageSkip(): Promise<void> {
+    if (heldMouseButtons.has(2)) return;
+    // Touch and accessibility secondary actions have no MouseEvent. Submit a
+    // balanced compatibility pair so they do not leave a fabricated held button.
+    void synchronizeHeldDeviceState();
+    void queueDeviceState("mouse", 2, true, false, false);
+    void queueDeviceState("mouse", 2, false, false, false);
+    await awaitDeviceSubmissions();
+  }
+
+  function onClientStateBoundary(): void {
+    if (!document.hasFocus() || document.visibilityState !== "visible") {
+      for (const code of [...heldKeys])
+        void observePhysicalDeviceState(
+          "keyboard",
+          code,
+          false,
+          keyToggleStates.get(code) ?? false,
+          false,
+        );
+      for (const code of [...heldMouseButtons]) {
+        const [x, y] = heldMousePositions.get(code) ?? [0, 0];
+        void observePhysicalDeviceState("mouse", code, false, false, false, x, y);
+      }
+    }
+    void sendClientState();
+  }
+
   async function shutdown(): Promise<void> {
     if (diagnosisExporting.value) return;
     if (fullManifestImport) await cleanupFullManifestImport(true);
@@ -3091,6 +3257,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     message: RuntimeMessage,
     correlationId?: ServiceInteger,
   ): Promise<number | bigint> {
+    if (message.type === "input" || message.type === "client_state_changed")
+      await awaitDeviceSubmissions();
     const observedEpoch = runtimeEpoch.value;
     const observedSessionGeneration = runtimeSessionObservationGeneration;
     const telemetry = startupTelemetry.value;
@@ -3235,7 +3403,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function onKeyDown(event: KeyboardEvent): void {
-    heldKeys.add(event.keyCode);
+    const code = event.keyCode;
+    if (code >= 0 && code <= 255)
+      void observePhysicalDeviceState(
+        "keyboard",
+        code,
+        true,
+        keyboardToggle(event, code),
+        event.repeat,
+      );
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
       event.preventDefault();
       void undo();
@@ -3271,7 +3447,47 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function onKeyUp(event: KeyboardEvent): void {
-    heldKeys.delete(event.keyCode);
+    const code = event.keyCode;
+    void observePhysicalDeviceState("keyboard", code, false, keyboardToggle(event, code), false);
+  }
+
+  function keyboardToggle(event: KeyboardEvent, code: number): boolean {
+    if (code === 20) return event.getModifierState("CapsLock");
+    if (code === 144) return event.getModifierState("NumLock");
+    if (code === 145) return event.getModifierState("ScrollLock");
+    return false;
+  }
+
+  function mouseCode(button: number): number | undefined {
+    return button === 0 ? 1 : button === 2 ? 2 : button === 1 ? 4 : undefined;
+  }
+
+  function onMouseDown(event: MouseEvent): void {
+    const code = mouseCode(event.button);
+    if (code == null) return;
+    void observePhysicalDeviceState(
+      "mouse",
+      code,
+      true,
+      false,
+      false,
+      event.clientX,
+      event.clientY,
+    );
+  }
+
+  function onMouseUp(event: MouseEvent): void {
+    const code = mouseCode(event.button);
+    if (code == null) return;
+    void observePhysicalDeviceState(
+      "mouse",
+      code,
+      false,
+      false,
+      false,
+      event.clientX,
+      event.clientY,
+    );
   }
 
   function liveMemoryCounters(): LiveMemoryCounters {

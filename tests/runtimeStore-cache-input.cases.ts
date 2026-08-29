@@ -1,5 +1,5 @@
 import { bridge } from "./runtimeStoreTestSupport";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Preferences } from "@/core/types";
 import {
   installRuntimeStoreTestHarness,
@@ -15,8 +15,19 @@ import {
   runtimeEvent,
 } from "./runtimeStoreTestSupport";
 
+function keyboardEvent(
+  type: "keydown" | "keyup",
+  keyCode: number,
+  init: KeyboardEventInit,
+): KeyboardEvent {
+  const event = new KeyboardEvent(type, init);
+  Object.defineProperty(event, "keyCode", { configurable: true, value: keyCode });
+  return event;
+}
+
 describe("runtime store cache-input", () => {
   installRuntimeStoreTestHarness();
+  afterEach(() => useRuntimeStore().teardown());
 
   it("initializes global listeners once and removes them during teardown", async () => {
     const documentAdd = vi.spyOn(document, "addEventListener");
@@ -28,11 +39,13 @@ describe("runtime store cache-input", () => {
     await Promise.all([store.initialize(), store.initialize()]);
 
     expect(documentAdd.mock.calls.filter(([type]) => type === "keydown")).toHaveLength(1);
+    expect(documentAdd.mock.calls.filter(([type]) => type === "mousedown")).toHaveLength(1);
     expect(windowAdd.mock.calls.filter(([type]) => type === "resize")).toHaveLength(1);
 
     store.teardown();
 
     expect(documentRemove.mock.calls.filter(([type]) => type === "keydown")).toHaveLength(1);
+    expect(documentRemove.mock.calls.filter(([type]) => type === "mousedown")).toHaveLength(1);
     expect(windowRemove.mock.calls.filter(([type]) => type === "resize")).toHaveLength(1);
     expect(bridge.setProjectProgressListener).toHaveBeenLastCalledWith(undefined);
     expect(bridge.dispose).toHaveBeenCalledOnce();
@@ -777,7 +790,7 @@ describe("runtime store cache-input", () => {
   it.each<[string, { kind: string; stop_message_skip?: boolean }]>([
     ["a stop-message-skip wait", { kind: "enter_key", stop_message_skip: true }],
     ["a non-message wait", { kind: "integer_value" }],
-  ])("keeps the mouse device event for %s", async (_, wait) => {
+  ])("balances the compatibility mouse device event for %s", async (_, wait) => {
     const store = await storeWithInputWait({
       ...wait,
       wait_id: 22,
@@ -787,14 +800,27 @@ describe("runtime store cache-input", () => {
 
     await store.skip();
 
-    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
-    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+    const devices = bridge.submitRuntime.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message.type === "device_state_changed");
+    expect(devices).toEqual([
       expect.objectContaining({
-        type: "device_state_changed",
-        value: expect.objectContaining({ device: "mouse", code: 2, pressed: true }),
+        value: expect.objectContaining({
+          event_sequence: 1,
+          device: "mouse",
+          code: 2,
+          pressed: true,
+        }),
       }),
-      undefined,
-    );
+      expect.objectContaining({
+        value: expect.objectContaining({
+          event_sequence: 2,
+          device: "mouse",
+          code: 2,
+          pressed: false,
+        }),
+      }),
+    ]);
   });
 
   it("queues browser pumping without waiting for the ordered submission acknowledgement", async () => {
@@ -844,11 +870,11 @@ describe("runtime store cache-input", () => {
 
     await store.skip();
 
-    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
-    expect(bridge.submitRuntime).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "device_state_changed" }),
-      undefined,
-    );
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]) => message.type === "device_state_changed",
+      ),
+    ).toHaveLength(2);
 
     bridge.pump.mockResolvedValueOnce({
       ...emptyBatch(),
@@ -866,7 +892,7 @@ describe("runtime store cache-input", () => {
     });
     await vi.advanceTimersByTimeAsync(32);
 
-    expect(bridge.submitRuntime).toHaveBeenCalledTimes(2);
+    expect(bridge.submitRuntime).toHaveBeenCalledTimes(3);
     expect(bridge.submitRuntime).toHaveBeenLastCalledWith(
       expect.objectContaining({
         type: "input",
@@ -914,14 +940,14 @@ describe("runtime store cache-input", () => {
     });
     await vi.advanceTimersByTimeAsync(32);
 
-    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
-    expect(bridge.submitRuntime).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "device_state_changed" }),
-      undefined,
-    );
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]) => message.type === "device_state_changed",
+      ),
+    ).toHaveLength(2);
   });
 
-  it("submits one ordinary keyboard event for an AnyKey wait", async () => {
+  it("submits an ordered physical key observation before its ordinary AnyKey input", async () => {
     const store = useRuntimeStore();
     await store.initialize();
     await storeWithInputWait({
@@ -930,22 +956,224 @@ describe("runtime store cache-input", () => {
       submission_token: { epoch: 2, id: 10 },
     });
     bridge.submitRuntime.mockClear();
+    const deviceAccepted = deferred<number>();
+    let nextMessageId = 2;
+    bridge.submitRuntime.mockImplementation(async (message) =>
+      message.type === "device_state_changed" ? deviceAccepted.promise : nextMessageId++,
+    );
 
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: " ", code: "Space" }));
+    document.dispatchEvent(keyboardEvent("keydown", 32, { key: " ", code: "Space" }));
     await flushMicrotasks();
 
-    expect(bridge.submitRuntime).toHaveBeenCalledOnce();
-    expect(bridge.submitRuntime).toHaveBeenCalledWith(
+    expect(bridge.submitRuntime.mock.calls.map(([message]) => message.type)).toEqual([
+      "device_state_changed",
+    ]);
+    deviceAccepted.resolve(1);
+    await advanceUntil(() => bridge.submitRuntime.mock.calls.length === 2);
+
+    expect(bridge.submitRuntime.mock.calls.map(([message]) => message.type)).toEqual([
+      "device_state_changed",
+      "input",
+    ]);
+    expect(bridge.submitRuntime.mock.calls[0]?.[0]).toMatchObject({
+      value: {
+        event_sequence: 1,
+        toggle: false,
+        repeat: false,
+        device: "keyboard",
+        code: 32,
+        pressed: true,
+      },
+    });
+    expect(bridge.submitRuntime.mock.calls[1]?.[0]).toMatchObject({
+      value: {
+        wait_id: 23,
+        intent: { type: "any_key", value: " " },
+        message_skip: false,
+      },
+    });
+  });
+
+  it("resynchronizes a key held before readiness and then submits its release", async () => {
+    const store = useRuntimeStore();
+    await store.initialize();
+    document.dispatchEvent(keyboardEvent("keydown", 65, { key: "a", code: "KeyA" }));
+    await flushMicrotasks();
+    expect(bridge.submitRuntime).not.toHaveBeenCalled();
+
+    const ready = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 23,
+      submission_token: { epoch: 2, id: 10 },
+    });
+    expect(ready).toBe(store);
+    await flushMicrotasks();
+    expect(
+      bridge.submitRuntime.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message.type === "device_state_changed"),
+    ).toEqual([
       expect.objectContaining({
-        type: "input",
         value: expect.objectContaining({
-          wait_id: 23,
-          intent: { type: "any_key", value: " " },
-          message_skip: false,
+          event_sequence: 1,
+          device: "keyboard",
+          code: 65,
+          pressed: true,
         }),
       }),
-      undefined,
+    ]);
+
+    document.dispatchEvent(keyboardEvent("keyup", 65, { key: "a", code: "KeyA" }));
+    await flushMicrotasks();
+    expect(
+      bridge.submitRuntime.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message.type === "device_state_changed")
+        .at(-1),
+    ).toMatchObject({ value: { event_sequence: 2, code: 65, pressed: false } });
+  });
+
+  it("resynchronizes a held mouse button across an epoch and releases it in the new order", async () => {
+    const store = useRuntimeStore();
+    await store.initialize();
+    await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 23,
+      submission_token: { epoch: 2, id: 10 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    document.dispatchEvent(new MouseEvent("mousedown", { button: 2, clientX: 17, clientY: 23 }));
+    await flushMicrotasks();
+    expect(bridge.submitRuntime.mock.calls[0]?.[0]).toMatchObject({
+      type: "device_state_changed",
+      value: { event_sequence: 1, device: "mouse", code: 2, pressed: true, x: 17, y: 23 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("state_changed", { phase: "waiting_input", epoch: 3 })],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    await flushMicrotasks();
+    expect(bridge.submitRuntime.mock.calls[0]?.[0]).toMatchObject({
+      type: "device_state_changed",
+      value: { event_sequence: 1, device: "mouse", code: 2, pressed: true, x: 17, y: 23 },
+    });
+
+    document.dispatchEvent(new MouseEvent("mouseup", { button: 2, clientX: 18, clientY: 24 }));
+    await flushMicrotasks();
+    expect(bridge.submitRuntime.mock.calls.at(-1)?.[0]).toMatchObject({
+      type: "device_state_changed",
+      value: { event_sequence: 2, device: "mouse", code: 2, pressed: false, x: 18, y: 24 },
+    });
+  });
+
+  it("waits for delayed blur releases before submitting the client focus boundary", async () => {
+    const store = useRuntimeStore();
+    await store.initialize();
+    await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 23,
+      submission_token: { epoch: 2, id: 10 },
+    });
+    document.dispatchEvent(keyboardEvent("keydown", 66, { key: "b", code: "KeyB" }));
+    await flushMicrotasks();
+    bridge.submitRuntime.mockClear();
+    const releaseAccepted = deferred<number>();
+    bridge.submitRuntime.mockImplementation(async (message) =>
+      message.type === "device_state_changed" ? releaseAccepted.promise : 3,
     );
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+
+    window.dispatchEvent(new Event("blur"));
+    await flushMicrotasks();
+    expect(bridge.submitRuntime.mock.calls.map(([message]) => message.type)).toEqual([
+      "device_state_changed",
+    ]);
+
+    releaseAccepted.resolve(2);
+    await advanceUntil(() => bridge.submitRuntime.mock.calls.length === 2);
+    expect(bridge.submitRuntime.mock.calls.map(([message]) => message.type)).toEqual([
+      "device_state_changed",
+      "client_state_changed",
+    ]);
+    focused.mockRestore();
+  });
+
+  it("reports repeat, mouse edges, and blur releases in FIFO order", async () => {
+    const store = useRuntimeStore();
+    await store.initialize();
+    await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 23,
+      submission_token: { epoch: 2, id: 10 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    document.dispatchEvent(keyboardEvent("keydown", 65, { key: "a", code: "KeyA" }));
+    document.dispatchEvent(keyboardEvent("keydown", 65, { key: "a", code: "KeyA", repeat: true }));
+    document.dispatchEvent(keyboardEvent("keyup", 65, { key: "a", code: "KeyA" }));
+    document.dispatchEvent(new MouseEvent("mousedown", { button: 2, clientX: 17, clientY: 23 }));
+    document.dispatchEvent(new MouseEvent("mouseup", { button: 2, clientX: 18, clientY: 24 }));
+    document.dispatchEvent(keyboardEvent("keydown", 66, { key: "b", code: "KeyB" }));
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    window.dispatchEvent(new Event("blur"));
+    await flushMicrotasks();
+    focused.mockRestore();
+    document.dispatchEvent(keyboardEvent("keydown", 67, { key: "c", code: "KeyC" }));
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await advanceUntil(
+      () =>
+        bridge.submitRuntime.mock.calls.filter(
+          ([message]) => message.type === "device_state_changed",
+        ).length === 9 &&
+        bridge.submitRuntime.mock.calls.at(-1)?.[0].type === "client_state_changed",
+    );
+    visibility.mockRestore();
+
+    const messages = bridge.submitRuntime.mock.calls.map(([message]) => message);
+    const devices = messages.filter((message) => message.type === "device_state_changed");
+    expect(devices.map((message) => message.value.event_sequence)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9,
+    ]);
+    expect(
+      devices.map((message) => [
+        message.value.device,
+        message.value.code,
+        message.value.pressed,
+        message.value.repeat,
+      ]),
+    ).toEqual([
+      ["keyboard", 65, true, false],
+      ["keyboard", 65, true, true],
+      ["keyboard", 65, false, false],
+      ["mouse", 2, true, false],
+      ["mouse", 2, false, false],
+      ["keyboard", 66, true, false],
+      ["keyboard", 66, false, false],
+      ["keyboard", 67, true, false],
+      ["keyboard", 67, false, false],
+    ]);
+    expect(messages.at(-1)).toMatchObject({
+      type: "client_state_changed",
+      value: { visible: false },
+    });
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("state_changed", { phase: "waiting_input", epoch: 3 })],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    bridge.submitRuntime.mockClear();
+    document.dispatchEvent(keyboardEvent("keydown", 68, { key: "d", code: "KeyD" }));
+    await flushMicrotasks();
+    expect(bridge.submitRuntime.mock.calls[0]?.[0]).toMatchObject({
+      type: "device_state_changed",
+      value: { event_sequence: 1, code: 68, pressed: true },
+    });
   });
 
   it("shares one AnyKey input lock across keyboard, viewport, form, and button paths", async () => {
@@ -1023,9 +1251,21 @@ describe("runtime store cache-input", () => {
       new KeyboardEvent("keydown", { key: "Shift" }),
     ])
       document.dispatchEvent(event);
-    await flushMicrotasks();
+    await advanceUntil(
+      () =>
+        bridge.submitRuntime.mock.calls.filter(
+          ([message]) => message.type === "device_state_changed",
+        ).length === 9,
+    );
 
-    expect(bridge.submitRuntime).not.toHaveBeenCalled();
+    expect(
+      bridge.submitRuntime.mock.calls.filter(([message]) => message.type === "input"),
+    ).toHaveLength(0);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]) => message.type === "device_state_changed",
+      ),
+    ).toHaveLength(9);
     expect(store.canInteract).toBe(true);
   });
 
