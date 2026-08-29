@@ -57,6 +57,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  assertSnakeDisplayState,
   assertSnakeDataState,
   runSnakeDataClient,
   SNAKE_DATA_MARKERS,
@@ -264,6 +265,31 @@ describe("snake data client test support", () => {
     ).toThrow("final integer input wait");
   });
 
+  it("requires an eligible full-width row and leaves the following blank row unpainted", () => {
+    expect(() =>
+      assertSnakeDisplayState({
+        eligibleBackground: "rgba(17, 34, 51, 0.498)",
+        eligibleRgba: [17, 34, 51, 127],
+        eligibleWidth: 800,
+        viewportWidth: 800,
+        blankText: "",
+        blankBackground: "rgb(0, 0, 0)",
+        blankRgba: [0, 0, 0, 255],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertSnakeDisplayState({
+        eligibleBackground: "rgb(0, 0, 0)",
+        eligibleRgba: [0, 0, 0, 255],
+        eligibleWidth: 800,
+        viewportWidth: 800,
+        blankText: "",
+        blankBackground: "rgb(0, 0, 0)",
+        blankRgba: [0, 0, 0, 255],
+      }),
+    ).toThrow("was not projected");
+  });
+
   it.each([
     ["browser", "firefox"],
     ["browser", "safari"],
@@ -284,10 +310,20 @@ describe("snake data client test support", () => {
         setValue: vi.fn(async () => undefined),
       };
       const button = { click: vi.fn(async () => undefined) };
+      const displayState = {
+        eligibleBackground: "rgba(17, 34, 51, 0.498)",
+        eligibleRgba: [17, 34, 51, 127],
+        eligibleWidth: 800,
+        viewportWidth: 800,
+        blankText: "",
+        blankBackground: "rgb(0, 0, 0)",
+        blankRgba: [0, 0, 0, 255],
+      };
       const browser = {
         capabilities: { browserName },
         keys: vi.fn(async () => undefined),
         execute: vi.fn(async (callback) => {
+          if (states.length === 0) return displayState;
           window.__RUSTYERA_TEST__ = { snapshot: () => states.shift() };
           return callback();
         }),
@@ -302,7 +338,10 @@ describe("snake data client test support", () => {
         }),
       };
 
-      await expect(runSnakeDataClient(browser, bridgeKind)).resolves.toBe(complete);
+      await expect(runSnakeDataClient(browser, bridgeKind)).resolves.toEqual({
+        ...complete,
+        displayState,
+      });
       expect(input.waitForDisplayed).toHaveBeenCalledOnce();
       expect(input.waitForEnabled).toHaveBeenCalledOnce();
       expect(input.setValue).toHaveBeenCalledWith("1");
@@ -313,7 +352,7 @@ describe("snake data client test support", () => {
         expect(button.click).toHaveBeenCalledOnce();
         expect(browser.keys).not.toHaveBeenCalled();
       }
-      expect(browser.execute).toHaveBeenCalledTimes(3);
+      expect(browser.execute).toHaveBeenCalledTimes(4);
     },
   );
 });

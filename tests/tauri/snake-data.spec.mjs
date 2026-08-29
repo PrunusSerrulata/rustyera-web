@@ -42,6 +42,7 @@ enabled("Tauri snake data integration", () => {
         resourceUnchanged: true,
         verified: SNAKE_DATA_MARKERS,
         output: observed.output,
+        displayState: observed.displayState,
       }),
     );
   });

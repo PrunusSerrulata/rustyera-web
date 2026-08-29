@@ -426,6 +426,7 @@ try {
         verified: SNAKE_DATA_MARKERS,
         output: observed.output,
         bridgeKind: observed.bridgeKind,
+        displayState: observed.displayState,
       }),
     );
   }

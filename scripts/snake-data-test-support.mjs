@@ -1,4 +1,4 @@
-/* global window */
+/* global document, getComputedStyle, window */
 
 export const SNAKE_DATA_START = "SNAKE_DATA_START";
 export const SNAKE_DATA_MARKERS = Object.freeze([
@@ -8,6 +8,8 @@ export const SNAKE_DATA_MARKERS = Object.freeze([
   "SNAKE_DATA_STRUCTURED=1/station/29/29/42/from-schema",
   "SNAKE_DATA_GLOBAL_MISSING=0/66/55",
   "SNAKE_DATA_GLOBAL=1/7/55/1/12/saved-map/saved-xml",
+  "SNAKE_DISPLAY_TIMER=10/77",
+  "SNAKE_DISPLAY_BACKGROUND",
   "SNAKE_DATA_READY",
 ]);
 
@@ -57,7 +59,50 @@ export async function runSnakeDataClient(activeBrowser, expectedBridge) {
     },
     { timeout: 60_000, interval: 100, timeoutMsg: "snake data pipeline did not complete" },
   );
-  return assertSnakeDataState(final, expectedBridge);
+  const displayState = await activeBrowser.execute(() => {
+    const lines = [...document.querySelectorAll(".game-line")];
+    const eligible = lines.find((line) => line.textContent?.includes("SNAKE_DISPLAY_BACKGROUND"));
+    const blank = eligible?.nextElementSibling;
+    const viewport = document.querySelector(".game-viewport");
+    const rgba = (color) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      const context = canvas.getContext("2d");
+      if (!context) return null;
+      context.clearRect(0, 0, 1, 1);
+      context.fillStyle = color;
+      context.fillRect(0, 0, 1, 1);
+      return [...context.getImageData(0, 0, 1, 1).data];
+    };
+    const eligibleBackground = eligible ? getComputedStyle(eligible).backgroundColor : null;
+    const blankBackground = blank ? getComputedStyle(blank).backgroundColor : null;
+    return {
+      eligibleBackground,
+      eligibleRgba: eligibleBackground ? rgba(eligibleBackground) : null,
+      eligibleWidth: eligible?.getBoundingClientRect().width ?? 0,
+      viewportWidth: viewport?.getBoundingClientRect().width ?? 0,
+      blankText: blank?.textContent ?? null,
+      blankBackground,
+      blankRgba: blankBackground ? rgba(blankBackground) : null,
+    };
+  });
+  assertSnakeDisplayState(displayState);
+  return { ...assertSnakeDataState(final, expectedBridge), displayState };
+}
+
+export function assertSnakeDisplayState(state) {
+  if (!state || JSON.stringify(state.eligibleRgba) !== JSON.stringify([17, 34, 51, 127]))
+    throw new Error(`snake display background was not projected: ${JSON.stringify(state)}`);
+  if (
+    String(state.blankText ?? "").trim() !== "" ||
+    JSON.stringify(state.blankRgba) === JSON.stringify(state.eligibleRgba)
+  )
+    throw new Error(
+      `snake blank line incorrectly received the text background: ${JSON.stringify(state)}`,
+    );
+  if (state.eligibleWidth + 1 < state.viewportWidth)
+    throw new Error(`snake text background was not full width: ${JSON.stringify(state)}`);
 }
 
 export async function submitSnakePrompt(activeBrowser, value) {
