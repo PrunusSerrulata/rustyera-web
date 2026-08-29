@@ -279,6 +279,28 @@ describe("snake data client test support", () => {
     ).not.toThrow();
     expect(() =>
       assertSnakeDisplayState({
+        eligibleBackground: "rgba(17, 34, 51, 0.498)",
+        eligibleRgba: [16, 34, 50, 127],
+        eligibleWidth: 800,
+        viewportWidth: 800,
+        blankText: "",
+        blankBackground: "rgba(0, 0, 0, 0)",
+        blankRgba: [0, 0, 0, 0],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertSnakeDisplayState({
+        eligibleBackground: "rgba(17, 34, 51, 0.498)",
+        eligibleRgba: [15, 34, 51, 127],
+        eligibleWidth: 800,
+        viewportWidth: 800,
+        blankText: "",
+        blankBackground: "rgba(0, 0, 0, 0)",
+        blankRgba: [0, 0, 0, 0],
+      }),
+    ).toThrow("was not projected");
+    expect(() =>
+      assertSnakeDisplayState({
         eligibleBackground: "rgb(0, 0, 0)",
         eligibleRgba: [0, 0, 0, 255],
         eligibleWidth: 800,

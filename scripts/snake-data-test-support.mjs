@@ -92,7 +92,22 @@ export async function runSnakeDataClient(activeBrowser, expectedBridge) {
 }
 
 export function assertSnakeDisplayState(state) {
-  if (!state || JSON.stringify(state.eligibleRgba) !== JSON.stringify([17, 34, 51, 127]))
+  const expected = [17, 34, 51, 127];
+  const computed = parseComputedRgba(state?.eligibleBackground);
+  const sampled = state?.eligibleRgba;
+  const computedMatches =
+    computed != null &&
+    computed.slice(0, 3).every((value, index) => value === expected[index]) &&
+    Math.abs(computed[3] - expected[3] / 255) <= 0.001;
+  // Canvas stores translucent colors premultiplied. Firefox can therefore read an RGB channel one
+  // level lower after the unavoidable premultiply/unpremultiply round trip; the computed CSS color
+  // above remains the authoritative projection value.
+  const sampleMatches =
+    Array.isArray(sampled) &&
+    sampled.length === expected.length &&
+    sampled.slice(0, 3).every((value, index) => Math.abs(value - expected[index]) <= 1) &&
+    sampled[3] === expected[3];
+  if (!computedMatches || !sampleMatches)
     throw new Error(`snake display background was not projected: ${JSON.stringify(state)}`);
   if (
     String(state.blankText ?? "").trim() !== "" ||
@@ -103,6 +118,16 @@ export function assertSnakeDisplayState(state) {
     );
   if (state.eligibleWidth + 1 < state.viewportWidth)
     throw new Error(`snake text background was not full width: ${JSON.stringify(state)}`);
+}
+
+function parseComputedRgba(value) {
+  const match =
+    typeof value === "string"
+      ? /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)$/.exec(value)
+      : null;
+  if (!match) return null;
+  const parsed = match.slice(1).map(Number);
+  return [parsed[0], parsed[1], parsed[2], parsed[3] ?? 1];
 }
 
 export async function submitSnakePrompt(activeBrowser, value) {
