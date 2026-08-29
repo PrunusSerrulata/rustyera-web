@@ -576,10 +576,16 @@ async function prewarmTuiCache(sourceProject, runDirectory) {
       input: `${JSON.stringify({ op: "wait_status", text: "项目缓存已保存。" })}\n${JSON.stringify({ op: "stop" })}\n`,
     },
   );
-  const cacheDirectory = path.join(projectOutput, ".rustyera", "cache");
-  await mkdir(cacheDirectory, { recursive: true });
-  await cp(cacheOutput, path.join(cacheDirectory, "compiled-project.reracache"));
-  await cp(sourceIndexOutput, path.join(cacheDirectory, "source-index-v1.json"));
+  const sourceIndexDirectory = path.join(projectOutput, ".rustyera", "cache");
+  const runtimeCacheDirectory = path.join(
+    await prewarmRuntimeStorageRoot(projectOutput),
+    ".rustyera",
+    "cache",
+  );
+  await mkdir(sourceIndexDirectory, { recursive: true });
+  await mkdir(runtimeCacheDirectory, { recursive: true });
+  await cp(cacheOutput, path.join(runtimeCacheDirectory, "compiled-project.reracache"));
+  await cp(sourceIndexOutput, path.join(sourceIndexDirectory, "source-index-v1.json"));
   console.log(
     JSON.stringify({
       type: "tauri-cache-prewarm",
@@ -589,6 +595,31 @@ async function prewarmTuiCache(sourceProject, runDirectory) {
     }),
   );
   return projectOutput;
+}
+
+async function prewarmRuntimeStorageRoot(project) {
+  const configuration = await readFile(path.join(project, "reraconfig.toml"), "utf8").catch(
+    (error) => {
+      if (error.code === "ENOENT") return "";
+      throw error;
+    },
+  );
+  let section = "";
+  let profile = "emuera.em";
+  for (const sourceLine of configuration.split(/\r?\n/)) {
+    const line = sourceLine.replace(/\s+#.*$/, "").trim();
+    const header = /^\[([^\]]+)]$/.exec(line);
+    if (header) {
+      section = header[1].trim();
+      continue;
+    }
+    if (section !== "compatibility") continue;
+    const entry = /^profile\s*=\s*["']([^"']+)["']\s*$/.exec(line);
+    if (entry) profile = entry[1];
+  }
+  if (profile === "emuera.em") return project;
+  if (profile === "emuera.skia.snake") return path.join(project, ".rustyera", "profiles", profile);
+  throw new Error(`unsupported prewarm compatibility profile: ${profile}`);
 }
 
 function run(command, args, env, deadline, describeDeadline, options = {}) {
