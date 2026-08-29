@@ -16,7 +16,12 @@ import { useTouchSecondaryAction } from "@/components/useTouchSecondaryAction";
 import { isViewportContinuationClick } from "@/core/viewportInteraction";
 import { htmlBoxRowLayoutsForRange } from "@/core/htmlBoxLayout";
 import { usesConfiguredLineHeight } from "@/core/lineLayout";
-import type { DisplayLine as PresentationLine, DisplayRun, MediaPlacement } from "@/core/types";
+import type {
+  Color,
+  DisplayLine as PresentationLine,
+  DisplayRun,
+  MediaPlacement,
+} from "@/core/types";
 import { measureGameViewport } from "@/platform/viewportMeasurement";
 import { useRuntimeStore } from "@/stores/runtime";
 
@@ -288,6 +293,12 @@ function lineMinimumHeight(line: any): string | undefined {
     : undefined;
 }
 
+function wholeLineBackground(line: PresentationLine | undefined): string | undefined {
+  const color = store.presentation.settings.text_line_background as Color | null | undefined;
+  if (!line?.text_background_eligible || color == null) return undefined;
+  return `rgba(${color.red}, ${color.green}, ${color.blue}, ${Number(color.alpha) / 255})`;
+}
+
 function projectHtmlLength(value: any, absolute = false): number | undefined {
   if (!value) return undefined;
   const raw = Number(value.value);
@@ -423,6 +434,7 @@ watch(
         :style="{
           transform: `translateY(${item.start + historyBottomInset}px)`,
           minHeight: lineMinimumHeight(store.presentation.lines[item.index]),
+          backgroundColor: wholeLineBackground(store.presentation.lines[item.index]),
         }"
       >
         <DisplayLine

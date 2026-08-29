@@ -57,6 +57,43 @@ describe("presentation projection", () => {
     expect(state.lines.map(plainLine)).toEqual(["new", "next"]);
   });
 
+  it("replaces whole-line background settings without rewriting history", () => {
+    const state = emptyPresentation();
+    applySnapshot(state, {
+      revision: 1,
+      title: "fixture",
+      history: {
+        logical_lines: [
+          {
+            line_id: 1,
+            temporary: false,
+            logical_line_start: true,
+            line_end: true,
+            alignment: "left",
+            runs: [],
+            text_background_eligible: true,
+          },
+        ],
+      },
+      settings: { text_line_background: null },
+    });
+    const line = state.lines[0];
+    applyDelta(state, {
+      base_revision: 1,
+      new_revision: 2,
+      operations: [
+        {
+          type: "set_settings",
+          settings: {
+            text_line_background: { red: 1, green: 2, blue: 3, alpha: 127 },
+          },
+        },
+      ],
+    });
+    expect(state.lines[0]).toBe(line);
+    expect(state.settings.text_line_background).toEqual({ red: 1, green: 2, blue: 3, alpha: 127 });
+  });
+
   it("batches ordered history prefix trims without changing later line operations", () => {
     const state = emptyPresentation();
     const line = (lineId: number, text: string): DisplayLine => ({

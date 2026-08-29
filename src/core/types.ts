@@ -453,6 +453,19 @@ export interface DisplayLine {
   line_end: boolean;
   alignment: "left" | "center" | "right";
   runs: DisplayRun[];
+  text_background_eligible?: boolean;
+}
+
+export interface PresentationSettings {
+  drawable_width: number | bigint;
+  line_height: number | bigint;
+  background: Color;
+  button_focus_foreground: Color;
+  maximum_physical_lines: number;
+  prevent_button_wrap: boolean;
+  legacy_nonbutton_wrap: boolean;
+  drawable_height: number | bigint;
+  text_line_background?: Color | null;
 }
 
 export interface MediaPlacement {

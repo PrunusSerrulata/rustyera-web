@@ -1,4 +1,9 @@
-import type { DisplayLine, InteractionToken, TooltipSettings } from "@/core/types";
+import type {
+  DisplayLine,
+  InteractionToken,
+  PresentationSettings,
+  TooltipSettings,
+} from "@/core/types";
 import {
   escapeHtml,
   htmlColor,
@@ -15,7 +20,7 @@ export interface PresentationState {
   backgrounds: any[];
   audio: any[];
   inputWait: any | null;
-  settings: any;
+  settings: Partial<PresentationSettings>;
   tooltip: TooltipSettings;
   resources: any;
   htmlIsland: any[];
