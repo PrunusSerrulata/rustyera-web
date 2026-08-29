@@ -71,6 +71,7 @@ fn client_advertises_canvas_image_decode() {
         capability.kind == ServiceKind::Canvas && capability.operation == "decode_canvas_image"
     }));
     for (kind, operation, major) in [
+        (ServiceKind::InputState, "device_pump", 1),
         (ServiceKind::InputState, "pointer_state", 1),
         (ServiceKind::Canvas, "sample_canvas_pixel", 1),
         (ServiceKind::PresentationQuery, "html_string_len", 2),
@@ -95,6 +96,22 @@ fn client_advertises_canvas_image_decode() {
             .services
             .iter()
             .any(|capability| capability.operation == "html_pixel_size")
+    );
+    let environment = hello
+        .capabilities
+        .environment
+        .iter()
+        .map(|capability| capability.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        environment,
+        [
+            era_runtime_protocol::INPUT_DEVICE_LATCH_CAPABILITY,
+            era_runtime_protocol::INPUT_DEVICE_PUMP_CAPABILITY,
+            era_runtime_protocol::INPUT_TIMED_VIEWPORT_CAPABILITY,
+        ]
+        .into_iter()
+        .collect()
     );
 }
 

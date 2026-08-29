@@ -989,6 +989,10 @@ fn client_hello(options: WebSessionOptions, limits: RuntimeLimits) -> ClientHell
         (ServiceKind::Entropy, "random_seed"),
         (ServiceKind::Clock, "local_date_time"),
         (ServiceKind::InputState, "get_key_state"),
+        (
+            ServiceKind::InputState,
+            era_runtime_protocol::DEVICE_PUMP_OPERATION,
+        ),
         (ServiceKind::InputState, "pointer_state"),
         (ServiceKind::Image, "image_metadata"),
         (ServiceKind::Image, "image_pixel"),
@@ -1037,6 +1041,17 @@ fn client_hello(options: WebSessionOptions, limits: RuntimeLimits) -> ClientHell
         ],
         requested_limits: limits,
         capabilities: ClientCapabilities {
+            environment: [
+                era_runtime_protocol::INPUT_TIMED_VIEWPORT_CAPABILITY,
+                era_runtime_protocol::INPUT_DEVICE_LATCH_CAPABILITY,
+                era_runtime_protocol::INPUT_DEVICE_PUMP_CAPABILITY,
+            ]
+            .into_iter()
+            .map(|name| era_runtime_protocol::EnvironmentCapability {
+                name: name.into(),
+                versions: VersionRange::exact(era_runtime_protocol::INPUT_ENVIRONMENT_VERSION),
+            })
+            .collect(),
             input_modalities: vec![InputModality::Keyboard, InputModality::Mouse],
             rich_text: true,
             html: true,
