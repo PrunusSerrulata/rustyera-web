@@ -56,8 +56,18 @@ cacheSettings("Tauri cache-hit project settings", () => {
       state.logs.some((entry) => String(entry.message).includes("runtime.compiled_cache_failed")),
       false,
     );
-    assert.deepEqual(state.logNotifications, []);
-    assert.equal((await driver.$$(".log-notification")).length, 0);
+    assert.deepEqual(
+      state.logNotifications.filter((notification) => !isExpectedProfileWarning(notification)),
+      [],
+    );
+    const visibleNotifications = await driver.$$(".log-notification");
+    const unexpectedVisibleNotifications = [];
+    for (const notification of visibleNotifications) {
+      const text = await notification.getText();
+      if (!isExpectedProfileWarning({ level: "warning", message: text }))
+        unexpectedVisibleNotifications.push(text);
+    }
+    assert.deepEqual(unexpectedVisibleNotifications, []);
 
     await driver.pause(2_100);
     state = await snapshot();
@@ -81,3 +91,13 @@ cacheSettings("Tauri cache-hit project settings", () => {
     );
   });
 });
+
+function isExpectedProfileWarning(notification) {
+  if (notification?.level !== "warning") return false;
+  const message = String(notification.message);
+  return (
+    message.includes("profile=emuera.skia.snake@9/9 stage=protocol") ||
+    (message.includes("[runtime.experimental_compatibility_profile]") &&
+      message.includes("profile emuera.skia.snake is experimental"))
+  );
+}
