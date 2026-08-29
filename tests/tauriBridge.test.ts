@@ -810,6 +810,60 @@ describe("Tauri lossless integer transport", () => {
     });
   });
 
+  it("serializes delayed native runtime submissions in frontend observation order", async () => {
+    let releaseFirst!: (value: unknown) => void;
+    const first = new Promise<unknown>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let runtimeCalls = 0;
+    invoke.mockImplementation((command) => {
+      if (command !== "submit_runtime") return Promise.resolve(undefined);
+      runtimeCalls += 1;
+      return runtimeCalls === 1 ? first : Promise.resolve(runtimeCalls);
+    });
+    const bridge = new TauriBridge();
+    const submissions = [
+      bridge.submitRuntime({
+        type: "device_state_changed",
+        value: { event_sequence: 1, device: "keyboard", code: 65, pressed: true },
+      }),
+      bridge.submitRuntime({
+        type: "input",
+        value: { intent: { type: "any_key", value: "a" } },
+      }),
+      bridge.submitRuntime({
+        type: "device_state_changed",
+        value: { event_sequence: 2, device: "keyboard", code: 65, pressed: false },
+      }),
+      bridge.submitRuntime({
+        type: "client_state_changed",
+        value: { focused: false, visible: true },
+      }),
+      bridge.submitRuntime({
+        type: "device_state_changed",
+        value: { event_sequence: 3, device: "mouse", code: 2, pressed: true },
+      }),
+      bridge.submitRuntime({
+        type: "device_state_changed",
+        value: { event_sequence: 4, device: "mouse", code: 2, pressed: false },
+      }),
+    ];
+    await Promise.resolve();
+
+    expect(commandCalls("submit_runtime")).toHaveLength(1);
+    releaseFirst(1);
+    await Promise.all(submissions);
+
+    expect(commandCalls("submit_runtime").map(([, args]) => (args as any).message.type)).toEqual([
+      "device_state_changed",
+      "input",
+      "device_state_changed",
+      "client_state_changed",
+      "device_state_changed",
+      "device_state_changed",
+    ]);
+  });
+
   it("submits and decodes a native pumped input in one IPC call", async () => {
     const fixture = {
       submittedMessageId: { $rustyeraInteger: "9007199254740993" },

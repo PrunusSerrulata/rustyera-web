@@ -63,6 +63,9 @@ export class TauriBridge implements FrontendBridge {
   private projectFileExportPath?: string;
   private stateExportPath?: string;
   private readonly projectFontRegistry = new ProjectFontRegistry();
+  // Tauri commands are separate IPC futures. Serialize runtime submissions so
+  // the native Mutex cannot observe a later input before an earlier device edge.
+  private runtimeSubmissionTail: Promise<void> = Promise.resolve();
 
   setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void {
     this.projectProgressListener = listener;
@@ -81,8 +84,9 @@ export class TauriBridge implements FrontendBridge {
     }
   }
 
-  prepareSessionReplacement(): Promise<void> {
-    return invoke<void>("destroy_session");
+  async prepareSessionReplacement(): Promise<void> {
+    await this.runtimeSubmissionTail;
+    await invoke<void>("destroy_session");
   }
 
   runtimeMemoryCounters(): RuntimeHostMemoryCounters {
@@ -115,11 +119,13 @@ export class TauriBridge implements FrontendBridge {
     message: RuntimeMessage,
     correlationId?: number | bigint,
   ): Promise<number | bigint> {
-    return decodeIpcValue(
-      await invoke("submit_runtime", {
-        message: encodeIpcValue(message),
-        correlationId: encodeIpcValue(correlationId),
-      }),
+    return this.enqueueRuntimeSubmission(async () =>
+      decodeIpcValue(
+        await invoke("submit_runtime", {
+          message: encodeIpcValue(message),
+          correlationId: encodeIpcValue(correlationId),
+        }),
+      ),
     );
   }
 
@@ -127,18 +133,29 @@ export class TauriBridge implements FrontendBridge {
     message: RuntimeMessage,
     correlationId?: number | bigint,
   ): Promise<SubmittedPumpBatch> {
-    if (import.meta.env.VITE_RUSTYERA_TEST === "1")
-      performance.mark("rustyera:settlement-invoke-start");
-    const response = await invoke("submit_runtime_and_pump", {
-      message: encodeIpcValue(message),
-      correlationId: encodeIpcValue(correlationId),
+    return this.enqueueRuntimeSubmission(async () => {
+      if (import.meta.env.VITE_RUSTYERA_TEST === "1")
+        performance.mark("rustyera:settlement-invoke-start");
+      const response = await invoke("submit_runtime_and_pump", {
+        message: encodeIpcValue(message),
+        correlationId: encodeIpcValue(correlationId),
+      });
+      if (import.meta.env.VITE_RUSTYERA_TEST === "1")
+        performance.mark("rustyera:settlement-invoke-resolved");
+      const decoded = decodeIpcResponse<SubmittedPumpBatch>(response);
+      if (import.meta.env.VITE_RUSTYERA_TEST === "1")
+        performance.mark("rustyera:settlement-decode-finished");
+      return decoded;
     });
-    if (import.meta.env.VITE_RUSTYERA_TEST === "1")
-      performance.mark("rustyera:settlement-invoke-resolved");
-    const decoded = decodeIpcResponse<SubmittedPumpBatch>(response);
-    if (import.meta.env.VITE_RUSTYERA_TEST === "1")
-      performance.mark("rustyera:settlement-decode-finished");
-    return decoded;
+  }
+
+  private enqueueRuntimeSubmission<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.runtimeSubmissionTail.then(operation, operation);
+    this.runtimeSubmissionTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   async submitDebug(
@@ -650,6 +667,7 @@ export class TauriBridge implements FrontendBridge {
     this.progressUnlisten = undefined;
     if (progressUnlisten) (await progressUnlisten)();
     this.projectProgressListener = undefined;
+    await this.runtimeSubmissionTail;
     await invoke("destroy_session").catch(() => undefined);
   }
 }
