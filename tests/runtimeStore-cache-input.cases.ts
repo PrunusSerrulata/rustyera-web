@@ -1176,6 +1176,40 @@ describe("runtime store cache-input", () => {
     });
   });
 
+  it("falls back to the physical key code when WebKit reports keyCode zero", async () => {
+    const store = useRuntimeStore();
+    await store.initialize();
+    await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 23,
+      submission_token: { epoch: 2, id: 10 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    document.dispatchEvent(keyboardEvent("keydown", 0, { key: "a", code: "KeyA" }));
+    document.dispatchEvent(keyboardEvent("keyup", 0, { key: "a", code: "KeyA" }));
+    document.dispatchEvent(keyboardEvent("keydown", 0, { key: "", code: "Unidentified" }));
+    await advanceUntil(
+      () =>
+        bridge.submitRuntime.mock.calls.filter(
+          ([message]) => message.type === "device_state_changed",
+        ).length === 2,
+    );
+
+    expect(
+      bridge.submitRuntime.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message.type === "device_state_changed"),
+    ).toEqual([
+      expect.objectContaining({
+        value: expect.objectContaining({ code: 65, pressed: true, event_sequence: 1 }),
+      }),
+      expect.objectContaining({
+        value: expect.objectContaining({ code: 65, pressed: false, event_sequence: 2 }),
+      }),
+    ]);
+  });
+
   it("shares one AnyKey input lock across keyboard, viewport, form, and button paths", async () => {
     const store = useRuntimeStore();
     await store.initialize();

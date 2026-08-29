@@ -124,6 +124,53 @@ import type {
 } from "@/stores/runtimeState";
 
 const FULL_PROJECT_MANIFEST_CHUNK_BYTES = 4 * 1024 * 1024;
+const KEYBOARD_DEVICE_CODES: Readonly<Record<string, number>> = {
+  Backspace: 8,
+  Tab: 9,
+  Enter: 13,
+  NumpadEnter: 13,
+  ShiftLeft: 16,
+  ShiftRight: 16,
+  ControlLeft: 17,
+  ControlRight: 17,
+  AltLeft: 18,
+  AltRight: 18,
+  Pause: 19,
+  CapsLock: 20,
+  Escape: 27,
+  Space: 32,
+  PageUp: 33,
+  PageDown: 34,
+  End: 35,
+  Home: 36,
+  ArrowLeft: 37,
+  ArrowUp: 38,
+  ArrowRight: 39,
+  ArrowDown: 40,
+  Insert: 45,
+  Delete: 46,
+  MetaLeft: 91,
+  MetaRight: 92,
+  ContextMenu: 93,
+  NumpadMultiply: 106,
+  NumpadAdd: 107,
+  NumpadSubtract: 109,
+  NumpadDecimal: 110,
+  NumpadDivide: 111,
+  NumLock: 144,
+  ScrollLock: 145,
+  Semicolon: 186,
+  Equal: 187,
+  Comma: 188,
+  Minus: 189,
+  Period: 190,
+  Slash: 191,
+  Backquote: 192,
+  BracketLeft: 219,
+  Backslash: 220,
+  BracketRight: 221,
+  Quote: 222,
+};
 
 function diagnosticNotificationPolicy(
   diagnostic: any,
@@ -3403,8 +3450,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function onKeyDown(event: KeyboardEvent): void {
-    const code = event.keyCode;
-    if (code >= 0 && code <= 255)
+    const code = keyboardDeviceCode(event);
+    if (code != null)
       void observePhysicalDeviceState(
         "keyboard",
         code,
@@ -3447,8 +3494,24 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function onKeyUp(event: KeyboardEvent): void {
-    const code = event.keyCode;
-    void observePhysicalDeviceState("keyboard", code, false, keyboardToggle(event, code), false);
+    const code = keyboardDeviceCode(event);
+    if (code != null)
+      void observePhysicalDeviceState("keyboard", code, false, keyboardToggle(event, code), false);
+  }
+
+  function keyboardDeviceCode(event: KeyboardEvent): number | undefined {
+    if (Number.isInteger(event.keyCode) && event.keyCode > 0 && event.keyCode <= 255)
+      return event.keyCode;
+    const physical = event.code;
+    const letter = /^Key([A-Z])$/.exec(physical)?.[1];
+    if (letter) return letter.charCodeAt(0);
+    const digit = /^Digit([0-9])$/.exec(physical)?.[1];
+    if (digit) return digit.charCodeAt(0);
+    const numpad = /^Numpad([0-9])$/.exec(physical)?.[1];
+    if (numpad) return 96 + Number(numpad);
+    const functionKey = /^F([1-9]|1[0-9]|2[0-4])$/.exec(physical)?.[1];
+    if (functionKey) return 111 + Number(functionKey);
+    return KEYBOARD_DEVICE_CODES[physical];
   }
 
   function keyboardToggle(event: KeyboardEvent, code: number): boolean {
