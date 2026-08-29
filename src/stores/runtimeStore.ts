@@ -441,6 +441,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     appendElapsed: (token, seconds) => runtimeStatus.appendElapsed("settings", token, seconds),
     finishStatus: (token, message) => runtimeStatus.finish("settings", token, message),
     clearStatus: (token) => runtimeStatus.clear("settings", token),
+    logWarning: (message) => log("warning", message),
     logError: (message) => log("error", message),
   });
   let sessionPreparation: Promise<void> | undefined;
