@@ -789,12 +789,12 @@ describe("web game test scenario", () => {
     await isolated.close();
   });
 
-  it("waits for a submitted runtime input to consume the current wait", async () => {
+  it("types a submitted runtime input as physical keys before consuming the wait", async () => {
     let waitId = "4";
     vi.stubGlobal("window", {
       __RUSTYERA_TEST__: { snapshot: () => ({ fault: null, wait: { wait_id: waitId } }) },
     });
-    const input = { fill: vi.fn() };
+    const input = { fill: vi.fn(), pressSequentially: vi.fn() };
     const button = { click: vi.fn(() => (waitId = "5")) };
     const page = {
       evaluate: vi.fn((callback) => callback()),
@@ -806,7 +806,8 @@ describe("web game test scenario", () => {
       semanticInput: "100",
     });
 
-    expect(input.fill).toHaveBeenCalledWith("100");
+    expect(input.fill).toHaveBeenCalledWith("");
+    expect(input.pressSequentially).toHaveBeenCalledWith("100");
     expect(button.click).toHaveBeenCalledOnce();
     expect(page.waitForFunction).toHaveBeenCalledWith(expect.any(Function), "4");
     vi.unstubAllGlobals();

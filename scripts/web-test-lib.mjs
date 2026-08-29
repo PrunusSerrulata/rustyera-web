@@ -919,7 +919,9 @@ export async function runAction(page, action) {
       () => window.__RUSTYERA_TEST__.snapshot().wait?.wait_id,
     );
     const input = page.locator(".prompt-bar input");
-    await input.fill(String(action.value ?? ""));
+    const value = String(action.value ?? "");
+    await input.fill("");
+    if (value) await input.pressSequentially(value);
     await page.locator(".prompt-bar button[type=submit]").click();
     if (beforeWaitId != null)
       await page.waitForFunction((waitId) => {
@@ -933,7 +935,7 @@ export async function runAction(page, action) {
       });
       await page.locator(".game-viewport").click({ button: "right" });
     }
-    return { semanticInput: String(action.value ?? "") };
+    return { semanticInput: value };
   }
   if (action.type === "click_until_text") {
     const maximum = Math.max(0, Number(action.maximum ?? 10));
