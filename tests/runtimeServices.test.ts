@@ -216,6 +216,7 @@ function serviceHarness(requestId: number | bigint = 1) {
     bridge: { readImageMetadata: vi.fn(), readResource: vi.fn() },
     currentPresentation: emptyPresentation,
     heldKeys: new Set(),
+    pumpDevices: vi.fn(async (_epoch, afterEventSequence) => afterEventSequence),
     clock: () => undefined,
     nextEntropy: () => 1n,
     send,
@@ -368,6 +369,40 @@ function wasmServiceRequest(request: RuntimeServiceRequest): RuntimeServiceReque
     payload: Array.from(request.payload, BigInt),
   };
 }
+
+describe("input runtime service adapter", () => {
+  it("waits for the device event-loop pump and returns its exact watermark", async () => {
+    const harness = serviceHarness();
+    const pumped = deferred<number>();
+    harness.context.pumpDevices = vi.fn(() => pumped.promise);
+    const handling = handleRuntimeService(
+      serviceRequest(
+        "device_pump",
+        new Map([
+          [0, 2],
+          [1, 7],
+        ]),
+      ),
+      42,
+      harness.context,
+    );
+    await Promise.resolve();
+
+    expect(harness.context.pumpDevices).toHaveBeenCalledWith(2, 7);
+    expect(harness.send).not.toHaveBeenCalled();
+
+    pumped.resolve(9);
+    await handling;
+    const response = (harness.send.mock.calls[0] as unknown as [any])[0].value.result;
+    expect(response.type).toBe("ready");
+    expect(decodeServicePayload(response.payload)).toEqual(
+      new Map([
+        [0, 2],
+        [1, 9],
+      ]),
+    );
+  });
+});
 
 describe("HTML v2 runtime service adapter", () => {
   it.each(["html_string_len", "html_substring", "html_string_lines"])(

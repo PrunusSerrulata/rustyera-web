@@ -11,6 +11,7 @@ import {
   isHtmlQueryService,
   isStrictProjectionService,
   canvasPixelQuery,
+  devicePumpQuery,
   projectionMap,
   projectionQuery,
   validateServiceRequest,
@@ -41,6 +42,7 @@ export interface RuntimeServiceContext {
   bridge: Pick<FrontendBridge, "readImageMetadata" | "readResource">;
   currentPresentation(): PresentationState;
   heldKeys: ReadonlySet<number>;
+  pumpDevices(epoch: ServiceInteger, afterEventSequence: ServiceInteger): Promise<ServiceInteger>;
   clock(): Date | undefined;
   nextEntropy(): bigint | undefined;
   send(message: RuntimeMessage, correlationId?: ServiceInteger): Promise<unknown>;
@@ -287,6 +289,11 @@ async function resolveRuntimeService(
   if (isHtmlQueryService(request))
     return resolveHtmlRuntimeService(query, context.html, context.lease);
   switch (`${request.kind}/${request.operation}`) {
+    case "input_state/device_pump": {
+      const expected = devicePumpQuery(query);
+      const through = await context.pumpDevices(expected.epoch, expected.afterEventSequence);
+      return mapOf([0, expected.epoch], [1, through]);
+    }
     case "input_state/pointer_state": {
       const expected = projectionQuery(query);
       const provider = projectionProvider(context);

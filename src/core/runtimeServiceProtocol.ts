@@ -39,6 +39,11 @@ export interface CanvasPixelQuery {
   y: number;
 }
 
+export interface DevicePumpQuery {
+  epoch: ServiceInteger;
+  afterEventSequence: ServiceInteger;
+}
+
 export interface RuntimeServiceRequest {
   request_id: ServiceInteger;
   kind: string;
@@ -119,6 +124,14 @@ export function canvasPixelQuery(value: unknown): CanvasPixelQuery {
     canvasRevision: serviceInteger(fields.get(2), "canvas revision"),
     x: coordinate(point.get(0)),
     y: coordinate(point.get(1)),
+  };
+}
+
+export function devicePumpQuery(value: unknown): DevicePumpQuery {
+  const fields = serviceMap(value, [0, 1], "device pump request");
+  return {
+    epoch: serviceInteger(fields.get(0), "device pump epoch"),
+    afterEventSequence: serviceInteger(fields.get(1), "device pump event sequence"),
   };
 }
 
