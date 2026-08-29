@@ -96,6 +96,9 @@ describe("verified Tauri build reuse", () => {
     expect(reusableBuildEnvironment(first, "native-input.spec.mjs", undefined, true)).toEqual(
       reusableBuildEnvironment(second, "snake-services.spec.mjs", undefined, true),
     );
+    expect(reusableBuildEnvironment(first, "cache-settings.spec.mjs", undefined, true)).toEqual(
+      reusableBuildEnvironment(second, "snake-services.spec.mjs", undefined, true),
+    );
     expect(first.VITE_RUSTYERA_TEST_PROJECT).toBe("/first/project");
     expect(reusableBuildEnvironment(first, "other.spec.mjs", undefined, false)).toEqual(first);
     expect(() => reusableBuildEnvironment(first, "other.spec.mjs", undefined, true)).toThrow(

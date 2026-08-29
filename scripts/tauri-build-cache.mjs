@@ -9,6 +9,7 @@ import path from "node:path";
 const execute = promisify(execFile);
 const reusableSpecs = new Set([
   "native-input.spec.mjs",
+  "cache-settings.spec.mjs",
   "snake-service-oracle.spec.mjs",
   "snake-service-lifecycle.spec.mjs",
   "snake-services.spec.mjs",
