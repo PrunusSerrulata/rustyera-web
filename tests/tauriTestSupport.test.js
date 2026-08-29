@@ -71,6 +71,79 @@ import {
   snapshotProgressSignature,
   startTauriSessionMonitor,
 } from "../scripts/tauri-test-support.mjs";
+import { assertStructuredSnakeProfileNotifications } from "./tauri/structured-profile-notifications.mjs";
+
+describe("structured snake profile notifications", () => {
+  it("accepts every notified structured warning and rejects unstructured or mismatched notices", () => {
+    const identity = {
+      profile: "emuera.skia.snake",
+      semantic_version: 9,
+      policy_version: 9,
+    };
+    const diagnostic = (code, message, stage, generation = null, notification = "default") => ({
+      code,
+      level: "warning",
+      message,
+      notification,
+      context: { identity, stage, generation },
+    });
+    const experimental = diagnostic(
+      "runtime.experimental_compatibility_profile",
+      "profile emuera.skia.snake is experimental",
+      "configuration",
+    );
+    const generated = diagnostic(
+      "compat.extra_argument",
+      "extra argument was ignored",
+      "runtime",
+      4,
+    );
+    const logOnly = diagnostic(
+      "compat.portability",
+      "portable fallback was selected",
+      "runtime",
+      4,
+      "log_only",
+    );
+    const notification = (id, value) => ({
+      id,
+      level: "warning",
+      message: `[${value.code}] ${value.message} [profile=emuera.skia.snake@9/9 stage=${value.context.stage}]`,
+    });
+    const state = {
+      logNotifications: [notification(1, experimental), notification(2, generated)],
+      serviceEvidence: {
+        records: [experimental, generated, logOnly].map((value) => ({
+          direction: "receive",
+          message: { type: "diagnostic", value },
+        })),
+      },
+    };
+    const visible = state.logNotifications.map(({ message }) => `警告${message} ×`);
+    expect(assertStructuredSnakeProfileNotifications(state, visible)).toEqual([
+      experimental,
+      generated,
+    ]);
+
+    const extraError = structuredClone(state);
+    extraError.logNotifications.push({ id: 3, level: "error", message: "unrelated failure" });
+    expect(() => assertStructuredSnakeProfileNotifications(extraError, visible)).toThrow(
+      "one-to-one",
+    );
+
+    const mismatched = structuredClone(state);
+    mismatched.serviceEvidence.records[0].message.value.context.identity.profile = "emuera.em";
+    expect(() => assertStructuredSnakeProfileNotifications(mismatched, visible)).toThrow(
+      "one-to-one",
+    );
+
+    const invalidGeneration = structuredClone(state);
+    invalidGeneration.serviceEvidence.records[1].message.value.context.generation = -1;
+    expect(() => assertStructuredSnakeProfileNotifications(invalidGeneration, visible)).toThrow(
+      "one-to-one",
+    );
+  });
+});
 
 afterEach(() => {
   vi.useRealTimers();

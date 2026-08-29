@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import { waitForRuntimeProgress } from "./runtime-progress.mjs";
+import { assertStructuredSnakeProfileNotifications } from "./structured-profile-notifications.mjs";
 
 const PROJECT_TIMEOUT = 120_000;
 const cacheSettings = process.env.VITE_RUSTYERA_TAURI_CACHE_SETTINGS ? describe : describe.skip;
@@ -56,18 +57,15 @@ cacheSettings("Tauri cache-hit project settings", () => {
       state.logs.some((entry) => String(entry.message).includes("runtime.compiled_cache_failed")),
       false,
     );
-    assert.deepEqual(
-      state.logNotifications.filter((notification) => !isExpectedProfileWarning(notification)),
-      [],
-    );
     const visibleNotifications = await driver.$$(".log-notification");
-    const unexpectedVisibleNotifications = [];
+    const visibleNotificationTexts = [];
     for (const notification of visibleNotifications) {
-      const text = await notification.getText();
-      if (!isExpectedProfileWarning({ level: "warning", message: text }))
-        unexpectedVisibleNotifications.push(text);
+      visibleNotificationTexts.push(await notification.getText());
     }
-    assert.deepEqual(unexpectedVisibleNotifications, []);
+    assert.ok(
+      assertStructuredSnakeProfileNotifications(state, visibleNotificationTexts).length > 0,
+      "snake cache fixture must surface its structured compatibility warning",
+    );
 
     await driver.pause(2_100);
     state = await snapshot();
@@ -91,13 +89,3 @@ cacheSettings("Tauri cache-hit project settings", () => {
     );
   });
 });
-
-function isExpectedProfileWarning(notification) {
-  if (notification?.level !== "warning") return false;
-  const message = String(notification.message);
-  return (
-    message.includes("profile=emuera.skia.snake@9/9 stage=protocol") ||
-    (message.includes("[runtime.experimental_compatibility_profile]") &&
-      message.includes("profile emuera.skia.snake is experimental"))
-  );
-}
