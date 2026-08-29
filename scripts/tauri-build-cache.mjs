@@ -174,6 +174,7 @@ export async function reusableArtifact(manifestPath, contract, binary, { require
               "scripts/snake-service-lifecycle-races.mjs",
               "scripts/snake-services-test-support.mjs",
               "scripts/browser-compat-test.mjs",
+              "scripts/cache-handoff-test.mjs",
               "scripts/web-test-lib.mjs",
             ].includes(name),
         ),

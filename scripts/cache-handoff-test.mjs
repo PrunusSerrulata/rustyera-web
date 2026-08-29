@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -347,11 +347,17 @@ async function assertSourceIndexMatchesProject(indexPath, projectPath, generatio
 async function addImageResource(target) {
   const resources = path.join(target, "resources");
   await mkdir(resources, { recursive: true });
+  const image = path.join(resources, "cover.png");
   await writeFile(
-    path.join(resources, "cover.png"),
+    image,
     Uint8Array.from([
       0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0,
       1, 0, 0, 0, 1,
     ]),
   );
+  // Node's timestamp-preserving recursive copy can round a freshly written APFS
+  // nanosecond timestamp below its millisecond boundary. The portable index is
+  // intentionally millisecond-based, so use a stable exactly representable half-second.
+  const portableTimestamp = new Date("2020-01-01T00:00:00.500Z");
+  await utimes(image, portableTimestamp, portableTimestamp);
 }

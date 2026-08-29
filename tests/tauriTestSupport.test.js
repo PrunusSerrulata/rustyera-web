@@ -162,6 +162,7 @@ describe("verified Tauri build reuse", () => {
           ["scripts/snake-service-lifecycle-races.mjs", "old-race-helper"],
           ["scripts/snake-services-test-support.mjs", "old-services-helper"],
           ["scripts/browser-compat-test.mjs", "old-browser-runner"],
+          ["scripts/cache-handoff-test.mjs", "old-cache-handoff-runner"],
           ["scripts/web-test-lib.mjs", "old-browser-helper"],
         ],
         coreSources: [["crates/runtime.rs", "same-core"]],
@@ -179,7 +180,7 @@ describe("verified Tauri build reuse", () => {
       changedRuntimeHelper.inputs.webSources[2][1] = "native-foreground-precondition";
       changedRuntimeHelper.inputs.webSources[4][1] = "transport-identity-before-image-gate";
       expect(await reusableArtifact(manifest, changedRuntimeHelper, binary)).toBeDefined();
-      for (const index of [5, 6, 7]) {
+      for (const index of [5, 6, 7, 8]) {
         const changedNodeHelper = structuredClone(changedRuntimeHelper);
         changedNodeHelper.inputs.webSources[index][1] = "node-only-observation-or-foreground";
         expect(await reusableArtifact(manifest, changedNodeHelper, binary)).toBeDefined();
