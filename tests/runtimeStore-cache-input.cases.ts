@@ -1,4 +1,5 @@
 import { bridge } from "./runtimeStoreTestSupport";
+import { snakeCompatibility } from "./compatibilityTestSupport";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Preferences } from "@/core/types";
 import {
@@ -1798,19 +1799,26 @@ describe("runtime store cache-input", () => {
 
   it("filters only correlated stale projection rejections", async () => {
     let nextMessageId = 40;
+    const context = { identity: snakeCompatibility(), stage: "protocol" };
     bridge.submitRuntime.mockImplementation(async () => nextMessageId++);
     bridge.pump.mockResolvedValueOnce(emptyBatch()).mockResolvedValueOnce({
       ...emptyBatch(),
       events: [
         runtimeEvent(
           "command_rejected",
-          { message: "projection observation does not match the canonical presentation" },
+          {
+            message: "projection observation does not match the canonical presentation",
+            context,
+          },
           40,
         ),
         runtimeEvent("command_rejected", { message: "input wait identity is stale" }, 999),
         runtimeEvent(
           "command_rejected",
-          { message: "projection observation does not match the canonical presentation" },
+          {
+            message: "projection observation does not match the canonical presentation",
+            context,
+          },
           998,
         ),
       ],
@@ -1835,11 +1843,21 @@ describe("runtime store cache-input", () => {
         entry.message.includes("input wait identity is stale"),
       ),
     ).toBe(false);
+    const projectionLogs = store.logs.filter((entry) =>
+      entry.message.includes("projection observation does not match the canonical presentation"),
+    );
+    expect(projectionLogs).toHaveLength(1);
+    expect(projectionLogs[0]?.message).toContain("profile=emuera.skia.snake@8/8 stage=protocol");
     expect(
-      store.logs.filter((entry) =>
+      store.logNotifications.filter((entry) =>
         entry.message.includes("projection observation does not match the canonical presentation"),
       ),
     ).toHaveLength(1);
+    expect(
+      store.logNotifications.filter(
+        (entry) => entry.message === "profile=emuera.skia.snake@8/8 stage=protocol",
+      ),
+    ).toHaveLength(0);
   });
 
   it("cancels a pending compiled-cache writer before restarting the project", async () => {

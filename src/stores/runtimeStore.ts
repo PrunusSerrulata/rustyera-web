@@ -33,7 +33,6 @@ import {
   snapshotFileName,
 } from "@/core/runtimeSupport";
 import { formatRuntimeFault } from "@/core/runtimeFault";
-import { formatCompatibilityContext } from "@/core/compatibility";
 import { hasEnabledButton, presentationInteractionEnabled } from "@/core/presentation";
 import {
   defaultPreferences,
@@ -1224,8 +1223,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
         }
         break;
       case "command_rejected": {
-        const compatibilityContext = formatCompatibilityContext(value.context);
-        if (compatibilityContext) log("warning", compatibilityContext, true);
         const correlation = String(correlationId);
         runtimeViewport.reject(correlation);
         if (pendingReturnToTitleMessageId === correlation) {
