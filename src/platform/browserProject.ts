@@ -414,8 +414,8 @@ export class BrowserProject {
       throw error;
     }
     this.files.set("reraconfig.toml", handle);
-    this.manifestValue = undefined;
-    this.sourcePayloadsReleased = false;
+    this.updateManifestConfiguration(contents);
+    this.pendingSnapshot = undefined;
     await this.invalidateCompiledCache();
   }
 
@@ -437,7 +437,7 @@ export class BrowserProject {
     const update = await prepare(projectBytes, expectedDigest, contents);
     await applyProjectFileUpdate(handle, current.size, projectDigest, update);
     this.packagedFile = await handle.getFile();
-    this.updateEmbeddedConfiguration(contents);
+    this.updateManifestConfiguration(contents);
     await this.invalidateCompiledCache();
   }
 
@@ -450,7 +450,7 @@ export class BrowserProject {
     }
   }
 
-  private updateEmbeddedConfiguration(contents: string): void {
+  private updateManifestConfiguration(contents: string): void {
     const manifest = this.manifestValue;
     if (!manifest) return;
     const source = normalizeLineEndings(contents);
