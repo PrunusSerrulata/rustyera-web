@@ -232,14 +232,15 @@ export class RuntimeConfigurationState {
     pending.resolve();
   }
 
-  reject(correlationId: number | bigint | undefined, message: string): void {
+  reject(correlationId: number | bigint | undefined, message: string): boolean {
     const pending = this.pending;
-    if (!pending || correlationId == null) return;
+    if (!pending || correlationId == null) return false;
     const messageId =
       pending.stage === "preparing" ? pending.prepareMessageId : pending.finalizeMessageId;
-    if (!sameMessageId(messageId, correlationId)) return;
+    if (!sameMessageId(messageId, correlationId)) return false;
     this.pending = undefined;
     pending.reject(new Error(`项目配置未保存：${message}`));
+    return true;
   }
 
   reset(): void {

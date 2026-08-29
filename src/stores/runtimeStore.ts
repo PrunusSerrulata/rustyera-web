@@ -1248,31 +1248,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           } else retireFullManifestImport(manifestImport);
           break;
         }
-        runtimeImport.reject(correlationId);
-        if (
-          runtimeClientPreferences.reject(
-            correlationId,
-            String(value.message ?? "Runtime 拒绝了客户端偏好"),
-          )
-        )
-          break;
-        if (
-          startupTelemetry.value?.outcome === "loading" &&
-          String(correlationId) === startupTelemetryState.startMessageId
-        ) {
-          const message = String(value.message ?? "Runtime rejected startup");
-          startupTelemetryState.fail(message);
-          finishProjectLoad();
-          baseStatus.value = `项目启动失败：${message}`;
-        }
-        const reloadRejected = projectReload.matches(correlationId);
-        if (reloadRejected) {
-          const message = String(value.message ?? "Runtime 拒绝了热重载");
-          await projectReload.finalize(false);
-          finishProjectLoad();
-          baseStatus.value = `重新加载项目失败：${message}`;
-          log("error", baseStatus.value, true);
-        }
+        const importRejected = runtimeImport.reject(correlationId);
         const {
           activeExport,
           compiledCachePreparing,
@@ -1289,6 +1265,49 @@ export const useRuntimeStore = defineStore("runtime", () => {
           pendingProjectionMessages,
           pendingGameInput.value,
         );
+        const configurationRejected = runtimeConfiguration.reject(
+          correlationId,
+          value.message ?? "Runtime 拒绝了命令",
+        );
+        const undoRejected = pendingInputUndo.value?.messageId === correlation;
+        const startupRejected =
+          startupTelemetry.value?.outcome === "loading" &&
+          correlation === startupTelemetryState.startMessageId;
+        if (startupRejected) {
+          const message = String(value.message ?? "Runtime rejected startup");
+          startupTelemetryState.fail(message);
+          finishProjectLoad();
+          baseStatus.value = `项目启动失败：${message}`;
+        }
+        const reloadRejected = projectReload.matches(correlationId);
+        if (reloadRejected) {
+          const message = String(value.message ?? "Runtime 拒绝了热重载");
+          await projectReload.finalize(false);
+          finishProjectLoad();
+          baseStatus.value = `重新加载项目失败：${message}`;
+          log("error", baseStatus.value, true);
+        }
+        const exportRejected = exportState?.requestMessageId === correlation;
+        const claimedByKnownOperation =
+          importRejected ||
+          configurationRejected ||
+          undoRejected ||
+          startupRejected ||
+          reloadRejected ||
+          staleProjection ||
+          rejectedInput != null ||
+          compiledCachePreparing ||
+          fullProjectPreparing ||
+          earlyFullProjectPreparation ||
+          exportRejected;
+        if (
+          !claimedByKnownOperation &&
+          runtimeClientPreferences.reject(
+            correlationId,
+            String(value.message ?? "Runtime 拒绝了客户端偏好"),
+          )
+        )
+          break;
         if (rejectedInput && !willRetryInput) {
           runtimeInput.rejectInput(rejectedInput, willRetryInput);
         }
@@ -1308,7 +1327,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
             true,
             suppressInputWarningNotification ? "none" : "all",
           );
-        runtimeConfiguration.reject(correlationId, value.message ?? "Runtime 拒绝了命令");
         if (fullProjectPreparing && isFullProjectExport(activeExport)) {
           scheduleFullProjectExportRetry(activeExport);
         }

@@ -1,4 +1,5 @@
 import { bridge } from "./runtimeStoreTestSupport";
+import { snakeCompatibility } from "./compatibilityTestSupport";
 import { describe, expect, it, vi } from "vitest";
 import {
   installRuntimeStoreTestHarness,
@@ -252,6 +253,102 @@ describe("runtime store configuration", () => {
     expect(bridge.submitRuntime.mock.calls.some(([message]) => message.type === "start")).toBe(
       true,
     );
+  });
+
+  it("routes an earlier stale projection rejection before an unregistered preference reply", async () => {
+    const configuration = {
+      project_revision: 4,
+      source_digest: new Uint8Array(32),
+      entries: [configurationEntry("UseMouse", "YES")],
+      restart_pending: false,
+      generated_source: null,
+    };
+    const delayedPreferenceId = deferred<number>();
+    let nextMessageId = 1;
+    let preferenceApplications = 0;
+    let startupPreferenceId: number | undefined;
+    let projectionId: number | undefined;
+    let currentPreferenceId: number | undefined;
+    bridge.submitRuntime.mockImplementation((message) => {
+      const messageId = nextMessageId++;
+      if (message.type === "projection_observation") projectionId = messageId;
+      if (message.type === "apply_client_preferences") {
+        preferenceApplications += 1;
+        if (preferenceApplications === 1) startupPreferenceId = messageId;
+        else {
+          currentPreferenceId = messageId;
+          return delayedPreferenceId.promise;
+        }
+      }
+      return Promise.resolve(messageId);
+    });
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", { success: true, diagnostics: [], configuration }),
+      ],
+    });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+
+    await store.enableDebug();
+    expect(startupPreferenceId).toBeDefined();
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("client_preferences_applied", { configuration }, startupPreferenceId)],
+    });
+    await advanceUntil(() =>
+      bridge.submitRuntime.mock.calls.some(([message]) => message.type === "start"),
+    );
+
+    await store.projectViewport({
+      width: 100,
+      height: 80,
+      lineColumns: 20,
+      chromeWidth: 0,
+      chromeHeight: 0,
+    });
+    expect(projectionId).toBeDefined();
+    const saving = store.saveClientPreferences("global", {
+      settings: { UseMouse: "NO" },
+    });
+    await flushMicrotasks();
+    expect(currentPreferenceId).toBeDefined();
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "command_rejected",
+          {
+            message: "projection observation does not match the canonical presentation",
+            context: { identity: snakeCompatibility(), stage: "protocol" },
+          },
+          projectionId,
+        ),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.logs.some((entry) => entry.message.includes("非预期的客户端偏好响应"))).toBe(
+      false,
+    );
+    expect(store.settingsBusy).toBe(true);
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("client_preferences_applied", { configuration }, currentPreferenceId)],
+    });
+    delayedPreferenceId.resolve(currentPreferenceId!);
+    await vi.advanceTimersByTimeAsync(32);
+    await saving;
+
+    expect(store.settingsBusy).toBe(false);
+    expect(store.preferencesOpen).toBe(false);
+    expect(
+      store.logNotifications.some((entry) =>
+        entry.message.includes("projection observation does not match"),
+      ),
+    ).toBe(false);
   });
 
   it("preserves an interleaved game wait until a saved preference is acknowledged", async () => {
