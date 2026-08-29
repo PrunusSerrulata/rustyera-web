@@ -22,6 +22,7 @@ import {
   runAction,
   shellWords,
   waitForAutomaticWaitChange,
+  waitForRuntimeObservation,
 } from "./web-test-lib.mjs";
 import { finalizeBrowserGameRun } from "./web-test-lifecycle.mjs";
 import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs";
@@ -334,10 +335,7 @@ async function execute(args) {
         if (remaining <= 0) throw new Error("scenario timeout exhausted");
         try {
           return await Promise.race([
-            page.evaluate(
-              (timeout) => window.__RUSTYERA_TEST__.waitForStableObservation(timeout),
-              Math.min(OBSERVATION_SLICE_MS, remaining),
-            ),
+            waitForRuntimeObservation(page, Math.min(OBSERVATION_SLICE_MS, remaining)),
             snapshotMonitor.failure,
           ]);
         } catch (error) {

@@ -1192,6 +1192,32 @@ export async function waitForAutomaticWaitChange(page, waitId) {
   await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
 }
 
+export async function waitForRuntimeObservation(page, timeout) {
+  return page.evaluate(async (timeoutMs) => {
+    let observing = true;
+    const timedInput = new Promise((resolve) => {
+      const poll = () => {
+        if (!observing) return;
+        const current = window.__RUSTYERA_TEST__.snapshot();
+        if (current.canInteract && current.wait?.deadline_ns != null) {
+          resolve(current);
+          return;
+        }
+        window.requestAnimationFrame(poll);
+      };
+      poll();
+    });
+    try {
+      return await Promise.race([
+        window.__RUSTYERA_TEST__.waitForStableObservation(timeoutMs),
+        timedInput,
+      ]);
+    } finally {
+      observing = false;
+    }
+  }, timeout);
+}
+
 async function sampleQueries(page, action) {
   const count = Number(action.count ?? 3);
   const interval = Number(action.interval_ms ?? 1_000);

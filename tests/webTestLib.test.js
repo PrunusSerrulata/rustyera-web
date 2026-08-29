@@ -25,6 +25,7 @@ import {
   runAction,
   terminalRuntimeRejection,
   waitForWebDriverDocument,
+  waitForRuntimeObservation,
 } from "../scripts/web-test-lib.mjs";
 import { SNAKE_DATA_MARKERS } from "../scripts/snake-data-test-support.mjs";
 
@@ -810,6 +811,40 @@ describe("web game test scenario", () => {
     expect(input.pressSequentially).toHaveBeenCalledWith("100");
     expect(button.click).toHaveBeenCalledOnce();
     expect(page.waitForFunction).toHaveBeenCalledWith(expect.any(Function), "4");
+    vi.unstubAllGlobals();
+  });
+
+  it("observes a timed input transition before its changing deadline state can expire", async () => {
+    const pending = { canInteract: false, wait: null };
+    const timed = { canInteract: true, wait: { deadline_ns: 5_000_000_000 } };
+    const snapshots = [pending, timed];
+    const waitForStableObservation = vi.fn(() => new Promise(() => {}));
+    vi.stubGlobal("window", {
+      __RUSTYERA_TEST__: {
+        snapshot: () => snapshots.shift() ?? timed,
+        waitForStableObservation,
+      },
+      requestAnimationFrame: (callback) => callback(),
+    });
+    const page = { evaluate: vi.fn((callback, argument) => callback(argument)) };
+
+    await expect(waitForRuntimeObservation(page, 5_000)).resolves.toBe(timed);
+    expect(waitForStableObservation).toHaveBeenCalledWith(5_000);
+    vi.unstubAllGlobals();
+  });
+
+  it("retains stable-frame observation for untimed input", async () => {
+    const current = { canInteract: true, wait: { deadline_ns: null } };
+    const stable = { ...current, output: ["stable"] };
+    const waitForStableObservation = vi.fn(async () => stable);
+    vi.stubGlobal("window", {
+      __RUSTYERA_TEST__: { snapshot: () => current, waitForStableObservation },
+      requestAnimationFrame: vi.fn(),
+    });
+    const page = { evaluate: vi.fn((callback, argument) => callback(argument)) };
+
+    await expect(waitForRuntimeObservation(page, 5_000)).resolves.toBe(stable);
+    expect(waitForStableObservation).toHaveBeenCalledWith(5_000);
     vi.unstubAllGlobals();
   });
 
