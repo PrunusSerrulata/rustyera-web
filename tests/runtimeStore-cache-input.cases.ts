@@ -1275,15 +1275,15 @@ describe("runtime store cache-input", () => {
     bridge.submitRuntime.mockClear();
 
     for (const event of [
-      new KeyboardEvent("keydown", { key: "x", repeat: true }),
-      new KeyboardEvent("keydown", { key: "x", ctrlKey: true }),
-      new KeyboardEvent("keydown", { key: "x", altKey: true }),
-      new KeyboardEvent("keydown", { key: "x", metaKey: true }),
-      new KeyboardEvent("keydown", { key: "x", shiftKey: true }),
-      new KeyboardEvent("keydown", { key: "Control" }),
-      new KeyboardEvent("keydown", { key: "Alt" }),
-      new KeyboardEvent("keydown", { key: "Meta" }),
-      new KeyboardEvent("keydown", { key: "Shift" }),
+      keyboardEvent("keydown", 88, { key: "x", repeat: true }),
+      keyboardEvent("keydown", 88, { key: "x", ctrlKey: true }),
+      keyboardEvent("keydown", 88, { key: "x", altKey: true }),
+      keyboardEvent("keydown", 88, { key: "x", metaKey: true }),
+      keyboardEvent("keydown", 88, { key: "x", shiftKey: true }),
+      keyboardEvent("keydown", 17, { key: "Control" }),
+      keyboardEvent("keydown", 18, { key: "Alt" }),
+      keyboardEvent("keydown", 91, { key: "Meta" }),
+      keyboardEvent("keydown", 16, { key: "Shift" }),
     ])
       document.dispatchEvent(event);
     await advanceUntil(
