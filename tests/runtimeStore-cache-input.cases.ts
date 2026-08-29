@@ -1176,7 +1176,7 @@ describe("runtime store cache-input", () => {
     });
   });
 
-  it("falls back to the physical key code when WebKit reports keyCode zero", async () => {
+  it("prefers the physical key identity when WebKit reports an inconsistent keyCode", async () => {
     const store = useRuntimeStore();
     await store.initialize();
     await storeWithInputWait({
@@ -1186,8 +1186,8 @@ describe("runtime store cache-input", () => {
     });
     bridge.submitRuntime.mockClear();
 
-    document.dispatchEvent(keyboardEvent("keydown", 0, { key: "a", code: "KeyA" }));
-    document.dispatchEvent(keyboardEvent("keyup", 0, { key: "a", code: "KeyA" }));
+    document.dispatchEvent(keyboardEvent("keydown", 97, { key: "a", code: "KeyA" }));
+    document.dispatchEvent(keyboardEvent("keyup", 97, { key: "a", code: "KeyA" }));
     document.dispatchEvent(keyboardEvent("keydown", 0, { key: "", code: "Unidentified" }));
     await advanceUntil(
       () =>

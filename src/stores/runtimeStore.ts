@@ -3500,8 +3500,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function keyboardDeviceCode(event: KeyboardEvent): number | undefined {
-    if (Number.isInteger(event.keyCode) && event.keyCode > 0 && event.keyCode <= 255)
-      return event.keyCode;
     const physical = event.code;
     const letter = /^Key([A-Z])$/.exec(physical)?.[1];
     if (letter) return letter.charCodeAt(0);
@@ -3511,7 +3509,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (numpad) return 96 + Number(numpad);
     const functionKey = /^F([1-9]|1[0-9]|2[0-4])$/.exec(physical)?.[1];
     if (functionKey) return 111 + Number(functionKey);
-    return KEYBOARD_DEVICE_CODES[physical];
+    const standardized = KEYBOARD_DEVICE_CODES[physical];
+    if (standardized != null) return standardized;
+    return Number.isInteger(event.keyCode) && event.keyCode > 0 && event.keyCode <= 255
+      ? event.keyCode
+      : undefined;
   }
 
   function keyboardToggle(event: KeyboardEvent, code: number): boolean {
