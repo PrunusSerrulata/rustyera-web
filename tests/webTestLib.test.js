@@ -29,15 +29,23 @@ import {
 import { SNAKE_DATA_MARKERS } from "../scripts/snake-data-test-support.mjs";
 
 describe("web game test scenario", () => {
-  it("activates the native app before selecting and observing its automation window", async () => {
+  it("focuses Safari through its WebDriver automation window", async () => {
     const calls = [];
     const execute = vi.fn(async (...args) => calls.push(["activate", ...args]));
+    const heading = {
+      waitForDisplayed: async (options) => calls.push(["displayed", options.timeout]),
+      click: async () => calls.push(["click"]),
+    };
     const browser = {
       getWindowHandle: async () => {
         calls.push(["handle"]);
         return "automation";
       },
       switchToWindow: async (handle) => calls.push(["switch", handle]),
+      $: async (selector) => {
+        calls.push(["element", selector]);
+        return heading;
+      },
       execute: async (read) =>
         runInNewContext(`(${read})()`, {
           document: { visibilityState: "visible", hasFocus: () => true },
@@ -49,16 +57,14 @@ describe("web game test scenario", () => {
     };
     await focusNativeBrowser(browser, "safari", { platform: "darwin", execute });
     expect(calls).toEqual([
-      [
-        "activate",
-        "/usr/bin/osascript",
-        ["-e", 'tell application id "com.apple.Safari" to activate'],
-        { timeout: 3_000 },
-      ],
       ["handle"],
       ["switch", "automation"],
+      ["element", ".welcome h1"],
+      ["displayed", 3_000],
+      ["click"],
       ["observe", 3_000, 50],
     ]);
+    expect(execute).not.toHaveBeenCalled();
     execute.mockClear();
     await focusNativeBrowser(browser, "firefox", { platform: "linux", execute });
     expect(execute).not.toHaveBeenCalled();
@@ -75,6 +81,10 @@ describe("web game test scenario", () => {
         switchToWindow: async () => {
           if (failure === "switch") throw new Error("switch");
         },
+        $: async () => ({
+          waitForDisplayed: async () => {},
+          click: async () => {},
+        }),
         execute: async (read) =>
           runInNewContext(`(${read})()`, {
             document: {
@@ -87,10 +97,14 @@ describe("web game test scenario", () => {
         },
       };
       await expect(
-        focusNativeBrowser(browser, failure === "unsupported" ? "unknown" : "safari", {
-          platform: "darwin",
-          execute,
-        }),
+        focusNativeBrowser(
+          browser,
+          failure === "unsupported" ? "unknown" : failure === "activation" ? "firefox" : "safari",
+          {
+            platform: "darwin",
+            execute,
+          },
+        ),
       ).rejects.toThrow();
       expect(execute.mock.calls.length).toBeLessThanOrEqual(1);
     },
