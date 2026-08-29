@@ -1233,6 +1233,80 @@ describe("browser startup bridge", () => {
     expect(requests.some((request) => request.message.method === "loadProjectBinary")).toBe(true);
   });
 
+  it("keeps portable manifest resources authorized after a configuration write", async () => {
+    const storage = new MemoryDirectoryHandle("game-storage");
+    const contents = "<root>portable</root>";
+    const bytes = new TextEncoder().encode(contents);
+    const source = {
+      name: "map.xml",
+      size: bytes.byteLength,
+      lastModified: 1,
+      arrayBuffer: async () => bytes.buffer.slice(0),
+      slice: (start = 0, end = bytes.byteLength) => {
+        const chunk = bytes.slice(start, end);
+        return { arrayBuffer: async () => chunk.buffer.slice(0) } as Blob;
+      },
+    } as File;
+    const handle = overlayBrowserDirectory(storage as any, [
+      { path: "plugins/map.xml", file: source },
+    ]);
+    pickBrowserDirectory.mockResolvedValue({
+      handle,
+      persistHandle: false,
+      projectName: "game",
+      manifest: {
+        project_revision: 1,
+        compatibility: snakeCompatibility(),
+        files: [
+          {
+            relative_path: "plugins/map.xml",
+            category: "resource",
+            payload: { type: "external", byteLength: bytes.byteLength },
+            content_hash: blake3(bytes),
+          },
+        ],
+      },
+    });
+    respond = (method) =>
+      method === "resolveProjectCompatibility"
+        ? {
+            request_id: 0,
+            identity: snakeCompatibility(),
+            configuration_digest: null,
+            diagnostics: [],
+          }
+        : 1n;
+    const bridge = new BrowserBridge();
+
+    await bridge.openProject();
+    await bridge.writeProjectConfiguration(new Uint8Array(), "[meta]\nschema_version = 5\n");
+
+    const read = await bridge.handleStorage({
+      request_id: 1,
+      namespace: "resource",
+      relative_path: "plugins/map.xml",
+      operation: { type: "read" },
+    });
+    expect(read, JSON.stringify(read)).toMatchObject({
+      request_id: 1,
+      result: { type: "read", data: [...bytes] },
+    });
+    await expect(
+      bridge.handleStorage({
+        request_id: 2,
+        namespace: "resource",
+        relative_path: "plugins",
+        operation: { type: "list", recursive: true, pattern: "*.xml" },
+      }),
+    ).resolves.toMatchObject({
+      request_id: 2,
+      result: {
+        type: "listed",
+        entries: [expect.objectContaining({ relative_path: "plugins/map.xml" })],
+      },
+    });
+  });
+
   it("falls back with one binary manifest transfer and retries its cache without rescanning", async () => {
     const root = new MemoryDirectoryHandle("game");
     await installCache(root, Uint8Array.of(9, 8, 7));
