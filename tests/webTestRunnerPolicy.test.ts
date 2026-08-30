@@ -113,6 +113,15 @@ describe("browser game runner progress policy", () => {
     expect(snapshots).toContain("Promise.race");
   });
 
+  it("treats an output-marker compatibility probe as startup-only", () => {
+    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+
+    expect(runner).toContain("Boolean(expectedOutput) ||");
+    expect(runner.indexOf("Boolean(expectedOutput) ||")).toBeLessThan(
+      runner.indexOf('compatibilityStage = "checking automatic interaction assistance"'),
+    );
+  });
+
   it("checks global preferences through the real UI before native-browser project load", () => {
     const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
 

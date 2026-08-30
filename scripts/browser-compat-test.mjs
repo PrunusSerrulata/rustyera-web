@@ -113,6 +113,7 @@ if (
   throw new Error("snake service flows require --project source directory");
 const startupOnly =
   process.argv.includes("--startup-only") ||
+  Boolean(expectedOutput) ||
   snakeData ||
   snakeServices ||
   snakeBatch1 ||
