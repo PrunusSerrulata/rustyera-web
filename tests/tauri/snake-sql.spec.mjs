@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 
 import { waitForRuntimeProgress } from "./runtime-progress.mjs";
+import {
+  assertSnakeSqlContractFollowupOutput,
+  assertSnakeSqlContractOutput,
+} from "../snakeSqlContract.mjs";
 
 const enabled = process.env.VITE_RUSTYERA_TAURI_SNAKE_SQL === "1" ? describe : describe.skip;
 
@@ -29,9 +33,7 @@ enabled("Tauri snake SQL integration", () => {
       accept: (state) =>
         state?.canInteract === true && state.output?.includes("SNAKE_SQL_PERSIST=1"),
     });
-    assert.ok(first.output.includes("SNAKE_SQL_SCALAR=1/alpha"));
-    assert.ok(first.output.includes("SNAKE_SQL_READER=1/1"));
-    assert.ok(first.output.includes("SNAKE_SQL_WRITE_READER=1/7/0/0/1/1/1"));
+    assertSnakeSqlContractOutput(first.output, 1);
 
     await $("button=文件").click();
     await $("button=返回标题").click();
@@ -47,6 +49,21 @@ enabled("Tauri snake SQL integration", () => {
         state?.canInteract === true && state.output?.includes("SNAKE_SQL_PERSIST=2"),
     });
     assert.equal(reopened.fault, null);
+    assertSnakeSqlContractOutput(reopened.output, 2);
+    await $(".prompt-bar input").setValue("0");
+    await $(".prompt-bar button[type=submit]").click();
+    const omitted = await waitForRuntimeProgress({
+      browser,
+      snapshot,
+      label: "omitted SQL parameter after durable reopen",
+      accept: (state) =>
+        state?.canInteract === true && state.output?.includes("SNAKE_SQL_OMITTED=1"),
+    });
+    assert.equal(omitted.fault, null);
+    const contractOutput = [...omitted.output];
+    assert.equal(contractOutput.at(-3), "");
+    contractOutput.splice(-3, 1);
+    assertSnakeSqlContractFollowupOutput(contractOutput, 2);
 
     const originalProject = process.env.VITE_RUSTYERA_TEST_PROJECT;
     const replacementProject = process.env.RUSTYERA_SQL_REPLACEMENT_PROJECT;
@@ -79,12 +96,14 @@ enabled("Tauri snake SQL integration", () => {
       "independent successor SQL title",
     );
     assert.equal(successor.fault, null);
+    assertSnakeSqlContractOutput(successor.output, 1);
     const returned = await replaceProject(
       originalProject,
       3,
       "original SQL title after replacement",
     );
     assert.equal(returned.fault, null);
+    assertSnakeSqlContractOutput(returned.output, 3, 0);
     console.log(
       JSON.stringify({
         project: originalProject,
@@ -93,8 +112,10 @@ enabled("Tauri snake SQL integration", () => {
         verified: [
           "scalar",
           "reader",
+          "parameter omission and Unicode",
+          "MAP XML duplicate-key and inner-XML normalization",
           "write reader EOF/close",
-          "transaction rollback",
+          "transaction commit/rollback",
           "durable reopen",
           "project lifecycle reset",
           "independent project Data isolation",
@@ -103,6 +124,7 @@ enabled("Tauri snake SQL integration", () => {
         outputs: {
           originalFirst: first.output,
           originalReopened: reopened.output,
+          originalOmittedParameter: omitted.output,
           successor: successor.output,
           originalReturned: returned.output,
         },

@@ -12,9 +12,15 @@ const databaseUrl = new URL(
   "../tests/fixtures/snake-sql-project/plugins/qol_data.db",
   import.meta.url,
 );
+const contractUrl = new URL("../tests/fixtures/snake-sql-project/contract.json", import.meta.url);
+const contract = JSON.parse(await readFile(contractUrl, "utf8"));
+if (contract.schemaVersion !== 1)
+  throw new Error(`unsupported contract schema ${contract.schemaVersion}`);
 const sqlite = await sqlite3InitModule();
-if (sqlite.version.libVersion !== "3.53.0")
-  throw new Error(`expected SQLite 3.53.0, received ${sqlite.version.libVersion}`);
+if (sqlite.version.libVersion !== contract.sqliteVersion)
+  throw new Error(
+    `expected SQLite ${contract.sqliteVersion}, received ${sqlite.version.libVersion}`,
+  );
 
 const db = new sqlite.oo1.DB(":memory:", "c");
 let bytes;
@@ -27,12 +33,15 @@ try {
   db.close();
 }
 
+const digest = createHash("sha256").update(bytes).digest("hex");
+if (digest !== contract.seedSha256)
+  throw new Error(`generated fixture SHA-256 ${digest} differs from ${contract.seedSha256}`);
 await writeFile(databaseUrl, bytes);
 console.log(
   JSON.stringify({
     path: fileURLToPath(databaseUrl),
     sqlite: sqlite.version.libVersion,
     bytes: bytes.byteLength,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
+    sha256: digest,
   }),
 );
