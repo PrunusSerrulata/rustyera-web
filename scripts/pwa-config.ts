@@ -44,7 +44,7 @@ export const rustyEraPwaOptions = {
     // service-worker activation then updates the shell, Worker, module, and binary atomically.
     ignoreURLParametersMatching: [/^utm_/, /^fbclid$/, /^v$/],
     // The runtime WASM is intentionally precached so an installed app can cold-start offline.
-    maximumFileSizeToCacheInBytes: 20 * MEBIBYTE,
+    maximumFileSizeToCacheInBytes: 24 * MEBIBYTE,
     navigateFallback: "index.html",
     skipWaiting: true,
     sourcemap: false,

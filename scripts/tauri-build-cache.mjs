@@ -15,6 +15,7 @@ const reusableSpecs = new Set([
   "snake-services.spec.mjs",
   "snake-batch1.spec.mjs",
   "snake-data.spec.mjs",
+  "snake-sql.spec.mjs",
   "snake-ingestion.spec.mjs",
   "snake-profile.spec.mjs",
 ]);

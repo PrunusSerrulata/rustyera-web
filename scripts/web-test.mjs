@@ -466,7 +466,9 @@ async function execute(args) {
         `cross-host project source index was not reused: ${JSON.stringify(current.rust.frontend.startupTelemetry)}`,
       );
     }
-    if (current.rust.fault) return fail("runtime_fault", 1, { fault: current.rust.fault });
+    if (current.rust.fault && scenario.actions[0]?.allow_fault !== true) {
+      return fail("runtime_fault", 1, { fault: current.rust.fault });
+    }
     if (current.comparison && !current.comparison.equal) return fail("difference", 1);
     if (scenario.checkpoint) await saveCheckpoint(scenario.checkpoint.path);
     if (scenario.prepare_traditional_save) {

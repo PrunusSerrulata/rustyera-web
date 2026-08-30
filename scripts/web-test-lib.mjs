@@ -1175,6 +1175,7 @@ export async function runAction(page, action) {
   } else if (action.type === "assert_state") {
     const state = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
     assertSubset(state, action.expect ?? {});
+    assertStringPrefixes(state, action.expect_prefix ?? {});
     return { state };
   } else throw new Error(`unknown action type ${action.type}`);
   return { semanticInput: action.semantic_input };
@@ -1753,6 +1754,19 @@ function assertSubset(actual, expected, prefix = "") {
       throw new Error(
         `assertion failed at ${label}: expected ${JSON.stringify(value)}, got ${JSON.stringify(actual?.[key])}`,
       );
+  }
+}
+
+function assertStringPrefixes(actual, expected, prefix = "") {
+  for (const [key, value] of Object.entries(expected)) {
+    const label = prefix ? `${prefix}.${key}` : key;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      assertStringPrefixes(actual?.[key], value, label);
+    } else if (typeof actual?.[key] !== "string" || !actual[key].startsWith(String(value))) {
+      throw new Error(
+        `assertion failed at ${label}: expected prefix ${JSON.stringify(value)}, got ${JSON.stringify(actual?.[key])}`,
+      );
+    }
   }
 }
 

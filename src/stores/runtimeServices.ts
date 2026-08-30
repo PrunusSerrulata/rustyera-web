@@ -23,6 +23,7 @@ import {
 import type { RuntimeServiceLease } from "@/stores/runtimeServiceRequests";
 import type { PointerObservation } from "@/platform/pointerObservation";
 import type { FrontendBridge, RuntimeMessage } from "@/core/types";
+import type { SqlProvider } from "@/platform/sqlProvider";
 
 export interface RuntimeProjectionServiceProvider {
   prepare(context: ProjectionQueryContext, lease: RuntimeServiceLease): Promise<PresentationState>;
@@ -48,6 +49,7 @@ export interface RuntimeServiceContext {
   send(message: RuntimeMessage, correlationId?: ServiceInteger): Promise<unknown>;
   resourceGeneration: number;
   imagePixels: RuntimeImagePixelCache;
+  sql?: SqlProvider;
 }
 
 interface DecodedPixelSurface {
@@ -288,6 +290,10 @@ async function resolveRuntimeService(
 ): Promise<Map<number, unknown>> {
   if (isHtmlQueryService(request))
     return resolveHtmlRuntimeService(query, context.html, context.lease);
+  if (request.kind === "sql" && request.operation === "rustyera.sql") {
+    if (!context.sql) throw new RuntimeServiceError("unsupported", "SQL provider is not installed");
+    return context.sql.handle(query, context.lease.signal);
+  }
   switch (`${request.kind}/${request.operation}`) {
     case "input_state/device_pump": {
       const expected = devicePumpQuery(query);

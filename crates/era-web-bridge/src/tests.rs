@@ -74,6 +74,7 @@ fn client_advertises_canvas_image_decode() {
         (ServiceKind::InputState, "device_pump", 1),
         (ServiceKind::InputState, "pointer_state", 1),
         (ServiceKind::Canvas, "sample_canvas_pixel", 1),
+        (ServiceKind::Sql, era_runtime_protocol::SQL_OPERATION, 1),
         (ServiceKind::PresentationQuery, "html_string_len", 2),
         (ServiceKind::PresentationQuery, "html_substring", 2),
         (ServiceKind::PresentationQuery, "html_string_lines", 2),

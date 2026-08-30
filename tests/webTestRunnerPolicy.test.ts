@@ -9,6 +9,28 @@ import { finalizeBrowserGameRun } from "../scripts/web-test-lifecycle.mjs";
 afterEach(() => vi.useRealTimers());
 
 describe("browser game runner progress policy", () => {
+  it("allows the first scenario action to assert an expected startup fault", () => {
+    const runner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
+    const scenario = JSON.parse(
+      readFileSync(resolve("tools/runtime-tester/scenarios/snake-sql-invalid-seed.json"), "utf8"),
+    );
+
+    expect(runner).toContain("scenario.actions[0]?.allow_fault !== true");
+    expect(scenario.actions[0]).toMatchObject({
+      type: "assert_state",
+      allow_fault: true,
+      expect: {
+        fault: {
+          code: "vm_fault",
+          context: { api: "sql_connect", stage: "runtime" },
+        },
+      },
+      expect_prefix: {
+        fault: { message: "rustyera.sql/open/invalid_source:" },
+      },
+    });
+  });
+
   it("uses the shared five-second complete snapshot monitor", () => {
     const runner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
 

@@ -15,9 +15,9 @@ use era_runtime_protocol::{
     ClientCapabilities, ClientHello, ConfigurationClientProfile, ExternalResource, FileCategory,
     FilePayload, InputModality, ProjectCompatibilityResolved, ProjectIdentity, ProjectLoadRequest,
     ProjectManifest, RUNTIME_PROTOCOL_VERSION, ResolveProjectCompatibility, RuntimeFeature,
-    RuntimeLimits, RuntimeMessage, SequenceAcknowledgement, ServerHello, ServiceCapability,
-    ServiceKind, ServiceRequest, ServiceResponse, StorageCapabilities, StorageRequest,
-    StorageResponse, SubmittedFile,
+    RuntimeLimits, RuntimeMessage, SQL_OPERATION, SequenceAcknowledgement, ServerHello,
+    ServiceCapability, ServiceKind, ServiceRequest, ServiceResponse, StorageCapabilities,
+    StorageRequest, StorageResponse, SubmittedFile,
 };
 use erabasic_vm::VmConfig;
 use serde::{Deserialize, Serialize};
@@ -1002,6 +1002,7 @@ fn client_hello(options: WebSessionOptions, limits: RuntimeLimits) -> ClientHell
         (ServiceKind::PresentationQuery, "html_get_printed_str"),
         (ServiceKind::PresentationQuery, "serialize_physical_history"),
         (ServiceKind::FontMetrics, "gget_text_size"),
+        (ServiceKind::Sql, SQL_OPERATION),
     ]
     .into_iter()
     .map(|(kind, operation)| ServiceCapability {

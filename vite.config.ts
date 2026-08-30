@@ -42,6 +42,7 @@ export default defineConfig({
   },
   clearScreen: false,
   server: { strictPort: true },
+  optimizeDeps: { exclude: ["@sqlite.org/sqlite-wasm"] },
   envPrefix: ["VITE_", "TAURI_"],
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },

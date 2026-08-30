@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/snake-sql-invalid-seed-project",
+  "mode": "fixed",
+  "seed": 123456,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [
+    {
+      "type": "assert_state",
+      "expect": {
+        "fault": {
+          "code": "vm_fault",
+          "context": { "api": "sql_connect", "stage": "runtime" },
+          "origin": {
+            "command": "sql_connect",
+            "function": "SYSTEM_TITLE",
+            "source": { "relative_path": "ERB/main.erb", "line": "2" }
+          },
+          "vm": { "primary": { "category": "script_argument", "code": "host" } }
+        },
+        "output": []
+      },
+      "expect_prefix": {
+        "fault": { "message": "rustyera.sql/open/invalid_source:" }
+      },
+      "allow_fault": true
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".fault-message" },
+      "fields": ["count", "visible"],
+      "expect": { "count": 1, "visible": true },
+      "allow_fault": true
+    }
+  ],
+  "limits": {
+    "max_steps": 6,
+    "timeout_seconds": 60
+  }
+}

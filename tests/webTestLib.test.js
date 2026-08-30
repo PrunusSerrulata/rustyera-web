@@ -30,6 +30,26 @@ import {
 import { SNAKE_DATA_MARKERS } from "../scripts/snake-data-test-support.mjs";
 
 describe("web game test scenario", () => {
+  it("checks state string prefixes separately from structural expectations", async () => {
+    const page = {
+      evaluate: vi.fn(async () => ({
+        fault: { code: "vm_fault", message: "rustyera.sql/open/invalid_source:6:reason=61" },
+        output: [],
+      })),
+    };
+    const action = {
+      type: "assert_state",
+      expect: { fault: { code: "vm_fault" }, output: [] },
+      expect_prefix: { fault: { message: "rustyera.sql/open/invalid_source:" } },
+    };
+
+    await expect(runAction(page, action)).resolves.toMatchObject({ state: { output: [] } });
+    action.expect_prefix.fault.message = "rustyera.sql/open/quota_exceeded:";
+    await expect(runAction(page, action)).rejects.toThrow(
+      "assertion failed at fault.message: expected prefix",
+    );
+  });
+
   it("focuses Safari through its WebDriver automation window", async () => {
     const calls = [];
     const execute = vi.fn(async (...args) => calls.push(["activate", ...args]));

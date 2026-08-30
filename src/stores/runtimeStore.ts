@@ -83,6 +83,7 @@ import { RuntimeDebugRequestState } from "@/stores/runtimeDebugRequests";
 import { RuntimeDebugState } from "@/stores/runtimeDebugState";
 import { RuntimeDiagnosisState } from "@/stores/runtimeDiagnosis";
 import { handleRuntimeService, RuntimeImagePixelCache } from "@/stores/runtimeServices";
+import { SqlProvider } from "@/platform/sqlProvider";
 import { RuntimeProjectSettingsState } from "@/stores/runtimeProjectSettings";
 import { RuntimeClientPreferencesState } from "@/stores/runtimeClientPreferences";
 import { RuntimeStatusState } from "@/stores/runtimeStatus";
@@ -295,6 +296,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   );
   const imagePixels = new RuntimeImagePixelCache();
   const serviceRequests = new RuntimeServiceRequests();
+  const sqlProvider = new SqlProvider(bridge);
   const pointerObservation = new RuntimePointerObservation(currentGameViewport);
   const canvasPixels = new RuntimeCanvasPixelSampler();
   const htmlMeasurements = new HtmlMeasurementProvider();
@@ -406,6 +408,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       startupTelemetryState.fail(error);
       finishProjectLoad();
       serviceRequests.reset();
+      sqlProvider.reset();
       htmlMeasurements.clear();
       canvasPixels.clear();
       fault.value = { code: "frontend", message: String(error) };
@@ -647,6 +650,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     lifecycleGeneration += 1;
     pointerObservation.stop();
     serviceRequests.reset();
+    sqlProvider.reset();
     canvasPixels.clear();
     htmlMeasurements.clear();
     initialization = undefined;
@@ -1179,6 +1183,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "fault": {
         serviceRequests.reset();
+        sqlProvider.reset();
         htmlMeasurements.clear();
         canvasPixels.clear();
         if (fullManifestImport) await cleanupFullManifestImport(false);
@@ -1538,6 +1543,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           active() && lease.active() ? send(message, correlation) : Promise.resolve(undefined),
         resourceGeneration: resources,
         imagePixels,
+        sql: sqlProvider,
         lease,
         html: {
           measurement: htmlMeasurements,
@@ -1913,7 +1919,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     fullManifestImports.clear();
     retiredFullManifestCommandIds.clear();
     projectFileExportState.finish();
-    resetRuntimeTimelineState(true, fullSession);
+    resetRuntimeTimelineState(true, fullSession, fullSession);
     runtimeDiagnosis.reset();
     traditionalSaves.reset();
     runtimeLogs.clear();
@@ -1932,13 +1938,18 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimeManifestSparse = false;
   }
 
-  function resetRuntimeTimelineState(advanceResources = true, resetViewport = true): void {
+  function resetRuntimeTimelineState(
+    advanceResources = true,
+    resetViewport = true,
+    resetSqlProvider = true,
+  ): void {
     serviceRequests.reset();
+    if (resetSqlProvider) sqlProvider.reset();
     pointerObservation.clear();
     canvasPixels.clear();
     htmlMeasurements.clear();
     presentationProjection.reset();
-    if (advanceResources) advanceProjectResourceGeneration();
+    if (advanceResources) advanceProjectResourceGeneration(false);
     testAudioPlayback.clear();
     inputUndo.value = null;
     fault.value = null;
@@ -1952,8 +1963,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimeImport.reset();
   }
 
-  function advanceProjectResourceGeneration(): void {
+  function advanceProjectResourceGeneration(resetSqlProvider = true): void {
     serviceRequests.reset();
+    if (resetSqlProvider) sqlProvider.reset();
     pointerObservation.clear();
     canvasPixels.clear();
     htmlMeasurements.clear();

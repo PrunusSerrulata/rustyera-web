@@ -42,7 +42,10 @@ import {
 
 const repository = fileURLToPath(new URL("..", import.meta.url));
 const cargoLocal = path.join(repository, "scripts/cargo-local.mjs");
-const taskDeadline = Date.now() + 60 * 60 * 1_000;
+const taskDeadline =
+  process.env.RUSTYERA_TEST_DISABLE_WALL_CLOCK_LIMIT === "1"
+    ? undefined
+    : Date.now() + 60 * 60 * 1_000;
 let activeStage = "parsing arguments";
 let lastCompleteSnapshot;
 const monitorObservation = { sequence: 0, runtime: undefined };
@@ -89,6 +92,10 @@ const specProfiles = {
   },
   "snake-data.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_DATA",
+    copyProject: true,
+  },
+  "snake-sql.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_SQL",
     copyProject: true,
   },
   "snake-ingestion.spec.mjs": {
@@ -224,16 +231,24 @@ if (specProfile?.copyProject) {
   if (specProfile.prewarmWithTui) project = await prewarmTuiCache(project, runDirectory);
 }
 
-let lifecycleReplacementProject;
-if (specName === "snake-service-lifecycle.spec.mjs") {
+let replacementProject;
+if (["snake-service-lifecycle.spec.mjs", "snake-sql.spec.mjs"].includes(specName)) {
   const index = arguments_.indexOf("--replacement-project");
-  if (index < 0 || !arguments_[index + 1])
+  if (specName === "snake-service-lifecycle.spec.mjs" && (index < 0 || !arguments_[index + 1]))
     throw new Error("lifecycle requires --replacement-project independent fixture");
-  const source = path.resolve(repository, arguments_[index + 1]);
-  if ((await realpath(source)) === (await realpath(originalProject)))
+  const source = path.resolve(repository, index >= 0 ? arguments_[index + 1] : originalProject);
+  if (
+    specName === "snake-service-lifecycle.spec.mjs" &&
+    (await realpath(source)) === (await realpath(originalProject))
+  )
     throw new Error("lifecycle successor must be a different project");
-  lifecycleReplacementProject = path.join(path.dirname(project), "lifecycle-independent-successor");
-  await cp(source, lifecycleReplacementProject, {
+  replacementProject = path.join(
+    path.dirname(project),
+    specName === "snake-sql.spec.mjs"
+      ? "sql-independent-successor"
+      : "lifecycle-independent-successor",
+  );
+  await cp(source, replacementProject, {
     recursive: true,
     errorOnExist: true,
     force: false,
@@ -242,7 +257,7 @@ if (specName === "snake-service-lifecycle.spec.mjs") {
     JSON.stringify({
       type: "lifecycle-successor-copy",
       source,
-      project: lifecycleReplacementProject,
+      project: replacementProject,
     }),
   );
 }
@@ -256,7 +271,9 @@ const environment = {
   VITE_RUSTYERA_TEST: "1",
   VITE_RUSTYERA_TAURI_TEST: "1",
   VITE_RUSTYERA_TEST_PROJECT: project,
-  RUSTYERA_LIFECYCLE_REPLACEMENT_PROJECT: lifecycleReplacementProject ?? "",
+  RUSTYERA_LIFECYCLE_REPLACEMENT_PROJECT: replacementProject ?? "",
+  RUSTYERA_SQL_REPLACEMENT_PROJECT:
+    specName === "snake-sql.spec.mjs" ? (replacementProject ?? "") : "",
   RUSTYERA_NATIVE_WEBDRIVER_SOURCE: nativeProvider?.provenance.source ?? "",
   RUSTYERA_SERVICE_CAPTURE_SOURCE_PROJECT: originalProject,
   VITE_RUSTYERA_TEST_PROJECT_FILE:
@@ -631,7 +648,7 @@ function run(command, args, env, deadline, describeDeadline, options = {}) {
       detached: process.platform !== "win32",
     });
     if (options.input != null) child.stdin.end(options.input);
-    const remaining = deadline - Date.now();
+    const remaining = deadline == null ? undefined : deadline - Date.now();
     let settled = false;
     const settle = (callback) => {
       if (settled) return;
@@ -639,29 +656,32 @@ function run(command, args, env, deadline, describeDeadline, options = {}) {
       clearTimeout(timer);
       callback();
     };
-    if (remaining <= 0) {
+    if (remaining != null && remaining <= 0) {
       terminateProcessTree(child);
       reject(new Error(describeDeadline()));
       return;
     }
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        terminateProcessTree(child, "SIGTERM");
-        const forceTimer = setTimeout(() => {
-          try {
-            terminateProcessTree(child, "SIGKILL");
-          } catch (error) {
-            console.error(`failed to force-stop timed-out Tauri build: ${error}`);
-          }
-        }, 1_000);
-        forceTimer.unref?.();
-        settle(() => reject(new Error(describeDeadline())));
-      } catch (error) {
-        settle(() => reject(error));
-      }
-    }, remaining);
+    const timer =
+      remaining == null
+        ? undefined
+        : setTimeout(() => {
+            timedOut = true;
+            try {
+              terminateProcessTree(child, "SIGTERM");
+              const forceTimer = setTimeout(() => {
+                try {
+                  terminateProcessTree(child, "SIGKILL");
+                } catch (error) {
+                  console.error(`failed to force-stop timed-out Tauri build: ${error}`);
+                }
+              }, 1_000);
+              forceTimer.unref?.();
+              settle(() => reject(new Error(describeDeadline())));
+            } catch (error) {
+              settle(() => reject(error));
+            }
+          }, remaining);
     child.once("error", (error) => settle(() => reject(error)));
     child.once("exit", (code, signal) => {
       if (timedOut) {
@@ -675,6 +695,7 @@ function run(command, args, env, deadline, describeDeadline, options = {}) {
 }
 
 function withinDeadline(promise, deadline, describeDeadline) {
+  if (deadline == null) return promise;
   const remaining = deadline - Date.now();
   if (remaining <= 0) return Promise.reject(new Error(describeDeadline()));
   let timer;
