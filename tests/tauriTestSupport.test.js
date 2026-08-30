@@ -518,7 +518,17 @@ describe("snake service client prompt submission", () => {
           serviceEvidence: {
             sessionGeneration: 1,
             records: [
-              { index: 0, message: { type: "service_request", value: { request_id: "7" } } },
+              {
+                index: 0,
+                message: {
+                  type: "service_request",
+                  value: {
+                    request_id: "7",
+                    kind: "input_state",
+                    operation: "pointer_state",
+                  },
+                },
+              },
             ],
             pointerSamples: [{ requestId: "7", context: { presentationRevision: "3" } }],
           },

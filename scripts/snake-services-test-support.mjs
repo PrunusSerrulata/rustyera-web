@@ -92,10 +92,41 @@ export async function runSnakeServicesClient(browser, bridgeKind) {
       evidence.observationError = String(observationError);
     }
     error.servicePointerEvidence = evidence;
-    // WebDriver abbreviates nested snapshot objects. Emit one complete JSON record so the
-    // real request/reply and query-time DOM samples survive a fast failure between watchdog ticks.
+    const failureState = evidence.failure?.state;
+    const serviceEvidence = failureState?.serviceEvidence;
+    const pointerRecords = serviceEvidence?.records?.filter(
+      (row) =>
+        row.message?.value?.kind === "input_state" &&
+        row.message.value.operation === "pointer_state",
+    );
+    // The complete runtime snapshot can contain the full resource replay and overflow the runner's
+    // retained output. Keep the independent DOM events and only the pointer request/reply slice.
     console.error(
-      JSON.stringify({ type: "snake-services-pointer-failure", error: String(error), evidence }),
+      JSON.stringify({
+        type: "snake-services-pointer-failure",
+        error: String(error),
+        evidence: {
+          beforeClick: evidence.beforeClick,
+          afterClick: evidence.afterClick,
+          failure: evidence.failure
+            ? {
+                observation: evidence.failure.observation,
+                state: {
+                  runtimeEpoch: failureState?.runtimeEpoch,
+                  output: failureState?.output,
+                  serviceEvidence: serviceEvidence
+                    ? {
+                        sessionGeneration: serviceEvidence.sessionGeneration,
+                        pointerSamples: serviceEvidence.pointerSamples,
+                        records: pointerRecords,
+                      }
+                    : undefined,
+                },
+              }
+            : undefined,
+          observationError: evidence.observationError,
+        },
+      }),
     );
     throw error;
   } finally {
