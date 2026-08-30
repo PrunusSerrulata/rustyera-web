@@ -5,11 +5,11 @@ import {
 } from "@/components/canvasReplayRenderer";
 import {
   RuntimeServiceError,
-  sameServiceInteger,
   serviceInteger,
   type CanvasPixelQuery,
 } from "@/core/runtimeServiceProtocol";
 import type { RuntimeServiceLease } from "@/stores/runtimeServiceRequests";
+import { replayIntegerKey, resolveCanvasReplay } from "@/core/replayResources";
 
 /** Logical samples serialize; obsolete decoders retain their shared physical resource quota. */
 export class RuntimeCanvasPixelSampler {
@@ -33,11 +33,6 @@ export class RuntimeCanvasPixelSampler {
   ): Promise<number> {
     if (this.queued >= 8)
       throw new RuntimeServiceError("resource_limit", "too many queued canvas samples");
-    if (!Number.isSafeInteger(Number(query.canvasId)))
-      throw new RuntimeServiceError(
-        "invalid_request",
-        "canvas identity exceeds the renderer's exact integer range",
-      );
     const generation = this.generation;
     const renderer = createCanvasReplayRenderer();
     const budget = this.pool.fork();
@@ -82,10 +77,8 @@ export class RuntimeCanvasPixelSampler {
     this.queued += 1;
     const work = this.tail.then(async () => {
       if (!active()) throw new RuntimeServiceError("stale_projection", "canvas sample is obsolete");
-      const replay = resources.canvases?.find((canvas) =>
-        sameServiceInteger(canvas.canvas_id, query.canvasId),
-      );
-      if (!replay || !sameServiceInteger(replay.revision, query.canvasRevision))
+      const replay = resolveCanvasReplay(resources.canvases, query.canvasId, query.canvasRevision);
+      if (!replay)
         throw new RuntimeServiceError(
           "stale_projection",
           "requested canvas revision is unavailable",
@@ -108,7 +101,7 @@ export class RuntimeCanvasPixelSampler {
       await renderer.replay(
         context,
         replay,
-        new Set([Number(query.canvasId)]),
+        new Set([replayIntegerKey(query.canvasId)]),
         resources,
         resourceGeneration,
         { budget, active, strict: true, signal: controller.signal },

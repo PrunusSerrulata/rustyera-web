@@ -706,6 +706,7 @@ describe("bounded offscreen HTML measurement", () => {
       binding.resources.sprites = [
         {
           name: "PORTRAIT",
+          revision: 1,
           size: wasm ? [20n, 10n] : [20, 10],
           frames: [{ resource_id: "atlas.png", source_rectangle: [12, 14, 20, 10] }],
         },
@@ -735,7 +736,7 @@ describe("bounded offscreen HTML measurement", () => {
         signal: new AbortController().signal,
         assertCurrent() {},
       });
-      binding.resources.sprites[0].size = [999, 999];
+      binding.resources.sprites[0]!.size = [999, 999];
       binding.resources.sprites = [];
       expect(await pending).toEqual({
         context: binding.context,
@@ -752,7 +753,12 @@ describe("bounded offscreen HTML measurement", () => {
   it.each([0n, -1n, 1_048_577n, "20"])("rejects invalid natural sprite width %s", async (width) => {
     const binding = measurementBinding(viewport);
     binding.resources.sprites = [
-      { name: "portrait", size: [width, 10n] as any, frames: [{ resource_id: "atlas.png" }] },
+      {
+        name: "portrait",
+        revision: 1,
+        size: [width, 10n] as any,
+        frames: [{ resource_id: "atlas.png" }],
+      },
     ];
     await expect(
       new HtmlMeasurementProvider().measureImageSlot(imageProbe(), binding, {
@@ -770,6 +776,7 @@ describe("bounded offscreen HTML measurement", () => {
       binding.resources.sprites = [
         {
           name: "portrait",
+          revision: 1,
           size: [20, 10],
           frames: [{ resource_id: "declared.png", source_rectangle: [0, 0, 20, 10] }],
         },
@@ -814,7 +821,12 @@ describe("bounded offscreen HTML measurement", () => {
       if (reason === "deadline") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const binding = measurementBinding(viewport);
       binding.resources.sprites = [
-        { name: "portrait", size: [20, 10], frames: [{ resource_id: "declared.png" }] },
+        {
+          name: "portrait",
+          revision: 1,
+          size: [20, 10],
+          frames: [{ resource_id: "declared.png" }],
+        },
       ];
       vi.mocked(binding.resourceBridge.readImageMetadata).mockResolvedValue({
         width: 20,
@@ -960,7 +972,12 @@ describe("bounded offscreen HTML measurement", () => {
   it("does not ignore a later declared image failure in full-document diagnostics", async () => {
     const binding = measurementBinding(viewport);
     binding.resources.sprites = [
-      { name: "portrait", size: [20, 10], frames: [{ resource_id: "declared.png" }] },
+      {
+        name: "portrait",
+        revision: 1,
+        size: [20, 10],
+        frames: [{ resource_id: "declared.png" }],
+      },
     ];
     vi.mocked(binding.resourceBridge.readImageMetadata).mockRejectedValue(
       new Error("later image failed"),

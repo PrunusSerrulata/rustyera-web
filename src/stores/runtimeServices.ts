@@ -12,10 +12,12 @@ import {
   isStrictProjectionService,
   canvasPixelQuery,
   devicePumpQuery,
+  lineGeometryQuery,
   projectionMap,
   projectionQuery,
   validateServiceRequest,
   type CanvasPixelQuery,
+  type LineGeometryQuery,
   type ProjectionQueryContext,
   type RuntimeServiceRequest,
   type ServiceInteger,
@@ -34,6 +36,14 @@ export interface RuntimeProjectionServiceProvider {
     presentation: PresentationState,
     lease: RuntimeServiceLease,
   ): Promise<number>;
+  lineGeometry(
+    query: LineGeometryQuery,
+    lease: RuntimeServiceLease,
+  ): Promise<{
+    top: number;
+    height: number;
+    viewportHeight: number;
+  }>;
 }
 
 export interface RuntimeServiceContext {
@@ -330,6 +340,25 @@ async function resolveRuntimeService(
         [0, projectionMap(pixelQuery.context)],
         [1, pixelQuery.canvasRevision],
         [2, argb],
+      );
+    }
+    case "presentation_query/get_line_geometry_v1": {
+      const expected = lineGeometryQuery(query);
+      const provider = projectionProvider(context);
+      await provider.prepare(expected.context, context.lease);
+      context.lease.assertActive();
+      if (!provider.matches(expected.context))
+        throw new RuntimeServiceError("stale_projection", "line projection changed");
+      const geometry = await provider.lineGeometry(expected, context.lease);
+      context.lease.assertActive();
+      if (!provider.matches(expected.context))
+        throw new RuntimeServiceError("stale_projection", "line projection changed");
+      return mapOf(
+        [0, projectionMap(expected.context)],
+        [1, expected.lineId],
+        [2, geometry.top],
+        [3, geometry.height],
+        [4, geometry.viewportHeight],
       );
     }
     case "entropy/random_seed": {

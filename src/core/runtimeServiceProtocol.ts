@@ -21,7 +21,8 @@ export function isStrictProjectionService(
   return (
     isHtmlQueryService(request) ||
     (request.kind === "input_state" && request.operation === "pointer_state") ||
-    (request.kind === "canvas" && request.operation === "sample_canvas_pixel")
+    (request.kind === "canvas" && request.operation === "sample_canvas_pixel") ||
+    (request.kind === "presentation_query" && request.operation === "get_line_geometry_v1")
   );
 }
 
@@ -37,6 +38,11 @@ export interface CanvasPixelQuery {
   canvasRevision: ServiceInteger;
   x: number;
   y: number;
+}
+
+export interface LineGeometryQuery {
+  context: ProjectionQueryContext;
+  lineId: ServiceInteger;
 }
 
 export interface DevicePumpQuery {
@@ -124,6 +130,14 @@ export function canvasPixelQuery(value: unknown): CanvasPixelQuery {
     canvasRevision: serviceInteger(fields.get(2), "canvas revision"),
     x: coordinate(point.get(0)),
     y: coordinate(point.get(1)),
+  };
+}
+
+export function lineGeometryQuery(value: unknown): LineGeometryQuery {
+  const fields = serviceMap(value, [0, 1], "line geometry request");
+  return {
+    context: projectionQuery(fields.get(0)),
+    lineId: serviceInteger(fields.get(1), "line identity"),
   };
 }
 

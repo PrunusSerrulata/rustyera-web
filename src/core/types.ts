@@ -442,8 +442,8 @@ export type DisplayRun =
   | { type: "space"; width: PresentationLength };
 
 export interface InteractionToken {
-  epoch: number;
-  id: number;
+  epoch: number | bigint;
+  id: number | bigint;
 }
 
 export interface DisplayLine {

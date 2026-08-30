@@ -54,12 +54,15 @@ import { platformBridge } from "@/platform";
 import {
   currentGameViewport,
   currentGameViewportMeasurement,
+  type GameViewportMeasurement,
 } from "@/platform/viewportMeasurement";
 import { RuntimePointerObservation } from "@/platform/pointerObservation";
+import { projectLineGeometry } from "@/platform/lineGeometry";
 import { RuntimeCanvasPixelSampler } from "@/components/canvasPixelSampler";
 import { HtmlMeasurementProvider } from "@/platform/htmlMeasurement";
 import {
   RuntimeServiceError,
+  isHtmlQueryService,
   sameServiceInteger,
   serviceInteger,
   type ProjectionQueryContext,
@@ -93,6 +96,7 @@ import { RuntimeTraditionalSaveState } from "@/stores/runtimeTraditionalSaves";
 import { RuntimeViewportState } from "@/stores/runtimeViewport";
 import { useSystemFontAccess } from "@/stores/systemFontAccess";
 import { transportValue } from "@/stores/runtimeTransport";
+import { resolveCanvasReplay } from "@/core/replayResources";
 
 import {
   sessionFontFallback,
@@ -189,6 +193,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const projectPreferences = ref<ProjectPreferences>(defaultProjectPreferences());
   const projectPreferencesWritable = ref(false);
   const runtimeViewport = new RuntimeViewportState(send);
+  let viewportLayoutIdentity = "";
+  let viewportLayoutIdentityAtProjection = "";
+  let viewportEnvironmentIdentityAtProjection = "";
+  const projectionObservationBarriers = new Set<symbol>();
+  let viewportProjectionBarrierGeneration = 0;
+  let runtimeBatchSequence = 0;
+  let viewportProjectionFlushAfterBatch: number | undefined;
+  let deferredViewportProjection:
+    { measurement: GameViewportMeasurement; layoutIdentity: string } | undefined;
   const viewportMeasurement = runtimeViewport.measurement;
   const {
     systemFonts,
@@ -407,6 +420,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       runtimeImport.reset();
       startupTelemetryState.fail(error);
       finishProjectLoad();
+      resetViewportProjectionBarriers();
       serviceRequests.reset();
       sqlProvider.reset();
       htmlMeasurements.clear();
@@ -649,6 +663,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   function teardown(): void {
     lifecycleGeneration += 1;
     pointerObservation.stop();
+    resetViewportProjectionBarriers();
     serviceRequests.reset();
     sqlProvider.reset();
     canvasPixels.clear();
@@ -912,6 +927,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function handleBatch(batch: PumpBatch): Promise<void> {
+    const batchSequence = ++runtimeBatchSequence;
     const batchLifecycleGeneration = lifecycleGeneration;
     const batchSessionGeneration = runtimeSessionObservationGeneration;
     startupTelemetryState.recordWasmMemory(batch.memoryBytes);
@@ -958,6 +974,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
     await awaitDeviceSubmissions();
     await settlePendingGameInput();
+    await flushDeferredViewportProjection(batchSequence);
   }
 
   function handleRuntime(
@@ -1182,6 +1199,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           await runtimeImport.ready(value);
         break;
       case "fault": {
+        resetViewportProjectionBarriers();
         serviceRequests.reset();
         sqlProvider.reset();
         htmlMeasurements.clear();
@@ -1459,6 +1477,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     serviceInteger(epoch, "runtime epoch");
     if (BigInt(epoch) < BigInt(runtimeEpoch.value)) return false;
     if (!sameServiceInteger(epoch, runtimeEpoch.value)) {
+      resetViewportProjectionBarriers();
       pointerObservation.clear();
       htmlMeasurements.clear();
       resetDeviceInputState(false);
@@ -1468,12 +1487,27 @@ export const useRuntimeStore = defineStore("runtime", () => {
     return true;
   }
 
-  function viewportStyleIdentity(): string {
+  function viewportEnvironmentIdentity(): string {
     return JSON.stringify([
       gameTextStyle.value.fontFamily,
       gameTextStyle.value.fontSize,
       gameLineHeightPx.value,
     ]);
+  }
+
+  function resetViewportProjectionBarriers(): void {
+    viewportProjectionBarrierGeneration += 1;
+    projectionObservationBarriers.clear();
+    deferredViewportProjection = undefined;
+    viewportProjectionFlushAfterBatch = undefined;
+  }
+
+  function viewportStyleIdentity(
+    layoutIdentity = projectionObservationBarriers.size
+      ? viewportLayoutIdentityAtProjection
+      : viewportLayoutIdentity,
+  ): string {
+    return JSON.stringify([viewportEnvironmentIdentity(), layoutIdentity]);
   }
 
   function projectionMatches(expected: ProjectionQueryContext): boolean {
@@ -1489,6 +1523,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
     );
   }
 
+  function projectionEnvironmentMatches(expected: ProjectionQueryContext): boolean {
+    const viewport = currentGameViewport();
+    return (
+      sameServiceInteger(currentPresentation().revision, expected.presentationRevision) &&
+      runtimeViewport.matchesEnvironment(
+        expected,
+        presentation.revision,
+        viewport ? currentGameViewportMeasurement() : undefined,
+        viewportEnvironmentIdentity(),
+      )
+    );
+  }
+
   async function handleService(
     request: any,
     correlationId?: ServiceInteger,
@@ -1496,11 +1543,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
   ): Promise<void> {
     const lifecycle = lifecycleGeneration;
     const resources = projectResourceGeneration.value;
+    const serviceBatchSequence = runtimeBatchSequence;
+    const projectionBarrierGeneration = viewportProjectionBarrierGeneration;
+    const projectionObservationBarrier =
+      isHtmlQueryService(request) ||
+      (request.kind === "canvas" && request.operation === "sample_canvas_pixel")
+        ? Symbol("projection observation")
+        : null;
     const active = () =>
       lifecycle === lifecycleGeneration &&
       sameServiceInteger(epoch, runtimeEpoch.value) &&
       resources === projectResourceGeneration.value;
     if (!active()) return;
+    if (projectionObservationBarrier)
+      projectionObservationBarriers.add(projectionObservationBarrier);
     serviceRequests.enterEpoch(epoch);
     try {
       const lease = serviceRequests.begin(request.request_id, epoch);
@@ -1508,6 +1564,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       const prepareProjection = async (
         expected: ProjectionQueryContext,
         lease: RuntimeServiceLease,
+        layoutSensitive = true,
       ) => {
         lease.assertActive();
         if (!sameServiceInteger(currentPresentation().revision, expected.presentationRevision))
@@ -1524,7 +1581,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
         lease.assertActive();
         await nextTick();
         lease.assertActive();
-        if (!active() || !projectionMatches(expected))
+        const matchesExpected = layoutSensitive
+          ? projectionMatches(expected)
+          : projectionEnvironmentMatches(expected);
+        if (!active() || !matchesExpected)
           throw new RuntimeServiceError(
             "stale_projection",
             "viewport observation does not match the query",
@@ -1548,7 +1608,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         html: {
           measurement: htmlMeasurements,
           async prepare(expected, lease) {
-            const projected = await prepareProjection(expected, lease);
+            const projected = await prepareProjection(expected, lease, false);
             lease.assertActive();
             const viewport = currentGameViewport();
             if (!viewport || !viewport.isConnected)
@@ -1568,7 +1628,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
               if (
                 !active() ||
                 currentGameViewport() !== viewport ||
-                !projectionMatches(expected) ||
+                !projectionEnvironmentMatches(expected) ||
                 replaceFullWidthSpaces.value !== spaces ||
                 JSON.stringify({
                   fontFamilyOverride: effectivePreferences.value.fontFamilyOverride,
@@ -1609,16 +1669,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
               });
             return pointerObservation.sample(epoch);
           },
+          lineGeometry: (query, serviceLease) => projectLineGeometry(query, serviceLease.signal),
           canvas: (query, projected, lease) =>
             canvasPixels.sample(query, projected.resources, resources, lease, () => {
-              const current = currentPresentation().resources.canvases?.find((canvas: any) =>
-                sameServiceInteger(canvas.canvas_id, query.canvasId),
+              const current = resolveCanvasReplay(
+                currentPresentation().resources.canvases,
+                query.canvasId,
+                query.canvasRevision,
               );
-              return (
-                active() &&
-                projectionMatches(query.context) &&
-                sameServiceInteger(current?.revision, query.canvasRevision)
-              );
+              return active() && projectionMatches(query.context) && current != null;
             }),
         },
       });
@@ -1645,6 +1704,18 @@ export const useRuntimeStore = defineStore("runtime", () => {
             log("warning", `前端服务失败 ${request.kind}/${request.operation}: ${String(failure)}`);
         }
       } else log("warning", `前端服务失败 ${request.kind}/${request.operation}: ${String(error)}`);
+    } finally {
+      if (
+        projectionObservationBarrier &&
+        projectionBarrierGeneration === viewportProjectionBarrierGeneration
+      ) {
+        projectionObservationBarriers.delete(projectionObservationBarrier);
+        if (projectionObservationBarriers.size === 0 && deferredViewportProjection)
+          viewportProjectionFlushAfterBatch = Math.max(
+            viewportProjectionFlushAfterBatch ?? 0,
+            serviceBatchSequence + 1,
+          );
+      }
     }
   }
 
@@ -1943,6 +2014,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     resetViewport = true,
     resetSqlProvider = true,
   ): void {
+    resetViewportProjectionBarriers();
     serviceRequests.reset();
     if (resetSqlProvider) sqlProvider.reset();
     pointerObservation.clear();
@@ -1959,11 +2031,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimeInput.reset();
     // Returning to title keeps the same physical host environment in core. Full session
     // replacement must discard it; new geometry observations invalidate it immediately.
-    if (resetViewport) runtimeViewport.reset();
+    if (resetViewport) {
+      viewportLayoutIdentity = "";
+      viewportLayoutIdentityAtProjection = "";
+      viewportEnvironmentIdentityAtProjection = "";
+      runtimeViewport.reset();
+    }
     runtimeImport.reset();
   }
 
   function advanceProjectResourceGeneration(resetSqlProvider = true): void {
+    resetViewportProjectionBarriers();
     serviceRequests.reset();
     if (resetSqlProvider) sqlProvider.reset();
     pointerObservation.clear();
@@ -3139,14 +3217,53 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await runtimeClientPreferences.save(scope, value);
   }
 
-  async function projectViewport(measurement = currentGameViewportMeasurement()): Promise<void> {
+  async function projectViewport(
+    measurement = currentGameViewportMeasurement(),
+    layoutIdentity = viewportLayoutIdentity,
+  ): Promise<void> {
+    viewportLayoutIdentity = layoutIdentity;
+    const environmentIdentity = viewportEnvironmentIdentity();
+    const previousMeasurement = runtimeViewport.measurement.value;
+    const onlyLayoutChanged =
+      measurement != null &&
+      previousMeasurement != null &&
+      measurement.width === previousMeasurement.width &&
+      measurement.height === previousMeasurement.height &&
+      environmentIdentity === viewportEnvironmentIdentityAtProjection;
+    if (projectionObservationBarriers.size > 0 && onlyLayoutChanged) {
+      deferredViewportProjection = { measurement: { ...measurement }, layoutIdentity };
+      return;
+    }
     await runtimeViewport.observe(
       measurement,
       runtimePump.ready,
       presentation.revision,
       prompt.value,
-      viewportStyleIdentity(),
+      viewportStyleIdentity(layoutIdentity),
+      environmentIdentity,
     );
+    if (measurement) {
+      viewportLayoutIdentityAtProjection = layoutIdentity;
+      viewportEnvironmentIdentityAtProjection = environmentIdentity;
+    }
+  }
+
+  async function flushDeferredViewportProjection(batchSequence: number): Promise<void> {
+    if (
+      !deferredViewportProjection ||
+      projectionObservationBarriers.size > 0 ||
+      viewportProjectionFlushAfterBatch == null ||
+      batchSequence < viewportProjectionFlushAfterBatch
+    )
+      return;
+    const deferred = deferredViewportProjection;
+    deferredViewportProjection = undefined;
+    viewportProjectionFlushAfterBatch = undefined;
+    try {
+      await projectViewport(deferred.measurement, deferred.layoutIdentity);
+    } catch (error) {
+      log("warning", `延后提交视口投影失败：${String(error)}`);
+    }
   }
 
   async function settleProjectViewport(): Promise<void> {

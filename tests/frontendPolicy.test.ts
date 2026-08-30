@@ -246,8 +246,9 @@ describe("frontend host and image-line policy", () => {
     expect(stylesheet).toMatch(/\.media-positioned\s*\{\s*overflow:\s*visible;/);
     expect(stylesheet).toMatch(/\.virtual-history\s*\{[^}]*width:\s*100%;/s);
     expect(stylesheet).toMatch(
-      /\.game-line:has\(\.media-positioned\)\s*\{[^}]*contain:\s*layout;[^}]*overflow:\s*visible;[^}]*z-index:\s*1;/s,
+      /\.game-line:has\(\.media-positioned\)\s*\{[^}]*overflow:\s*visible;/s,
     );
+    expect(stylesheet).not.toMatch(/\.virtual-history\s*\{[^}]*z-index:/s);
     expect(stylesheet).toMatch(
       /\.media-positioned > \.media-visual\s*\{[^}]*position:\s*absolute;[^}]*left:\s*0;/s,
     );
@@ -406,6 +407,7 @@ describe("frontend host and image-line policy", () => {
     expect(borderedStyle).toContain("border-style: solid");
     expect(borderedStyle).toContain("border-width: 1px");
     expect(borderedStyle).toContain("border-color: rgb(192, 192, 192)");
+    expect(borderedStyle).toContain("z-index: -1");
 
     const margined = mount(HtmlNode, {
       props: {
@@ -438,6 +440,7 @@ describe("frontend host and image-line policy", () => {
     expect(marginedStyle).toContain("height: 76px");
     expect(marginedStyle).toContain("border-width: 1px");
     expect(marginedStyle).toContain("padding: 5px");
+    expect(marginedStyle).toContain("z-index: -1");
 
     for (const semantic of [
       {
@@ -624,6 +627,10 @@ describe("frontend host and image-line policy", () => {
             source: "portrait",
             height: { unit: "font_height_hundredths", value: 3000 },
             y: { unit: "font_height_hundredths", value: -3000 },
+            color_matrix: {
+              type: "fixed",
+              value: Array.from({ length: 25 }, (_, index) => (index % 6 === 0 ? 256 : 0)),
+            },
           },
         },
       },
@@ -634,6 +641,7 @@ describe("frontend host and image-line policy", () => {
       height: 18_000,
       requested_height: { unit: "font_height_hundredths", value: 3000 },
       requested_y: { unit: "font_height_hundredths", value: -3000 },
+      color_matrix: { type: "fixed" },
     });
   });
 
@@ -907,8 +915,7 @@ describe("frontend host and image-line policy", () => {
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*line-height:\s*var\(--game-line-height\);/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*white-space:\s*pre;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*overflow-wrap:\s*normal;/s);
-    expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*contain:\s*layout;/s);
-    expect(stylesheet).not.toMatch(/\.game-line\s*\{[^}]*contain:\s*layout paint;/s);
+    expect(stylesheet).not.toMatch(/\.game-line\s*\{[^}]*contain:/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*pointer-events:\s*none;/s);
     expect(stylesheet).toMatch(
       /\.game-line:has\(\.media-image, \.canvas-replay\)[^}]*padding:\s*0;/s,

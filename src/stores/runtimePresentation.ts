@@ -205,6 +205,7 @@ function markSnapshotPayloadsRaw(snapshot: any): void {
   for (const line of snapshot.history?.logical_lines ?? []) markObjectRaw(line);
   for (const document of snapshot.html_island ?? []) markObjectRaw(document);
   markObjectRaw(snapshot.resources);
+  markObjectRaw(snapshot.scene);
 }
 
 function markDeltaPayloadsRaw(delta: any): void {
@@ -215,6 +216,8 @@ function markDeltaPayloadsRaw(delta: any): void {
       for (const document of operation.html_island ?? []) markObjectRaw(document);
     } else if (operation.type === "set_resources") {
       markObjectRaw(operation.resources);
+    } else if (operation.type === "apply_scene_delta") {
+      markObjectRaw(operation.delta);
     }
   }
 }

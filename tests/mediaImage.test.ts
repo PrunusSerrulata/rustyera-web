@@ -18,6 +18,7 @@ const store = reactive({
       sprites: [
         {
           name: "TW_TITLE000",
+          revision: 3,
           size: [1041, 16],
           frames: [
             {
@@ -52,8 +53,9 @@ import {
 import type { FrontendBridge } from "@/core/types";
 
 const canvasReplayStub = {
-  props: ["visible"],
-  template: '<canvas class="canvas-replay-test" :data-visible="String(visible)" />',
+  props: ["visible", "replay"],
+  template:
+    '<canvas class="canvas-replay-test" :data-visible="String(visible)" :data-revision="String(replay?.revision)" />',
 };
 
 // Earlier live wrappers must not react to the next case's shared store reset.
@@ -67,6 +69,7 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "TW_TITLE000",
+        revision: 3,
         size: [1041, 16],
         frames: [
           {
@@ -114,6 +117,7 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "TW_TITLE000",
+        revision: 3,
         size: [1041, 16],
         frames: [
           {
@@ -142,6 +146,30 @@ describe("Era sprite images", () => {
     expect(wrapper.get<HTMLElement>(".media-sprite").attributes("style")).toContain(
       "width: 1041px",
     );
+  });
+
+  it("applies a resolved HTML fixed matrix in place of the opacity filter", async () => {
+    const wrapper = mount(MediaImage, {
+      props: {
+        placement: {
+          resource_id: "matrix.png",
+          width: 10_000,
+          height: 10_000,
+          depth: 0,
+          opacity: { numerator: 1, denominator: 2 },
+          revision: 3,
+          color_matrix: {
+            type: "fixed",
+            value: Array.from({ length: 25 }, (_, index) => (index % 6 === 0 ? 256 : 0)),
+          },
+        },
+      },
+    });
+    await flushPromises();
+    expect(wrapper.get("feColorMatrix").attributes("values")?.split(" ")).toHaveLength(20);
+    const imageStyle = wrapper.get("img").attributes("style");
+    expect(wrapper.get(".media-positioned").attributes("style")).toContain("opacity: 1");
+    expect(imageStyle).toContain("filter: url(");
   });
 
   it("matches sprite names case-insensitively and crops the source sheet", async () => {
@@ -174,6 +202,7 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "女性",
+        revision: 4,
         size: [64, 64],
         frames: [
           {
@@ -210,6 +239,7 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "钟表_09_00",
+        revision: 4,
         size: [100, 100],
         frames: [
           {
@@ -336,6 +366,7 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "portrait",
+        revision: 5,
         size: [100, 100],
         frames: [{ resource_id: "portrait.webp", source_rectangle: [10, 20, 100, 100] }],
       },
@@ -440,11 +471,13 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "portrait",
+        revision: 6,
         size: [100, 100],
         frames: [{ resource_id: "base.webp", source_rectangle: [0, 0, 100, 100] }],
       },
       {
         name: "portrait_hover",
+        revision: 6,
         size: [100, 100],
         frames: [{ resource_id: "hover.webp", source_rectangle: [0, 0, 100, 100] }],
       },
@@ -498,14 +531,17 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "颜绘3000",
+        revision: 8,
         size: [150, 150],
         frames: [],
         canvas_id: 42,
+        canvas_revision: 7,
       },
     ];
     store.presentation.resources.canvases = [
       {
         canvas_id: 42,
+        revision: 7,
         size: { width: 150, height: 150 },
         commands: [],
       },
@@ -539,14 +575,54 @@ describe("Era sprite images", () => {
     expect(canvas.attributes("displayheight")).toBe("108");
   });
 
+  it("renders a selected scene animation frame backed by a replay canvas", () => {
+    store.presentation.resources.sprites = [
+      {
+        name: "ANIMATED",
+        revision: 9,
+        size: [20, 20],
+        frames: [{ canvas_id: 42, canvas_revision: 7, delay_ms: 20 }],
+      },
+    ];
+    store.presentation.resources.canvases = [
+      { canvas_id: 42, revision: 6, size: { width: 1, height: 1 }, commands: [] },
+      { canvas_id: 42, revision: 7, size: { width: 20, height: 20 }, commands: [] },
+    ];
+    const wrapper = mount(MediaImage, {
+      props: {
+        placement: {
+          resource_id: "ANIMATED",
+          width: 20_000,
+          height: 20_000,
+          depth: 0,
+          opacity: { numerator: 1, denominator: 1 },
+          revision: 9,
+        },
+        allowFrameCanvas: true,
+        spriteRevision: 9,
+      },
+      global: { stubs: { CanvasReplay: canvasReplayStub } },
+    });
+    expect(wrapper.find(".canvas-replay-test").exists()).toBe(true);
+    expect(wrapper.get(".canvas-replay-test").attributes("data-revision")).toBe("7");
+  });
+
   it("retains the generated canvas until its final sprite has painted", async () => {
     const animation = {
       canvas_id: 42,
+      revision: 7,
       size: { width: 100, height: 100 },
       commands: [],
     };
     store.presentation.resources.sprites = [
-      { name: "portrait", size: [100, 100], frames: [], canvas_id: 42 },
+      {
+        name: "portrait",
+        revision: 9,
+        size: [100, 100],
+        frames: [],
+        canvas_id: 42,
+        canvas_revision: 7,
+      },
     ];
     store.presentation.resources.canvases = [animation];
     let resolveFinal!: (value: string) => void;
@@ -580,6 +656,7 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "portrait",
+        revision: 9,
         size: [100, 100],
         frames: [{ resource_id: "portrait.webp", source_rectangle: [0, 0, 100, 100] }],
       },
@@ -613,11 +690,19 @@ describe("Era sprite images", () => {
   it("cancels stale non-line handoffs and keeps the canvas on image failure or unmount", async () => {
     const animation = {
       canvas_id: 42,
+      revision: 7,
       size: { width: 100, height: 100 },
       commands: [],
     };
     store.presentation.resources.sprites = [
-      { name: "portrait", size: [100, 100], frames: [], canvas_id: 42 },
+      {
+        name: "portrait",
+        revision: 9,
+        size: [100, 100],
+        frames: [],
+        canvas_id: 42,
+        canvas_revision: 7,
+      },
     ];
     store.presentation.resources.canvases = [animation];
     const animationFrames: FrameRequestCallback[] = [];
@@ -644,6 +729,7 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "portrait",
+        revision: 9,
         size: [100, 100],
         frames: [{ resource_id: "portrait.webp", source_rectangle: [0, 0, 100, 100] }],
       },
@@ -690,6 +776,7 @@ describe("Era sprite images", () => {
         sprites: [
           {
             name: "MEASURE",
+            revision: 4,
             size: [100, 50],
             frames: [{ resource_id: "frozen.png", source_rectangle: [0, 0, 100, 50] }],
           },

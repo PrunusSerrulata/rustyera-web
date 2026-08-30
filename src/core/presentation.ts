@@ -11,13 +11,16 @@ import {
   projectedLength,
   rawLength,
 } from "./presentation/htmlFormat";
+import { applySceneDelta, emptyScene, validateScene, type SceneStateV1 } from "@/core/scene";
+import { decodeFixedColorMatrix } from "@/core/colorMatrix";
+import { sameServiceInteger, serviceInteger } from "@/core/runtimeServiceProtocol";
 
 export interface PresentationState {
   revision: number;
   historyRevision: number;
   title: string;
   lines: DisplayLine[];
-  backgrounds: any[];
+  scene: SceneStateV1;
   audio: any[];
   inputWait: any | null;
   settings: Partial<PresentationSettings>;
@@ -31,7 +34,9 @@ export interface PresentationState {
 }
 
 export type PresentationInteractionSource =
-  { kind: "run"; run: any } | { kind: "html"; node: any; effectiveForeground?: unknown };
+  | { kind: "run"; run: any }
+  | { kind: "html"; node: any; effectiveForeground?: unknown }
+  | { kind: "scene"; layer: any };
 
 export interface PresentationInteractionLocation {
   rowKey: string;
@@ -45,7 +50,7 @@ export function emptyPresentation(): PresentationState {
     historyRevision: 0,
     title: "RustyEra",
     lines: [],
-    backgrounds: [],
+    scene: emptyScene(),
     audio: [],
     inputWait: null,
     settings: {},
@@ -60,15 +65,25 @@ export function emptyPresentation(): PresentationState {
 }
 
 export function applySnapshot(state: PresentationState, snapshot: any): void {
-  const previousSequences = collectInteractionSequences(state.lines, state.htmlIsland);
+  const candidate = clonePresentation(state);
+  applySnapshotCandidate(candidate, cloneProtocol(snapshot));
+  validatePresentationCandidate(candidate);
+  Object.assign(state, candidate);
+}
+
+function applySnapshotCandidate(state: PresentationState, snapshot: any): void {
+  const previousSequences = collectInteractionSequences(state.lines, state.htmlIsland, state.scene);
   const nextLines = [...(snapshot.history?.logical_lines ?? [])] as DisplayLine[];
   // A resynchronization snapshot can carry an equal-length dynamic-map tail with new line IDs.
   // Emuera replaces that tail in place, so only actual history growth should request bottom follow.
   if (nextLines.length > state.lines.length) state.historyRevision += 1;
-  state.revision = snapshot.revision;
+  state.revision = exactFrontendRevision(snapshot.revision, "presentation revision");
   state.title = snapshot.title;
   state.lines = nextLines;
-  state.backgrounds = snapshot.backgrounds ?? [];
+  const sourceScene = (snapshot.scene ?? emptyScene()) as SceneStateV1;
+  const scene = { revision: sourceScene.revision, layers: [...sourceScene.layers] };
+  validateScene(scene);
+  state.scene = scene;
   state.audio = snapshot.audio ?? [];
   state.inputWait = snapshot.input_wait ?? null;
   state.settings = snapshot.settings ?? {};
@@ -98,10 +113,50 @@ export function defaultTooltipSettings(): TooltipSettings {
 }
 
 export function applyDelta(state: PresentationState, delta: any): void {
-  if (delta.base_revision !== state.revision) {
+  const candidate = clonePresentation(state);
+  const clonedDelta = cloneProtocol(delta);
+  applyDeltaCandidate(candidate, clonedDelta);
+  validatePresentationCandidate(candidate);
+  preserveDeltaLineContainer(state, candidate, clonedDelta.operations);
+  Object.assign(state, candidate);
+}
+
+function preserveDeltaLineContainer(
+  state: PresentationState,
+  candidate: PresentationState,
+  operations: any[],
+): void {
+  const replacesContainer = operations.some(
+    (operation) =>
+      operation.type === "clear" ||
+      (operation.type === "trim_lines" && Number(operation.count) > 0),
+  );
+  if (replacesContainer) return;
+  const mutatesLines = operations.some((operation) =>
+    ["append_line", "delete_lines", "replace_line"].includes(operation.type),
+  );
+  if (mutatesLines) {
+    state.lines.length = candidate.lines.length;
+    for (let index = 0; index < candidate.lines.length; index += 1)
+      state.lines[index] = candidate.lines[index];
+  }
+  candidate.lines = state.lines;
+}
+
+function applyDeltaCandidate(state: PresentationState, delta: any): void {
+  const baseRevision = serviceInteger(delta.base_revision, "presentation delta base revision");
+  const newRevision = serviceInteger(delta.new_revision, "presentation delta revision");
+  if (!sameServiceInteger(baseRevision, state.revision)) {
     throw new Error(`展示 revision 不连续：${state.revision} → ${delta.base_revision}`);
   }
+  if (BigInt(newRevision) <= BigInt(baseRevision))
+    throw new Error("presentation revision is not monotonic");
+  if (newRevision > BigInt(Number.MAX_SAFE_INTEGER))
+    throw new Error("presentation revision exceeds the frontend exact range");
+  if (!Array.isArray(delta.operations))
+    throw new Error("presentation delta operations are invalid");
   const previousLineCount = state.lines.length;
+  let previousSceneSequences = collectSceneSequences(state.scene);
   let existingLineChanged = false;
   let pendingPrefixTrim = 0;
   const flushPrefixTrim = () => {
@@ -119,6 +174,7 @@ export function applyDelta(state: PresentationState, delta: any): void {
         break;
       case "delete_lines":
         flushPrefixTrim();
+        serviceInteger(operation.count, "deleted presentation line count");
         state.lines.splice(
           Math.max(0, state.lines.length - Number(operation.count)),
           Number(operation.count),
@@ -131,8 +187,10 @@ export function applyDelta(state: PresentationState, delta: any): void {
       case "set_title":
         state.title = operation.title;
         break;
-      case "set_backgrounds":
-        state.backgrounds = operation.backgrounds;
+      case "apply_scene_delta":
+        state.scene = applySceneDelta(state.scene, operation.delta);
+        assignSceneSequences(state, state.scene, previousSceneSequences);
+        previousSceneSequences = collectSceneSequences(state.scene);
         break;
       case "set_audio":
         state.audio = operation.audio;
@@ -173,11 +231,14 @@ export function applyDelta(state: PresentationState, delta: any): void {
         state.buttonGeneration = operation.generation;
         break;
       case "trim_lines":
+        serviceInteger(operation.count, "trimmed presentation line count");
         pendingPrefixTrim += Math.min(
           Math.max(0, Number(operation.count)),
           state.lines.length - pendingPrefixTrim,
         );
         break;
+      default:
+        throw new Error(`unknown presentation operation: ${String(operation.type)}`);
     }
   }
   flushPrefixTrim();
@@ -185,13 +246,94 @@ export function applyDelta(state: PresentationState, delta: any): void {
   // scrollbar unchanged when the final line count is unchanged, so only actual history growth
   // (or an in-place line whose dimensions may change) should request another bottom follow.
   if (state.lines.length > previousLineCount || existingLineChanged) state.historyRevision += 1;
-  state.revision = delta.new_revision;
+  state.revision = Number(newRevision);
 }
 
-function findLineIndexFromEnd(lines: DisplayLine[], lineId: number): number {
+function clonePresentation(state: PresentationState): PresentationState {
+  return {
+    ...state,
+    lines: [...state.lines],
+    scene: { revision: state.scene.revision, layers: [...state.scene.layers] },
+    audio: [...state.audio],
+    settings: { ...state.settings },
+    tooltip: { ...state.tooltip },
+    htmlIsland: [...state.htmlIsland],
+  };
+}
+
+function cloneProtocol<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(cloneProtocol) as T;
+  if (value && typeof value === "object") {
+    const rawMarker = Object.getOwnPropertyDescriptor(value, "__v_skip");
+    // RuntimePresentationProjection marks immutable payload roots raw before staging. Preserve
+    // those identities while cloning only the mutable envelope used for atomic validation.
+    if (rawMarker?.value === true && rawMarker.enumerable === false) return value;
+    const clone: Record<PropertyKey, unknown> = {};
+    for (const key of Reflect.ownKeys(value as object))
+      clone[key] = cloneProtocol((value as Record<PropertyKey, unknown>)[key]);
+    return clone as T;
+  }
+  return value;
+}
+
+function validatePresentationCandidate(state: PresentationState): void {
+  serviceInteger(state.revision, "presentation revision");
+  validateScene(state.scene);
+  visitPresentationInteractions(state, ({ interaction }) => validateInteraction(interaction));
+  for (const line of state.lines) validateColorMatricesInRuns(line.runs);
+  for (const document of state.htmlIsland) validateColorMatricesInNodes(document?.nodes ?? []);
+}
+
+function validateInteraction(interaction: any): void {
+  const token = interaction?.token ?? interaction;
+  serviceInteger(token?.epoch, "interaction epoch");
+  serviceInteger(token?.id, "interaction identity");
+  const value = interaction?.value;
+  // HTML buttons submit an opaque interaction token and keep their display value in semantic
+  // markup. Scene interactions validate their mandatory typed value in validateScene().
+  if (value == null) return;
+  if (typeof value !== "object") throw new Error("interaction value is invalid");
+  if (value.type === "integer") serviceInteger(value.value, "interaction integer", true);
+  else if (value.type === "string") {
+    if (typeof value.value !== "string") throw new Error("interaction string is invalid");
+  } else if (value.type === "boolean") {
+    if (typeof value.value !== "boolean") throw new Error("interaction boolean is invalid");
+  } else if (value.type === "bytes") {
+    if (!Array.isArray(value.value)) throw new Error("interaction bytes are invalid");
+    for (const byte of value.value) {
+      const integer = serviceInteger(byte, "interaction byte");
+      if (BigInt(integer) > 255n) throw new Error("interaction byte exceeds u8");
+    }
+  } else throw new Error("interaction value type is invalid");
+}
+
+function validateColorMatricesInRuns(runs: any[]): void {
+  for (const run of runs) {
+    if (run.type === "image") decodeFixedColorMatrix(run.placement?.color_matrix);
+    if (run.type === "button") validateColorMatricesInRuns(run.runs ?? []);
+    if (run.type === "column_cell") validateColorMatricesInRuns(run.content ?? []);
+    if (run.type === "html_document") validateColorMatricesInNodes(run.document?.nodes ?? []);
+  }
+}
+
+function validateColorMatricesInNodes(nodes: any[]): void {
+  for (const node of nodes) {
+    if (node.semantic?.type === "image") decodeFixedColorMatrix(node.semantic.color_matrix);
+    validateColorMatricesInNodes(node.children ?? []);
+  }
+}
+
+function findLineIndexFromEnd(lines: DisplayLine[], lineId: number | bigint): number {
   for (let index = lines.length - 1; index >= 0; index -= 1)
-    if (lines[index]?.line_id === lineId) return index;
+    if (sameServiceInteger(lines[index]?.line_id, lineId)) return index;
   return -1;
+}
+
+function exactFrontendRevision(value: unknown, name: string): number {
+  const revision = serviceInteger(value, name);
+  if (BigInt(revision) > BigInt(Number.MAX_SAFE_INTEGER))
+    throw new Error(`${name} exceeds the frontend exact range`);
+  return Number(revision);
 }
 
 function lineContentChanged(
@@ -281,6 +423,7 @@ export function visitPresentationInteractions(
     visitRuns(line.runs, `line:${String(line.line_id)}`, visitInteraction);
   for (const [index, document] of state.htmlIsland.entries())
     visitHtmlNodes(document?.nodes ?? [], `island:${index}`, visitInteraction);
+  visitScene(state.scene, visitInteraction);
 }
 
 export function retirePresentedButtons(state: PresentationState): number {
@@ -309,7 +452,11 @@ export function presentationInteractionEnabled(
   interaction: any,
 ): boolean {
   if (interaction?.enabled !== true) return false;
-  if (state.buttonGeneration != null && interaction.generation !== state.buttonGeneration)
+  if (
+    state.buttonGeneration != null &&
+    "generation" in interaction &&
+    interaction.generation !== state.buttonGeneration
+  )
     return false;
   const sequence = interaction[INTERACTION_SEQUENCE];
   return sequence == null || sequence > state.retiredInteractionSequence;
@@ -327,10 +474,15 @@ function interactionIdentity(interaction: any): string {
   return `${String(token.epoch)}:${String(token.id)}`;
 }
 
-function collectInteractionSequences(lines: DisplayLine[], htmlIsland: any[]): Map<string, number> {
+function collectInteractionSequences(
+  lines: DisplayLine[],
+  htmlIsland: any[],
+  scene: SceneStateV1,
+): Map<string, number> {
   const sequences = new Map<string, number>();
   for (const line of lines) collectLineSequences(line, sequences);
   collectHtmlIslandSequences(htmlIsland, sequences);
+  collectSceneSequences(scene, sequences);
   return sequences;
 }
 
@@ -357,12 +509,38 @@ function collectHtmlIslandSequences(
   return sequences;
 }
 
+function visitScene(
+  scene: SceneStateV1 | undefined,
+  visitInteraction: (location: PresentationInteractionLocation) => void,
+): void {
+  for (const layer of scene?.layers ?? []) {
+    if (!layer.interaction) continue;
+    visitInteraction({
+      rowKey: `scene:${String(layer.layer_id)}`,
+      interaction: layer.interaction,
+      source: { kind: "scene", layer },
+    });
+  }
+}
+
+function collectSceneSequences(
+  scene: SceneStateV1,
+  sequences = new Map<string, number>(),
+): Map<string, number> {
+  visitScene(scene, ({ interaction }) => {
+    const sequence = interaction[INTERACTION_SEQUENCE];
+    if (sequence != null) sequences.set(interactionIdentity(interaction), sequence);
+  });
+  return sequences;
+}
+
 function assignPresentationSequences(
   state: PresentationState,
   previous: Map<string, number>,
 ): void {
   for (const line of state.lines) assignLineSequences(state, line, previous);
   assignHtmlIslandSequences(state, state.htmlIsland, previous);
+  assignSceneSequences(state, state.scene, previous);
 }
 
 function assignLineSequences(
@@ -386,6 +564,14 @@ function assignHtmlIslandSequences(
     });
 }
 
+function assignSceneSequences(
+  state: PresentationState,
+  scene: SceneStateV1,
+  previous = new Map<string, number>(),
+): void {
+  visitScene(scene, ({ interaction }) => assignInteractionSequence(state, interaction, previous));
+}
+
 function assignInteractionSequence(
   state: PresentationState,
   interaction: any,
@@ -402,6 +588,16 @@ function assignInteractionSequence(
 }
 
 function findPresentationInteraction(state: PresentationState, token: InteractionToken): any {
+  for (let index = state.scene.layers.length - 1; index >= 0; index -= 1) {
+    const interaction = state.scene.layers[index].interaction;
+    const current = interaction?.token;
+    if (
+      current &&
+      sameInteractionInteger(current.epoch, token.epoch) &&
+      sameInteractionInteger(current.id, token.id)
+    )
+      return interaction;
+  }
   for (let index = state.htmlIsland.length - 1; index >= 0; index -= 1) {
     const found = findHtmlInteraction(state.htmlIsland[index]?.nodes ?? [], token);
     if (found) return found;
@@ -411,6 +607,14 @@ function findPresentationInteraction(state: PresentationState, token: Interactio
     if (found) return found;
   }
   return undefined;
+}
+
+function sameInteractionInteger(left: unknown, right: unknown): boolean {
+  return (
+    (typeof left === "number" || typeof left === "bigint") &&
+    (typeof right === "number" || typeof right === "bigint") &&
+    BigInt(left) === BigInt(right)
+  );
 }
 
 function findRunInteraction(runs: any[], token: InteractionToken): any {

@@ -60,7 +60,7 @@ export interface HtmlMeasurementProjection {
   track(promise: Promise<unknown>): void;
   acquireImage(
     resourceId: string,
-    revision: number,
+    revision: ServiceInteger,
   ): { ready: Promise<{ url: string; width: number; height: number }>; release(): void };
 }
 export const htmlMeasurementProjectionKey: InjectionKey<HtmlMeasurementProjection> = Symbol(
@@ -208,7 +208,7 @@ export class HtmlMeasurementScope implements HtmlMeasurementProjection {
 
   acquireImage(
     resourceId: string,
-    revision: number,
+    revision: ServiceInteger,
   ): { ready: Promise<{ url: string; width: number; height: number }>; release(): void } {
     let lease: ResourceUrlLease | undefined;
     let decoded: HTMLImageElement | undefined;

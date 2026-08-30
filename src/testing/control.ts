@@ -184,7 +184,7 @@ function presentationMedia(presentation: any): Record<string, unknown> {
         for (const node of run.document?.nodes ?? []) visitNode(node, line.line_id);
     }
   }
-  return serialize({ images, backgrounds: presentation.backgrounds ?? [] });
+  return serialize({ images, scene: presentation.scene ?? { revision: 0, layers: [] } });
 }
 
 function mediaReplay(resources: any, resourceName: string): Record<string, unknown> {

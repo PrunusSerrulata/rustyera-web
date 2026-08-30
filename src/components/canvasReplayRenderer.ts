@@ -6,6 +6,7 @@ import {
 } from "@/core/runtimeServiceProtocol";
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import { acquireResourceUrl, type ResourceUrlLease } from "@/core/resources";
+import { replayIntegerKey, resolveCanvasReplay, resolveSpriteReplay } from "@/core/replayResources";
 import type { FrontendBridge } from "@/core/types";
 import { platformBridge } from "@/platform";
 import { observeServiceDecode, serviceLifecycleImageCrossOrigin } from "@/testing/serviceLifecycle";
@@ -136,17 +137,24 @@ export type CanvasReplayCommand =
   | { type: "set_font"; style_bits: unknown; size: unknown; family: string }
   | { type: "draw_line"; start: WirePoint; end: WirePoint }
   | { type: "draw_text"; text: string; point: WirePoint }
+  | { type: "polygon_point_add"; point: WirePoint }
+  | { type: "polygon_point_clear" }
+  | { type: "draw_polygon" }
+  | { type: "fill_polygon" }
   | { type: "load_encoded_image"; encoded: ServiceInteger[] }
   | {
       type: "draw_sprite";
       name: string;
       destination: WireRectangle;
       color_matrix?: number[];
+      resource_revision: unknown;
     }
   | {
       type: "draw_canvas";
       source_canvas_id: unknown;
+      source_revision: unknown;
       mask_canvas_id?: unknown;
+      mask_revision?: unknown;
       source: WireRectangle;
       destination: WireRectangle;
       color_matrix?: number[];
@@ -156,13 +164,16 @@ export type CanvasReplayCommand =
 
 interface CanvasSpriteFrame {
   canvas_id?: unknown;
+  canvas_revision?: unknown;
   resource_id?: string;
   source_rectangle?: readonly unknown[];
 }
 
 interface CanvasSprite {
   name: string;
+  revision: unknown;
   canvas_id?: unknown;
+  canvas_revision?: unknown;
   canvas_rectangle?: WireRectangle;
   frames?: CanvasSpriteFrame[];
 }
@@ -184,7 +195,7 @@ export interface CanvasReplayRenderer {
   replay(
     context: CanvasRenderingContext2D,
     replay: CanvasReplayData,
-    ancestors: Set<number>,
+    ancestors: Set<string | number>,
     resources: CanvasReplayResources,
     resourceGeneration: number,
     control?: CanvasReplayRenderControl,
@@ -200,7 +211,7 @@ export function createCanvasReplayRenderer(): CanvasReplayRenderer {
     replay(
       context: CanvasRenderingContext2D,
       replay: CanvasReplayData,
-      ancestors: Set<number>,
+      ancestors: Set<string | number>,
       resources: CanvasReplayResources,
       resourceGeneration: number,
       control = { budget: new CanvasReplayBudget(), active: () => true },
@@ -222,7 +233,7 @@ export function createCanvasReplayRenderer(): CanvasReplayRenderer {
 async function replayCommands(
   context: CanvasRenderingContext2D,
   replay: CanvasReplayData,
-  ancestors: Set<number>,
+  ancestors: Set<string | number>,
   resources: CanvasReplayResources,
   resourceGeneration: number,
   decodedImages: ImageCache,
@@ -234,6 +245,7 @@ async function replayCommands(
   let pen = "#000";
   let penWidth = 1;
   let font = "16px sans-serif";
+  const polygonPoints: Array<{ x: number; y: number }> = [];
   for (const command of replay.commands ?? []) {
     assertActive(control);
     control.budget.command();
@@ -302,6 +314,23 @@ async function replayCommands(
         context.font = font;
         context.fillText(command.text, numeric(command.point.x), numeric(command.point.y));
         break;
+      case "polygon_point_add":
+        polygonPoints.push(point(command.point));
+        break;
+      case "polygon_point_clear":
+        polygonPoints.length = 0;
+        break;
+      case "draw_polygon":
+        drawPolygonPath(context, polygonPoints);
+        context.strokeStyle = pen;
+        context.lineWidth = penWidth;
+        context.stroke();
+        break;
+      case "fill_polygon":
+        drawPolygonPath(context, polygonPoints);
+        context.fillStyle = brush;
+        context.fill();
+        break;
       case "load_encoded_image": {
         if (!Array.isArray(command.encoded))
           throw new RuntimeServiceError("invalid_request", "encoded canvas image is not bytes");
@@ -351,7 +380,7 @@ async function replayCommands(
           command.name,
           ancestors,
           resources,
-          replay.revision,
+          command.resource_revision,
           resourceGeneration,
           decodedImages,
           control,
@@ -376,14 +405,30 @@ async function replayCommands(
         break;
       }
       case "draw_canvas": {
+        if (command.source_revision == null)
+          throw new RuntimeServiceError(
+            "invalid_request",
+            "draw_canvas source revision is required",
+          );
+        if (command.mask_canvas_id != null && command.mask_revision == null)
+          throw new RuntimeServiceError(
+            "invalid_request",
+            "draw_canvas mask revision is required with a mask canvas",
+          );
+        if (command.mask_canvas_id == null && command.mask_revision != null)
+          throw new RuntimeServiceError(
+            "invalid_request",
+            "draw_canvas mask revision has no mask canvas",
+          );
         const source = await canvasSource(
-          canvasIdentity(command.source_canvas_id, control.strict),
+          canvasIdentity(command.source_canvas_id),
           ancestors,
           resources,
           resourceGeneration,
           decodedImages,
           control,
           depth + 1,
+          command.source_revision,
         );
         if (!source) break;
         let mask: HTMLCanvasElement | undefined;
@@ -392,13 +437,14 @@ async function replayCommands(
             command.mask_canvas_id == null
               ? undefined
               : await canvasSource(
-                  canvasIdentity(command.mask_canvas_id, control.strict),
+                  canvasIdentity(command.mask_canvas_id),
                   ancestors,
                   resources,
                   resourceGeneration,
                   decodedImages,
                   control,
                   depth + 1,
+                  command.mask_revision,
                 );
           drawProjected(
             context,
@@ -433,7 +479,7 @@ async function replayCommands(
 
 async function spriteSource(
   name: string,
-  ancestors: Set<number>,
+  ancestors: Set<string | number>,
   resources: CanvasReplayResources,
   revision: unknown,
   resourceGeneration: number,
@@ -441,18 +487,22 @@ async function spriteSource(
   control: CanvasReplayRenderControl,
   depth: number,
 ): Promise<{ image: CanvasDrawable; rectangle: Rectangle } | undefined> {
-  const sprite = resources.sprites?.find(
-    (item) => String(item.name).toUpperCase() === String(name).toUpperCase(),
-  );
+  const resourceRevision = serviceInteger(revision, "canvas sprite revision");
+  const sprite = resolveSpriteReplay(resources.sprites, name, resourceRevision);
+  if (!sprite)
+    throw new RuntimeServiceError("backend_failure", "canvas sprite revision is missing");
   if (sprite?.canvas_id != null) {
+    if (sprite.canvas_revision == null)
+      throw new RuntimeServiceError("invalid_request", "canvas-backed sprite has no revision");
     const image = await canvasSource(
-      canvasIdentity(sprite.canvas_id, control.strict),
+      canvasIdentity(sprite.canvas_id),
       ancestors,
       resources,
       resourceGeneration,
       decodedImages,
       control,
       depth + 1,
+      sprite.canvas_revision,
     );
     if (!image) return undefined;
     return {
@@ -464,14 +514,20 @@ async function spriteSource(
   }
   const frame = sprite?.frames?.[0];
   if (frame?.canvas_id != null) {
+    if (frame.canvas_revision == null)
+      throw new RuntimeServiceError(
+        "invalid_request",
+        "canvas-backed sprite frame has no revision",
+      );
     const image = await canvasSource(
-      canvasIdentity(frame.canvas_id, control.strict),
+      canvasIdentity(frame.canvas_id),
       ancestors,
       resources,
       resourceGeneration,
       decodedImages,
       control,
       depth + 1,
+      frame.canvas_revision,
     );
     if (!image) return undefined;
     return { image, rectangle: tupleRectangle(frame.source_rectangle, image) };
@@ -480,7 +536,7 @@ async function spriteSource(
   try {
     const image = await decodedImage(
       resourceId,
-      Number(revision),
+      resourceRevision,
       resourceGeneration,
       decodedImages,
       control.strict,
@@ -497,7 +553,7 @@ async function spriteSource(
 
 function decodedImage(
   resourceId: string,
-  revision: number,
+  revision: ServiceInteger,
   resourceGeneration: number,
   decodedImages: ImageCache,
   strict = false,
@@ -652,24 +708,30 @@ function releaseDecodedImages(decodedImages: ImageCache): void {
 }
 
 async function canvasSource(
-  canvasId: number,
-  ancestors: Set<number>,
+  canvasId: ServiceInteger,
+  ancestors: Set<string | number>,
   resources: CanvasReplayResources,
   resourceGeneration: number,
   decodedImages: ImageCache,
   control: CanvasReplayRenderControl,
   depth: number,
+  expectedRevision: unknown,
 ): Promise<HTMLCanvasElement | undefined> {
-  if (ancestors.has(canvasId)) {
+  const canvasKey = replayIntegerKey(canvasId);
+  if (
+    [...ancestors].some(
+      (ancestor) =>
+        (typeof ancestor === "string" ? ancestor : replayIntegerKey(ancestor)) === canvasKey,
+    )
+  ) {
     if (control.strict)
       throw new RuntimeServiceError("backend_failure", "canvas graph contains a cycle");
     return undefined;
   }
-  const replay = resources.canvases?.find((item) => Number(item.canvas_id) === canvasId);
+  const revision = serviceInteger(expectedRevision, "canvas source revision");
+  const replay = resolveCanvasReplay(resources.canvases, canvasId, revision);
   if (!replay) {
-    if (control.strict)
-      throw new RuntimeServiceError("backend_failure", "canvas graph source is missing");
-    return undefined;
+    throw new RuntimeServiceError("backend_failure", "canvas graph source is missing");
   }
   assertActive(control);
   const width = canvasDimension(replay.size.width);
@@ -687,7 +749,7 @@ async function canvasSource(
     return undefined;
   }
   const next = new Set(ancestors);
-  next.add(canvasId);
+  next.add(canvasKey);
   try {
     await replayCommands(
       context,
@@ -705,6 +767,17 @@ async function canvasSource(
     releaseCanvas(element);
     throw error;
   }
+}
+
+function drawPolygonPath(
+  context: CanvasRenderingContext2D,
+  points: Array<{ x: number; y: number }>,
+): void {
+  context.beginPath();
+  if (!points.length) return;
+  context.moveTo(points[0].x, points[0].y);
+  for (const point of points.slice(1)) context.lineTo(point.x, point.y);
+  context.closePath();
 }
 
 interface Rectangle {
@@ -732,15 +805,8 @@ export function canvasDimension(value: unknown): number {
   return Number.isFinite(dimension) ? dimension : 0;
 }
 
-function canvasIdentity(value: unknown, strict = false): number {
-  if (!strict) return Number(value);
-  const id = Number(serviceInteger(value, "canvas identity", true));
-  if (!Number.isSafeInteger(id))
-    throw new RuntimeServiceError(
-      "invalid_request",
-      "canvas identity exceeds the renderer's exact integer range",
-    );
-  return id;
+function canvasIdentity(value: unknown): ServiceInteger {
+  return serviceInteger(value, "canvas identity", true);
 }
 
 function numeric(value: unknown): number {

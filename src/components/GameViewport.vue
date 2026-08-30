@@ -6,16 +6,26 @@ import {
   type Range,
   type Virtualizer,
 } from "@tanstack/vue-virtual";
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  provide,
+  ref,
+  shallowRef,
+  watch,
+} from "vue";
 
 import DisplayLine from "@/components/DisplayLine.vue";
 import GameTooltip from "@/components/GameTooltip.vue";
 import HtmlNode from "@/components/HtmlNode.vue";
-import MediaImage from "@/components/MediaImage.vue";
+import SceneCompositor from "@/components/SceneCompositor.vue";
 import { useTouchSecondaryAction } from "@/components/useTouchSecondaryAction";
 import { isViewportContinuationClick } from "@/core/viewportInteraction";
 import { htmlBoxRowLayoutsForRange } from "@/core/htmlBoxLayout";
 import { usesConfiguredLineHeight } from "@/core/lineLayout";
+import { compactSceneDepthRanks, sceneDepthKey, sceneDepthRankKey } from "@/core/sceneStacking";
 import type {
   Color,
   DisplayLine as PresentationLine,
@@ -23,6 +33,13 @@ import type {
   MediaPlacement,
 } from "@/core/types";
 import { measureGameViewport } from "@/platform/viewportMeasurement";
+import { currentLineGeometry, registerLineGeometryProvider } from "@/platform/lineGeometry";
+import {
+  RuntimeServiceError,
+  sameServiceInteger,
+  type LineGeometryQuery,
+} from "@/core/runtimeServiceProtocol";
+import { activateScenePointer } from "@/platform/scenePointerObservation";
 import { useRuntimeStore } from "@/stores/runtime";
 
 const store = useRuntimeStore();
@@ -33,12 +50,16 @@ const touchSecondaryAction = useTouchSecondaryAction(
   () => void store.skip(),
 );
 const viewportColumns = ref(100);
+const viewportWidth = ref(0);
 const viewportHeight = ref(0);
+const viewportScrollTop = ref(0);
 let viewportObserver: ResizeObserver | undefined;
+let unregisterLineGeometry: (() => void) | undefined;
 let viewportFrame: number | undefined;
 let projectedWidth = -1;
 let projectedHeight = -1;
 let projectedLineColumns = -1;
+let projectedLayoutIdentity = "";
 let keyedRuntimeEpoch = "";
 let bottomFollowRevision = 0;
 let followingBottom = false;
@@ -46,7 +67,18 @@ let preserveNfViewport = false;
 let nfUserScrolled = false;
 const keyedLines = new Map<number, { id: string; key: string; mediaLayout?: string }>();
 type RangeExtractor = (range: Range) => number[];
+const baseRangeExtractor = shallowRef<RangeExtractor>(defaultRangeExtractor);
 const activeRangeExtractor = shallowRef<RangeExtractor>(defaultRangeExtractor);
+const geometryRangeLeases = new Map<number, number>();
+const geometryAbort = new AbortController();
+
+const sceneDepthRanks = computed(() =>
+  compactSceneDepthRanks([
+    ...store.presentation.scene.layers.map((layer) => layer.depth),
+    ...presentationHtmlDepths(),
+  ]),
+);
+provide(sceneDepthRankKey, (depth) => sceneDepthRanks.value.get(sceneDepthKey(depth)) ?? 0);
 
 watch(
   () => store.runtimeEpoch,
@@ -114,7 +146,13 @@ function mediaLayoutIdentity(line: PresentationLine | undefined): string | undef
   const placements: unknown[] = [];
   const visitNode = (node: any): void => {
     if (node?.semantic?.type === "image") {
-      placements.push([node.semantic.width, node.semantic.height, node.semantic.y]);
+      placements.push([
+        node.semantic.width,
+        node.semantic.height,
+        node.semantic.x,
+        node.semantic.y,
+        node.semantic.display,
+      ]);
     }
     for (const child of node?.children ?? []) visitNode(child);
   };
@@ -187,7 +225,18 @@ const virtualizer = useVirtualizer(
     };
   }),
 );
-const items = computed(() => virtualizer.value.getVirtualItems());
+// TanStack can expose the previous range for one render while an authoritative snapshot trims or
+// replaces history. Never let those retired indices reach the DOM or the line-geometry projection.
+const items = computed(() =>
+  (() => {
+    const current = virtualizer.value.getVirtualItems();
+    const valid = (item: (typeof current)[number]) =>
+      item.index >= 0 && item.index < store.presentation.lines.length;
+    // Preserve the virtualizer's array identity on the ordinary path so projection observers do
+    // not schedule a second frame merely because validation inspected an already-valid range.
+    return current.every(valid) ? current : current.filter(valid);
+  })(),
+);
 const visibleBoxRowLayouts = computed(() => {
   const visibleItems = items.value;
   if (visibleItems.length === 0) return new Map();
@@ -206,6 +255,45 @@ const historyHeight = computed(() => Math.max(viewportHeight.value, measuredHist
 const historyBottomInset = computed(() =>
   Math.max(0, viewportHeight.value - measuredHistoryHeight.value),
 );
+const sceneLineTops = computed(() => {
+  void items.value;
+  const tops = new Map<string, number>();
+  const measurements = virtualizer.value.measurementsCache ?? [];
+  for (const measurement of measurements) {
+    const line = store.presentation.lines[measurement.index];
+    if (line) tops.set(String(line.line_id), measurement.start + historyBottomInset.value);
+  }
+  return tops;
+});
+
+function presentationHtmlDepths(): unknown[] {
+  const depths: unknown[] = [];
+  const visitNode = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    const value = node as { semantic?: unknown; children?: unknown };
+    if (value.semantic && typeof value.semantic === "object") {
+      const semantic = value.semantic as { type?: unknown; depth?: unknown };
+      if (semantic.type === "division" && semantic.depth != null) depths.push(semantic.depth);
+    }
+    if (Array.isArray(value.children)) for (const child of value.children) visitNode(child);
+  };
+  const visitRun = (run: unknown): void => {
+    if (!run || typeof run !== "object") return;
+    const value = run as {
+      type?: unknown;
+      document?: { nodes?: unknown[] };
+      runs?: unknown[];
+      content?: unknown[];
+    };
+    if (value.type === "html_document")
+      for (const node of value.document?.nodes ?? []) visitNode(node);
+    for (const child of value.runs ?? value.content ?? []) visitRun(child);
+  };
+  for (const line of store.presentation.lines) for (const run of line.runs) visitRun(run);
+  for (const document of store.presentation.htmlIsland)
+    for (const node of document?.nodes ?? []) visitNode(node);
+  return depths;
+}
 
 const bottomFollowSource = () =>
   [store.presentation.historyRevision, store.presentation.lines.at(-1)?.line_id] as const;
@@ -267,7 +355,7 @@ function selectTerminalRange(): void {
   // A distinct extractor identity invalidates TanStack's range memo even when a redraw replaces
   // an equal-length tail. Mounting only the terminal window avoids retaining both generations of
   // interactive controls while the post-render scroll catches up.
-  activeRangeExtractor.value = (range) => {
+  baseRangeExtractor.value = (range) => {
     if (range.count === 0) return [];
     const visible = visibleLines ?? Math.max(1, range.endIndex - range.startIndex + 1);
     const start = Math.max(0, range.count - visible);
@@ -276,15 +364,47 @@ function selectTerminalRange(): void {
     // latency-critical input transition, even though the natural range is restored after layout.
     return Array.from({ length: range.count - start }, (_, offset) => start + offset);
   };
+  refreshRangeExtractor();
 }
 
 function releaseTerminalRange(): void {
-  activeRangeExtractor.value = defaultRangeExtractor;
+  baseRangeExtractor.value = defaultRangeExtractor;
+  refreshRangeExtractor();
+}
+
+function acquireGeometryRange(index: number): () => void {
+  geometryRangeLeases.set(index, (geometryRangeLeases.get(index) ?? 0) + 1);
+  refreshRangeExtractor();
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    const remaining = (geometryRangeLeases.get(index) ?? 1) - 1;
+    if (remaining > 0) geometryRangeLeases.set(index, remaining);
+    else geometryRangeLeases.delete(index);
+    refreshRangeExtractor();
+  };
+}
+
+function refreshRangeExtractor(): void {
+  const base = baseRangeExtractor.value;
+  const forced = [...geometryRangeLeases.keys()];
+  if (forced.length === 0) {
+    activeRangeExtractor.value = base;
+    return;
+  }
+  activeRangeExtractor.value = (range) => {
+    const indexes = new Set(base(range));
+    for (const index of forced) if (index >= 0 && index < range.count) indexes.add(index);
+    return [...indexes].sort((left, right) => left - right);
+  };
 }
 
 function releaseTerminalRangeOnScrollBack(): void {
+  viewportScrollTop.value = viewport.value?.scrollTop ?? 0;
   if (preserveNfViewport) nfUserScrolled = !isAtBottom();
   if (!followingBottom && !isAtBottom()) releaseTerminalRange();
+  scheduleViewportSynchronization();
 }
 
 function isAtBottom(): boolean {
@@ -359,6 +479,11 @@ function click(event: MouseEvent): void {
     return;
   }
   if (!store.useMouse) return;
+  if (activateScenePointer(event.clientX, event.clientY)) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
   if (viewport.value && isViewportContinuationClick(event, viewport.value)) {
     void store.continueFromViewport();
   }
@@ -386,20 +511,36 @@ function wheel(event: WheelEvent): void {
 function synchronizeViewport(forceObservation = false): void {
   viewportFrame = undefined;
   if (!viewport.value) return;
+  viewportScrollTop.value = viewport.value.scrollTop;
   const measurement = measureGameViewport(viewport.value, history.value);
+  viewportWidth.value = measurement.width;
   viewportHeight.value = measurement.height;
   viewportColumns.value = measurement.lineColumns;
+  const layoutIdentity = viewportLayoutIdentity();
   if (
     !forceObservation &&
     measurement.width === projectedWidth &&
     measurement.height === projectedHeight &&
-    measurement.lineColumns === projectedLineColumns
+    measurement.lineColumns === projectedLineColumns &&
+    layoutIdentity === projectedLayoutIdentity
   )
     return;
   projectedWidth = measurement.width;
   projectedHeight = measurement.height;
   projectedLineColumns = measurement.lineColumns;
-  void store.projectViewport(measurement);
+  projectedLayoutIdentity = layoutIdentity;
+  void store.projectViewport(measurement, layoutIdentity);
+}
+
+function viewportLayoutIdentity(): string {
+  return JSON.stringify([
+    viewportScrollTop.value,
+    viewportWidth.value,
+    viewportHeight.value,
+    measuredHistoryHeight.value,
+    historyBottomInset.value,
+    items.value.map((item) => [item.key, item.index, item.start, item.size]),
+  ]);
 }
 
 function scheduleViewportSynchronization(): void {
@@ -413,11 +554,45 @@ onMounted(() => {
     viewportObserver = new ResizeObserver(scheduleViewportSynchronization);
     viewportObserver.observe(viewport.value);
   }
+  unregisterLineGeometry = registerLineGeometryProvider(realizeLineGeometry);
 });
 onBeforeUnmount(() => {
+  geometryAbort.abort();
+  geometryRangeLeases.clear();
+  refreshRangeExtractor();
+  unregisterLineGeometry?.();
   viewportObserver?.disconnect();
   if (viewportFrame != null) cancelAnimationFrame(viewportFrame);
 });
+
+async function realizeLineGeometry(query: LineGeometryQuery, signal: AbortSignal) {
+  const targetViewport = viewport.value;
+  if (!targetViewport || !targetViewport.isConnected)
+    throw new RuntimeServiceError("stale_projection", "game viewport is unavailable");
+  assertGeometryActive(signal);
+  const index = store.presentation.lines.findIndex((line) =>
+    sameServiceInteger(line.line_id, query.lineId),
+  );
+  if (index < 0) return currentLineGeometry(targetViewport, query.lineId);
+  const release = acquireGeometryRange(index);
+  try {
+    await nextTick();
+    assertGeometryActive(signal);
+    await nextAnimationFrame();
+    assertGeometryActive(signal);
+    await nextTick();
+    assertGeometryActive(signal);
+    return currentLineGeometry(targetViewport, query.lineId);
+  } finally {
+    release();
+    await nextTick();
+  }
+}
+
+function assertGeometryActive(signal: AbortSignal): void {
+  if (signal.aborted || geometryAbort.signal.aborted)
+    throw new RuntimeServiceError("stale_projection", "line geometry query was cancelled");
+}
 watch(
   [
     () => store.gameTextStyle?.fontFamily,
@@ -430,6 +605,7 @@ watch(
     virtualizer.value.measure();
   },
 );
+watch(viewportLayoutIdentity, () => scheduleViewportSynchronization());
 </script>
 
 <template>
@@ -450,48 +626,53 @@ watch(
     @scroll.passive="releaseTerminalRangeOnScrollBack"
     @wheel.prevent="wheel"
   >
-    <div class="background-layer">
-      <MediaImage
-        v-for="background in store.presentation.backgrounds"
-        :key="`${background.resource_id}:${background.revision}`"
-        :placement="background"
-        :line-slot="false"
-      />
-    </div>
-    <div
-      ref="history"
-      class="virtual-history"
-      :class="{ 'history-bottom-aligned': historyBottomInset > 0 }"
+    <SceneCompositor
+      :scene="store.presentation.scene ?? { revision: 0, layers: [] }"
+      :line-tops="sceneLineTops"
+      :scroll-top="viewportScrollTop"
+      :viewport-width="viewportWidth"
+      :viewport-height="viewportHeight"
+      :depth-ranks="sceneDepthRanks"
       :style="{ height: `${historyHeight}px` }"
     >
       <div
-        v-for="item in items"
-        :key="String(item.key)"
-        :ref="(element) => element && virtualizer.measureElement(element as Element)"
-        class="game-line"
-        :class="`align-${store.presentation.lines[item.index].alignment}`"
-        :data-index="item.index"
-        :style="{
-          transform: `translateY(${item.start + historyBottomInset}px)`,
-          minHeight: lineMinimumHeight(store.presentation.lines[item.index]),
-          backgroundColor: wholeLineBackground(store.presentation.lines[item.index]),
-        }"
+        ref="history"
+        class="virtual-history"
+        :class="{ 'history-bottom-aligned': historyBottomInset > 0 }"
+        :style="{ height: `${historyHeight}px` }"
       >
-        <DisplayLine
-          :line="store.presentation.lines[item.index]"
-          :viewport-columns="viewportColumns"
-          :box-row-layout="visibleBoxRowLayouts.get(item.index)"
-        />
+        <div
+          v-for="item in items"
+          :key="String(item.key)"
+          :ref="(element) => element && virtualizer.measureElement(element as Element)"
+          class="game-line"
+          :class="`align-${store.presentation.lines[item.index].alignment}`"
+          :data-index="item.index"
+          :data-line-id="String(store.presentation.lines[item.index].line_id)"
+          :style="{
+            transform: `translateY(${item.start + historyBottomInset}px)`,
+            minHeight: lineMinimumHeight(store.presentation.lines[item.index]),
+            backgroundColor: wholeLineBackground(store.presentation.lines[item.index]),
+          }"
+        >
+          <DisplayLine
+            :line="store.presentation.lines[item.index]"
+            :viewport-columns="viewportColumns"
+            :box-row-layout="visibleBoxRowLayouts.get(item.index)"
+          />
+        </div>
       </div>
-    </div>
-    <div class="html-island">
-      <template
-        v-for="(document, documentIndex) in store.presentation.htmlIsland"
-        :key="documentIndex"
-      >
-        <HtmlNode v-for="(node, nodeIndex) in document.nodes" :key="nodeIndex" :node="node" />
+      <template #positioned-html>
+        <div class="html-island">
+          <template
+            v-for="(document, documentIndex) in store.presentation.htmlIsland"
+            :key="documentIndex"
+          >
+            <HtmlNode v-for="(node, nodeIndex) in document.nodes" :key="nodeIndex" :node="node" />
+          </template>
+        </div>
       </template>
-    </div>
+    </SceneCompositor>
   </main>
   <GameTooltip :scope="viewport" :settings="store.presentation.tooltip" />
 </template>

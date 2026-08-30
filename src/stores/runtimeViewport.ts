@@ -16,6 +16,7 @@ interface ViewportObservation {
   lineColumns: number;
   textBox: string;
   styleIdentity: string;
+  environmentStyleIdentity: string;
   messageId: string;
 }
 
@@ -38,6 +39,7 @@ export class RuntimeViewportState {
     presentationRevision: ServiceInteger,
     textBox: string,
     styleIdentity = "",
+    environmentStyleIdentity = styleIdentity,
   ): Promise<void> {
     if (!measurement) return;
     this.measurement.value = measurement;
@@ -99,6 +101,7 @@ export class RuntimeViewportState {
         lineColumns: measurement.lineColumns,
         textBox,
         styleIdentity,
+        environmentStyleIdentity,
         messageId: String(messageId),
       });
       if (this.submittedObservations.size > 256)
@@ -141,6 +144,27 @@ export class RuntimeViewportState {
       observed.width === measurement.width &&
       observed.height === measurement.height &&
       observed.styleIdentity === styleIdentity
+    );
+  }
+
+  matchesEnvironment(
+    context: ProjectionQueryContext,
+    publishedRevision: ServiceInteger,
+    measurement: Pick<GameViewportMeasurement, "width" | "height"> | undefined,
+    environmentStyleIdentity = "",
+  ): boolean {
+    const observed = [...this.submittedObservations.values()].find(
+      (candidate) =>
+        sameServiceInteger(context.environmentRevision, candidate.environmentRevision) &&
+        sameServiceInteger(context.projectionSpaceRevision, candidate.projectionSpaceRevision),
+    );
+    return (
+      observed != null &&
+      measurement != null &&
+      sameServiceInteger(context.presentationRevision, publishedRevision) &&
+      observed.width === measurement.width &&
+      observed.height === measurement.height &&
+      observed.environmentStyleIdentity === environmentStyleIdentity
     );
   }
 

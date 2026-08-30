@@ -25,6 +25,17 @@ export interface CanonicalHtmlLength {
   unit: "pixels" | "font_height_hundredths";
   value: number;
 }
+export type CanonicalHtmlDisplayMode =
+  "relative" | "absolute" | "absolute_left_top" | "absolute_left_bottom";
+export interface CanonicalHtmlTextRenderIntent {
+  renderer?: "gdi" | "skia";
+  edging?: "alias" | "anti_alias" | "subpixel_anti_alias";
+  hinting?: "none" | "slight" | "normal" | "full";
+}
+export type CanonicalHtmlColorMatrix = {
+  type: "fixed";
+  value: readonly ServiceInteger[];
+};
 type BoxLengths = readonly [
   CanonicalHtmlLength,
   CanonicalHtmlLength,
@@ -40,7 +51,15 @@ export interface CanonicalHtmlBoxModel {
 }
 export type CanonicalHtmlSemantic =
   | { type: "style" | "no_break" | "break" }
-  | { type: "font"; face?: string | null; color?: number | null; button_color?: number | null }
+  | {
+      type: "font";
+      face?: string | null;
+      color?: number | null;
+      button_color?: number | null;
+      size_millipixels?: number | null;
+      vertical_alignment?: "top" | "middle" | "bottom" | null;
+      render_intent?: CanonicalHtmlTextRenderIntent;
+    }
   | { type: "paragraph"; alignment: "left" | "center" | "right" }
   | { type: "button"; value?: string | null; title?: string | null; position?: number | null }
   | { type: "non_button"; title?: string | null; position?: number | null }
@@ -53,6 +72,9 @@ export type CanonicalHtmlSemantic =
       width?: CanonicalHtmlLength | null;
       height?: CanonicalHtmlLength | null;
       y?: CanonicalHtmlLength | null;
+      x?: CanonicalHtmlLength | null;
+      display?: CanonicalHtmlDisplayMode;
+      color_matrix?: CanonicalHtmlColorMatrix | null;
     }
   | {
       type: "shape";
@@ -66,10 +88,12 @@ export type CanonicalHtmlSemantic =
       x?: CanonicalHtmlLength | null;
       y?: CanonicalHtmlLength | null;
       width: CanonicalHtmlLength;
-      height: CanonicalHtmlLength;
+      height?: CanonicalHtmlLength | null;
       depth: number;
       color?: number | null;
-      relative: boolean;
+      display?: CanonicalHtmlDisplayMode;
+      /** Legacy test/document compatibility; core protocol 45 uses display. */
+      relative?: boolean;
       box_model: CanonicalHtmlBoxModel;
     };
 export type CanonicalHtmlNode =
@@ -227,6 +251,14 @@ function checkedSemantic(node: Extract<CanonicalHtmlNode, { type: "element" }>):
     checkedLength(semantic.width);
     checkedLength(semantic.height);
     checkedLength(semantic.y);
+    checkedLength(semantic.x);
+    if (
+      semantic.display != null &&
+      !["relative", "absolute", "absolute_left_top", "absolute_left_bottom"].includes(
+        semantic.display,
+      )
+    )
+      invalid("HTML image display mode is invalid");
   } else if (semantic.type === "shape") {
     if (
       typeof semantic.kind !== "string" ||
@@ -245,14 +277,15 @@ function checkedSemantic(node: Extract<CanonicalHtmlNode, { type: "element" }>):
     checkedColor(semantic.color);
     checkedColor(semantic.button_color);
   } else if (semantic.type === "division") {
-    if (!semantic.width || !semantic.height) invalid("HTML division dimensions are missing");
+    if (!semantic.width) invalid("HTML division width is missing");
     checkedLength(semantic.x);
     checkedLength(semantic.y);
     checkedLength(semantic.width);
     checkedLength(semantic.height);
     checkedColor(semantic.color);
+    const display = semantic.display ?? (semantic.relative === true ? "relative" : "absolute");
     if (
-      typeof semantic.relative !== "boolean" ||
+      !["relative", "absolute", "absolute_left_top", "absolute_left_bottom"].includes(display) ||
       !Number.isInteger(semantic.depth) ||
       !semantic.box_model
     )
@@ -276,6 +309,27 @@ function checkedSemantic(node: Extract<CanonicalHtmlNode, { type: "element" }>):
     checkedString(semantic.face);
     checkedColor(semantic.color);
     checkedColor(semantic.button_color);
+    if (
+      semantic.size_millipixels != null &&
+      (!Number.isInteger(semantic.size_millipixels) ||
+        semantic.size_millipixels <= 0 ||
+        semantic.size_millipixels > 0xffffffff)
+    )
+      invalid("HTML font size is invalid");
+    if (
+      semantic.vertical_alignment != null &&
+      !["top", "middle", "bottom"].includes(semantic.vertical_alignment)
+    )
+      invalid("HTML font vertical alignment is invalid");
+    const intent = semantic.render_intent;
+    if (
+      intent &&
+      ((intent.renderer != null && !["gdi", "skia"].includes(intent.renderer)) ||
+        (intent.edging != null &&
+          !["alias", "anti_alias", "subpixel_anti_alias"].includes(intent.edging)) ||
+        (intent.hinting != null && !["none", "slight", "normal", "full"].includes(intent.hinting)))
+    )
+      invalid("HTML font render intent is invalid");
   } else if (semantic.type === "button" || semantic.type === "non_button") {
     if (
       semantic.position != null &&

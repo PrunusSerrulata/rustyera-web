@@ -95,6 +95,8 @@ describe("canvas resource replay", () => {
         beginPath: vi.fn(),
         moveTo: vi.fn(),
         lineTo: vi.fn(),
+        closePath: vi.fn(),
+        fill: vi.fn(),
         stroke: vi.fn(),
         setLineDash: vi.fn(),
         translate: vi.fn(),
@@ -147,6 +149,38 @@ describe("canvas resource replay", () => {
     vi.unstubAllGlobals();
   });
 
+  it("replays the canonical polygon point list for draw, fill and clear", async () => {
+    const renderer = createCanvasReplayRenderer();
+    const context = document.createElement("canvas").getContext("2d")!;
+    await renderer.replay(
+      context,
+      {
+        canvas_id: 1,
+        revision: 1,
+        size: { width: 20, height: 20 },
+        commands: [
+          { type: "set_pen", argb: 0xff112233, width: 1_000 },
+          { type: "set_brush", argb: 0xff445566 },
+          { type: "polygon_point_add", point: { x: 1, y: 2 } },
+          { type: "polygon_point_add", point: { x: 3, y: 4 } },
+          { type: "draw_polygon" },
+          { type: "fill_polygon" },
+          { type: "polygon_point_clear" },
+          { type: "draw_polygon" },
+        ],
+      },
+      new Set([1]),
+      {},
+      1,
+    );
+    const projected = contexts[0];
+    expect(projected.moveTo).toHaveBeenCalledWith(1, 2);
+    expect(projected.lineTo).toHaveBeenCalledWith(3, 4);
+    expect(projected.closePath).toHaveBeenCalledTimes(2);
+    expect(projected.stroke).toHaveBeenCalledTimes(2);
+    expect(projected.fill).toHaveBeenCalledOnce();
+  });
+
   it("binds strict replay image metadata and resource URLs to the injected HTML resource bridge", async () => {
     const bridge = {
       readImageMetadata: vi.fn(async () => ({ width: 100, height: 100 })),
@@ -165,12 +199,13 @@ describe("canvas resource replay", () => {
             {
               type: "draw_sprite",
               name: "frozen",
+              resource_revision: 7,
               destination: { x: 0, y: 0, width: 10, height: 10 },
             },
           ],
         },
         new Set([1]),
-        { sprites: [{ name: "frozen", frames: [{ resource_id: "fixed.png" }] }] },
+        { sprites: [{ name: "frozen", revision: 7, frames: [{ resource_id: "fixed.png" }] }] },
         91,
         {
           budget: new CanvasReplayBudget(),
@@ -210,12 +245,13 @@ describe("canvas resource replay", () => {
           {
             type: "draw_sprite",
             name: "fixed.png",
+            resource_revision: 7,
             destination: { x: 0, y: 0, width: 10, height: 10 },
           },
         ],
       },
       new Set([1]),
-      {},
+      { sprites: [{ name: "fixed.png", revision: 7, frames: [{ resource_id: "fixed.png" }] }] },
       91,
       {
         budget: new CanvasReplayBudget(),
@@ -256,12 +292,13 @@ describe("canvas resource replay", () => {
               {
                 type: "draw_sprite",
                 name: "fixed.png",
+                resource_revision: 7,
                 destination: { x: 0, y: 0, width: 10, height: 10 },
               },
             ],
           },
           new Set([1]),
-          {},
+          { sprites: [{ name: "fixed.png", revision: 7, frames: [{ resource_id: "fixed.png" }] }] },
           91,
           { budget, active: () => true, strict: true, resourceBridge: bridge },
         ),
@@ -415,6 +452,12 @@ describe("canvas resource replay", () => {
     store.presentation.resources.sprites = [
       {
         name: "face-layer",
+        revision: 6,
+        frames: [{ resource_id: "resources/stale-face.png" }],
+      },
+      {
+        name: "face-layer",
+        revision: 7,
         frames: [
           {
             resource_id: "resources/face-layer.png",
@@ -433,6 +476,7 @@ describe("canvas resource replay", () => {
             {
               type: "draw_sprite",
               name: "FACE-LAYER",
+              resource_revision: 7,
               destination: { x: 4, y: 5, width: 60, height: 80 },
             },
           ],
@@ -480,6 +524,7 @@ describe("canvas resource replay", () => {
             {
               type: "draw_canvas",
               source_canvas_id: 2,
+              source_revision: 3,
               source: { x: 0, y: 0, width: 20, height: 10 },
               destination: { x: 6, y: 7, width: 20, height: 10 },
               rotation_millidegrees: 0,
@@ -622,6 +667,71 @@ describe("canvas resource replay", () => {
     expect(wrapper.get("canvas.canvas-replay").element).toBe(firstVisible);
   });
 
+  it("retains the old frame when an exact draw_canvas source revision is unavailable", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const wrapper = mount(CanvasReplay, {
+      props: {
+        replay: { canvas_id: 1, revision: 1, size: { width: 10, height: 10 }, commands: [] },
+      },
+    });
+    await settleReplay();
+    const firstVisible = wrapper.get("canvas.canvas-replay").element;
+    store.presentation.resources.canvases = [
+      { canvas_id: 2, revision: 1, size: { width: 10, height: 10 }, commands: [] },
+    ];
+    await wrapper.setProps({
+      replay: {
+        canvas_id: 1,
+        revision: 2,
+        size: { width: 10, height: 10 },
+        commands: [
+          {
+            type: "draw_canvas",
+            source_canvas_id: 2,
+            source_revision: 2,
+            source: { x: 0, y: 0, width: 10, height: 10 },
+            destination: { x: 0, y: 0, width: 10, height: 10 },
+          },
+        ],
+      },
+    });
+    await settleReplay();
+    expect(wrapper.get("canvas.canvas-replay").element).toBe(firstVisible);
+  });
+
+  it("requires an exact mask revision whenever draw_canvas names a mask", async () => {
+    const renderer = createCanvasReplayRenderer();
+    const context = document.createElement("canvas").getContext("2d")!;
+    await expect(
+      renderer.replay(
+        context,
+        {
+          canvas_id: 1,
+          revision: 2,
+          size: { width: 10, height: 10 },
+          commands: [
+            {
+              type: "draw_canvas",
+              source_canvas_id: 2,
+              source_revision: 1,
+              mask_canvas_id: 3,
+              source: { x: 0, y: 0, width: 10, height: 10 },
+              destination: { x: 0, y: 0, width: 10, height: 10 },
+            },
+          ],
+        },
+        new Set([1]),
+        {
+          canvases: [
+            { canvas_id: 2, revision: 1, size: { width: 10, height: 10 }, commands: [] },
+            { canvas_id: 3, revision: 4, size: { width: 10, height: 10 }, commands: [] },
+          ],
+        },
+        1,
+      ),
+    ).rejects.toMatchObject({ category: "invalid_request" });
+  });
+
   it("serializes decoded frames and coalesces the pending animation backlog", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const decoders: Array<() => void> = [];
@@ -642,6 +752,7 @@ describe("canvas resource replay", () => {
     store.presentation.resources.sprites = [
       {
         name: "layer",
+        revision: 1,
         frames: [
           {
             resource_id: "resources/layer.png",
@@ -658,6 +769,7 @@ describe("canvas resource replay", () => {
         {
           type: "draw_sprite",
           name: "layer",
+          resource_revision: 1,
           destination: { x: revision, y: 0, width: 100, height: 100 },
         },
       ],
@@ -698,6 +810,7 @@ describe("canvas resource replay", () => {
     store.presentation.resources.sprites = [
       {
         name: "portrait",
+        revision: 7,
         frames: [
           {
             resource_id: "resources/portrait.png",
@@ -721,6 +834,7 @@ describe("canvas resource replay", () => {
             {
               type: "draw_sprite",
               name: "portrait",
+              resource_revision: 7,
               destination: { x: 0, y: 0, width: 100, height: 100 },
               color_matrix: matrix,
             },
@@ -761,6 +875,7 @@ describe("canvas resource replay", () => {
         {
           type: "draw_sprite",
           name,
+          resource_revision: 1,
           destination: { x: revision, y: 0, width: 100, height: 100 },
         },
       ],
@@ -768,10 +883,12 @@ describe("canvas resource replay", () => {
     store.presentation.resources.sprites = [
       {
         name: "stable",
+        revision: 1,
         frames: [{ resource_id: "stable", source_rectangle: [0, 0, 100, 100] }],
       },
       {
         name: "broken",
+        revision: 1,
         frames: [{ resource_id: "broken", source_rectangle: [0, 0, 100, 100] }],
       },
     ];
@@ -815,6 +932,7 @@ describe("canvas resource replay", () => {
     store.presentation.resources.sprites = [
       {
         name: "layer",
+        revision: 1,
         frames: [{ resource_id: "layer", source_rectangle: [0, 0, 100, 100] }],
       },
     ];
@@ -826,6 +944,7 @@ describe("canvas resource replay", () => {
         {
           type: "draw_sprite",
           name: "layer",
+          resource_revision: 1,
           destination: { x: revision, y: 0, width: 100, height: 100 },
         },
       ],
@@ -911,6 +1030,7 @@ describe("canvas resource replay", () => {
               {
                 type: "draw_canvas" as const,
                 source_canvas_id: index + 3,
+                source_revision: 1,
                 source: { x: 0, y: 0, width: 10, height: 10 },
                 destination: { x: 0, y: 0, width: 10, height: 10 },
               },
@@ -927,6 +1047,7 @@ describe("canvas resource replay", () => {
             {
               type: "draw_canvas",
               source_canvas_id: 2,
+              source_revision: 1,
               source: { x: 0, y: 0, width: 10, height: 10 },
               destination: { x: 0, y: 0, width: 10, height: 10 },
             },
@@ -1060,7 +1181,10 @@ describe("independent canvas pixel services", () => {
         const oldContext = contexts.length;
         const pending = sampler.sample(
           query,
-          { canvases: [{ ...replay(), commands: [blocked.command] }] },
+          {
+            sprites: pendingSpriteReplays(),
+            canvases: [{ ...replay(), commands: [blocked.command] }],
+          },
           1,
           requests.begin(1, 1),
           () => true,
@@ -1109,7 +1233,7 @@ describe("independent canvas pixel services", () => {
       requests.enterEpoch(1);
       const pending = sampler.sample(
         query,
-        { canvases: [{ ...replay(), commands: [old.command] }] },
+        { sprites: pendingSpriteReplays(), canvases: [{ ...replay(), commands: [old.command] }] },
         1,
         requests.begin(1, 1),
         () => true,
@@ -1121,7 +1245,10 @@ describe("independent canvas pixel services", () => {
       const newer = blockImageStage("bitmap");
       const following = sampler.sample(
         query,
-        { canvases: [{ ...replay(), commands: [newer.command, ...replay().commands!] }] },
+        {
+          sprites: pendingSpriteReplays(),
+          canvases: [{ ...replay(), commands: [newer.command, ...replay().commands!] }],
+        },
         2,
         requests.begin(2, 1),
         () => true,
@@ -1153,7 +1280,10 @@ describe("independent canvas pixel services", () => {
       requests.enterEpoch(1);
       const pending = sampler.sample(
         query,
-        { canvases: [{ ...replay(), commands: [blocked.command] }] },
+        {
+          sprites: pendingSpriteReplays(),
+          canvases: [{ ...replay(), commands: [blocked.command] }],
+        },
         1,
         requests.begin(1, 1),
         () => true,
@@ -1187,7 +1317,10 @@ describe("independent canvas pixel services", () => {
       pendingMetadata.push(blocked);
       const pending = sampler.sample(
         query,
-        { canvases: [{ ...replay(), commands: [blocked.command] }] },
+        {
+          sprites: pendingSpriteReplays(),
+          canvases: [{ ...replay(), commands: [blocked.command] }],
+        },
         id,
         requests.begin(id, 1),
         () => true,
@@ -1202,7 +1335,10 @@ describe("independent canvas pixel services", () => {
     await expect(
       sampler.sample(
         query,
-        { canvases: [{ ...replay(), commands: [overflow.command] }] },
+        {
+          sprites: pendingSpriteReplays(),
+          canvases: [{ ...replay(), commands: [overflow.command] }],
+        },
         33,
         requests.begin(33, 1),
         () => true,
@@ -1218,7 +1354,10 @@ describe("independent canvas pixel services", () => {
     const recovered = blockImageStage("metadata");
     const pending = sampler.sample(
       query,
-      { canvases: [{ ...replay(), commands: [recovered.command] }] },
+      {
+        sprites: pendingSpriteReplays(),
+        canvases: [{ ...replay(), commands: [recovered.command] }],
+      },
       34,
       requests.begin(35, 1),
       () => true,
@@ -1237,7 +1376,7 @@ describe("independent canvas pixel services", () => {
     const sampler = new RuntimeCanvasPixelSampler();
     const pending = sampler.sample(
       query,
-      { canvases: [{ ...replay(), commands: [blocked.command] }] },
+      { sprites: pendingSpriteReplays(), canvases: [{ ...replay(), commands: [blocked.command] }] },
       1,
       lease().lease,
       () => true,
@@ -1269,7 +1408,7 @@ describe("independent canvas pixel services", () => {
     const sampler = new RuntimeCanvasPixelSampler();
     const pending = sampler.sample(
       query,
-      { canvases: [{ ...replay(), commands: [blocked.command] }] },
+      { sprites: pendingSpriteReplays(), canvases: [{ ...replay(), commands: [blocked.command] }] },
       1,
       lease().lease,
       () => current,
@@ -1367,6 +1506,10 @@ function pixelContext(canvas: HTMLCanvasElement) {
   return context;
 }
 
+function pendingSpriteReplays() {
+  return [{ name: "pending.png", revision: 1, frames: [{ resource_id: "pending.png" }] }];
+}
+
 function blockImageStage(stage: "metadata" | "url" | "bitmap" | "image", width = 2, height = 2) {
   let finish!: () => void;
   let started = false;
@@ -1432,6 +1575,7 @@ function blockImageStage(stage: "metadata" | "url" | "bitmap" | "image", width =
       : {
           type: "draw_sprite" as const,
           name: "pending.png",
+          resource_revision: 1,
           destination: { x: 0, y: 0, width: 2, height: 2 },
         };
   return {

@@ -30,16 +30,21 @@ export function assistedInteractionRows(state: PresentationState): AssistedInter
   const rows = new Map<string, AssistedInteraction[]>();
   visitPresentationInteractions(state, ({ rowKey, interaction, source }) => {
     if (!presentationInteractionEnabled(state, interaction)) return;
-    const description =
-      source.kind === "run"
-        ? describeRuns(source.run.runs ?? [])
-        : describeHtmlNodes(source.node.children ?? [], source.effectiveForeground);
-    const title =
-      source.kind === "run"
-        ? source.run.title
-        : source.node.semantic?.type === "button" || source.node.semantic?.type === "non_button"
+    let description: InteractionDescription;
+    let title: unknown;
+    if (source.kind === "run") {
+      description = describeRuns(source.run.runs ?? []);
+      title = source.run.title;
+    } else if (source.kind === "html") {
+      description = describeHtmlNodes(source.node.children ?? [], source.effectiveForeground);
+      title =
+        source.node.semantic?.type === "button" || source.node.semantic?.type === "non_button"
           ? source.node.semantic.title
           : undefined;
+    } else {
+      description = describeSceneLayer(source.layer);
+      title = source.layer.interaction?.title;
+    }
     const items = rows.get(rowKey) ?? [];
     const added = pushInteraction(
       items,
@@ -51,6 +56,17 @@ export function assistedInteractionRows(state: PresentationState): AssistedInter
     if (added && !rows.has(rowKey)) rows.set(rowKey, items);
   });
   return [...rows].map(([rowKey, items]) => ({ rowKey, items }));
+}
+
+function describeSceneLayer(layer: any): InteractionDescription {
+  const description = emptyDescription();
+  for (const source of [layer?.source, layer?.interaction?.hover_source]) {
+    if (source?.type === "resource" && source.resource_id)
+      description.resources.push(String(source.resource_id));
+    else if (source?.type === "sprite" && source.sprite_name)
+      description.resources.push(String(source.sprite_name));
+  }
+  return description;
 }
 
 export function interactionAssistModeVisible(

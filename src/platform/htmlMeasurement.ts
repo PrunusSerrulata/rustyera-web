@@ -700,16 +700,20 @@ function validateSlots(document: CanonicalHtmlDocument, fontSize: number): void 
         }
         if (semantic.type === "division") {
           const width = projectPresentationLength(semantic.width, fontSize);
-          const height = projectPresentationLength(semantic.height, fontSize);
-          if (width == null || height == null)
+          const height =
+            semantic.height == null
+              ? undefined
+              : projectPresentationLength(semantic.height, fontSize);
+          if (width == null || (semantic.height != null && height == null))
             throw new RuntimeServiceError(
               "invalid_request",
               "HTML division has no valid renderer dimensions",
             );
           if (
             Math.abs(width) > 32768 ||
-            Math.abs(height) > 32768 ||
-            Math.abs(width * height) > HTML_MEASUREMENT_LIMITS.pixels
+            (height != null &&
+              (Math.abs(height) > 32768 ||
+                Math.abs(width * height) > HTML_MEASUREMENT_LIMITS.pixels))
           )
             throw new RuntimeServiceError(
               "resource_limit",

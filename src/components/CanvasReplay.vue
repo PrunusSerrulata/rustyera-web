@@ -10,6 +10,7 @@ import {
 } from "@/components/canvasReplayRenderer";
 import { htmlMeasurementProjectionKey } from "@/components/htmlMeasurementProjection";
 import { RuntimeServiceError } from "@/core/runtimeServiceProtocol";
+import { replayIntegerKey } from "@/core/replayResources";
 import { useRuntimeStore } from "@/stores/runtime";
 
 const props = defineProps<{
@@ -89,7 +90,7 @@ async function drainRenders(): Promise<void> {
         const replayTask = renderer.replay(
           context,
           request.replay,
-          new Set([Number(request.replay.canvas_id)]),
+          new Set([replayIntegerKey(request.replay.canvas_id)]),
           request.resources,
           request.resourceGeneration,
           { budget, active, strict: !!measurement, resourceBridge: measurement?.resourceBridge },
@@ -181,6 +182,18 @@ function releaseSurfaces(): void {
     surface.height = 0;
   }
 }
+
+function sampleArgb(x: number, y: number): number | undefined {
+  const surface = activeSurface.value === 0 ? firstSurface.value : secondSurface.value;
+  if (!surface || x < 0 || y < 0 || x >= surface.width || y >= surface.height) return undefined;
+  const pixel = surface
+    .getContext("2d", { willReadFrequently: true })
+    ?.getImageData(x, y, 1, 1).data;
+  if (!pixel) return undefined;
+  return ((pixel[3] << 24) | (pixel[0] << 16) | (pixel[1] << 8) | pixel[2]) >>> 0;
+}
+
+defineExpose({ sampleArgb });
 </script>
 
 <template>

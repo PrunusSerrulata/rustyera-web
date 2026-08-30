@@ -9,6 +9,7 @@ import {
   type CanonicalHtmlLength,
   type CanonicalHtmlNode,
   type CanonicalHtmlSemantic,
+  type CanonicalHtmlTextRenderIntent,
   type HtmlQueryStyle,
 } from "@/core/htmlMeasurement";
 import {
@@ -74,6 +75,32 @@ function fields(value: unknown[], minimum: number, maximum = minimum): void {
   if (value.length < minimum || value.length > maximum)
     invalidHtmlWire("HTML enum field count is invalid");
 }
+function index<T extends string>(value: unknown, variants: readonly T[]): T {
+  return variants[htmlWireInteger(value, 0, variants.length - 1)]!;
+}
+function renderIntent(value: unknown): CanonicalHtmlTextRenderIntent {
+  const map = htmlWireMap(value, [], [0, 1, 2]);
+  return {
+    renderer: optional(map.get(0), (value) => index(value, ["gdi", "skia"] as const)),
+    edging: optional(map.get(1), (value) =>
+      index(value, ["alias", "anti_alias", "subpixel_anti_alias"] as const),
+    ),
+    hinting: optional(map.get(2), (value) =>
+      index(value, ["none", "slight", "normal", "full"] as const),
+    ),
+  };
+}
+function colorMatrix(value: unknown) {
+  const [tag, data] = variant(value);
+  if (tag !== 1) return invalidHtmlWire("HTML service exposed a non-fixed color matrix");
+  fields(data, 1);
+  const matrix = htmlWireList(data[0], 25);
+  fields(matrix, 25);
+  return {
+    type: "fixed" as const,
+    value: matrix.map((component) => serviceInteger(component, "HTML color matrix", true)),
+  };
+}
 function length(value: unknown): CanonicalHtmlLength {
   const [tag, data] = variant(value);
   fields(data, 1);
@@ -110,8 +137,18 @@ function semantic(value: unknown): CanonicalHtmlSemantic {
       fields(data, 0);
       return { type: "style" };
     case 1:
-      fields(data, 0, 3);
-      return { type: "font", face: str(0), color: color(1), button_color: color(2) };
+      fields(data, 0, 6);
+      return {
+        type: "font",
+        face: str(0),
+        color: color(1),
+        button_color: color(2),
+        size_millipixels: optional(data[3], u32),
+        vertical_alignment: optional(data[4], (value) =>
+          index(value, ["top", "middle", "bottom"] as const),
+        ),
+        render_intent: data[5] == null ? {} : renderIntent(data[5]),
+      };
     case 2: {
       fields(data, 1);
       const alignment = ["left", "center", "right"] as const;
@@ -130,7 +167,7 @@ function semantic(value: unknown): CanonicalHtmlSemantic {
       fields(data, 1);
       return { type: "clear_button", suppress_tooltip: boolean(data[0]) };
     case 7:
-      fields(data, 1, 6);
+      fields(data, 1, 9);
       return {
         type: "image",
         source: text(data[0]),
@@ -139,6 +176,17 @@ function semantic(value: unknown): CanonicalHtmlSemantic {
         height: distance(3),
         width: distance(4),
         y: distance(5),
+        x: distance(6),
+        display:
+          data[7] == null
+            ? "relative"
+            : index(data[7], [
+                "relative",
+                "absolute",
+                "absolute_left_top",
+                "absolute_left_bottom",
+              ] as const),
+        color_matrix: optional(data[8], colorMatrix),
       };
     case 8:
       fields(data, 2, 4);
@@ -149,19 +197,27 @@ function semantic(value: unknown): CanonicalHtmlSemantic {
         color: color(2),
         button_color: color(3),
       };
-    case 9:
+    case 9: {
       fields(data, 8);
+      const display = index(data[6], [
+        "relative",
+        "absolute",
+        "absolute_left_top",
+        "absolute_left_bottom",
+      ] as const);
       return {
         type: "division",
         x: distance(0),
         y: distance(1),
         width: length(data[2]),
-        height: length(data[3]),
+        height: distance(3),
         depth: i32(data[4]),
         color: color(5),
-        relative: boolean(data[6]),
+        display,
+        relative: display === "relative",
         box_model: boxModel(data[7]),
       };
+    }
     case 10:
       fields(data, 0);
       return { type: "break" };

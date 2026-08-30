@@ -24,6 +24,7 @@ import {
   htmlPointerButtonValue,
 } from "@/platform/pointerObservation";
 import { decodeHtmlServiceQuery } from "@/core/htmlServiceProtocol";
+import { decodeHtmlServiceDocument } from "@/core/htmlServiceDocument";
 import { encodeProjectionServicePayload } from "@/core/serviceCodec";
 import { validateProjectionCbor } from "@/core/serviceCborValidation";
 import type { FrontendBridge } from "@/core/types";
@@ -234,6 +235,7 @@ function serviceHarness(requestId: number | bigint = 1) {
       matches: () => true,
       pointer: () => ({ x: 13, y: -21, buttonValue: "canonical" }),
       canvas: vi.fn(async () => 0x12345678),
+      lineGeometry: vi.fn(async () => ({ top: -4, height: 18, viewportHeight: 600 })),
     },
   };
   return { requests, send, context };
@@ -481,6 +483,84 @@ describe("HTML v2 runtime service adapter", () => {
     expect(decoded.probes[0].document.nodes[0]).toMatchObject({
       kind: "font",
       semantic: { type: "font", face: undefined },
+    });
+  });
+
+  it("decodes protocol 45 font, positioned image and division intents exactly", () => {
+    const payload = htmlServicePayload("x");
+    const probe = (payload.get(2) as Map<number, unknown>[])[0];
+    const document = probe.get(1) as Map<number, unknown>;
+    const matrix = Array.from({ length: 25 }, (_, index) => (index % 6 === 0 ? 256 : 0));
+    document.set(0, [
+      [
+        1,
+        [
+          4,
+          [],
+          [],
+          null,
+          0,
+          1,
+          [
+            1,
+            [
+              null,
+              0xff0000,
+              null,
+              12_500,
+              1,
+              new Map([
+                [0, 1],
+                [1, 2],
+                [2, 3],
+              ]),
+            ],
+          ],
+        ],
+      ],
+      [
+        1,
+        [
+          10,
+          [],
+          [],
+          null,
+          1,
+          2,
+          [7, ["face", null, null, [0, [6]], [0, [5]], [1, [4]], [0, [3]], 3, [1, [matrix]]]],
+        ],
+      ],
+      [1, [12, [], [], null, 2, 3, [9, [null, null, [0, [80]], null, -2, null, 2, new Map()]]]],
+    ]);
+    const decoded = decodeHtmlServiceDocument(document).nodes as any[];
+    expect(decoded[0].semantic).toEqual({
+      type: "font",
+      face: undefined,
+      color: 0xff0000,
+      button_color: undefined,
+      size_millipixels: 12_500,
+      vertical_alignment: "middle",
+      render_intent: {
+        renderer: "skia",
+        edging: "subpixel_anti_alias",
+        hinting: "full",
+      },
+    });
+    expect(decoded[1].semantic).toMatchObject({
+      type: "image",
+      source: "face",
+      x: { unit: "pixels", value: 3 },
+      y: { unit: "font_height_hundredths", value: 4 },
+      display: "absolute_left_bottom",
+      color_matrix: { type: "fixed", value: matrix },
+    });
+    expect(decoded[2].semantic).toMatchObject({
+      type: "division",
+      width: { unit: "pixels", value: 80 },
+      height: undefined,
+      depth: -2,
+      display: "absolute_left_top",
+      relative: false,
     });
   });
 
@@ -757,6 +837,37 @@ describe("projection runtime services", () => {
     );
   });
 
+  it("returns revision-bound geometry for the requested stable line identity", async () => {
+    const { context, send } = serviceHarness();
+    const lineId = 0xffff_ffff_ffff_fffdn;
+    const request: RuntimeServiceRequest = {
+      request_id: 1,
+      kind: "presentation_query",
+      operation: "get_line_geometry_v1",
+      operation_version: { major: 1, minor: 0 },
+      payload: encodeProjectionServicePayload(
+        new Map<number, unknown>([
+          [0, projectionMap(projectionContext)],
+          [1, lineId],
+        ]),
+      ),
+    };
+    await handleRuntimeService(request, undefined, context);
+    expect(context.projection!.lineGeometry).toHaveBeenCalledWith(
+      { context: projectionContext, lineId },
+      context.lease,
+    );
+    expect(decodeServicePayload((send.mock.calls[0] as any)[0].value.result.payload)).toEqual(
+      new Map<number, unknown>([
+        [0, projectionMap(projectionContext)],
+        [1, lineId],
+        [2, -4],
+        [3, 18],
+        [4, 600],
+      ]),
+    );
+  });
+
   it.each([
     [
       "unknown operation",
@@ -1004,6 +1115,33 @@ describe("realized viewport identity", () => {
     expect(viewport.matches(expected, 9, measurement)).toBe(false);
     viewport.reset();
     expect(viewport.matches(expected, 9, measurement)).toBe(false);
+  });
+
+  it("keeps an HTML environment usable when layout, columns and text-box projection advance", async () => {
+    let message = 0;
+    const viewport = new RuntimeViewportState(async () => ++message);
+    const measurement = {
+      width: 300,
+      height: 200,
+      lineColumns: 30,
+      chromeWidth: 0,
+      chromeHeight: 0,
+    };
+    await viewport.observe(measurement, true, 8, "1", "layout-one", "font-one");
+    const expected = {
+      presentationRevision: 9,
+      environmentRevision: 1,
+      projectionSpaceRevision: 1,
+    };
+    const changedColumns = { ...measurement, lineColumns: 31 };
+    await viewport.observe(changedColumns, true, 9, "", "layout-two", "font-one");
+    expect(viewport.matches(expected, 9, measurement, "layout-two")).toBe(false);
+    expect(viewport.matchesEnvironment(expected, 9, measurement, "font-one")).toBe(true);
+    expect(viewport.matchesEnvironment(expected, 9, measurement, "font-two")).toBe(false);
+    expect(viewport.matchesEnvironment(expected, 9, changedColumns, "font-one")).toBe(true);
+    expect(
+      viewport.matchesEnvironment(expected, 9, { ...measurement, width: 301 }, "font-one"),
+    ).toBe(false);
   });
 });
 

@@ -4,6 +4,7 @@ import {
   serviceInteger,
   type ServiceInteger,
 } from "@/core/runtimeServiceProtocol";
+import { scenePointerButton } from "@/platform/scenePointerObservation";
 
 export interface PointerButtonModel {
   epoch: ServiceInteger;
@@ -122,7 +123,10 @@ export class RuntimePointerObservation {
       localX < viewport.clientWidth &&
       localY < viewport.clientHeight
     ) {
-      let element = document.elementFromPoint(this.position.x, this.position.y);
+      buttonValue = scenePointerButton(epoch, this.position.x, this.position.y) ?? "";
+      let element = buttonValue
+        ? null
+        : document.elementFromPoint(this.position.x, this.position.y);
       if (element && viewport.contains(element)) {
         while (element && element !== viewport) {
           const model = buttons.get(element)?.();

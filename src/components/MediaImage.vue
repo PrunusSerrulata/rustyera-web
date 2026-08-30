@@ -1,19 +1,44 @@
 <script setup lang="ts">
-import { computed, inject, onBeforeUnmount, ref, shallowRef, watch, watchEffect } from "vue";
+import { computed, inject, onBeforeUnmount, ref, shallowRef, useId, watch, watchEffect } from "vue";
 
 import CanvasReplay from "@/components/CanvasReplay.vue";
 import { htmlMeasurementProjectionKey } from "@/components/htmlMeasurementProjection";
 import { HTML_MEASUREMENT_LIMITS } from "@/core/htmlMeasurement";
-import { RuntimeServiceError, sameServiceInteger } from "@/core/runtimeServiceProtocol";
+import { fixedColorMatrixFilter } from "@/core/colorMatrix";
+import {
+  resolveCanvasReplay,
+  resolveSpriteReplay,
+  type RevisionedSpriteReplay,
+} from "@/core/replayResources";
+import {
+  RuntimeServiceError,
+  serviceInteger,
+  type ServiceInteger,
+} from "@/core/runtimeServiceProtocol";
 import { acquireResourceUrl } from "@/core/resources";
 import type { PresentationLength } from "@/core/types";
 import { platformBridge } from "@/platform";
 import { useRuntimeStore } from "@/stores/runtime";
 
-const props = withDefaults(defineProps<{ placement: any; alt?: string; lineSlot?: boolean }>(), {
-  alt: undefined,
-  lineSlot: true,
-});
+const props = withDefaults(
+  defineProps<{
+    placement: any;
+    alt?: string;
+    lineSlot?: boolean;
+    frameIndex?: number;
+    allowFrameCanvas?: boolean;
+    resolveSprite?: boolean;
+    spriteRevision?: ServiceInteger;
+  }>(),
+  {
+    alt: undefined,
+    lineSlot: true,
+    frameIndex: 0,
+    allowFrameCanvas: false,
+    resolveSprite: true,
+    spriteRevision: undefined,
+  },
+);
 const measurement = inject(htmlMeasurementProjectionKey, undefined);
 const store = measurement?.state ?? useRuntimeStore();
 const source = ref("");
@@ -25,20 +50,55 @@ const activeResourceId = computed(() =>
     ? props.placement.hover_resource_id
     : props.placement.resource_id,
 );
+const colorMatrix = computed(() => fixedColorMatrixFilter(props.placement.color_matrix));
+const colorFilterId = `media-color-${useId().replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+const colorFilter = computed(() => (colorMatrix.value ? `url(#${colorFilterId})` : undefined));
+
+interface MediaSpriteFrame {
+  canvas_id?: unknown;
+  canvas_revision?: unknown;
+  resource_id?: string;
+  source_rectangle?: readonly unknown[];
+}
+
+interface MediaSpriteReplay extends RevisionedSpriteReplay {
+  canvas_id?: unknown;
+  canvas_revision?: unknown;
+  frames?: MediaSpriteFrame[];
+  size?: readonly unknown[];
+}
+
 const sprite = computed(() => {
-  const key = activeResourceId.value.toUpperCase();
-  return store.presentation.resources.sprites?.find(
-    (item: any) => String(item.name).toUpperCase() === key,
+  if (!props.resolveSprite) return undefined;
+  const revision = props.spriteRevision ?? props.placement.revision;
+  if (revision == null) return undefined;
+  return resolveSpriteReplay<MediaSpriteReplay>(
+    store.presentation.resources.sprites as MediaSpriteReplay[] | undefined,
+    activeResourceId.value,
+    revision,
   );
 });
-const frame = computed(() => sprite.value?.frames?.[0]);
+const frame = computed(() => {
+  const frames = sprite.value?.frames ?? [];
+  return frames.length ? frames[Math.max(0, props.frameIndex) % frames.length] : undefined;
+});
 const canvasReplay = computed(() => {
-  const canvasId = sprite.value?.canvas_id ?? (measurement ? frame.value?.canvas_id : undefined);
-  return canvasId == null
-    ? undefined
-    : store.presentation.resources.canvases?.find((item: any) =>
-        measurement ? sameServiceInteger(item.canvas_id, canvasId) : item.canvas_id === canvasId,
-      );
+  const canvasId =
+    sprite.value?.canvas_id ??
+    (measurement || props.allowFrameCanvas ? frame.value?.canvas_id : undefined);
+  if (canvasId == null) return undefined;
+  const canvasRevision =
+    sprite.value?.canvas_id != null ? sprite.value.canvas_revision : frame.value?.canvas_revision;
+  if (canvasRevision == null)
+    throw new RuntimeServiceError("invalid_request", "canvas-backed sprite has no canvas revision");
+  const replay = resolveCanvasReplay(
+    store.presentation.resources.canvases,
+    serviceInteger(canvasId, "sprite canvas id", true),
+    serviceInteger(canvasRevision, "sprite canvas revision", true),
+  );
+  if (!replay)
+    throw new RuntimeServiceError("backend_failure", "canvas-backed sprite revision is missing");
+  return replay;
 });
 const resourceIdentity = computed(() =>
   JSON.stringify(
@@ -181,9 +241,11 @@ const imageTransform = computed(() => {
 });
 
 const opacity = computed(() =>
-  props.placement.opacity?.denominator
-    ? props.placement.opacity.numerator / props.placement.opacity.denominator
-    : 1,
+  colorMatrix.value
+    ? 1
+    : props.placement.opacity?.denominator
+      ? props.placement.opacity.numerator / props.placement.opacity.denominator
+      : 1,
 );
 const scale = computed(() => store.effectivePreferences.imageScale);
 const escapesConsoleRow = computed(() => props.placement.requested_y != null);
@@ -195,9 +257,11 @@ const directStyle = computed(() => ({
   width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
   height: dimensions.value.height ? `${dimensions.value.height * scale.value}px` : undefined,
   top: verticalOffset(),
+  left: horizontalOffset(),
   opacity: opacity.value,
   zIndex: props.placement.depth,
   transform: imageTransform.value,
+  filter: colorFilter.value,
 }));
 const positionedSlotStyle = computed(() => ({
   width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
@@ -213,7 +277,9 @@ const positionedVisualStyle = computed(() => ({
   width: dimensions.value.width ? `${dimensions.value.width * scale.value}px` : undefined,
   height: dimensions.value.height ? `${dimensions.value.height * scale.value}px` : undefined,
   top: verticalOffset() ?? "0px",
+  left: horizontalOffset() ?? "0px",
   transform: verticallyFlipped.value ? "scaleY(-1)" : undefined,
+  filter: colorFilter.value,
 }));
 const bottomAnchored = computed(() => {
   const y = props.placement.requested_y as PresentationLength | undefined;
@@ -227,9 +293,11 @@ const spriteStyle = computed(() => ({
   width: `${(dimensions.value.width ?? 0) * scale.value}px`,
   height: `${(dimensions.value.height ?? 0) * scale.value}px`,
   top: verticalOffset(),
+  left: horizontalOffset(),
   opacity: opacity.value,
   zIndex: props.placement.depth,
   transform: imageTransform.value,
+  filter: colorFilter.value,
 }));
 const spriteSourceStyle = computed(() => {
   const rectangle = frame.value?.source_rectangle ?? [0, 0, 0, 0];
@@ -263,6 +331,18 @@ function positive(value: unknown): number | undefined {
 
 function verticalOffset(): string | undefined {
   const value = props.placement.requested_y as PresentationLength | undefined;
+  if (!value) return undefined;
+  const magnitude =
+    value.unit === "pixels"
+      ? Number(value.value)
+      : value.unit === "logical"
+        ? Number(value.value) / 1000
+        : (Number(value.value) * store.gameTextStyle.fontSizePx) / 100;
+  return Number.isFinite(magnitude) ? `${magnitude * scale.value}px` : undefined;
+}
+
+function horizontalOffset(): string | undefined {
+  const value = props.placement.requested_x as PresentationLength | undefined;
   if (!value) return undefined;
   const magnitude =
     value.unit === "pixels"
@@ -333,6 +413,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <svg v-if="colorMatrix" class="media-color-filter" aria-hidden="true">
+    <filter :id="colorFilterId" color-interpolation-filters="sRGB">
+      <feColorMatrix type="matrix" :values="colorMatrix" />
+    </filter>
+  </svg>
   <span
     v-if="lineSlot && retainedCanvasReplay"
     class="media-image media-positioned"

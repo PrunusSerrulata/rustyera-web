@@ -3,6 +3,7 @@ import { computed, inject } from "vue";
 
 import { htmlMeasurementProjectionKey } from "@/components/htmlMeasurementProjection";
 import { htmlMeasurementSegments } from "@/core/htmlMeasurement";
+import { useSceneDepthRank } from "@/core/sceneStacking";
 
 import MediaImage from "@/components/MediaImage.vue";
 import { usePointerButton } from "@/components/usePointerButton";
@@ -32,6 +33,7 @@ const props = defineProps<{
 const measurement = inject(htmlMeasurementProjectionKey, undefined);
 const children = computed<any[]>(() => props.node.children ?? []);
 const store = measurement?.state ?? useRuntimeStore();
+const sceneDepthRank = useSceneDepthRank();
 const pointerButton = measurement
   ? undefined
   : usePointerButton(() => {
@@ -67,13 +69,25 @@ const imagePlacement = computed(() =>
         y: 0,
         depth: 0,
         opacity: { numerator: 1, denominator: 1 },
-        revision: 0,
+        revision: htmlImageRevision(props.node.semantic.source),
         requested_width: props.node.semantic.width,
         requested_height: props.node.semantic.height,
         requested_y: props.node.semantic.y,
+        requested_x: props.node.semantic.x,
+        display: props.node.semantic.display,
+        color_matrix: props.node.semantic.color_matrix,
       }
     : null,
 );
+
+function htmlImageRevision(name: unknown): unknown {
+  const key = String(name ?? "").toUpperCase();
+  const matches = (store.presentation.resources.sprites ?? []).filter(
+    (sprite: any) => String(sprite?.name ?? "").toUpperCase() === key,
+  );
+  if (matches.length > 1) throw new Error("HTML image sprite revision is ambiguous");
+  return matches[0]?.revision ?? 0;
+}
 const spaceShapeStyle = computed(() => {
   const semantic = props.node.semantic;
   if (semantic?.type !== "shape" || semantic.kind?.toLowerCase() !== "space") return null;
@@ -112,24 +126,31 @@ const fontStyle = computed(() => {
       store.effectivePreferences.fontFamilyOverride || !semantic.face
         ? undefined
         : `${semantic.face}, var(--game-font)`,
+    fontSize:
+      semantic.size_millipixels == null
+        ? undefined
+        : `${Number(semantic.size_millipixels) / 1000}px`,
+    verticalAlign: semantic.vertical_alignment ?? undefined,
+    textRendering: semantic.render_intent?.renderer === "skia" ? "optimizeLegibility" : undefined,
   };
 });
 const layeredDivisionStyle = computed(() => {
   const semantic = props.node.semantic;
-  if (semantic?.type !== "division" || semantic.relative !== true) return null;
+  const display = semantic?.display ?? (semantic?.relative === true ? "relative" : undefined);
+  if (semantic?.type !== "division" || display == null) return null;
   const width = projectLength(semantic.width);
   const height = projectLength(semantic.height);
-  if (width == null || height == null) return null;
+  if (width == null) return null;
   const boxModel = projectBoxModel(semantic.box_model);
   if (boxModel == null) return null;
   const [marginTop, marginRight, marginBottom, marginLeft] = boxModel.margin;
-  const depth = Number(semantic.depth);
   return {
     left: `${(projectLength(semantic.x) ?? 0) + marginLeft}px`,
     top: `${(projectLength(semantic.y) ?? 0) + marginTop}px`,
     width: `${Math.max(0, Math.abs(width) - marginLeft - marginRight)}px`,
-    height: `${Math.max(0, Math.abs(height) - marginTop - marginBottom)}px`,
-    zIndex: Number.isFinite(depth) ? depth : undefined,
+    height:
+      height == null ? undefined : `${Math.max(0, Math.abs(height) - marginTop - marginBottom)}px`,
+    zIndex: sceneDepthRank(semantic.depth),
     backgroundColor: semantic.color == null ? undefined : htmlColor(semantic.color),
     ...boxModel.style,
   };
@@ -358,6 +379,9 @@ const trailingTextChildIndex = computed(() =>
     }"
     :style="[fontStyle, lockedPositionStyle]"
     :data-era-tooltip="tooltipTitle"
+    :data-html-renderer="node.semantic?.render_intent?.renderer"
+    :data-html-edging="node.semantic?.render_intent?.edging"
+    :data-html-hinting="node.semantic?.render_intent?.hinting"
     @click="activate"
   >
     <HtmlNode

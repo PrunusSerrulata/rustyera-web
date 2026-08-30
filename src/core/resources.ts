@@ -1,5 +1,6 @@
 import { serviceLifecycleResourceUrl } from "@/testing/serviceLifecycle";
 import type { FrontendBridge } from "@/core/types";
+import type { ServiceInteger } from "@/core/runtimeServiceProtocol";
 
 interface ResourceUrlEntry {
   generation: number;
@@ -29,7 +30,7 @@ export class ResourceUrlRegistry {
   acquire(
     bridge: FrontendBridge,
     resourceId: string,
-    _revision = 0,
+    _revision: ServiceInteger = 0,
     generation = 0,
   ): ResourceUrlLease {
     void _revision;
@@ -118,7 +119,7 @@ export const resourceUrlRegistry = new ResourceUrlRegistry();
 export function acquireResourceUrl(
   bridge: FrontendBridge,
   resourceId: string,
-  revision = 0,
+  revision: ServiceInteger = 0,
   generation = 0,
 ): ResourceUrlLease {
   return resourceUrlRegistry.acquire(bridge, resourceId, revision, generation);

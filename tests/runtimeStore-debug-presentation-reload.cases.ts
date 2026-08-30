@@ -81,7 +81,7 @@ function storeHtmlQuery(context: ProjectionQueryContext) {
 describe("runtime store debug-presentation-reload", () => {
   installRuntimeStoreTestHarness();
 
-  it.each(["complete", "cancel", "epoch", "fault", "teardown", "resize", "preferences"])(
+  it.each(["complete", "cancel", "epoch", "fault", "teardown", "resize", "preferences", "layout"])(
     "binds HTML provider lifetime to the confirmed viewport through %s",
     async (ending) => {
       const viewport = document.createElement("main");
@@ -148,7 +148,27 @@ describe("runtime store debug-presentation-reload", () => {
         if (ending === "teardown") store.teardown();
         else if (ending === "resize") width = 641;
         else if (ending === "preferences") store.preferences.fontSizeOverridePx = 23;
-        else if (ending !== "complete") {
+        else if (ending === "layout") {
+          const projectionCount = bridge.submitRuntime.mock.calls.filter(
+            ([message]) => message.type === "projection_observation",
+          ).length;
+          store.prompt = "cleared-after-input";
+          await store.projectViewport(
+            {
+              width: 640,
+              height: 480,
+              lineColumns: 80,
+              chromeWidth: 0,
+              chromeHeight: 0,
+            },
+            "history-layout-changed",
+          );
+          expect(
+            bridge.submitRuntime.mock.calls.filter(
+              ([message]) => message.type === "projection_observation",
+            ),
+          ).toHaveLength(projectionCount);
+        } else if (ending !== "complete") {
           const event =
             ending === "cancel"
               ? runtimeEvent(
@@ -168,8 +188,27 @@ describe("runtime store debug-presentation-reload", () => {
           bridge.pump.mockResolvedValueOnce({ ...emptyBatch(), events: [event] });
           await advanceUntil(() => signal?.aborted === true);
         }
+        if (ending === "layout")
+          bridge.pump.mockResolvedValueOnce({
+            ...emptyBatch(),
+            events: [
+              runtimeEvent(
+                "service_request",
+                {
+                  ...storeHtmlQuery({
+                    presentationRevision: 1,
+                    environmentRevision: observation.environment_revision,
+                    projectionSpaceRevision: observation.projection_space_revision,
+                  }),
+                  request_id: 902,
+                },
+                942,
+                2,
+              ),
+            ],
+          });
         gate.resolve();
-        if (["complete", "resize", "preferences"].includes(ending)) {
+        if (["complete", "resize", "preferences", "layout"].includes(ending)) {
           await advanceUntil(() =>
             bridge.submitRuntime.mock.calls.some(
               ([message]) => message.type === "service_response",
@@ -179,13 +218,30 @@ describe("runtime store debug-presentation-reload", () => {
             ([message]) => message.type === "service_response",
           )!;
           expect(response[1]).toBe(941);
-          if (ending === "complete")
+          if (["complete", "layout"].includes(ending))
             expect(
               (decodeServicePayload(response[0].value.result.payload) as Map<number, any>)
                 .get(1)[0]
                 .get(1),
             ).toEqual([0, [9250, []]]);
           else expect(response[0].value.result.error.code).toBe("frontend.stale_projection");
+          if (ending === "layout") {
+            await advanceUntil(
+              () =>
+                bridge.submitRuntime.mock.calls.filter(
+                  ([message]) => message.type === "projection_observation",
+                ).length > observations.length,
+            );
+            const messageTypes = bridge.submitRuntime.mock.calls.map(([message]) => message.type);
+            expect(
+              bridge.submitRuntime.mock.calls.filter(
+                ([message]) => message.type === "service_response",
+              ),
+            ).toHaveLength(2);
+            expect(messageTypes.lastIndexOf("service_response")).toBeLessThan(
+              messageTypes.lastIndexOf("projection_observation"),
+            );
+          }
         } else {
           await flushMicrotasks();
           await flushMicrotasks();

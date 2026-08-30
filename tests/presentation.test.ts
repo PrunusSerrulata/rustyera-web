@@ -537,6 +537,37 @@ describe("presentation projection", () => {
     );
   });
 
+  it("commits presentation and scene candidates only after every operation validates", () => {
+    const state = emptyPresentation();
+    const before = {
+      title: state.title,
+      revision: state.revision,
+      sequence: state.nextInteractionSequence,
+    };
+    expect(() =>
+      applyDelta(state, {
+        base_revision: 0,
+        new_revision: 1,
+        operations: [
+          { type: "set_title", title: "partial" },
+          {
+            type: "apply_scene_delta",
+            delta: {
+              base_revision: 0,
+              new_revision: 1,
+              operations: [{ type: "clear_depth", depth: "not-an-integer" }],
+            },
+          },
+        ],
+      }),
+    ).toThrow();
+    expect({
+      title: state.title,
+      revision: state.revision,
+      sequence: state.nextInteractionSequence,
+    }).toEqual(before);
+  });
+
   it("preserves positioned images when HTML_GETPRINTEDSTR serializes an HTML line", () => {
     const line: DisplayLine = {
       line_id: 1,

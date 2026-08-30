@@ -1001,6 +1001,10 @@ fn client_hello(options: WebSessionOptions, limits: RuntimeLimits) -> ClientHell
         (ServiceKind::PresentationQuery, "get_display_line"),
         (ServiceKind::PresentationQuery, "html_get_printed_str"),
         (ServiceKind::PresentationQuery, "serialize_physical_history"),
+        (
+            ServiceKind::PresentationQuery,
+            era_runtime_protocol::GET_LINE_GEOMETRY_OPERATION,
+        ),
         (ServiceKind::FontMetrics, "gget_text_size"),
         (ServiceKind::Sql, SQL_OPERATION),
     ]
