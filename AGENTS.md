@@ -52,6 +52,11 @@
 - Browser 的 `public/wasm` 和 Tauri binary 都须在本 worktree 重建，记录实际 core SHA，
   不共享原目录的 node_modules、bundle、target 或测试输出。独立选定端口和浏览器配置，
   Tauri 的 devUrl/启动端口必须一致；原生会话与另一个 worktree 冲突时串行，不抢占会话。
+- 本工作区已核验的 Chromium 可执行文件为
+  `rustyera-web/.playwright-browsers/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell`
+  （Chrome for Testing 151.0.7922.34）。`npm run test:game` 必须通过
+  `--chromium-executable` 显式复用该文件，同时继续隔离 profile、端口和测试输出；路径失效
+  时只在工作区根目录内重新查找，不搜索工作区外位置，也不自动下载浏览器。
 - Browser/WASM 与 Tauri/原生 host 分别验收，不用一个 host 的结果代替另一个；原版
   eraTW、蛇版 TW 和两种 oracle 分开记录。动态测试仍必须等相关静态/共享 core 门禁
   通过，并遵守本仓库的真实客户端测试与每 5 秒完整快照规则。
