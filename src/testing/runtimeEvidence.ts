@@ -2,6 +2,10 @@ import type { ProjectionQueryContext, ServiceInteger } from "@/core/runtimeServi
 import type { WebEvent } from "@/core/types";
 import { blake3 } from "@noble/hashes/blake3.js";
 
+const MAXIMUM_STATE_CHUNK_BYTES = 16 * 1024 * 1024;
+const MAXIMUM_STORAGE_BYTES = 64 * 1024 * 1024;
+const HASH_CHUNK_BYTES = 64 * 1024;
+
 declare global {
   interface Window {
     /** Test-runner-owned, read-only DOM observation; never a source of runtime values. */
@@ -41,32 +45,79 @@ export class RuntimeEvidence {
   prepareMessage(message: unknown): unknown {
     if (!this.enabled || this.failure !== null || message == null || typeof message !== "object")
       return message;
-    const entry = message as { type?: string; value?: { data?: unknown } };
-    if (entry.type !== "state_import_chunk" && entry.type !== "state_export_chunk") return message;
-    return { ...entry, value: { ...entry.value, data: this.prepareBulkBytes(entry.value?.data) } };
+    const entry = message as { type?: string; value?: Record<string, unknown> };
+    if (entry.type === "state_import_chunk" || entry.type === "state_export_chunk")
+      return {
+        ...entry,
+        value: this.prepareDataContainer(entry.value, MAXIMUM_STATE_CHUNK_BYTES),
+      };
+    if (entry.type === "storage_request") {
+      const operation = entry.value?.operation as Record<string, unknown> | undefined;
+      if (operation?.type !== "write") return message;
+      return {
+        ...entry,
+        value: {
+          ...entry.value,
+          operation: this.prepareDataContainer(operation, MAXIMUM_STORAGE_BYTES),
+        },
+      };
+    }
+    if (entry.type === "storage_response") {
+      const result = entry.value?.result as Record<string, unknown> | undefined;
+      if (result?.type !== "read" && result?.type !== "read_chunk") return message;
+      return {
+        ...entry,
+        value: {
+          ...entry.value,
+          result: this.prepareDataContainer(result, MAXIMUM_STORAGE_BYTES),
+        },
+      };
+    }
+    return message;
   }
 
-  private prepareBulkBytes(data: unknown): unknown {
+  private prepareDataContainer(
+    container: Record<string, unknown> | undefined,
+    maximumBytes: number,
+  ): Record<string, unknown> | undefined {
+    if (!container || !("data" in container)) return container;
+    return { ...container, data: this.prepareBulkBytes(container.data, maximumBytes) };
+  }
+
+  private prepareBulkBytes(data: unknown, maximumBytes = MAXIMUM_STATE_CHUNK_BYTES): unknown {
     if (!this.enabled || this.failure !== null) return data;
+    if (
+      data != null &&
+      typeof data === "object" &&
+      (data as { observation?: unknown }).observation === "bulk_bytes_digest"
+    )
+      return data;
     if (!(data instanceof Uint8Array) && !Array.isArray(data)) return data;
     try {
-      if (data.length > 16 * 1024 * 1024)
-        throw new Error("bulk observation exceeds its byte limit");
-      const bytes =
-        data instanceof Uint8Array
-          ? data
-          : Uint8Array.from(data, (value) => {
-              if (typeof value !== "number" && typeof value !== "bigint")
-                throw new Error("invalid bulk byte type");
-              const byte = Number(value);
-              if (!Number.isInteger(byte) || byte < 0 || byte > 255)
-                throw new Error("invalid bulk byte");
-              return byte;
-            });
+      if (data.length > maximumBytes) throw new Error("bulk observation exceeds its byte limit");
+      const hash = blake3.create();
+      if (data instanceof Uint8Array) {
+        hash.update(data);
+      } else {
+        for (let offset = 0; offset < data.length; offset += HASH_CHUNK_BYTES) {
+          const length = Math.min(HASH_CHUNK_BYTES, data.length - offset);
+          const chunk = new Uint8Array(length);
+          for (let index = 0; index < length; index += 1) {
+            const value = data[offset + index];
+            if (typeof value !== "number" && typeof value !== "bigint")
+              throw new Error("invalid bulk byte type");
+            const byte = Number(value);
+            if (!Number.isInteger(byte) || byte < 0 || byte > 255)
+              throw new Error("invalid bulk byte");
+            chunk[index] = byte;
+          }
+          hash.update(chunk);
+        }
+      }
       return {
         observation: "bulk_bytes_digest",
-        byteLength: bytes.byteLength,
-        blake3: [...blake3(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+        byteLength: data.length,
+        blake3: [...hash.digest()].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
       };
     } catch {
       this.failure = "unserializable_observation";

@@ -751,7 +751,15 @@ describe("Tauri end-to-end test support", () => {
     const second = structuredClone(first);
     second.runtime.serviceEvidence.records.push({
       messageId: "2",
-      message: { type: "advance_time" },
+      message: {
+        type: "storage_response",
+        value: {
+          result: {
+            type: "read",
+            data: { observation: "bulk_bytes_digest", byteLength: 3, blake3: "digest-a" },
+          },
+        },
+      },
     });
     second.runtime.serviceEvidence.bytes = 40;
     second.runtime.serviceEvidence.pointerSamples.push({ index: 0, requestId: "3" });
@@ -759,6 +767,8 @@ describe("Tauri end-to-end test support", () => {
     expect(() => assertSnapshotProgress(first, second)).toThrow(/identical/);
     expect(second.runtime.serviceEvidence.records).toHaveLength(2);
     expect(second.runtime.serviceLifecycle.records).toHaveLength(2);
+    second.runtime.serviceEvidence.records[1].message.value.result.data.blake3 = "digest-b";
+    expect(() => assertSnapshotProgress(first, second)).toThrow(/identical/);
     second.runtime.phase = "running";
     expect(() => assertSnapshotProgress(first, second)).not.toThrow();
     second.runtime.phase = first.runtime.phase;

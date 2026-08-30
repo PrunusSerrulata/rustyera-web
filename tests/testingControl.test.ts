@@ -190,6 +190,171 @@ describe("runtime evidence observations", () => {
     expect(bytes.byteLength).toBe(0);
   });
 
+  it("digests only storage bulk leaves while preserving their typed envelopes", () => {
+    const evidence = new RuntimeEvidence(true, 16 * 1024 * 1024);
+    const writeBytes = Uint8Array.of(1, 2, 3);
+    const readBytes = [4, 5, 6];
+    const chunkBytes = Uint8Array.of(7, 8);
+    const write = {
+      type: "storage_request",
+      value: {
+        request_id: 10n,
+        namespace: "data",
+        relative_path: "sql/current",
+        idempotency_key: "write-10",
+        deadline_ns: 99n,
+        operation: {
+          type: "write",
+          data: writeBytes,
+          atomic_replace: true,
+          precondition: { type: "revision", revision: "old" },
+        },
+      },
+    };
+    const read = {
+      type: "storage_response",
+      value: {
+        request_id: 11n,
+        result: { type: "read", data: readBytes, revision: "new" },
+      },
+    };
+    const readChunk = {
+      type: "storage_response",
+      value: {
+        request_id: 12n,
+        result: {
+          type: "read_chunk",
+          data: chunkBytes,
+          offset: 64n,
+          complete: true,
+          change_token: "token",
+        },
+      },
+    };
+
+    evidence.receive({
+      channel: "runtime",
+      epoch: 2n,
+      sequence: 1n,
+      messageId: 1n,
+      message: write,
+    });
+    evidence.sent("runtime", read, 2n, 2n);
+    evidence.sent("runtime", readChunk, 3n, 2n);
+
+    const snapshot = evidence.snapshot() as any;
+    const expectedDigest = (bytes: Uint8Array) => ({
+      observation: "bulk_bytes_digest",
+      byteLength: bytes.byteLength,
+      blake3: [...blake3(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+    });
+    expect(snapshot.records[0].message.value).toMatchObject({
+      request_id: "10",
+      namespace: "data",
+      relative_path: "sql/current",
+      idempotency_key: "write-10",
+      deadline_ns: "99",
+      operation: {
+        type: "write",
+        data: expectedDigest(writeBytes),
+        atomic_replace: true,
+        precondition: { type: "revision", revision: "old" },
+      },
+    });
+    expect(snapshot.records[1].message.value.result).toEqual({
+      type: "read",
+      data: expectedDigest(Uint8Array.from(readBytes)),
+      revision: "new",
+    });
+    expect(snapshot.records[2].message.value.result).toEqual({
+      type: "read_chunk",
+      data: expectedDigest(chunkBytes),
+      offset: "64",
+      complete: true,
+      change_token: "token",
+    });
+    expect(write.value.operation.data).toBe(writeBytes);
+    expect(read.value.result.data).toBe(readBytes);
+    expect(readChunk.value.result.data).toBe(chunkBytes);
+    const prepared = evidence.prepareMessage(readChunk);
+    expect(evidence.prepareMessage(prepared)).toEqual(prepared);
+  });
+
+  it("leaves non-bulk storage variants and service payloads intact", () => {
+    const evidence = new RuntimeEvidence(true);
+    const variants = [
+      { type: "storage_request", value: { operation: { type: "read", data: [1, 2] } } },
+      { type: "storage_request", value: { operation: { type: "list", data: [1, 2] } } },
+      { type: "storage_request", value: { operation: { type: "delete", data: [1, 2] } } },
+      { type: "storage_request", value: { operation: { type: "stat", data: [1, 2] } } },
+      { type: "storage_request", value: { operation: { type: "read_range", data: [1, 2] } } },
+      { type: "storage_response", value: { result: { type: "written", data: [1, 2] } } },
+      { type: "storage_response", value: { result: { type: "listed", data: [1, 2] } } },
+      { type: "storage_response", value: { result: { type: "deleted", data: [1, 2] } } },
+      { type: "storage_response", value: { result: { type: "metadata", data: [1, 2] } } },
+      {
+        type: "storage_response",
+        value: { result: { type: "error", error: { kind: "io", data: [1, 2] } } },
+      },
+      { type: "service_response", value: { payload: Uint8Array.of(1, 2) } },
+    ];
+    for (const variant of variants) expect(evidence.prepareMessage(variant)).toBe(variant);
+  });
+
+  it("fails storage evidence explicitly for invalid or oversized bulk bytes", () => {
+    const invalid = new RuntimeEvidence(true);
+    invalid.prepareMessage({
+      type: "storage_response",
+      value: { result: { type: "read", data: [0, 256] } },
+    });
+    expect(invalid.snapshot()).toMatchObject({
+      overflow: true,
+      failure: "unserializable_observation",
+    });
+
+    const oversizedState = new RuntimeEvidence(true);
+    oversizedState.prepareMessage({
+      type: "state_import_chunk",
+      value: { data: new Uint8Array(16 * 1024 * 1024 + 1) },
+    });
+    expect(oversizedState.snapshot()).toMatchObject({
+      overflow: true,
+      failure: "unserializable_observation",
+    });
+
+    const oversizedStorage = new RuntimeEvidence(true);
+    oversizedStorage.prepareMessage({
+      type: "storage_response",
+      value: { result: { type: "read", data: new Uint8Array(64 * 1024 * 1024 + 1) } },
+    });
+    expect(oversizedStorage.snapshot()).toMatchObject({
+      overflow: true,
+      failure: "unserializable_observation",
+    });
+  });
+
+  it("keeps a snake TW sized storage read as a bounded digest record", () => {
+    const evidence = new RuntimeEvidence(true);
+    const data = new Uint8Array(1_368_064).fill(19);
+    evidence.sent(
+      "runtime",
+      {
+        type: "storage_response",
+        value: { request_id: 1, result: { type: "read", data, revision: "seed" } },
+      },
+      1,
+      2,
+    );
+
+    const snapshot = evidence.snapshot() as any;
+    expect(snapshot).toMatchObject({ overflow: false, failure: null });
+    expect(snapshot.bytes).toBeLessThan(1024);
+    expect(snapshot.records[0].message.value.result.data).toMatchObject({
+      observation: "bulk_bytes_digest",
+      byteLength: 1_368_064,
+    });
+  });
+
   it("distinguishes reused wire identities across actual frontend session generations", () => {
     const evidence = new RuntimeEvidence(true);
     const message = { type: "service_response", value: { request_id: 2 } };
