@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Encoder } from "cbor-x";
 
 import {
   RuntimeImagePixelCache,
@@ -192,6 +193,12 @@ const projectionContext: ProjectionQueryContext = {
   environmentRevision: 7,
   projectionSpaceRevision: 9,
 };
+const uncheckedServiceEncoder = new Encoder({
+  mapsAsObjects: false,
+  useRecords: false,
+  variableMapSize: true,
+  tagUint8Array: false,
+});
 
 function serviceRequest(
   operation = "pointer_state",
@@ -922,7 +929,9 @@ describe("projection runtime services", () => {
           ]),
         );
         await handleRuntimeService(
-          { ...request, payload: encodeServicePayload(payload) },
+          // Deliberately bypass the production encoder's exact-integer guard so
+          // the service decoder receives and rejects malformed external CBOR.
+          { ...request, payload: uncheckedServiceEncoder.encode(payload) },
           undefined,
           failed.context,
         );
