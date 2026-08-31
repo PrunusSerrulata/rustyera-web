@@ -1,14 +1,50 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path, { resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { startCompleteSnapshotMonitor } from "../scripts/tauri-test-support.mjs";
+import { installRemoteFileSystem } from "../scripts/web-test-lib.mjs";
 import { finalizeBrowserGameRun } from "../scripts/web-test-lifecycle.mjs";
 
 afterEach(() => vi.useRealTimers());
 
 describe("browser game runner progress policy", () => {
+  it("streams every remote filesystem write chunk into one atomically committed file", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rustyera-remote-fs-test-"));
+    const installedBindings: string[] = [];
+    const page = {
+      async exposeBinding(name: string, callback: (source: unknown, request: unknown) => unknown) {
+        installedBindings.push(name);
+        Reflect.set(window, name, (request: unknown) => callback({}, request));
+      },
+      async addInitScript(script: () => void) {
+        script();
+      },
+    };
+    try {
+      await installRemoteFileSystem(page, root);
+      const directory = await window.showDirectoryPicker?.({ mode: "readwrite" });
+      const file = await directory?.getFileHandle("cache.reracache", { create: true });
+      const writer = await file?.createWritable({ keepExistingData: false });
+      await writer?.write(new Uint8Array([1, 2, 3]));
+      await writer?.write(new Uint8Array([4, 5]));
+      await writer?.close();
+
+      expect([...new Uint8Array(await readFile(path.join(root, "cache.reracache")))]).toEqual([
+        1, 2, 3, 4, 5,
+      ]);
+      expect(await readFile(path.join(root, "cache.reracache"))).toHaveLength(5);
+    } finally {
+      for (const name of installedBindings) Reflect.deleteProperty(window, name);
+      Reflect.deleteProperty(window, "showDirectoryPicker");
+      Reflect.deleteProperty(window, "__RUSTYERA_TEST_FS_REPLACE__");
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("allows the first scenario action to assert an expected startup fault", () => {
     const runner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
     const scenario = JSON.parse(

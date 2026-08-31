@@ -7,6 +7,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   rename,
@@ -501,6 +502,8 @@ async function deadlineRace(promise, timeoutMs, label) {
 }
 
 export async function installRemoteFileSystem(page, root) {
+  const writers = new Map();
+  let nextWriter = 0;
   const safe = (relative) => {
     const resolved = path.resolve(root, relative || ".");
     if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`))
@@ -525,6 +528,41 @@ export async function installRemoteFileSystem(page, root) {
       };
     }
     if (request.op === "mkdir") return mkdir(target, { recursive: true }).then(() => true);
+    if (request.op === "open_writer") {
+      await mkdir(path.dirname(target), { recursive: true });
+      const id = String(++nextWriter);
+      const temporary = path.join(
+        path.dirname(target),
+        `.${path.basename(target)}.rustyera-test-${id}.tmp`,
+      );
+      const handle = await open(temporary, "w");
+      writers.set(id, { handle, target, temporary });
+      return id;
+    }
+    if (request.op === "write_chunk") {
+      const writer = writers.get(String(request.writer));
+      if (!writer) throw new Error(`unknown filesystem writer ${request.writer}`);
+      await writer.handle.write(Buffer.from(String(request.data), "base64"));
+      return true;
+    }
+    if (request.op === "close_writer") {
+      const id = String(request.writer);
+      const writer = writers.get(id);
+      if (!writer) throw new Error(`unknown filesystem writer ${request.writer}`);
+      writers.delete(id);
+      await writer.handle.close();
+      await rename(writer.temporary, writer.target);
+      return true;
+    }
+    if (request.op === "abort_writer") {
+      const id = String(request.writer);
+      const writer = writers.get(id);
+      if (!writer) return true;
+      writers.delete(id);
+      await writer.handle.close();
+      await rm(writer.temporary, { force: true });
+      return true;
+    }
     if (request.op === "write") {
       await mkdir(path.dirname(target), { recursive: true });
       await writeFile(target, new Uint8Array(request.data));
@@ -542,6 +580,14 @@ export async function installRemoteFileSystem(page, root) {
     await writeFile(target, source.replace(request.expected, request.replacement), "utf8");
   });
   await page.addInitScript(() => {
+    const FILE_WRITE_CHUNK_BYTES = 1024 * 1024;
+    const base64 = (bytes) => {
+      let binary = "";
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+      }
+      return btoa(binary);
+    };
     const callFileSystem = async (request) => {
       try {
         return await window.__rustyeraFs(request);
@@ -573,14 +619,30 @@ export async function installRemoteFileSystem(page, root) {
         return new File([bytes], this.name, { lastModified: stat.lastModified });
       }
       async createWritable() {
-        let data = new Uint8Array();
+        const writer = await callFileSystem({ op: "open_writer", path: this.relativePath });
+        let active = true;
         return {
           write: async (value) => {
-            data = value instanceof Uint8Array ? value : new Uint8Array(await value.arrayBuffer());
+            if (!active) throw new DOMException("Writer is closed", "InvalidStateError");
+            const data =
+              value instanceof Uint8Array ? value : new Uint8Array(await value.arrayBuffer());
+            for (let offset = 0; offset < data.length; offset += FILE_WRITE_CHUNK_BYTES) {
+              await callFileSystem({
+                op: "write_chunk",
+                writer,
+                data: base64(data.subarray(offset, offset + FILE_WRITE_CHUNK_BYTES)),
+              });
+            }
           },
-          close: () => callFileSystem({ op: "write", path: this.relativePath, data: [...data] }),
+          close: async () => {
+            if (!active) return;
+            active = false;
+            await callFileSystem({ op: "close_writer", path: this.relativePath, writer });
+          },
           abort: async () => {
-            data = new Uint8Array();
+            if (!active) return;
+            active = false;
+            await callFileSystem({ op: "abort_writer", path: this.relativePath, writer });
           },
         };
       }
