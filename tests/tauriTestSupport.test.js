@@ -66,6 +66,7 @@ import {
 import {
   assertSnapshotProgress,
   captureCompleteTauriSnapshot,
+  expandCompleteTauriSnapshot,
   focusCurrentTauriWindow,
   resolveTauriBinary,
   snapshotCaptureTimeout,
@@ -751,6 +752,24 @@ describe("Tauri end-to-end test support", () => {
         });
       else delete window.Element.prototype.checkVisibility;
     }
+  });
+
+  it("expands the compact text tree into exact textContent for every element", () => {
+    const snapshot = {
+      document: [
+        { tag: "main", textParts: [1, "!"], value: null, visible: true },
+        { tag: "span", textParts: ["map"], value: null, visible: true },
+      ],
+      runtime: { phase: "waiting_input" },
+    };
+
+    expect(expandCompleteTauriSnapshot(snapshot)).toEqual({
+      document: [
+        { tag: "main", text: "map!", value: null, visible: true },
+        { tag: "span", text: "map", value: null, visible: true },
+      ],
+      runtime: { phase: "waiting_input" },
+    });
   });
 
   it("rejects a complete snapshot command that exceeds its hard deadline", async () => {

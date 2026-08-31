@@ -33,71 +33,70 @@ export async function captureCompleteTauriSnapshot(browser, timeoutMs = SNAPSHOT
   let timeout;
   try {
     return await Promise.race([
-      browser.execute(() => {
-        const ELEMENT_NODE = 1;
-        const TEXT_NODE = 3;
-        const CDATA_SECTION_NODE = 4;
-        const nodes = [...document.querySelectorAll("*")];
-        const positions = new Map(nodes.map((element, index) => [element, index]));
-        const texts = new Array(nodes.length).fill("");
-        // Preserve Element.textContent exactly without asking the browser to walk every
-        // descendant subtree again for every ancestor in a large scene.
-        for (let index = nodes.length - 1; index >= 0; index -= 1) {
-          const parts = [];
-          for (const child of nodes[index].childNodes) {
-            if (child.nodeType === TEXT_NODE || child.nodeType === CDATA_SECTION_NODE)
-              parts.push(child.nodeValue ?? "");
-            else if (child.nodeType === ELEMENT_NODE) {
-              const childIndex = positions.get(child);
-              if (childIndex != null) parts.push(texts[childIndex]);
+      browser
+        .execute(() => {
+          const ELEMENT_NODE = 1;
+          const TEXT_NODE = 3;
+          const CDATA_SECTION_NODE = 4;
+          const nodes = [...document.querySelectorAll("*")];
+          const positions = new Map(nodes.map((element, index) => [element, index]));
+          const elements = nodes.map((element) => {
+            const candidateValue = "value" in element ? element.value : null;
+            const value = ["string", "number", "boolean"].includes(typeof candidateValue)
+              ? candidateValue
+              : null;
+            let visible = false;
+            if (element.isConnected && !element.hidden) {
+              if (typeof element.checkVisibility === "function") {
+                visible = element.checkVisibility({
+                  checkOpacity: true,
+                  checkVisibilityCSS: true,
+                  opacityProperty: true,
+                  visibilityProperty: true,
+                });
+              } else {
+                const style = getComputedStyle(element);
+                visible =
+                  style.display !== "none" &&
+                  style.visibility !== "hidden" &&
+                  style.visibility !== "collapse" &&
+                  style.opacity !== "0";
+              }
+              if (visible) {
+                const bounds = element.getBoundingClientRect();
+                visible = bounds.width > 0 && bounds.height > 0;
+              }
             }
-          }
-          texts[index] = parts.join("");
-        }
-        const elements = nodes.map((element, index) => {
-          const bounds = element.getBoundingClientRect();
-          const candidateValue = "value" in element ? element.value : null;
-          const value = ["string", "number", "boolean"].includes(typeof candidateValue)
-            ? candidateValue
-            : null;
-          let visible = false;
-          if (element.isConnected && !element.hidden && bounds.width > 0 && bounds.height > 0) {
-            if (typeof element.checkVisibility === "function") {
-              visible = element.checkVisibility({
-                checkOpacity: true,
-                checkVisibilityCSS: true,
-                opacityProperty: true,
-                visibilityProperty: true,
-              });
-            } else {
-              const style = getComputedStyle(element);
-              visible =
-                style.display !== "none" &&
-                style.visibility !== "hidden" &&
-                style.visibility !== "collapse" &&
-                style.opacity !== "0";
-            }
-          }
+            return {
+              tag: element.tagName.toLowerCase(),
+              attributes: Object.fromEntries(
+                [...element.attributes]
+                  .map((attribute) => [attribute.name, attribute.value])
+                  .sort(([left], [right]) => left.localeCompare(right)),
+              ),
+              // Transfer each direct text node once. Numeric entries refer to child
+              // elements and are expanded into exact Element.textContent after the
+              // compact browser payload crosses the automation boundary.
+              textParts: [...element.childNodes].flatMap((child) => {
+                if (child.nodeType === TEXT_NODE || child.nodeType === CDATA_SECTION_NODE)
+                  return [child.nodeValue ?? ""];
+                if (child.nodeType !== ELEMENT_NODE) return [];
+                const childIndex = positions.get(child);
+                return [childIndex == null ? (child.textContent ?? "") : childIndex];
+              }),
+              value,
+              visible,
+            };
+          });
           return {
-            tag: element.tagName.toLowerCase(),
-            attributes: Object.fromEntries(
-              [...element.attributes]
-                .map((attribute) => [attribute.name, attribute.value])
-                .sort(([left], [right]) => left.localeCompare(right)),
-            ),
-            text: texts[index],
-            value,
-            visible,
+            document: elements,
+            runtime:
+              window.__RUSTYERA_TEST__?.snapshotSummary?.() ??
+              window.__RUSTYERA_TEST__?.snapshot() ??
+              null,
           };
-        });
-        return {
-          document: elements,
-          runtime:
-            window.__RUSTYERA_TEST__?.snapshotSummary?.() ??
-            window.__RUSTYERA_TEST__?.snapshot() ??
-            null,
-        };
-      }),
+        })
+        .then(expandCompleteTauriSnapshot),
       new Promise((_, reject) => {
         timeout = setTimeout(
           () => reject(new Error(`complete snapshot capture exceeded ${timeoutMs} ms`)),
@@ -108,6 +107,20 @@ export async function captureCompleteTauriSnapshot(browser, timeoutMs = SNAPSHOT
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export function expandCompleteTauriSnapshot(snapshot) {
+  const texts = new Array(snapshot.document.length).fill("");
+  for (let index = snapshot.document.length - 1; index >= 0; index -= 1) {
+    const element = snapshot.document[index];
+    const text = (element.textParts ?? [])
+      .map((part) => (typeof part === "number" ? texts[part] : part))
+      .join("");
+    texts[index] = text;
+    element.text = text;
+    delete element.textParts;
+  }
+  return snapshot;
 }
 
 export function snapshotCaptureTimeout(previousSnapshot, interval = SNAPSHOT_INTERVAL_MS) {
