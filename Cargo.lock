@@ -1069,6 +1069,7 @@ dependencies = [
  "erabasic-hir",
  "erabasic-validator",
  "rayon",
+ "rmp-serde",
  "serde",
  "serde_json",
 ]
