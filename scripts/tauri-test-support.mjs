@@ -112,6 +112,7 @@ export async function captureCompleteTauriSnapshot(browser, timeoutMs = SNAPSHOT
 }
 
 export function expandCompleteTauriSnapshot(snapshot) {
+  const compactProgressSignature = snapshotProgressSignature(snapshot);
   const texts = new Array(snapshot.document.length).fill("");
   for (let index = snapshot.document.length - 1; index >= 0; index -= 1) {
     const element = snapshot.document[index];
@@ -122,6 +123,12 @@ export function expandCompleteTauriSnapshot(snapshot) {
     element.text = text;
     delete element.textParts;
   }
+  Object.defineProperty(snapshot, "compactProgressSignature", {
+    configurable: false,
+    enumerable: false,
+    value: compactProgressSignature,
+    writable: false,
+  });
   return snapshot;
 }
 
@@ -257,7 +264,11 @@ export function startTauriSessionMonitor(
             `${label} runtime rejected the configured state: ${JSON.stringify(terminalRejection)}`,
           );
         }
-        const currentSignature = snapshotProgressSignature(snapshot);
+        const currentSignature = captured.compactProgressSignature
+          ? `${captured.compactProgressSignature}\n${JSON.stringify(
+              withoutReportMetadata(snapshot.operation),
+            )}`
+          : snapshotProgressSignature(snapshot);
         identicalIntervals =
           previousSnapshot != null && previousSignature === currentSignature
             ? identicalIntervals + 1

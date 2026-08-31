@@ -789,13 +789,34 @@ describe("Tauri end-to-end test support", () => {
       runtime: { phase: "waiting_input" },
     };
 
-    expect(expandCompleteTauriSnapshot(snapshot)).toEqual({
+    const expanded = expandCompleteTauriSnapshot(snapshot);
+    expect(expanded).toEqual({
       document: [
         { tag: "main", text: "map!", value: null, visible: true },
         { tag: "span", text: "map", value: null, visible: true },
       ],
       runtime: { phase: "waiting_input" },
     });
+    expect(Object.keys(expanded)).not.toContain("compactProgressSignature");
+    expect(expanded.compactProgressSignature).toEqual(expect.any(String));
+  });
+
+  it("derives the watchdog signature from compact direct text", () => {
+    const makeSnapshot = (text) =>
+      expandCompleteTauriSnapshot({
+        document: [
+          { tag: "main", textParts: [1], value: null, visible: true },
+          { tag: "span", textParts: [text], value: null, visible: true },
+        ],
+        runtime: { phase: "waiting_input" },
+      });
+
+    expect(makeSnapshot("map").compactProgressSignature).toBe(
+      makeSnapshot("map").compactProgressSignature,
+    );
+    expect(makeSnapshot("map").compactProgressSignature).not.toBe(
+      makeSnapshot("room").compactProgressSignature,
+    );
   });
 
   it("rejects a complete snapshot command that exceeds its hard deadline", async () => {
