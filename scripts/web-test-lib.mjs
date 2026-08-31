@@ -187,10 +187,13 @@ export class TraceWriter {
   constructor(file) {
     this.path = path.resolve(file);
     this.stream = createWriteStream(this.path, { encoding: "utf8" });
+    this.pending = [];
+    this.draining = undefined;
   }
 
   emit(event) {
-    this.stream.write(`${JSON.stringify(event)}\n`);
+    this.pending.push(event);
+    this.draining ??= this.drain();
     const compact = compactTraceEvent(event);
     if (compact.type === "observation") {
       for (const key of ["rust", "reference"]) {
@@ -206,7 +209,48 @@ export class TraceWriter {
   }
 
   async close() {
+    await this.draining;
     await new Promise((resolve) => this.stream.end(resolve));
+  }
+
+  async drain() {
+    while (this.pending.length) {
+      const event = this.pending.shift();
+      if (event.type?.endsWith("-snapshot") && Array.isArray(event.document))
+        await this.writeSnapshot(event);
+      else await this.write(`${JSON.stringify(event)}\n`);
+    }
+    this.draining = undefined;
+  }
+
+  async writeSnapshot(event) {
+    await this.write("{");
+    let fields = 0;
+    for (const [key, value] of Object.entries(event)) {
+      if (key === "document") {
+        if (fields > 0) await this.write(",");
+        await this.write(`${JSON.stringify(key)}:[`);
+        for (let index = 0; index < value.length; index += 1) {
+          if (index > 0) await this.write(",");
+          await this.write(JSON.stringify(value[index]));
+          if (index % 64 === 63) await new Promise((resolve) => setImmediate(resolve));
+        }
+        await this.write("]");
+        fields += 1;
+        continue;
+      }
+      const serialized = JSON.stringify(value);
+      if (serialized === undefined) continue;
+      if (fields > 0) await this.write(",");
+      await this.write(`${JSON.stringify(key)}:${serialized}`);
+      fields += 1;
+    }
+    await this.write("}\n");
+  }
+
+  async write(chunk) {
+    if (this.stream.write(chunk)) return;
+    await new Promise((resolve) => this.stream.once("drain", resolve));
   }
 }
 

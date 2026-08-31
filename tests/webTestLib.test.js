@@ -24,6 +24,7 @@ import {
   runtimeProgressDiagnostic,
   runtimeProgressSignature,
   runAction,
+  TraceWriter,
   terminalRuntimeRejection,
   waitForWebDriverDocument,
   waitForRuntimeObservation,
@@ -44,6 +45,41 @@ describe("web game test scenario", () => {
       document: { elementCount: 2 },
     });
     expect(event.document).toHaveLength(2);
+  });
+
+  it("streams complete snapshot elements without interleaving later trace events", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rustyera-trace-writer-"));
+    const tracePath = path.join(root, "trace.ndjson");
+    const output = vi.spyOn(globalThis.process.stdout, "write").mockReturnValue(true);
+    try {
+      const writer = new TraceWriter(tracePath);
+      const document = Array.from({ length: 130 }, (_, index) => ({
+        tag: "span",
+        attributes: { "data-index": String(index) },
+        text: `cell-${index}`,
+        value: null,
+        visible: true,
+      }));
+      writer.emit({
+        type: "browser-game-snapshot",
+        capturedAt: "2026-09-01T00:00:00Z",
+        document,
+        runtime: { phase: "waiting_input" },
+      });
+      writer.emit({ type: "result", status: "input_exhausted" });
+      await writer.close();
+
+      const events = (await readFile(tracePath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(events).toHaveLength(2);
+      expect(events[0].document).toEqual(document);
+      expect(events[1]).toEqual({ type: "result", status: "input_exhausted" });
+    } finally {
+      output.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("checks state string prefixes separately from structural expectations", async () => {
