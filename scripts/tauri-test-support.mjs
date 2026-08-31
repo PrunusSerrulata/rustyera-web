@@ -57,6 +57,33 @@ export async function captureCompleteTauriSnapshot(browser, timeoutMs = SNAPSHOT
               displayed[index] = false;
               opaque[index] = false;
               contentVisible[index] = false;
+            } else if (typeof element.checkVisibility === "function") {
+              // Chromium can resolve inherited display/visibility/opacity in one
+              // native tree walk. Repeated getComputedStyle calls force a full
+              // hover style recalculation for every node on large game screens.
+              visible = element.checkVisibility({
+                checkOpacity: true,
+                checkVisibilityCSS: true,
+                contentVisibilityAuto: true,
+                opacityProperty: true,
+                visibilityProperty: true,
+              });
+              if (!visible) {
+                // Native invisibility also covers display:contents and empty
+                // boxes whose descendants can still render. Resolve only this
+                // small exceptional set through computed style so descendants
+                // retain the old exact visibility semantics.
+                const style = getComputedStyle(element);
+                displayed[index] = style.display !== "none";
+                opaque[index] = style.opacity !== "0";
+                contentVisible[index] = style.contentVisibility !== "hidden";
+                visible =
+                  displayed[index] &&
+                  opaque[index] &&
+                  contentVisible[index] &&
+                  style.visibility !== "hidden" &&
+                  style.visibility !== "collapse";
+              }
             } else {
               const style = getComputedStyle(element);
               displayed[index] = style.display !== "none";
@@ -68,18 +95,18 @@ export async function captureCompleteTauriSnapshot(browser, timeoutMs = SNAPSHOT
                 contentVisible[index] &&
                 style.visibility !== "hidden" &&
                 style.visibility !== "collapse";
-              if (visible) {
-                const offsetWidth = element.offsetWidth;
-                const offsetHeight = element.offsetHeight;
-                if (
-                  typeof offsetWidth !== "number" ||
-                  typeof offsetHeight !== "number" ||
-                  offsetWidth <= 0 ||
-                  offsetHeight <= 0
-                ) {
-                  const bounds = element.getBoundingClientRect();
-                  visible = bounds.width > 0 && bounds.height > 0;
-                }
+            }
+            if (visible) {
+              const offsetWidth = element.offsetWidth;
+              const offsetHeight = element.offsetHeight;
+              if (
+                typeof offsetWidth !== "number" ||
+                typeof offsetHeight !== "number" ||
+                offsetWidth <= 0 ||
+                offsetHeight <= 0
+              ) {
+                const bounds = element.getBoundingClientRect();
+                visible = bounds.width > 0 && bounds.height > 0;
               }
             }
             return {
