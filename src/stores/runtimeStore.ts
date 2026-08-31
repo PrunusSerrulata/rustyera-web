@@ -1488,9 +1488,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   function viewportEnvironmentIdentity(): string {
     return JSON.stringify([
-      gameTextStyle.value.fontFamily,
-      gameTextStyle.value.fontSize,
-      gameLineHeightPx.value,
+      effectivePreferences.value.fontFamilyOverride,
+      effectivePreferences.value.fontSizeOverridePx,
+      effectivePreferences.value.imageScale,
+      replaceFullWidthSpaces.value,
     ]);
   }
 
@@ -1583,11 +1584,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
         const matchesExpected = layoutSensitive
           ? projectionMatches(expected)
           : projectionEnvironmentMatches(expected);
-        if (!active() || !matchesExpected)
+        if (!active() || !matchesExpected) {
+          const viewport = currentGameViewport();
+          const mismatch = runtimeViewport.describeEnvironmentMismatch(
+            expected,
+            presentation.revision,
+            viewport ? currentGameViewportMeasurement() : undefined,
+            viewportEnvironmentIdentity(),
+          );
           throw new RuntimeServiceError(
             "stale_projection",
-            "viewport observation does not match the query",
+            `viewport observation does not match the query: ${mismatch}`,
           );
+        }
         preparedProjectionContext = expected;
         return { ...presentation, resources: presentation.resources };
       };

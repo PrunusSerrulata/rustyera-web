@@ -1138,6 +1138,23 @@ describe("realized viewport identity", () => {
     expect(viewport.matches(expected, 9, measurement, "layout-two")).toBe(false);
     expect(viewport.matchesEnvironment(expected, 9, measurement, "font-one")).toBe(true);
     expect(viewport.matchesEnvironment(expected, 9, measurement, "font-two")).toBe(false);
+    expect(
+      JSON.parse(viewport.describeEnvironmentMismatch(expected, 9, measurement, "font-two")),
+    ).toMatchObject({
+      expected: {
+        presentationRevision: "9",
+        environmentRevision: "1",
+        projectionSpaceRevision: "1",
+      },
+      publishedPresentationRevision: "9",
+      measurement: { width: 300, height: 200 },
+      observation: {
+        width: 300,
+        height: 200,
+        environmentStyleIdentity: "font-one",
+      },
+      environmentStyleIdentity: "font-two",
+    });
     expect(viewport.matchesEnvironment(expected, 9, changedColumns, "font-one")).toBe(true);
     expect(
       viewport.matchesEnvironment(expected, 9, { ...measurement, width: 301 }, "font-one"),

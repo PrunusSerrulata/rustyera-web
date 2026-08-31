@@ -294,6 +294,105 @@ describe("runtime store debug-presentation-reload", () => {
     },
   );
 
+  it("keeps Runtime text styles in the presentation identity during an HTML query", async () => {
+    const viewport = document.createElement("main");
+    viewport.className = "game-viewport";
+    Object.defineProperties(viewport, {
+      clientWidth: { value: 640 },
+      clientHeight: { value: 480 },
+    });
+    document.body.append(viewport);
+    const measured = vi
+      .spyOn(HtmlMeasurementProvider.prototype, "measure")
+      .mockImplementation(async (_probe, binding, guard) => {
+        guard.assertCurrent();
+        return {
+          context: binding.context,
+          advancePx: 9.25,
+          cuts: [],
+          textNodes: [],
+          firstRow: { advancePx: 9.25, heightPx: 18, fragments: [] },
+        };
+      });
+    const store = await storeWithInputWait({
+      kind: "enter_key",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 5 },
+    });
+    try {
+      await store.projectViewport({
+        width: 640,
+        height: 480,
+        lineColumns: 80,
+        chromeWidth: 0,
+        chromeHeight: 0,
+      });
+      const observation = bridge.submitRuntime.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message.type === "projection_observation")
+        .at(-1)!.value;
+      bridge.pump.mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("presentation_delta", {
+            base_revision: 1,
+            new_revision: 2,
+            operations: [
+              {
+                type: "append_line",
+                line: {
+                  line_id: 1,
+                  temporary: false,
+                  logical_line_start: true,
+                  line_end: true,
+                  alignment: "left",
+                  runs: [
+                    {
+                      type: "text",
+                      text: "styled output",
+                      style: {
+                        foreground: { red: 255, green: 255, blue: 255, alpha: 255 },
+                        bold: false,
+                        italic: false,
+                        underline: false,
+                        strikeout: false,
+                        font_family: "SimHei",
+                        font_millipixels: 16_000,
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          runtimeEvent(
+            "service_request",
+            storeHtmlQuery({
+              presentationRevision: 2,
+              environmentRevision: observation.environment_revision,
+              projectionSpaceRevision: observation.projection_space_revision,
+            }),
+            941,
+            2,
+          ),
+        ],
+      });
+
+      await store.enableDebug();
+      await advanceUntil(() =>
+        bridge.submitRuntime.mock.calls.some(([message]) => message.type === "service_response"),
+      );
+      const response = bridge.submitRuntime.mock.calls.find(
+        ([message]) => message.type === "service_response",
+      )![0];
+      expect(response.value.result.type).toBe("ready");
+      expect(measured).toHaveBeenCalledOnce();
+    } finally {
+      store.teardown();
+      measured.mockRestore();
+    }
+  });
+
   it("rejects HTML queries without a confirmed mounted viewport before DOM measurement", async () => {
     const measured = vi.spyOn(HtmlMeasurementProvider.prototype, "measure");
     bridge.createSession.mockResolvedValueOnce({

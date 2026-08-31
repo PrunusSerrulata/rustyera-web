@@ -168,6 +168,36 @@ export class RuntimeViewportState {
     );
   }
 
+  describeEnvironmentMismatch(
+    context: ProjectionQueryContext,
+    publishedRevision: ServiceInteger,
+    measurement: Pick<GameViewportMeasurement, "width" | "height"> | undefined,
+    environmentStyleIdentity = "",
+  ): string {
+    const observed = [...this.submittedObservations.values()].find(
+      (candidate) =>
+        sameServiceInteger(context.environmentRevision, candidate.environmentRevision) &&
+        sameServiceInteger(context.projectionSpaceRevision, candidate.projectionSpaceRevision),
+    );
+    return JSON.stringify({
+      expected: {
+        presentationRevision: String(context.presentationRevision),
+        environmentRevision: String(context.environmentRevision),
+        projectionSpaceRevision: String(context.projectionSpaceRevision),
+      },
+      publishedPresentationRevision: String(publishedRevision),
+      measurement: measurement ? { width: measurement.width, height: measurement.height } : null,
+      observation: observed
+        ? {
+            width: observed.width,
+            height: observed.height,
+            environmentStyleIdentity: observed.environmentStyleIdentity,
+          }
+        : null,
+      environmentStyleIdentity,
+    });
+  }
+
   reject(messageId: string): void {
     if (this.rejectedMessages.size >= 256)
       this.rejectedMessages.delete(this.rejectedMessages.values().next().value!);
