@@ -191,7 +191,7 @@ export class TraceWriter {
 
   emit(event) {
     this.stream.write(`${JSON.stringify(event)}\n`);
-    const compact = structuredClone(event);
+    const compact = compactTraceEvent(event);
     if (compact.type === "observation") {
       for (const key of ["rust", "reference"]) {
         if (compact[key]?.output) delete compact[key].output;
@@ -208,6 +208,15 @@ export class TraceWriter {
   async close() {
     await new Promise((resolve) => this.stream.end(resolve));
   }
+}
+
+export function compactTraceEvent(event) {
+  return event.type?.endsWith("-snapshot")
+    ? {
+        ...event,
+        document: { elementCount: Array.isArray(event.document) ? event.document.length : 0 },
+      }
+    : structuredClone(event);
 }
 
 export async function isolatedProject(source, options = {}) {

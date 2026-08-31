@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   assertAtomicPresentationTransition,
   browserProjectProgressErrors,
+  compactTraceEvent,
   compareObservations,
   goalStatus,
   injectInGameSaveFlow,
@@ -30,6 +31,21 @@ import {
 import { SNAKE_DATA_MARKERS } from "../scripts/snake-data-test-support.mjs";
 
 describe("web game test scenario", () => {
+  it("keeps complete snapshots in the file event while compacting console output", () => {
+    const event = {
+      type: "browser-game-snapshot",
+      capturedAt: "2026-09-01T00:00:00Z",
+      document: [{ tag: "html" }, { tag: "body" }],
+      runtime: { phase: "waiting_input" },
+    };
+
+    expect(compactTraceEvent(event)).toEqual({
+      ...event,
+      document: { elementCount: 2 },
+    });
+    expect(event.document).toHaveLength(2);
+  });
+
   it("checks state string prefixes separately from structural expectations", async () => {
     const page = {
       evaluate: vi.fn(async () => ({

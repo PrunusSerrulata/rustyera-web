@@ -778,6 +778,20 @@ describe("Tauri end-to-end test support", () => {
     ).not.toThrow();
   });
 
+  it("reuses precomputed complete snapshot signatures", () => {
+    const previous = { document: [] };
+    const current = { document: [] };
+    previous.circular = previous;
+    current.circular = current;
+
+    expect(() =>
+      assertSnapshotProgress(previous, current, "Browser", 1, {
+        previous: "previous",
+        current: "current",
+      }),
+    ).not.toThrow();
+  });
+
   it("allows three unchanged loading intervals and rejects the fourth", () => {
     const snapshot = {
       document: [{ tag: "main" }],
@@ -879,6 +893,23 @@ describe("Tauri end-to-end test support", () => {
     await expect(monitor.failure).rejects.toThrow(expected);
     await expect(monitor.stop()).rejects.toThrow(expected);
     expect(JSON.parse(output.mock.calls[0][0])).toMatchObject({ document: [], runtime });
+  });
+
+  it("delivers a structured snapshot without a stringify/parse round trip", async () => {
+    const runtime = { fault: { message: "boom" } };
+    const browser = { execute: vi.fn(async () => ({ document: [], runtime })) };
+    const output = vi.fn();
+    const outputEvent = vi.fn();
+    const monitor = startTauriSessionMonitor(browser, {
+      interval: 1,
+      output,
+      outputEvent,
+    });
+
+    await expect(monitor.failure).rejects.toThrow(/runtime faulted/);
+    await expect(monitor.stop()).rejects.toThrow(/runtime faulted/);
+    expect(output).not.toHaveBeenCalled();
+    expect(outputEvent).toHaveBeenCalledWith(expect.objectContaining({ document: [], runtime }));
   });
 
   it("fails exactly when the shared deadline is reached", async () => {

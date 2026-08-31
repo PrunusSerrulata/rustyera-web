@@ -127,10 +127,12 @@ export function assertSnapshotProgress(
   currentSnapshot,
   label = "Tauri",
   identicalIntervals = 1,
+  signatures,
 ) {
   if (
     previousSnapshot != null &&
-    snapshotProgressSignature(previousSnapshot) === snapshotProgressSignature(currentSnapshot)
+    (signatures?.previous ?? snapshotProgressSignature(previousSnapshot)) ===
+      (signatures?.current ?? snapshotProgressSignature(currentSnapshot))
   ) {
     const requiredIntervals = usesExtendedSnapshotWatchdog(currentSnapshot) ? 4 : 1;
     if (identicalIntervals < requiredIntervals) return;
@@ -172,6 +174,7 @@ export function startTauriSessionMonitor(
     interval = SNAPSHOT_INTERVAL_MS,
     label = "Tauri",
     output = console.log,
+    outputEvent,
     snapshotContext = () => undefined,
     allowFault = () => false,
     onSnapshot,
@@ -206,6 +209,7 @@ export function startTauriSessionMonitor(
 
   async function monitor() {
     let previousSnapshot;
+    let previousSignature;
     let identicalIntervals = 0;
     try {
       while (!stopped) {
@@ -219,13 +223,13 @@ export function startTauriSessionMonitor(
         const snapshot = { ...captured, operation: snapshotContext() };
         const runtime = captured.runtime;
         // Persist the failure frontier before an observer or terminal-state check can throw.
-        await output(
-          JSON.stringify({
-            type: eventType,
-            capturedAt: new Date().toISOString(),
-            ...snapshot,
-          }),
-        );
+        const event = {
+          type: eventType,
+          capturedAt: new Date().toISOString(),
+          ...snapshot,
+        };
+        if (outputEvent) await outputEvent(event);
+        else await output(JSON.stringify(event));
         await onSnapshot?.(snapshot);
         if (runtime?.fault != null && !allowFault()) {
           throw new Error(`${label} runtime faulted: ${JSON.stringify(runtime.fault)}`);
@@ -238,13 +242,17 @@ export function startTauriSessionMonitor(
             `${label} runtime rejected the configured state: ${JSON.stringify(terminalRejection)}`,
           );
         }
+        const currentSignature = snapshotProgressSignature(snapshot);
         identicalIntervals =
-          previousSnapshot != null &&
-          snapshotProgressSignature(previousSnapshot) === snapshotProgressSignature(snapshot)
+          previousSnapshot != null && previousSignature === currentSignature
             ? identicalIntervals + 1
             : 0;
-        assertSnapshotProgress(previousSnapshot, snapshot, label, identicalIntervals);
+        assertSnapshotProgress(previousSnapshot, snapshot, label, identicalIntervals, {
+          previous: previousSignature,
+          current: currentSignature,
+        });
         previousSnapshot = snapshot;
+        previousSignature = currentSignature;
         if (stopAfterNextCapture) {
           stopped = true;
           break;

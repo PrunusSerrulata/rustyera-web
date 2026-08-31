@@ -271,7 +271,7 @@ async function execute(args) {
         describeDeadline: () => "browser game test exceeded its scenario deadline",
         eventType: "browser-game-snapshot",
         label: "Chromium game test",
-        output: (event) => trace.emit(JSON.parse(event)),
+        outputEvent: (event) => trace.emit(event),
       },
     );
     void snapshotMonitor.failure.catch(async (error) => {
