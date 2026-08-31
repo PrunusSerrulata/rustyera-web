@@ -84,6 +84,7 @@ async function execute(args) {
       scenario.compiled_cache === true || Boolean(process.env.RUSTYERA_TEST_COMPILED_CACHE_INPUT),
     compiledCacheInput: process.env.RUSTYERA_TEST_COMPILED_CACHE_INPUT,
     sourceIndexInput: process.env.RUSTYERA_TEST_SOURCE_INDEX_INPUT,
+    runtimeStorageInput: process.env.RUSTYERA_TEST_RUNTIME_STORAGE_INPUT,
     cleanSaves: scenario.clean_saves === true,
   });
   if (scenario.prepare_in_game_save) {
@@ -165,6 +166,8 @@ async function execute(args) {
           sourceIndexInput: process.env.RUSTYERA_TEST_SOURCE_INDEX_INPUT,
           sourceIndexOutput: process.env.RUSTYERA_TEST_SOURCE_INDEX_OUTPUT,
           projectOutput: process.env.RUSTYERA_TEST_PROJECT_OUTPUT,
+          runtimeStorageInput: process.env.RUSTYERA_TEST_RUNTIME_STORAGE_INPUT,
+          runtimeStorageOutput: process.env.RUSTYERA_TEST_RUNTIME_STORAGE_OUTPUT,
           succeeded: completedOutcome?.exitCode === 0 && runError == null,
           cacheSaved: compiledCacheSaved,
         }),

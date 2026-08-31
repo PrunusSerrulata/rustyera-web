@@ -316,6 +316,14 @@ export async function isolatedProject(source, options = {}) {
     );
     await alignProjectTimestampsWithSourceIndex(destination, options.sourceIndexInput);
   }
+  if (options.runtimeStorageInput) {
+    const runtimeRoot = await projectRuntimeStorageRoot(destination);
+    await mkdir(runtimeRoot, { recursive: true });
+    await cp(path.resolve(options.runtimeStorageInput), runtimeRoot, {
+      recursive: true,
+      preserveTimestamps: true,
+    });
+  }
   return { root, project: destination, close: () => rm(root, { recursive: true, force: true }) };
 }
 
@@ -368,6 +376,8 @@ export function crossHostArtifactPaths({
   sourceIndexInput,
   sourceIndexOutput,
   projectOutput,
+  runtimeStorageInput,
+  runtimeStorageOutput,
 }) {
   const resolvedSource = path.resolve(source);
   const resolvedIsolated = path.resolve(isolated);
@@ -376,17 +386,31 @@ export function crossHostArtifactPaths({
   const sourceIndexInputPath = sourceIndexInput ? path.resolve(sourceIndexInput) : undefined;
   const sourceIndex = sourceIndexOutput ? path.resolve(sourceIndexOutput) : undefined;
   const project = projectOutput ? path.resolve(projectOutput) : undefined;
+  const runtimeStorageInputPath = runtimeStorageInput
+    ? path.resolve(runtimeStorageInput)
+    : undefined;
+  const runtimeStorage = runtimeStorageOutput ? path.resolve(runtimeStorageOutput) : undefined;
   if (input && cache && input === cache) throw new Error("cache input and output must differ");
   if (sourceIndexInputPath && sourceIndex && sourceIndexInputPath === sourceIndex)
     throw new Error("source-index input and output must differ");
-  const outputs = [cache, sourceIndex, project].filter(Boolean);
+  if (runtimeStorageInputPath && runtimeStorageInputPath === runtimeStorage)
+    throw new Error("runtime storage input and output must differ");
+  const outputs = [cache, sourceIndex, project, runtimeStorage].filter(Boolean);
   if (new Set(outputs).size !== outputs.length)
     throw new Error("cross-host artifact outputs must differ");
   for (const target of outputs) {
     if (pathsOverlap(target, resolvedSource) || pathsOverlap(target, resolvedIsolated))
       throw new Error(`cross-host artifact target overlaps project state: ${target}`);
   }
-  return { input, cache, sourceIndexInput: sourceIndexInputPath, sourceIndex, project };
+  return {
+    input,
+    cache,
+    sourceIndexInput: sourceIndexInputPath,
+    sourceIndex,
+    project,
+    runtimeStorageInput: runtimeStorageInputPath,
+    runtimeStorage,
+  };
 }
 
 export async function publishCrossHostArtifacts({
@@ -397,6 +421,8 @@ export async function publishCrossHostArtifacts({
   sourceIndexInput,
   sourceIndexOutput,
   projectOutput,
+  runtimeStorageInput,
+  runtimeStorageOutput,
   succeeded,
   cacheSaved,
 }) {
@@ -411,8 +437,10 @@ export async function publishCrossHostArtifacts({
     sourceIndexInput,
     sourceIndexOutput,
     projectOutput,
+    runtimeStorageInput,
+    runtimeStorageOutput,
   });
-  if (!targets.cache && !targets.sourceIndex && !targets.project) return;
+  if (!targets.cache && !targets.sourceIndex && !targets.project && !targets.runtimeStorage) return;
   if (targets.cache && !cacheSaved)
     throw new Error("compiled cache output requires an observed successful cache save");
   if (targets.cache && (await pathExists(targets.cache)))
@@ -421,9 +449,15 @@ export async function publishCrossHostArtifacts({
     throw new Error(`source-index output target must not exist: ${targets.sourceIndex}`);
   if (targets.project && (await directoryNonempty(targets.project)))
     throw new Error(`project output target must be absent or empty: ${targets.project}`);
+  if (targets.runtimeStorage && (await directoryNonempty(targets.runtimeStorage)))
+    throw new Error(
+      `runtime storage output target must be absent or empty: ${targets.runtimeStorage}`,
+    );
   const targetParents = [
     ...new Set(
-      [targets.cache, targets.sourceIndex, targets.project].filter(Boolean).map(path.dirname),
+      [targets.cache, targets.sourceIndex, targets.project, targets.runtimeStorage]
+        .filter(Boolean)
+        .map(path.dirname),
     ),
   ];
   if (targetParents.length > 1)
@@ -450,6 +484,13 @@ export async function publishCrossHostArtifacts({
       const temporary = path.join(temporaryRoot, "project");
       await copyProjectSources(isolated, temporary);
     }
+    if (targets.runtimeStorage) {
+      const temporary = path.join(temporaryRoot, "runtime-storage");
+      await cp(await projectRuntimeStorageRoot(isolated), temporary, {
+        recursive: true,
+        preserveTimestamps: true,
+      });
+    }
     if (targets.cache)
       await rename(path.join(temporaryRoot, "compiled-project.reracache"), targets.cache);
     if (targets.sourceIndex)
@@ -457,6 +498,10 @@ export async function publishCrossHostArtifacts({
     if (targets.project) {
       await rm(targets.project, { recursive: true, force: true });
       await rename(path.join(temporaryRoot, "project"), targets.project);
+    }
+    if (targets.runtimeStorage) {
+      await rm(targets.runtimeStorage, { recursive: true, force: true });
+      await rename(path.join(temporaryRoot, "runtime-storage"), targets.runtimeStorage);
     }
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });

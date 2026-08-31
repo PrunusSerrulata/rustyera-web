@@ -52,6 +52,45 @@ describe("browser game runner progress policy", () => {
     }
   });
 
+  it("hands owned Snake runtime storage to a fresh isolated client", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rustyera-snake-storage-handoff-test-"));
+    const source = path.join(root, "source");
+    const output = path.join(root, "runtime-storage");
+    let producer: Awaited<ReturnType<typeof isolatedProject>> | undefined;
+    let consumer: Awaited<ReturnType<typeof isolatedProject>> | undefined;
+    try {
+      await mkdir(source, { recursive: true });
+      await writeFile(
+        path.join(source, "reraconfig.toml"),
+        '[compatibility]\nprofile = "emuera.skia.snake"\n',
+      );
+      producer = await isolatedProject(source);
+      const producerRoot = await projectRuntimeStorageRoot(producer.project);
+      const revision = path.join(producerRoot, "data", "sql", "v1", "identity", "revision");
+      await mkdir(path.dirname(revision), { recursive: true });
+      await writeFile(revision, new Uint8Array([1, 3, 3, 7]));
+
+      await publishCrossHostArtifacts({
+        source,
+        isolated: producer.project,
+        runtimeStorageOutput: output,
+        succeeded: true,
+        cacheSaved: false,
+      });
+      consumer = await isolatedProject(source, { runtimeStorageInput: output });
+      const consumerRoot = await projectRuntimeStorageRoot(consumer.project);
+      expect([
+        ...new Uint8Array(
+          await readFile(path.join(consumerRoot, "data", "sql", "v1", "identity", "revision")),
+        ),
+      ]).toEqual([1, 3, 3, 7]);
+    } finally {
+      await consumer?.close();
+      await producer?.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("streams every remote filesystem write chunk into one atomically committed file", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "rustyera-remote-fs-test-"));
     const installedBindings: string[] = [];

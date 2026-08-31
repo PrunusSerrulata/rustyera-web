@@ -11,6 +11,7 @@ export function isolatedProject(
     compiledCache?: boolean;
     compiledCacheInput?: string;
     sourceIndexInput?: string;
+    runtimeStorageInput?: string;
   },
 ): Promise<IsolatedProject>;
 
@@ -24,6 +25,8 @@ export function publishCrossHostArtifacts(options: {
   sourceIndexInput?: string;
   sourceIndexOutput?: string;
   projectOutput?: string;
+  runtimeStorageInput?: string;
+  runtimeStorageOutput?: string;
   succeeded: boolean;
   cacheSaved: boolean;
 }): Promise<void>;
