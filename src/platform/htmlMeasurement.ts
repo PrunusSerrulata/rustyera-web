@@ -34,6 +34,7 @@ import {
 import {
   RuntimeServiceError,
   isBoundedUnsignedInteger,
+  sameServiceInteger,
   serviceInteger,
 } from "@/core/runtimeServiceProtocol";
 
@@ -73,29 +74,38 @@ export class HtmlMeasurementProvider {
     validateProbe(probe, binding.replaceFullWidthSpaces);
     const document = cloneBounded(probe.document);
     const cuts = cloneBounded(probe.cuts);
-    return this.schedule(probe.style, binding, guard, async (style, frozen, current) => {
-      let work = inspectHtmlDocument(document, frozen.replaceFullWidthSpaces).work;
-      const documents = [document];
-      for (const cut of cuts) {
+    return this.schedule(
+      probe.style,
+      binding,
+      guard,
+      [document],
+      async (style, frozen, current) => {
+        let work = inspectHtmlDocument(document, frozen.replaceFullWidthSpaces).work;
+        const documents = [document];
+        for (const cut of cuts) {
+          current.assertCurrent();
+          const prefix = htmlPrefixDocument(document, cut);
+          work += inspectHtmlDocument(prefix, frozen.replaceFullWidthSpaces).work;
+          if (work > HTML_MEASUREMENT_LIMITS.work)
+            throw new RuntimeServiceError(
+              "resource_limit",
+              "HTML prefix work exceeds the per-probe budget",
+            );
+          documents.push(prefix);
+        }
+        // Shape each prefix independently, but read every width from one settled DOM layout.
+        // Mounting/unmounting between cuts can mix fallback-font epochs in native browsers.
+        const measured = await this.render(documents, style, frozen, current, "part");
         current.assertCurrent();
-        const prefix = htmlPrefixDocument(document, cut);
-        work += inspectHtmlDocument(prefix, frozen.replaceFullWidthSpaces).work;
-        if (work > HTML_MEASUREMENT_LIMITS.work)
-          throw new RuntimeServiceError(
-            "resource_limit",
-            "HTML prefix work exceeds the per-probe budget",
-          );
-        documents.push(prefix);
-      }
-      // Shape each prefix independently, but read every width from one settled DOM layout.
-      // Mounting/unmounting between cuts can mix fallback-font epochs in native browsers.
-      const measured = await this.render(documents, style, frozen, current, "part");
-      current.assertCurrent();
-      return {
-        ...measured[0],
-        cuts: cuts.map((cut, index) => ({ id: cut.id, advancePx: measured[index + 1].advancePx })),
-      };
-    });
+        return {
+          ...measured[0],
+          cuts: cuts.map((cut, index) => ({
+            id: cut.id,
+            advancePx: measured[index + 1].advancePx,
+          })),
+        };
+      },
+    );
   }
 
   async measureImageSlot(
@@ -118,6 +128,7 @@ export class HtmlMeasurementProvider {
       probe.style,
       binding,
       guard,
+      [document, missing],
       async (style, frozen, current) => {
         const sprite = frozen.resources.sprites?.find(
           (item) => item.name.toUpperCase() === name.toUpperCase(),
@@ -152,6 +163,7 @@ export class HtmlMeasurementProvider {
       probe.style,
       binding,
       guard,
+      [document],
       async (style, frozen, current) => {
         await this.render(document, style, frozen, current, "ready");
         current.assertCurrent();
@@ -169,7 +181,7 @@ export class HtmlMeasurementProvider {
   ): Promise<HtmlMeasurementResult> {
     inspectHtmlDocument(document, binding.replaceFullWidthSpaces);
     const frozenDocument = cloneBounded(document);
-    return this.schedule(style, binding, guard, (frozenStyle, frozen, current) =>
+    return this.schedule(style, binding, guard, [frozenDocument], (frozenStyle, frozen, current) =>
       this.render(frozenDocument, frozenStyle, frozen, current, "document"),
     );
   }
@@ -178,6 +190,7 @@ export class HtmlMeasurementProvider {
     style: HtmlQueryStyle,
     binding: HtmlMeasurementBinding,
     guard: HtmlMeasurementGuard,
+    documents: readonly CanonicalHtmlDocument[],
     run: (
       style: HtmlQueryStyle,
       binding: HtmlMeasurementBinding,
@@ -195,7 +208,7 @@ export class HtmlMeasurementProvider {
       ...binding,
       context: { ...binding.context },
       preferences: { ...binding.preferences },
-      resources: cloneResources(binding.resources),
+      resources: cloneResources(binding.resources, documents),
     };
     const generation = this.generation;
     const viewportIdentity = measurementViewportIdentity(binding.viewport);
@@ -726,14 +739,94 @@ function validateSlots(document: CanonicalHtmlDocument, fontSize: number): void 
   visit(document.nodes);
 }
 
-function cloneResources(resources: HtmlMeasurementResources): HtmlMeasurementResources {
+function cloneResources(
+  resources: HtmlMeasurementResources,
+  documents: readonly CanonicalHtmlDocument[],
+): HtmlMeasurementResources {
   if (
     !resources ||
     !Array.isArray(resources.sprites ?? []) ||
     !Array.isArray(resources.canvases ?? [])
   )
     throw new RuntimeServiceError("invalid_request", "HTML resource projection is invalid");
-  if ((resources.sprites?.length ?? 0) > 4096 || (resources.canvases?.length ?? 0) > 128)
+  const sprites = resources.sprites ?? [];
+  const canvases = resources.canvases ?? [];
+  const selectedSprites: typeof sprites = [];
+  const selectedCanvases: typeof canvases = [];
+  const queuedSprites: typeof sprites = [];
+  const queuedCanvases: typeof canvases = [];
+  const seenSprites = new Set<object>();
+  const seenCanvases = new Set<object>();
+
+  const selectSprite = (name: unknown, revision?: unknown) => {
+    if (typeof name !== "string") return;
+    const key = name.toUpperCase();
+    const sprite = sprites.find(
+      (candidate) =>
+        candidate != null &&
+        typeof candidate.name === "string" &&
+        candidate.name.toUpperCase() === key &&
+        (revision == null || sameServiceInteger(candidate.revision, revision)),
+    );
+    if (!sprite || seenSprites.has(sprite)) return;
+    seenSprites.add(sprite);
+    selectedSprites.push(sprite);
+    queuedSprites.push(sprite);
+  };
+  const selectCanvas = (canvasId: unknown, revision?: unknown) => {
+    if (canvasId == null) return;
+    const canvas = canvases.find(
+      (candidate) =>
+        candidate != null &&
+        sameServiceInteger(candidate.canvas_id, canvasId) &&
+        (revision == null || sameServiceInteger(candidate.revision, revision)),
+    );
+    if (!canvas || seenCanvases.has(canvas)) return;
+    seenCanvases.add(canvas);
+    selectedCanvases.push(canvas);
+    queuedCanvases.push(canvas);
+  };
+  const collectDocument = (document: CanonicalHtmlDocument) => {
+    const visit = (nodes: CanonicalHtmlDocument["nodes"]) => {
+      for (const node of nodes)
+        if (node.type === "element") {
+          if (node.semantic.type === "image") {
+            selectSprite(node.semantic.source);
+            selectSprite(node.semantic.hover_source);
+            selectSprite(node.semantic.mask_source);
+          }
+          visit(node.children);
+        }
+    };
+    visit(document.nodes);
+  };
+  for (const document of documents) collectDocument(document);
+
+  for (let spriteIndex = 0, canvasIndex = 0; ;) {
+    while (spriteIndex < queuedSprites.length) {
+      const sprite = queuedSprites[spriteIndex++];
+      if (sprite.canvas_id != null) selectCanvas(sprite.canvas_id, sprite.canvas_revision);
+      const frame = sprite.frames?.[0];
+      if (frame?.canvas_id != null) selectCanvas(frame.canvas_id, frame.canvas_revision);
+    }
+    while (canvasIndex < queuedCanvases.length) {
+      const canvas = queuedCanvases[canvasIndex++];
+      for (const command of canvas.commands ?? []) {
+        if (command?.type === "draw_sprite") selectSprite(command.name, command.resource_revision);
+        else if (command?.type === "draw_canvas") {
+          selectCanvas(command.source_canvas_id, command.source_revision);
+          selectCanvas(command.mask_canvas_id, command.mask_revision);
+        }
+      }
+    }
+    if (spriteIndex >= queuedSprites.length && canvasIndex >= queuedCanvases.length) break;
+    if (selectedSprites.length > 4096 || selectedCanvases.length > 128)
+      throw new RuntimeServiceError(
+        "resource_limit",
+        "HTML resource projection exceeds the graph budget",
+      );
+  }
+  if (selectedSprites.length > 4096 || selectedCanvases.length > 128)
     throw new RuntimeServiceError(
       "resource_limit",
       "HTML resource projection exceeds the graph budget",
@@ -741,7 +834,7 @@ function cloneResources(resources: HtmlMeasurementResources): HtmlMeasurementRes
   let commands = 0;
   let encodedBytes = 0;
   const names = new Set<string>();
-  for (const sprite of resources.sprites ?? []) {
+  for (const sprite of selectedSprites) {
     if (
       !sprite ||
       typeof sprite.name !== "string" ||
@@ -758,7 +851,7 @@ function cloneResources(resources: HtmlMeasurementResources): HtmlMeasurementRes
     names.add(name);
   }
   const canvasIds = new Set<bigint>();
-  for (const canvas of resources.canvases ?? []) {
+  for (const canvas of selectedCanvases) {
     if (!canvas)
       throw new RuntimeServiceError("invalid_request", "HTML canvas projection is invalid");
     const id = BigInt(serviceInteger(canvas.canvas_id, "HTML canvas ID"));
@@ -793,7 +886,7 @@ function cloneResources(resources: HtmlMeasurementResources): HtmlMeasurementRes
       "resource_limit",
       "HTML canvas graph exceeds the retained work budget",
     );
-  return cloneBounded(resources);
+  return cloneBounded({ sprites: selectedSprites, canvases: selectedCanvases });
 }
 
 async function loadFonts(host: HTMLElement, scope: HtmlMeasurementScope): Promise<void> {

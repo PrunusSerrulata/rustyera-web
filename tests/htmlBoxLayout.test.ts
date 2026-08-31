@@ -455,6 +455,26 @@ describe("bounded offscreen HTML measurement", () => {
     expect(viewport.querySelector(".html-measurement-host")).toBeNull();
   });
 
+  it("does not retain an unrelated project sprite catalog for a text measurement", async () => {
+    const binding = measurementBinding(viewport);
+    binding.resources.sprites = Array.from({ length: 4_097 }, (_, index) => ({
+      name: `unused-${index}`,
+      revision: 1,
+      size: [1, 1],
+      frames: [{ resource_id: `unused-${index}.png` }],
+    }));
+
+    const result = await new HtmlMeasurementProvider().measure(
+      { document: queryText("plain text"), mode: "text_part", cuts: [], style: queryStyle() },
+      binding,
+      { signal: new AbortController().signal, assertCurrent() {} },
+    );
+
+    expect(result.advancePx).toBeGreaterThan(0);
+    expect(binding.resourceBridge.readResource).not.toHaveBeenCalled();
+    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+  });
+
   it("measures all independent prefixes in one settled font layout", async () => {
     let fontWidth = 12;
     let finishLoad!: () => void;
