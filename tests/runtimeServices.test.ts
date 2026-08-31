@@ -232,7 +232,9 @@ function serviceHarness(requestId: number | bigint = 1) {
     imagePixels: new RuntimeImagePixelCache(),
     projection: {
       prepare: vi.fn(async () => emptyPresentation()),
+      prepareEnvironment: vi.fn(async () => emptyPresentation()),
       matches: () => true,
+      matchesEnvironment: () => true,
       pointer: () => ({ x: 13, y: -21, buttonValue: "canonical" }),
       canvas: vi.fn(async () => 0x12345678),
       lineGeometry: vi.fn(async () => ({ top: -4, height: 18, viewportHeight: 600 })),
@@ -835,6 +837,17 @@ describe("projection runtime services", () => {
         [5, 9],
       ]),
     );
+  });
+
+  it("does not invalidate pointer sampling when only virtual layout identity advances", async () => {
+    const { context, send } = serviceHarness();
+    context.projection!.matches = () => false;
+
+    await handleRuntimeService(serviceRequest(), 42, context);
+
+    expect(context.projection!.prepareEnvironment).toHaveBeenCalledOnce();
+    const [response] = send.mock.calls[0] as unknown as [any];
+    expect(response.value.result.type).toBe("ready");
   });
 
   it("returns revision-bound geometry for the requested stable line identity", async () => {

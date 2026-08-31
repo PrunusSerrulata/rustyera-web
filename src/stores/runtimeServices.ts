@@ -29,7 +29,12 @@ import type { SqlProvider } from "@/platform/sqlProvider";
 
 export interface RuntimeProjectionServiceProvider {
   prepare(context: ProjectionQueryContext, lease: RuntimeServiceLease): Promise<PresentationState>;
+  prepareEnvironment(
+    context: ProjectionQueryContext,
+    lease: RuntimeServiceLease,
+  ): Promise<PresentationState>;
   matches(context: ProjectionQueryContext): boolean;
+  matchesEnvironment(context: ProjectionQueryContext): boolean;
   pointer(): PointerObservation;
   canvas(
     query: CanvasPixelQuery,
@@ -313,9 +318,11 @@ async function resolveRuntimeService(
     case "input_state/pointer_state": {
       const expected = projectionQuery(query);
       const provider = projectionProvider(context);
-      await provider.prepare(expected, context.lease);
+      // Pointer coordinates and hit testing depend on the mounted viewport and canonical
+      // presentation, but not on virtual-history row measurements that may settle later.
+      await provider.prepareEnvironment(expected, context.lease);
       context.lease.assertActive();
-      if (!provider.matches(expected))
+      if (!provider.matchesEnvironment(expected))
         throw new RuntimeServiceError("stale_projection", "pointer projection changed");
       const pointer = provider.pointer();
       return mapOf(

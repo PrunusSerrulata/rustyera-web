@@ -1666,7 +1666,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
         },
         projection: {
           prepare: prepareProjection,
+          prepareEnvironment: (expected, lease) => prepareProjection(expected, lease, false),
           matches: (expected) => active() && projectionMatches(expected),
+          matchesEnvironment: (expected) => active() && projectionEnvironmentMatches(expected),
           pointer: () => {
             if (preparedProjectionContext)
               testEvidence.pointerSample({
