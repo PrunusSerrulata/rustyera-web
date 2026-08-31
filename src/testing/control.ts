@@ -59,6 +59,7 @@ export function installWebTestControl(pinia: Pinia): void {
         frontendVersion: import.meta.env.VITE_RUSTYERA_FRONTEND_VERSION,
       },
       phase: store.phase,
+      cooperativeBackgroundWorkRevision: store.testBackgroundWorkRevision(),
       runtimeEpoch: store.runtimeEpoch,
       status: store.status,
       projectOpen: store.projectOpen,

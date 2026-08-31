@@ -16,6 +16,7 @@ export class RuntimePumpCoordinator {
   readonly #transitioning = ref(false);
   #timer: number | undefined;
   #handlingBatch = false;
+  #backgroundWorkRevision = 0;
 
   constructor(
     private readonly bridge: Pick<FrontendBridge, "pump">,
@@ -32,6 +33,12 @@ export class RuntimePumpCoordinator {
 
   get transitioning(): boolean {
     return this.#transitioning.value;
+  }
+
+  /** Advances only when the runtime completes one cooperative background slice. Idle polling must
+   * not manufacture watchdog progress. */
+  get backgroundWorkRevision(): number {
+    return this.#backgroundWorkRevision;
   }
 
   setReady(ready: boolean): void {
@@ -83,6 +90,7 @@ export class RuntimePumpCoordinator {
     }
     try {
       const batch = await operation();
+      this.#observeBackgroundWork(batch);
       this.#handlingBatch = true;
       try {
         await this.callbacks.handleBatch(batch);
@@ -113,6 +121,7 @@ export class RuntimePumpCoordinator {
         // present for the runtime's timer/input arbitration in the next pump.
         await this.callbacks.advanceTimedWait();
         batch = await this.bridge.pump();
+        this.#observeBackgroundWork(batch);
         this.#handlingBatch = true;
         try {
           await this.callbacks.handleBatch(batch);
@@ -134,6 +143,14 @@ export class RuntimePumpCoordinator {
     } finally {
       this.#pumping.value = false;
     }
+  }
+
+  #observeBackgroundWork(batch: PumpBatch): void {
+    if (batch.cooperativeBackgroundWork)
+      this.#backgroundWorkRevision = Math.min(
+        Number.MAX_SAFE_INTEGER,
+        this.#backgroundWorkRevision + 1,
+      );
   }
 }
 

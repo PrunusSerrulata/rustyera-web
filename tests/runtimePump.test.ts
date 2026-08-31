@@ -94,6 +94,27 @@ describe("runtime pump coordinator", () => {
     coordinator.clearTimer();
   });
 
+  it("reports only completed cooperative slices as background progress", async () => {
+    const cooperative = { ...batch("more_work"), cooperativeBackgroundWork: true };
+    const pump = vi
+      .fn<() => Promise<PumpBatch>>()
+      .mockResolvedValueOnce(cooperative)
+      .mockResolvedValue(batch());
+    const coordinator = createCoordinator({ pump });
+    coordinator.setReady(true);
+
+    coordinator.schedule(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(coordinator.backgroundWorkRevision).toBe(1);
+
+    await coordinator.submitAndHandle(async () => ({
+      ...submittedBatch(),
+      cooperativeBackgroundWork: true,
+    }));
+    expect(coordinator.backgroundWorkRevision).toBe(2);
+    coordinator.clearTimer();
+  });
+
   it("yields compute-only work at the contiguous fairness boundary", async () => {
     const pump = vi.fn(async () => batch("more_work"));
     const coordinator = createCoordinator({ pump });
