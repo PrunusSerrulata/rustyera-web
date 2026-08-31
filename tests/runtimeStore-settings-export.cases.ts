@@ -834,6 +834,25 @@ describe("runtime store settings-export", () => {
     expect(store.status).toBe("已导出 input-replay_20260730-003007.jsonl");
   });
 
+  it("accepts the traditional-save transfer kind for the test download", async () => {
+    const store = useRuntimeStore();
+    await store.enableDebug();
+
+    await store.exportTraditionalSaveForTest();
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        stateExportReadyEvent("traditional_save", 18, [1, 2, 3]),
+        stateExportChunkEvent(18, [1, 2, 3]),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(bridge.beginStateExport).toHaveBeenCalledWith("save00.sav", 3);
+    expect(store.testTransferState().export).toBeNull();
+    expect(store.fault).toBeNull();
+  });
+
   it("releases a failed operation-sequence request so it can be retried", async () => {
     bridge.submitRuntime.mockRejectedValueOnce(new Error("transport unavailable"));
     const store = useRuntimeStore();

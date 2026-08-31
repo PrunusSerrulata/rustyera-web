@@ -2194,6 +2194,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const activeExport: ExportState = {
       name,
       kind,
+      runtimeKind: request.kind,
       chunks: [],
       received: 0,
     };
@@ -2216,6 +2217,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     exportState = {
       name: "save00.sav",
       kind: "download",
+      runtimeKind: "traditional_save",
       chunks: [],
       received: 0,
     };

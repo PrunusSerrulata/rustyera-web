@@ -33,6 +33,7 @@ export const sessionFontFallback = ["system-ui", "sans-serif", "serif", "monospa
 
 export interface ExportState {
   name: string;
+  runtimeKind?: "vm_snapshot" | "input_replay" | "traditional_save";
   kind:
     | "download"
     | "input_replay_download"
@@ -63,6 +64,7 @@ export const diagnosisStateExportRequest = {
 } as const;
 
 export function runtimeExportKind(state: ExportState): string {
+  if (state.runtimeKind) return state.runtimeKind;
   switch (state.kind) {
     case "diagnosis_replay":
     case "input_replay_download":
