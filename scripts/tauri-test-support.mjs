@@ -40,32 +40,34 @@ export async function captureCompleteTauriSnapshot(browser, timeoutMs = SNAPSHOT
           const CDATA_SECTION_NODE = 4;
           const nodes = [...document.querySelectorAll("*")];
           const positions = new Map(nodes.map((element, index) => [element, index]));
-          const elements = nodes.map((element) => {
+          const displayed = new Array(nodes.length).fill(true);
+          const opaque = new Array(nodes.length).fill(true);
+          const contentVisible = new Array(nodes.length).fill(true);
+          const elements = nodes.map((element, index) => {
             const candidateValue = "value" in element ? element.value : null;
             const value = ["string", "number", "boolean"].includes(typeof candidateValue)
               ? candidateValue
               : null;
-            let visible = false;
-            if (element.isConnected && !element.hidden) {
-              if (typeof element.checkVisibility === "function") {
-                visible = element.checkVisibility({
-                  checkOpacity: true,
-                  checkVisibilityCSS: true,
-                  opacityProperty: true,
-                  visibilityProperty: true,
-                });
-              } else {
-                const style = getComputedStyle(element);
-                visible =
-                  style.display !== "none" &&
-                  style.visibility !== "hidden" &&
-                  style.visibility !== "collapse" &&
-                  style.opacity !== "0";
-              }
-              if (visible) {
-                const bounds = element.getBoundingClientRect();
-                visible = bounds.width > 0 && bounds.height > 0;
-              }
+            const parentIndex = positions.get(element.parentElement);
+            const style = getComputedStyle(element);
+            displayed[index] =
+              (parentIndex == null || displayed[parentIndex]) &&
+              !element.hidden &&
+              style.display !== "none";
+            opaque[index] = (parentIndex == null || opaque[parentIndex]) && style.opacity !== "0";
+            contentVisible[index] =
+              (parentIndex == null || contentVisible[parentIndex]) &&
+              style.contentVisibility !== "hidden";
+            let visible =
+              element.isConnected &&
+              displayed[index] &&
+              opaque[index] &&
+              contentVisible[index] &&
+              style.visibility !== "hidden" &&
+              style.visibility !== "collapse";
+            if (visible) {
+              const bounds = element.getBoundingClientRect();
+              visible = bounds.width > 0 && bounds.height > 0;
             }
             return {
               tag: element.tagName.toLowerCase(),

@@ -724,14 +724,8 @@ describe("Tauri end-to-end test support", () => {
     );
   });
 
-  it("uses native visibility checks without resolving a computed style for every scene node", async () => {
+  it("resolves visibility once per element while preserving nested text", async () => {
     document.body.innerHTML = "<main><span>map</span><button value='1'>move</button></main>";
-    const original = window.Element.prototype.checkVisibility;
-    const checkVisibility = vi.fn(() => true);
-    Object.defineProperty(window.Element.prototype, "checkVisibility", {
-      configurable: true,
-      value: checkVisibility,
-    });
     const computed = vi.spyOn(window, "getComputedStyle");
     for (const element of document.querySelectorAll("*")) {
       element.getBoundingClientRect = () => ({ width: 100, height: 20 });
@@ -741,16 +735,48 @@ describe("Tauri end-to-end test support", () => {
     try {
       const snapshot = await captureCompleteTauriSnapshot(browser);
       expect(snapshot.document.find((element) => element.tag === "main")?.text).toBe("mapmove");
-      expect(checkVisibility).toHaveBeenCalled();
-      expect(computed).not.toHaveBeenCalled();
+      expect(computed).toHaveBeenCalledTimes(document.querySelectorAll("*").length);
     } finally {
       computed.mockRestore();
-      if (original)
-        Object.defineProperty(window.Element.prototype, "checkVisibility", {
-          configurable: true,
-          value: original,
-        });
-      else delete window.Element.prototype.checkVisibility;
+    }
+  });
+
+  it("propagates non-rendered ancestor styles through the visibility topology", async () => {
+    document.body.innerHTML = [
+      "<div id='display'><span id='display-child'>display</span></div>",
+      "<div id='opacity'><span id='opacity-child'>opacity</span></div>",
+      "<div id='content'><span id='content-child'>content</span></div>",
+      "<span id='visible'>visible</span>",
+    ].join("");
+    const computed = vi.spyOn(window, "getComputedStyle").mockImplementation((element) => ({
+      display: element.id === "display" ? "none" : "block",
+      opacity: element.id === "opacity" ? "0" : "1",
+      contentVisibility: element.id === "content" ? "hidden" : "visible",
+      visibility: "visible",
+    }));
+    for (const element of document.querySelectorAll("*")) {
+      element.getBoundingClientRect = () => ({ width: 100, height: 20 });
+    }
+    const browser = { execute: vi.fn(async (callback) => callback()) };
+
+    try {
+      const snapshot = await captureCompleteTauriSnapshot(browser);
+      const visibility = Object.fromEntries(
+        snapshot.document
+          .filter((element) => element.attributes.id)
+          .map((element) => [element.attributes.id, element.visible]),
+      );
+      expect(visibility).toEqual({
+        display: false,
+        "display-child": false,
+        opacity: false,
+        "opacity-child": false,
+        content: false,
+        "content-child": false,
+        visible: true,
+      });
+    } finally {
+      computed.mockRestore();
     }
   });
 
