@@ -195,7 +195,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const runtimeViewport = new RuntimeViewportState(send);
   let viewportLayoutIdentity = "";
   let viewportLayoutIdentityAtProjection = "";
-  let viewportEnvironmentIdentityAtProjection = "";
   const projectionObservationBarriers = new Set<symbol>();
   let viewportProjectionBarrierGeneration = 0;
   let runtimeBatchSequence = 0;
@@ -2034,7 +2033,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (resetViewport) {
       viewportLayoutIdentity = "";
       viewportLayoutIdentityAtProjection = "";
-      viewportEnvironmentIdentityAtProjection = "";
       runtimeViewport.reset();
     }
     runtimeImport.reset();
@@ -3223,14 +3221,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   ): Promise<void> {
     viewportLayoutIdentity = layoutIdentity;
     const environmentIdentity = viewportEnvironmentIdentity();
-    const previousMeasurement = runtimeViewport.measurement.value;
-    const onlyLayoutChanged =
-      measurement != null &&
-      previousMeasurement != null &&
-      measurement.width === previousMeasurement.width &&
-      measurement.height === previousMeasurement.height &&
-      environmentIdentity === viewportEnvironmentIdentityAtProjection;
-    if (projectionObservationBarriers.size > 0 && onlyLayoutChanged) {
+    if (projectionObservationBarriers.size > 0 && measurement != null) {
       deferredViewportProjection = { measurement: { ...measurement }, layoutIdentity };
       return;
     }
@@ -3244,7 +3235,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
     );
     if (measurement) {
       viewportLayoutIdentityAtProjection = layoutIdentity;
-      viewportEnvironmentIdentityAtProjection = environmentIdentity;
     }
   }
 

@@ -78,10 +78,22 @@ function storeHtmlQuery(context: ProjectionQueryContext) {
   };
 }
 
+const providerLifetimeEndings = [
+  "complete",
+  "cancel",
+  "epoch",
+  "fault",
+  "teardown",
+  "resize",
+  "resize-observation",
+  "preferences",
+  "layout",
+] as const;
+
 describe("runtime store debug-presentation-reload", () => {
   installRuntimeStoreTestHarness();
 
-  it.each(["complete", "cancel", "epoch", "fault", "teardown", "resize", "preferences", "layout"])(
+  it.each(providerLifetimeEndings)(
     "binds HTML provider lifetime to the confirmed viewport through %s",
     async (ending) => {
       const viewport = document.createElement("main");
@@ -147,7 +159,24 @@ describe("runtime store debug-presentation-reload", () => {
         cleared.mockClear();
         if (ending === "teardown") store.teardown();
         else if (ending === "resize") width = 641;
-        else if (ending === "preferences") store.preferences.fontSizeOverridePx = 23;
+        else if (ending === "resize-observation") {
+          const projectionCount = bridge.submitRuntime.mock.calls.filter(
+            ([message]) => message.type === "projection_observation",
+          ).length;
+          width = 641;
+          await store.projectViewport({
+            width: 641,
+            height: 480,
+            lineColumns: 80,
+            chromeWidth: 0,
+            chromeHeight: 0,
+          });
+          expect(
+            bridge.submitRuntime.mock.calls.filter(
+              ([message]) => message.type === "projection_observation",
+            ),
+          ).toHaveLength(projectionCount);
+        } else if (ending === "preferences") store.preferences.fontSizeOverridePx = 23;
         else if (ending === "layout") {
           const projectionCount = bridge.submitRuntime.mock.calls.filter(
             ([message]) => message.type === "projection_observation",
@@ -208,7 +237,9 @@ describe("runtime store debug-presentation-reload", () => {
             ],
           });
         gate.resolve();
-        if (["complete", "resize", "preferences", "layout"].includes(ending)) {
+        if (
+          ["complete", "resize", "resize-observation", "preferences", "layout"].includes(ending)
+        ) {
           await advanceUntil(() =>
             bridge.submitRuntime.mock.calls.some(
               ([message]) => message.type === "service_response",
@@ -225,7 +256,7 @@ describe("runtime store debug-presentation-reload", () => {
                 .get(1),
             ).toEqual([0, [9250, []]]);
           else expect(response[0].value.result.error.code).toBe("frontend.stale_projection");
-          if (ending === "layout") {
+          if (["layout", "resize-observation"].includes(ending)) {
             await advanceUntil(
               () =>
                 bridge.submitRuntime.mock.calls.filter(
@@ -237,7 +268,7 @@ describe("runtime store debug-presentation-reload", () => {
               bridge.submitRuntime.mock.calls.filter(
                 ([message]) => message.type === "service_response",
               ),
-            ).toHaveLength(2);
+            ).toHaveLength(ending === "layout" ? 2 : 1);
             expect(messageTypes.lastIndexOf("service_response")).toBeLessThan(
               messageTypes.lastIndexOf("projection_observation"),
             );
