@@ -387,7 +387,7 @@ async function execute(args) {
           source: "automatic_enter",
           action: { type: "input", value: "" },
         });
-        await runAction(page, { type: "input", value: "" });
+        await runAction(page, { type: "input", value: "", keyboard_submit: true });
         if (reference) referenceObservation = await reference.step("", scenario.watches);
       }
       throw new Error("automatic wait budget exhausted");

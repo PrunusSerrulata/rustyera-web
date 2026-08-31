@@ -1116,7 +1116,8 @@ export async function runAction(page, action) {
     const value = String(action.value ?? "");
     await input.fill("");
     if (value) await input.pressSequentially(value);
-    await page.locator(".prompt-bar button[type=submit]").click();
+    if (action.keyboard_submit === true) await input.press("Enter");
+    else await page.locator(".prompt-bar button[type=submit]").click();
     if (beforeWaitId != null)
       await page.waitForFunction((waitId) => {
         const snapshot = window.__RUSTYERA_TEST__.snapshot();

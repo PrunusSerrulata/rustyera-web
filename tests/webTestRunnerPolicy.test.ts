@@ -144,7 +144,9 @@ describe("browser game runner progress policy", () => {
     expect(timedWaitBranch).toContain("continue;");
     expect(timedWaitBranch).not.toContain("runAction");
     expect(stableEnterBranch).toContain('source: "automatic_enter"');
-    expect(stableEnterBranch).toContain('await runAction(page, { type: "input", value: "" })');
+    expect(stableEnterBranch).toContain(
+      'await runAction(page, { type: "input", value: "", keyboard_submit: true })',
+    );
   });
 
   it("sets the repository browser path before importing Playwright", () => {
