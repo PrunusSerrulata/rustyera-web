@@ -423,6 +423,18 @@ async function execute(args) {
       trace.emit({ type: "checkpoint", path: target });
     }
 
+    async function saveTraditionalCheckpoint(configuredPath) {
+      const target = path.resolve(
+        configuredPath
+          ? path.resolve(path.dirname(scenario.path), configuredPath)
+          : path.join(path.dirname(tracePath), "owned-save.sav"),
+      );
+      await page.evaluate(() => window.__RUSTYERA_TEST__.exportTraditionalSave());
+      const download = await page.evaluate(() => window.__RUSTYERA_TEST__.takeDownload(30_000));
+      await writeFile(target, new Uint8Array(download.bytes));
+      trace.emit({ type: "checkpoint", kind: "traditional_save", path: target });
+    }
+
     trace.emit({
       type: "start",
       scenario: scenario.path,
@@ -511,6 +523,8 @@ async function execute(args) {
         if (current.goal.satisfied) return outcome("passed", 0);
       }
     }
+    if (scenario.traditional_save_after_actions)
+      await saveTraditionalCheckpoint(scenario.traditional_save_after_actions.path);
     if (current.goal.satisfied || (scenario.mode === "fixed" && !Object.keys(scenario.goal).length))
       return outcome("passed", 0);
     if (args.command === "run") {

@@ -149,6 +149,19 @@ describe("browser game runner progress policy", () => {
     );
   });
 
+  it("can persist an owned save immediately after the fixed action queue", () => {
+    const runner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
+    const afterActions = runner.slice(
+      runner.indexOf("for (const action of scenario.actions)"),
+      runner.indexOf('if (args.command === "run")'),
+    );
+
+    expect(afterActions).toContain("if (scenario.traditional_save_after_actions)");
+    expect(afterActions).toContain(
+      "await saveTraditionalCheckpoint(scenario.traditional_save_after_actions.path)",
+    );
+  });
+
   it("sets the repository browser path before importing Playwright", () => {
     const runner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
 
