@@ -780,6 +780,30 @@ describe("Tauri end-to-end test support", () => {
     }
   });
 
+  it("uses maintained HTML dimensions before allocating geometry rectangles", async () => {
+    document.body.innerHTML = "<main><span>map</span></main>";
+    for (const element of document.querySelectorAll("*")) {
+      Object.defineProperties(element, {
+        offsetWidth: { configurable: true, value: 100 },
+        offsetHeight: { configurable: true, value: 20 },
+      });
+      element.getBoundingClientRect = vi.fn(() => {
+        throw new Error("positive HTML dimensions must not resolve a rectangle");
+      });
+    }
+    const browser = { execute: vi.fn(async (callback) => callback()) };
+
+    const snapshot = await captureCompleteTauriSnapshot(browser);
+
+    expect(
+      snapshot.document
+        .filter((element) => ["main", "span"].includes(element.tag))
+        .every((element) => element.visible),
+    ).toBe(true);
+    for (const element of document.querySelectorAll("*"))
+      expect(element.getBoundingClientRect).not.toHaveBeenCalled();
+  });
+
   it("expands the compact text tree into exact textContent for every element", () => {
     const snapshot = {
       document: [

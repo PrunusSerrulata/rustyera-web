@@ -49,25 +49,38 @@ export async function captureCompleteTauriSnapshot(browser, timeoutMs = SNAPSHOT
               ? candidateValue
               : null;
             const parentIndex = positions.get(element.parentElement);
-            const style = getComputedStyle(element);
-            displayed[index] =
-              (parentIndex == null || displayed[parentIndex]) &&
-              !element.hidden &&
-              style.display !== "none";
-            opaque[index] = (parentIndex == null || opaque[parentIndex]) && style.opacity !== "0";
-            contentVisible[index] =
-              (parentIndex == null || contentVisible[parentIndex]) &&
-              style.contentVisibility !== "hidden";
-            let visible =
-              element.isConnected &&
-              displayed[index] &&
-              opaque[index] &&
-              contentVisible[index] &&
-              style.visibility !== "hidden" &&
-              style.visibility !== "collapse";
-            if (visible) {
-              const bounds = element.getBoundingClientRect();
-              visible = bounds.width > 0 && bounds.height > 0;
+            const ancestorsRender =
+              parentIndex == null ||
+              (displayed[parentIndex] && opaque[parentIndex] && contentVisible[parentIndex]);
+            let visible = false;
+            if (!ancestorsRender || !element.isConnected || element.hidden) {
+              displayed[index] = false;
+              opaque[index] = false;
+              contentVisible[index] = false;
+            } else {
+              const style = getComputedStyle(element);
+              displayed[index] = style.display !== "none";
+              opaque[index] = style.opacity !== "0";
+              contentVisible[index] = style.contentVisibility !== "hidden";
+              visible =
+                displayed[index] &&
+                opaque[index] &&
+                contentVisible[index] &&
+                style.visibility !== "hidden" &&
+                style.visibility !== "collapse";
+              if (visible) {
+                const offsetWidth = element.offsetWidth;
+                const offsetHeight = element.offsetHeight;
+                if (
+                  typeof offsetWidth !== "number" ||
+                  typeof offsetHeight !== "number" ||
+                  offsetWidth <= 0 ||
+                  offsetHeight <= 0
+                ) {
+                  const bounds = element.getBoundingClientRect();
+                  visible = bounds.width > 0 && bounds.height > 0;
+                }
+              }
             }
             return {
               tag: element.tagName.toLowerCase(),
