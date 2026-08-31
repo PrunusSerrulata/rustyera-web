@@ -1,17 +1,57 @@
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path, { resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { startCompleteSnapshotMonitor } from "../scripts/tauri-test-support.mjs";
-import { installRemoteFileSystem } from "../scripts/web-test-lib.mjs";
+import {
+  installRemoteFileSystem,
+  isolatedProject,
+  projectRuntimeStorageRoot,
+  publishCrossHostArtifacts,
+} from "../scripts/web-test-lib.mjs";
 import { finalizeBrowserGameRun } from "../scripts/web-test-lifecycle.mjs";
 
 afterEach(() => vi.useRealTimers());
 
 describe("browser game runner progress policy", () => {
+  it("hands Snake-profile caches through their profile-scoped runtime storage", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rustyera-snake-cache-handoff-test-"));
+    const source = path.join(root, "source");
+    const input = path.join(root, "input.reracache");
+    const output = path.join(root, "output.reracache");
+    let isolated: Awaited<ReturnType<typeof isolatedProject>> | undefined;
+    try {
+      await mkdir(source, { recursive: true });
+      await Promise.all([
+        writeFile(input, new Uint8Array([9, 8, 7, 6])),
+        writeFile(
+          path.join(source, "reraconfig.toml"),
+          '[compatibility]\nprofile = "emuera.skia.snake"\n',
+        ),
+      ]);
+      isolated = await isolatedProject(source, { compiledCacheInput: input });
+      const runtimeRoot = await projectRuntimeStorageRoot(isolated.project);
+      const cache = path.join(runtimeRoot, ".rustyera", "cache", "compiled-project.reracache");
+      expect([...new Uint8Array(await readFile(cache))]).toEqual([9, 8, 7, 6]);
+
+      await publishCrossHostArtifacts({
+        source,
+        isolated: isolated.project,
+        cacheInput: input,
+        cacheOutput: output,
+        succeeded: true,
+        cacheSaved: true,
+      });
+      expect([...new Uint8Array(await readFile(output))]).toEqual([9, 8, 7, 6]);
+    } finally {
+      await isolated?.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("streams every remote filesystem write chunk into one atomically committed file", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "rustyera-remote-fs-test-"));
     const installedBindings: string[] = [];

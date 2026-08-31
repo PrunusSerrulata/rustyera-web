@@ -213,6 +213,11 @@ export class TraceWriter {
 export async function isolatedProject(source, options = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "rustyera-web-test-"));
   const destination = path.join(root, "project");
+  const sourceRuntimeRoot = await projectRuntimeStorageRoot(source);
+  const compiledCacheRelative = path.relative(
+    source,
+    path.join(sourceRuntimeRoot, ".rustyera", "cache", "compiled-project.reracache"),
+  );
   await cp(source, destination, {
     recursive: true,
     preserveTimestamps: true,
@@ -222,16 +227,27 @@ export async function isolatedProject(source, options = {}) {
         return false;
       if (!relative.split(path.sep).includes(".rustyera")) return true;
       if (!options.compiledCache && !options.sourceIndexInput) return false;
-      const retained = [".rustyera", path.join(".rustyera", "cache")];
-      if (options.compiledCache)
-        retained.push(path.join(".rustyera", "cache", "compiled-project.reracache"));
+      const retained = new Set([".rustyera", path.join(".rustyera", "cache")]);
+      if (options.compiledCache) {
+        let retainedPath = compiledCacheRelative;
+        for (;;) {
+          retained.add(retainedPath);
+          const parent = path.dirname(retainedPath);
+          if (parent === retainedPath || parent === ".") break;
+          retainedPath = parent;
+        }
+      }
       if (options.sourceIndexInput)
-        retained.push(path.join(".rustyera", "cache", "source-index-v1.json"));
-      return retained.includes(relative);
+        retained.add(path.join(".rustyera", "cache", "source-index-v1.json"));
+      return retained.has(relative);
     },
   });
   if (options.compiledCacheInput) {
-    const cacheDirectory = path.join(destination, ".rustyera", "cache");
+    const cacheDirectory = path.join(
+      await projectRuntimeStorageRoot(destination),
+      ".rustyera",
+      "cache",
+    );
     await mkdir(cacheDirectory, { recursive: true });
     await cp(
       path.resolve(options.compiledCacheInput),
@@ -248,6 +264,31 @@ export async function isolatedProject(source, options = {}) {
     await alignProjectTimestampsWithSourceIndex(destination, options.sourceIndexInput);
   }
   return { root, project: destination, close: () => rm(root, { recursive: true, force: true }) };
+}
+
+export async function projectRuntimeStorageRoot(project) {
+  const configuration = await readFile(path.join(project, "reraconfig.toml"), "utf8").catch(
+    (error) => {
+      if (error?.code === "ENOENT") return "";
+      throw error;
+    },
+  );
+  let section = "";
+  let profile = "emuera.em";
+  for (const sourceLine of configuration.split(/\r?\n/)) {
+    const line = sourceLine.replace(/\s+#.*$/, "").trim();
+    const header = /^\[([^\]]+)]$/.exec(line);
+    if (header) {
+      section = header[1].trim();
+      continue;
+    }
+    if (section !== "compatibility") continue;
+    const entry = /^profile\s*=\s*["']([^"']+)["']\s*$/.exec(line);
+    if (entry) profile = entry[1];
+  }
+  if (profile === "emuera.em") return project;
+  if (profile === "emuera.skia.snake") return path.join(project, ".rustyera", "profiles", profile);
+  throw new Error(`unsupported compatibility profile for test storage: ${profile}`);
 }
 
 async function alignProjectTimestampsWithSourceIndex(project, sourceIndex) {
@@ -338,7 +379,12 @@ export async function publishCrossHostArtifacts({
   const temporaryRoot = await mkdtemp(path.join(targetParents[0], ".handoff-"));
   try {
     if (targets.cache) {
-      const cache = path.join(isolated, ".rustyera", "cache", "compiled-project.reracache");
+      const cache = path.join(
+        await projectRuntimeStorageRoot(isolated),
+        ".rustyera",
+        "cache",
+        "compiled-project.reracache",
+      );
       const temporary = path.join(temporaryRoot, "compiled-project.reracache");
       await copyFile(cache, temporary);
       await mkdir(path.dirname(targets.cache), { recursive: true });
