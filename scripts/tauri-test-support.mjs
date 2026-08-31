@@ -34,13 +34,50 @@ export async function captureCompleteTauriSnapshot(browser, timeoutMs = SNAPSHOT
   try {
     return await Promise.race([
       browser.execute(() => {
-        const elements = [...document.querySelectorAll("*")].map((element) => {
-          const style = getComputedStyle(element);
+        const ELEMENT_NODE = 1;
+        const TEXT_NODE = 3;
+        const CDATA_SECTION_NODE = 4;
+        const nodes = [...document.querySelectorAll("*")];
+        const positions = new Map(nodes.map((element, index) => [element, index]));
+        const texts = new Array(nodes.length).fill("");
+        // Preserve Element.textContent exactly without asking the browser to walk every
+        // descendant subtree again for every ancestor in a large scene.
+        for (let index = nodes.length - 1; index >= 0; index -= 1) {
+          const parts = [];
+          for (const child of nodes[index].childNodes) {
+            if (child.nodeType === TEXT_NODE || child.nodeType === CDATA_SECTION_NODE)
+              parts.push(child.nodeValue ?? "");
+            else if (child.nodeType === ELEMENT_NODE) {
+              const childIndex = positions.get(child);
+              if (childIndex != null) parts.push(texts[childIndex]);
+            }
+          }
+          texts[index] = parts.join("");
+        }
+        const elements = nodes.map((element, index) => {
           const bounds = element.getBoundingClientRect();
           const candidateValue = "value" in element ? element.value : null;
           const value = ["string", "number", "boolean"].includes(typeof candidateValue)
             ? candidateValue
             : null;
+          let visible = false;
+          if (element.isConnected && !element.hidden && bounds.width > 0 && bounds.height > 0) {
+            if (typeof element.checkVisibility === "function") {
+              visible = element.checkVisibility({
+                checkOpacity: true,
+                checkVisibilityCSS: true,
+                opacityProperty: true,
+                visibilityProperty: true,
+              });
+            } else {
+              const style = getComputedStyle(element);
+              visible =
+                style.display !== "none" &&
+                style.visibility !== "hidden" &&
+                style.visibility !== "collapse" &&
+                style.opacity !== "0";
+            }
+          }
           return {
             tag: element.tagName.toLowerCase(),
             attributes: Object.fromEntries(
@@ -48,18 +85,9 @@ export async function captureCompleteTauriSnapshot(browser, timeoutMs = SNAPSHOT
                 .map((attribute) => [attribute.name, attribute.value])
                 .sort(([left], [right]) => left.localeCompare(right)),
             ),
-            text: element.textContent ?? "",
+            text: texts[index],
             value,
-            visible: Boolean(
-              element.isConnected &&
-              !element.hidden &&
-              style.display !== "none" &&
-              style.visibility !== "hidden" &&
-              style.visibility !== "collapse" &&
-              style.opacity !== "0" &&
-              bounds.width > 0 &&
-              bounds.height > 0,
-            ),
+            visible,
           };
         });
         return {

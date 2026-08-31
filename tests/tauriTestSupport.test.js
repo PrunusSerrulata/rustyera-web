@@ -723,6 +723,36 @@ describe("Tauri end-to-end test support", () => {
     );
   });
 
+  it("uses native visibility checks without resolving a computed style for every scene node", async () => {
+    document.body.innerHTML = "<main><span>map</span><button value='1'>move</button></main>";
+    const original = window.Element.prototype.checkVisibility;
+    const checkVisibility = vi.fn(() => true);
+    Object.defineProperty(window.Element.prototype, "checkVisibility", {
+      configurable: true,
+      value: checkVisibility,
+    });
+    const computed = vi.spyOn(window, "getComputedStyle");
+    for (const element of document.querySelectorAll("*")) {
+      element.getBoundingClientRect = () => ({ width: 100, height: 20 });
+    }
+    const browser = { execute: vi.fn(async (callback) => callback()) };
+
+    try {
+      const snapshot = await captureCompleteTauriSnapshot(browser);
+      expect(snapshot.document.find((element) => element.tag === "main")?.text).toBe("mapmove");
+      expect(checkVisibility).toHaveBeenCalled();
+      expect(computed).not.toHaveBeenCalled();
+    } finally {
+      computed.mockRestore();
+      if (original)
+        Object.defineProperty(window.Element.prototype, "checkVisibility", {
+          configurable: true,
+          value: original,
+        });
+      else delete window.Element.prototype.checkVisibility;
+    }
+  });
+
   it("rejects a complete snapshot command that exceeds its hard deadline", async () => {
     const browser = { execute: vi.fn(() => new Promise(() => {})) };
 
