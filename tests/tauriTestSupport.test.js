@@ -68,6 +68,7 @@ import {
   captureCompleteTauriSnapshot,
   focusCurrentTauriWindow,
   resolveTauriBinary,
+  snapshotCaptureTimeout,
   snapshotProgressSignature,
   startTauriSessionMonitor,
 } from "../scripts/tauri-test-support.mjs";
@@ -728,6 +729,12 @@ describe("Tauri end-to-end test support", () => {
     await expect(captureCompleteTauriSnapshot(browser, 1)).rejects.toThrow(
       "complete snapshot capture exceeded 1 ms",
     );
+  });
+
+  it("allows four capture intervals only while the previous snapshot is loading", () => {
+    expect(snapshotCaptureTimeout(undefined, 5_000)).toBe(5_000);
+    expect(snapshotCaptureTimeout({ runtime: { projectLoading: false } }, 5_000)).toBe(5_000);
+    expect(snapshotCaptureTimeout({ runtime: { projectLoading: true } }, 5_000)).toBe(20_000);
   });
 
   it("rejects the second consecutive identical complete snapshot", () => {

@@ -79,6 +79,10 @@ export async function captureCompleteTauriSnapshot(browser, timeoutMs = SNAPSHOT
   }
 }
 
+export function snapshotCaptureTimeout(previousSnapshot, interval = SNAPSHOT_INTERVAL_MS) {
+  return previousSnapshot?.runtime?.projectLoading === true ? interval * 4 : interval;
+}
+
 export function assertSnapshotProgress(
   previousSnapshot,
   currentSnapshot,
@@ -169,7 +173,10 @@ export function startTauriSessionMonitor(
         if (deadline != null && Date.now() >= deadline) {
           throw new Error(describeDeadline());
         }
-        const captured = await captureCompleteTauriSnapshot(browser);
+        const captured = await captureCompleteTauriSnapshot(
+          browser,
+          snapshotCaptureTimeout(previousSnapshot, interval),
+        );
         const snapshot = { ...captured, operation: snapshotContext() };
         const runtime = captured.runtime;
         // Persist the failure frontier before an observer or terminal-state check can throw.

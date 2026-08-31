@@ -15,6 +15,8 @@ export interface CompleteSnapshotMonitorOptions {
 
 export function snapshotProgressSignature(snapshot: unknown): string;
 
+export function snapshotCaptureTimeout(previousSnapshot: unknown, interval?: number): number;
+
 export function resolveTauriBinary(
   targetDirectory: string,
   release: boolean,
