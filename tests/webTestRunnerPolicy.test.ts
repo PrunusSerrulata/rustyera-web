@@ -33,12 +33,16 @@ describe("browser game runner progress policy", () => {
 
   it("uses the shared five-second complete snapshot monitor", () => {
     const runner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
+    const library = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const snapshots = readFileSync(resolve("scripts/tauri-test-support.mjs"), "utf8");
 
     expect(runner).toContain(
       'import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs"',
     );
     expect(runner).toContain('eventType: "browser-game-snapshot"');
     expect(runner).toContain("snapshotMonitor.failure");
+    expect(library).toContain("snapshotSummary()");
+    expect(snapshots).toContain("snapshotSummary?.()");
     expect(runner).not.toContain("OBSERVATION_REPORT_MS");
     expect(runner).not.toContain("OBSERVATION_STALL_MS");
     expect(runner).toContain("action.settle_auto_enter ?? action.auto_enter !== false");

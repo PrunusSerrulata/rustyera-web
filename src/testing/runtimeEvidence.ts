@@ -167,14 +167,23 @@ export class RuntimeEvidence {
 
   snapshot(sessionGeneration = 0): Record<string, unknown> {
     return {
+      ...this.summary(sessionGeneration),
+      bytes: this.bytes,
+      records: this.records.map((record) => JSON.parse(record)),
+      pointerSamples: this.pointerSamples.map((record) => JSON.parse(record)),
+    };
+  }
+
+  /** Lightweight state for animation-frame polling and the five-second watchdog. The immutable
+   * append-only ledgers remain available from snapshot(), but repeatedly cloning them would make
+   * observation cost grow with the session and can starve the game being observed. */
+  summary(sessionGeneration = 0): Record<string, unknown> {
+    return {
       version: 1,
       sessionGeneration,
       enabled: this.enabled,
       overflow: this.failure !== null,
       failure: this.failure,
-      bytes: this.bytes,
-      records: this.records.map((record) => JSON.parse(record)),
-      pointerSamples: this.pointerSamples.map((record) => JSON.parse(record)),
     };
   }
 

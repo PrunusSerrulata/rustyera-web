@@ -1,5 +1,6 @@
 import {
   configureServiceLifecycle,
+  serviceLifecycleSummary,
   serviceLifecycleSnapshot,
   type ServiceLifecycleConfiguration,
 } from "@/testing/serviceLifecycle";
@@ -16,6 +17,7 @@ export interface WebTestControl {
   openProject(): Promise<void>;
   waitForStableObservation(timeoutMs?: number): Promise<Record<string, unknown>>;
   snapshot(): Record<string, unknown>;
+  snapshotSummary(): Record<string, unknown>;
   mediaPlacements(): Record<string, unknown>;
   mediaReplay(resourceName: string): Record<string, unknown>;
   inspect(watches: string[]): Promise<Record<string, unknown>>;
@@ -46,11 +48,11 @@ export function isStableObservationCandidate(
 
 export function installWebTestControl(pinia: Pinia): void {
   const store = useRuntimeStore(pinia);
-  const snapshot = (): Record<string, unknown> =>
+  const createSnapshot = (summary: boolean): Record<string, unknown> =>
     serialize({
       bridgeKind: store.bridgeKind,
-      serviceEvidence: store.testRuntimeEvidence(),
-      serviceLifecycle: serviceLifecycleSnapshot(),
+      serviceEvidence: summary ? store.testRuntimeEvidenceSummary() : store.testRuntimeEvidence(),
+      serviceLifecycle: summary ? serviceLifecycleSummary() : serviceLifecycleSnapshot(),
       buildIdentity: {
         corePin: import.meta.env.VITE_RUSTYERA_CORE_FULL_REVISION,
         wasmRevision: import.meta.env.VITE_RUSTYERA_WASM_REVISION,
@@ -106,12 +108,15 @@ export function installWebTestControl(pinia: Pinia): void {
       },
       lastDownload: downloadSummary(window.__RUSTYERA_TEST_DOWNLOADS__?.at(-1)),
     });
+  const snapshot = (): Record<string, unknown> => createSnapshot(false);
+  const snapshotSummary = (): Record<string, unknown> => createSnapshot(true);
 
   window.__RUSTYERA_TEST__ = {
     configure: (configuration) => store.configureTestRun(configuration),
     configureServiceLifecycle,
     openProject: () => store.openProject(),
     snapshot,
+    snapshotSummary,
     mediaPlacements: () => presentationMedia(store.presentation),
     mediaReplay: (resourceName) => mediaReplay(store.presentation.resources, resourceName),
     inspect: (watches) => store.inspectWatches(watches),
@@ -144,7 +149,7 @@ export function installWebTestControl(pinia: Pinia): void {
       let previous = "";
       let stableFrames = 0;
       while (performance.now() < deadline) {
-        const current = JSON.stringify(snapshot());
+        const current = JSON.stringify(snapshotSummary());
         const observable = isStableObservationCandidate(
           store.phase,
           store.canInteract,

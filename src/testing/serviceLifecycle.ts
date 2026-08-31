@@ -89,9 +89,15 @@ export function takeServiceLifecycleDiagnosisExportPath(): string | undefined {
 
 export function serviceLifecycleSnapshot(): Record<string, unknown> {
   return {
+    ...serviceLifecycleSummary(),
+    records: records.map((record) => ({ ...record })),
+  };
+}
+
+export function serviceLifecycleSummary(): Record<string, unknown> {
+  return {
     enabled: import.meta.env.VITE_RUSTYERA_TEST === "1" && configuration !== undefined,
     failure,
-    records: records.map((record) => ({ ...record })),
   };
 }
 

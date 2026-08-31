@@ -135,6 +135,30 @@ describe("runtime evidence observations", () => {
     );
   });
 
+  it("provides constant-size polling state without cloning append-only ledgers", () => {
+    const evidence = new RuntimeEvidence(true);
+    evidence.receive({
+      channel: "runtime",
+      epoch: 2n,
+      sequence: 3n,
+      messageId: 4n,
+      message: { type: "service_request", value: { payload: [1, 2, 3] } },
+    });
+
+    expect(evidence.summary(7)).toEqual({
+      version: 1,
+      sessionGeneration: 7,
+      enabled: true,
+      overflow: false,
+      failure: null,
+    });
+    expect(evidence.summary(7)).not.toHaveProperty("records");
+    expect(evidence.snapshot(7)).toMatchObject({
+      sessionGeneration: 7,
+      records: [{ index: 0, direction: "receive" }],
+    });
+  });
+
   it("discloses overflow instead of truncating a successful-looking capture", () => {
     const evidence = new RuntimeEvidence(true, 1024, 1);
     evidence.sent("runtime", { type: "start" }, 1n, 2n);

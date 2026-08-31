@@ -64,7 +64,10 @@ export async function captureCompleteTauriSnapshot(browser, timeoutMs = SNAPSHOT
         });
         return {
           document: elements,
-          runtime: window.__RUSTYERA_TEST__?.snapshot() ?? null,
+          runtime:
+            window.__RUSTYERA_TEST__?.snapshotSummary?.() ??
+            window.__RUSTYERA_TEST__?.snapshot() ??
+            null,
         };
       }),
       new Promise((_, reject) => {

@@ -1187,7 +1187,7 @@ function hex(bytes) {
 
 export async function waitForAutomaticWaitChange(page, waitId) {
   await page.waitForFunction((previousWaitId) => {
-    const current = window.__RUSTYERA_TEST__.snapshot();
+    const current = window.__RUSTYERA_TEST__.snapshotSummary();
     return current.fault != null || current.wait?.wait_id !== previousWaitId;
   }, waitId);
   await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
@@ -1199,9 +1199,9 @@ export async function waitForRuntimeObservation(page, timeout) {
     const timedInput = new Promise((resolve) => {
       const poll = () => {
         if (!observing) return;
-        const current = window.__RUSTYERA_TEST__.snapshot();
+        const current = window.__RUSTYERA_TEST__.snapshotSummary();
         if (current.canInteract && current.wait?.deadline_ns != null) {
-          resolve(current);
+          resolve(window.__RUSTYERA_TEST__.snapshot());
           return;
         }
         window.requestAnimationFrame(poll);

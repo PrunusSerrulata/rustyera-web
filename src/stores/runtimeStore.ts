@@ -3845,6 +3845,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     inspectWatches,
     inspectTypedWatches,
     testRuntimeEvidence: () => testEvidence.snapshot(runtimeSessionObservationGeneration),
+    testRuntimeEvidenceSummary: () => testEvidence.summary(runtimeSessionObservationGeneration),
     openDebugDialog,
     closeDebugDialog,
     stepDebug,
