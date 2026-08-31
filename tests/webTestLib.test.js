@@ -970,6 +970,46 @@ describe("web game test scenario", () => {
     expect(locator.hover).toHaveBeenCalledOnce();
   });
 
+  it("waits for a timed input to advance without submitting an input", async () => {
+    const before = {
+      wait: {
+        wait_id: "283",
+        kind: "string_value",
+        deadline_ns: "69532300000",
+        viewport_policy: "preserve_user_viewport",
+      },
+    };
+    const after = {
+      wait: {
+        wait_id: "284",
+        kind: "string_value",
+        deadline_ns: "72532300000",
+        viewport_policy: "preserve_user_viewport",
+      },
+    };
+    const snapshots = [before, after];
+    const page = {
+      evaluate: vi.fn(async (callback) => {
+        if (String(callback).includes("waitForStableObservation")) return undefined;
+        return snapshots.shift() ?? after;
+      }),
+      waitForFunction: vi.fn(async () => undefined),
+    };
+
+    await expect(runAction(page, { type: "wait_timed_input_change" })).resolves.toEqual({
+      query: {
+        timed_input: {
+          previous_wait_id: "283",
+          next_wait_id: "284",
+          previous_kind: "string_value",
+          next_kind: "string_value",
+          viewport_policy: "preserve_user_viewport",
+        },
+      },
+    });
+    expect(page.waitForFunction).toHaveBeenCalledWith(expect.any(Function), "283");
+  });
+
   it("scrolls a focused production viewport with real keyboard input", async () => {
     const locator = { focus: vi.fn() };
     const page = {

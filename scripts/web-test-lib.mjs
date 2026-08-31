@@ -1046,6 +1046,24 @@ export async function runAction(page, action) {
     }
     throw new Error(`void wait budget exhausted after ${maximum} attempts`);
   }
+  if (action.type === "wait_timed_input_change") {
+    const before = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    if (before.wait?.deadline_ns == null)
+      throw new Error("wait_timed_input_change requires an active timed input wait");
+    await waitForAutomaticWaitChange(page, before.wait.wait_id);
+    const after = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    return {
+      query: {
+        timed_input: {
+          previous_wait_id: before.wait.wait_id,
+          next_wait_id: after.wait?.wait_id ?? null,
+          previous_kind: before.wait.kind,
+          next_kind: after.wait?.kind ?? null,
+          viewport_policy: before.wait.viewport_policy,
+        },
+      },
+    };
+  }
   if (action.type === "input") {
     const beforeWaitId = await page.evaluate(
       () => window.__RUSTYERA_TEST__.snapshot().wait?.wait_id,

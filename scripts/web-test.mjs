@@ -39,6 +39,7 @@ const OBSERVABLE_STEP_ACTION_TYPES = new Set([
   "drain_void_waits",
   "advance_intermediate_waits_until",
   "advance_enter_waits_until",
+  "wait_timed_input_change",
 ]);
 
 function isObservableStepAction(type) {
