@@ -770,13 +770,19 @@ export async function runAction(page, action) {
     return { semanticInput: action.semantic_input };
   }
   if (action.type === "wait_compiled_cache_saved") {
-    await page.waitForFunction(() => {
-      const state = window.__RUSTYERA_TEST__.snapshot();
-      return (
-        state.status === "项目缓存已保存。" ||
-        state.logs?.some((entry) => String(entry.message).includes("runtime.compiled_cache_failed"))
-      );
-    });
+    await page.waitForFunction(
+      () => {
+        const state = window.__RUSTYERA_TEST__.snapshot();
+        return (
+          state.status === "项目缓存已保存。" ||
+          state.logs?.some((entry) =>
+            String(entry.message).includes("runtime.compiled_cache_failed"),
+          )
+        );
+      },
+      undefined,
+      { timeout: 0 },
+    );
     const state = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
     const failure = state.logs?.find((entry) =>
       String(entry.message).includes("runtime.compiled_cache_failed"),

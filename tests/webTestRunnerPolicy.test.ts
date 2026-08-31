@@ -118,6 +118,7 @@ describe("browser game runner progress policy", () => {
     expect(snapshots).toContain('runtime?.transfer?.export?.name === "compiled-project.reracache"');
     expect(library).toContain('includes("runtime.compiled_cache_failed")');
     expect(library).toContain("compiled cache export failed:");
+    expect(library).toContain("{ timeout: 0 },");
   });
 
   it("treats an output-marker compatibility probe as startup-only", () => {
