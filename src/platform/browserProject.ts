@@ -157,6 +157,7 @@ export class BrowserProject {
   private scanMetricsValue: BrowserProjectScanMetrics = emptyScanMetrics();
   private compatibilityValue?: CompatibilityIdentity;
   private resolvedConfigurationDigest?: Uint8Array | null;
+  private dataRootValue?: FileSystemDirectoryHandle;
 
   constructor(
     readonly root: FileSystemDirectoryHandle,
@@ -170,7 +171,9 @@ export class BrowserProject {
   }
 
   setCompatibility(value: unknown): void {
-    this.compatibilityValue = requireCompatibilityIdentity(value);
+    const compatibility = requireCompatibilityIdentity(value);
+    if (this.compatibilityValue?.profile !== compatibility.profile) this.dataRootValue = undefined;
+    this.compatibilityValue = compatibility;
     if (this.manifestValue) this.manifestValue.compatibility = this.compatibilityValue;
   }
 
@@ -214,10 +217,12 @@ export class BrowserProject {
 
   async dataRoot(create = true): Promise<FileSystemDirectoryHandle> {
     if (this.compatibility().profile === "emuera.em") return this.root;
+    if (this.dataRootValue) return this.dataRootValue;
     let directory = this.root;
     for (const name of [".rustyera", "profiles", "emuera.skia.snake"])
       directory = await directory.getDirectoryHandle(name, { create });
-    return directory;
+    this.dataRootValue = directory;
+    return this.dataRootValue;
   }
 
   async cacheDirectory(create = false): Promise<FileSystemDirectoryHandle> {

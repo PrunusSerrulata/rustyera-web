@@ -1468,6 +1468,19 @@ it("does not bind mutable storage before compatibility resolution", async () => 
   await expect(project.dataRoot()).rejects.toThrow();
 });
 
+it("reuses the resolved snake data root across serial storage requests", async () => {
+  const root = new SaveDirectoryHandle("game");
+  const rootLookup = vi.spyOn(root, "getDirectoryHandle");
+  const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
+  project.setCompatibility(snakeCompatibility());
+
+  const first = await project.dataRoot();
+  const second = await project.dataRoot();
+
+  expect(second).toBe(first);
+  expect(rootLookup).toHaveBeenCalledTimes(1);
+});
+
 describe("manifest-authorized resource storage", () => {
   it("reads embedded resources without falling back to same-name project files", async () => {
     const root = new SaveDirectoryHandle("game");
