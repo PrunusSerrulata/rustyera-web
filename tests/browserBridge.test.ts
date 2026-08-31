@@ -857,7 +857,7 @@ describe("browser startup bridge", () => {
 
     expect(runtimeWorkers).toHaveLength(2);
     expect(firstWorker.terminate).toHaveBeenCalledOnce();
-    expect(requests[0]?.message.args[0]).toMatchObject({ retainProjectSourcePayloads: true });
+    expect(requests[0]?.message.args[0]).toMatchObject({ retainProjectSourcePayloads: false });
   });
 
   it("reports the live worker generation and current WASM linear memory", async () => {

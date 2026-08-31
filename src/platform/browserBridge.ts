@@ -133,7 +133,10 @@ export class BrowserBridge implements FrontendBridge {
     return this.recordRuntimeMemory(
       await this.worker.call("create", {
         ...options,
-        retainProjectSourcePayloads: !this.memoryConstrained,
+        // The browser project remains the authoritative reload source. Keeping a second copy of
+        // every decoded script inside WASM adds hundreds of MiB to large desktop projects while
+        // providing no recovery capability that the directory/project-file transfer lacks.
+        retainProjectSourcePayloads: false,
       }),
     );
   }
