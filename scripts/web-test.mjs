@@ -154,26 +154,22 @@ async function execute(args) {
     cleanups: [
       () => agentInput?.close(),
       () => reference?.close(),
+      () => referenceProject?.close(),
+      () =>
+        publishCrossHostArtifacts({
+          source: scenario.project,
+          isolated: webProject.project,
+          cacheInput: process.env.RUSTYERA_TEST_COMPILED_CACHE_INPUT,
+          cacheOutput: process.env.RUSTYERA_TEST_COMPILED_CACHE_OUTPUT,
+          sourceIndexInput: process.env.RUSTYERA_TEST_SOURCE_INDEX_INPUT,
+          sourceIndexOutput: process.env.RUSTYERA_TEST_SOURCE_INDEX_OUTPUT,
+          projectOutput: process.env.RUSTYERA_TEST_PROJECT_OUTPUT,
+          succeeded: completedOutcome?.exitCode === 0 && runError == null,
+          cacheSaved: compiledCacheSaved,
+        }),
       () => browser?.close(),
       () => server?.close(),
-      () => referenceProject?.close(),
-      async () => {
-        try {
-          await publishCrossHostArtifacts({
-            source: scenario.project,
-            isolated: webProject.project,
-            cacheInput: process.env.RUSTYERA_TEST_COMPILED_CACHE_INPUT,
-            cacheOutput: process.env.RUSTYERA_TEST_COMPILED_CACHE_OUTPUT,
-            sourceIndexInput: process.env.RUSTYERA_TEST_SOURCE_INDEX_INPUT,
-            sourceIndexOutput: process.env.RUSTYERA_TEST_SOURCE_INDEX_OUTPUT,
-            projectOutput: process.env.RUSTYERA_TEST_PROJECT_OUTPUT,
-            succeeded: completedOutcome?.exitCode === 0 && runError == null,
-            cacheSaved: compiledCacheSaved,
-          });
-        } finally {
-          await webProject.close();
-        }
-      },
+      () => webProject.close(),
     ],
     trace,
     classifyError,

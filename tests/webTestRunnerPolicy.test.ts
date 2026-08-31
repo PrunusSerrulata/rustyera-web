@@ -696,7 +696,11 @@ describe("browser game runner progress policy", () => {
     const order: string[] = [];
     const originalMonitorError = new Error("identical complete snapshots");
     const cleanups = [
-      vi.fn(() => order.push("cleanup-1")),
+      vi.fn(async () => {
+        order.push("cleanup-1-start");
+        await Promise.resolve();
+        order.push("cleanup-1-end");
+      }),
       vi.fn(() => {
         order.push("cleanup-2");
         throw new Error("secondary cleanup failure");
@@ -734,6 +738,7 @@ describe("browser game runner progress policy", () => {
     expect(events.find((event) => event.type === "error")?.message).not.toContain(
       "page closed after monitor failure",
     );
+    expect(order.indexOf("cleanup-1-end")).toBeLessThan(order.indexOf("cleanup-2"));
     expect(order.at(-1)).toBe("close");
     expect(order.indexOf("result")).toBeLessThan(order.indexOf("close"));
   });
