@@ -79,13 +79,20 @@ export async function captureCompleteTauriSnapshot(browser, timeoutMs = SNAPSHOT
   }
 }
 
-export function assertSnapshotProgress(previousSnapshot, currentSnapshot, label = "Tauri") {
+export function assertSnapshotProgress(
+  previousSnapshot,
+  currentSnapshot,
+  label = "Tauri",
+  identicalIntervals = 1,
+) {
   if (
     previousSnapshot != null &&
     snapshotProgressSignature(previousSnapshot) === snapshotProgressSignature(currentSnapshot)
   ) {
+    const requiredIntervals = currentSnapshot?.runtime?.projectLoading === true ? 4 : 1;
+    if (identicalIntervals < requiredIntervals) return;
     throw new Error(
-      `${label} end-to-end test stalled: two consecutive complete snapshots were identical: ${JSON.stringify(currentSnapshot)}`,
+      `${label} end-to-end test stalled: ${identicalIntervals} consecutive 5-second intervals had identical complete snapshots: ${JSON.stringify(currentSnapshot)}`,
     );
   }
 }
@@ -156,6 +163,7 @@ export function startTauriSessionMonitor(
 
   async function monitor() {
     let previousSnapshot;
+    let identicalIntervals = 0;
     try {
       while (!stopped) {
         if (deadline != null && Date.now() >= deadline) {
@@ -184,7 +192,12 @@ export function startTauriSessionMonitor(
             `${label} runtime rejected the configured state: ${JSON.stringify(terminalRejection)}`,
           );
         }
-        assertSnapshotProgress(previousSnapshot, snapshot, label);
+        identicalIntervals =
+          previousSnapshot != null &&
+          snapshotProgressSignature(previousSnapshot) === snapshotProgressSignature(snapshot)
+            ? identicalIntervals + 1
+            : 0;
+        assertSnapshotProgress(previousSnapshot, snapshot, label, identicalIntervals);
         previousSnapshot = snapshot;
         if (stopAfterNextCapture) {
           stopped = true;

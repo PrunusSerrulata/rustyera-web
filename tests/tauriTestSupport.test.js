@@ -734,11 +734,26 @@ describe("Tauri end-to-end test support", () => {
     const snapshot = { document: [{ tag: "main" }], runtime: { phase: "waiting_input" } };
 
     expect(() => assertSnapshotProgress(snapshot, structuredClone(snapshot))).toThrow(
-      /two consecutive complete snapshots were identical/,
+      /1 consecutive 5-second interval/,
     );
     expect(() =>
       assertSnapshotProgress(snapshot, { ...snapshot, runtime: { phase: "running" } }),
     ).not.toThrow();
+  });
+
+  it("allows three unchanged loading intervals and rejects the fourth", () => {
+    const snapshot = {
+      document: [{ tag: "main" }],
+      runtime: { phase: "negotiating", projectLoading: true },
+    };
+    for (const interval of [1, 2, 3]) {
+      expect(() =>
+        assertSnapshotProgress(snapshot, structuredClone(snapshot), "Browser", interval),
+      ).not.toThrow();
+    }
+    expect(() => assertSnapshotProgress(snapshot, structuredClone(snapshot), "Browser", 4)).toThrow(
+      /4 consecutive 5-second intervals/,
+    );
   });
 
   it("does not count growing capture history as game progress", () => {
@@ -865,8 +880,8 @@ describe("Tauri end-to-end test support", () => {
     const browser = { execute: vi.fn(async () => structuredClone(snapshot)) };
     const monitor = startTauriSessionMonitor(browser, { interval: 1, output: vi.fn() });
 
-    await expect(monitor.failure).rejects.toThrow(/two consecutive complete snapshots/);
-    await expect(monitor.stop()).rejects.toThrow(/two consecutive complete snapshots/);
+    await expect(monitor.failure).rejects.toThrow(/1 consecutive 5-second interval/);
+    await expect(monitor.stop()).rejects.toThrow(/1 consecutive 5-second interval/);
     expect(browser.execute).toHaveBeenCalledTimes(2);
   });
 
