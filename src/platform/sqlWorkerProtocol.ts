@@ -70,7 +70,7 @@ export function decodeSqlWorkerCommand(value: unknown): SqlWorkerCommand {
   if (typeof command.persistent !== "boolean") invalid("SQL Worker persistence flag");
   const initialBytes = optionalBytes(command.initialBytes, "SQL Worker initial database");
   const durableRevision = optionalDigest(command.durableRevision, "SQL Worker durable revision");
-  if (command.persistent && (!initialBytes || !durableRevision))
+  if (command.persistent && Boolean(initialBytes) !== Boolean(durableRevision))
     invalid("persistent SQL Worker database material");
   if (!command.persistent && (initialBytes || durableRevision))
     invalid("memory SQL Worker database material");

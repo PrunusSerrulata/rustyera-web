@@ -50,14 +50,15 @@ export interface SqlPublishOutcome {
 }
 
 export interface SqlStorageChain {
+  kind: "resource" | "memory";
   identityHex: string;
   currentDatabaseRevision?: string;
   currentStorageRevision?: string;
 }
 
 export interface SqlOpenMaterial {
-  bytes: Uint8Array;
-  durableRevision: Uint8Array;
+  bytes?: Uint8Array;
+  durableRevision?: Uint8Array;
   chain: SqlStorageChain;
 }
 
@@ -122,6 +123,7 @@ export class SqlStorage {
         durableRevision: revision.sha256,
         chain: {
           identityHex,
+          kind: "resource",
           // An exact orphan can be restored after a failed current-pointer publication. Its
           // first successful write may create the missing pointer with a Missing CAS; an exact
           // revision behind an existing pointer still conflicts instead of overwriting it.
@@ -138,6 +140,7 @@ export class SqlStorage {
         durableRevision: hexBytes(pointer.databaseRevision),
         chain: {
           identityHex,
+          kind: "resource",
           currentDatabaseRevision: pointer.databaseRevision,
           currentStorageRevision: pointer.storageRevision,
         },
@@ -168,6 +171,7 @@ export class SqlStorage {
         durableRevision: actualSeed,
         chain: {
           identityHex,
+          kind: "resource",
           currentDatabaseRevision: seedRevision,
           currentStorageRevision: concurrent.storageRevision,
         },
@@ -184,15 +188,31 @@ export class SqlStorage {
       durableRevision: actualSeed,
       chain: {
         identityHex,
+        kind: "resource",
         currentDatabaseRevision: seedRevision,
         currentStorageRevision: seedStorageRevision,
       },
     };
   }
 
+  async openMemory(
+    logicalName: string,
+    revision: { kind: "current" } | { kind: "exact"; sha256: Uint8Array },
+  ): Promise<SqlOpenMaterial> {
+    const identityHex = bytesHex(memoryIdentityDigest(logicalName));
+    const chain: SqlStorageChain = { kind: "memory", identityHex };
+    if (revision.kind === "current") return { chain };
+    const revisionHex = bytesHex(revision.sha256);
+    return {
+      bytes: await this.readRevision(identityHex, revisionHex, true),
+      durableRevision: revision.sha256,
+      chain: { ...chain, currentDatabaseRevision: revisionHex },
+    };
+  }
+
   async publish(
     chain: SqlStorageChain,
-    expectedRevision: Uint8Array,
+    expectedRevision: Uint8Array | undefined,
     bytes: Uint8Array,
     revision: Uint8Array,
   ): Promise<SqlPublishOutcome> {
@@ -201,10 +221,10 @@ export class SqlStorage {
         maximum_bytes: String(MAXIMUM_DATABASE_BYTES),
         actual_bytes: String(bytes.byteLength),
       });
-    const expectedHex = bytesHex(expectedRevision);
+    const expectedHex = expectedRevision ? bytesHex(expectedRevision) : undefined;
     if (chain.currentDatabaseRevision !== expectedHex)
       throw new SqlStorageError(SqlErrorCode.RevisionConflict, "SQL current revision changed", {
-        expected_revision: expectedHex,
+        expected_revision: expectedHex ?? "missing",
         actual_revision: chain.currentDatabaseRevision ?? "missing",
       });
     const revisionHex = bytesHex(revision);
@@ -215,6 +235,12 @@ export class SqlStorage {
       );
     await this.enforceChainQuota(chain.identityHex, revisionHex, bytes.byteLength);
     await this.writeRevision(chain.identityHex, revisionHex, bytes);
+    if (chain.kind === "memory") {
+      // Memory databases deliberately have no current pointer: a normal Open starts empty on
+      // every client lifecycle, while an owned save can still reopen any immutable exact blob.
+      chain.currentDatabaseRevision = revisionHex;
+      return { status: "committed", databaseRevision: revisionHex, storageRevision: revisionHex };
+    }
     const precondition: SqlStoragePrecondition = chain.currentStorageRevision
       ? { type: "revision", revision: chain.currentStorageRevision }
       : { type: "missing" };
@@ -398,6 +424,25 @@ export class SqlStorage {
       throw storageCommitError(error, transportFailureOutcome);
     }
   }
+}
+
+function memoryIdentityDigest(logicalName: string): Uint8Array {
+  const normalized = logicalName.toLowerCase();
+  const name = new TextEncoder().encode(normalized);
+  const prefix = new TextEncoder().encode("rustyera.sql.memory.v1\0");
+  const sqlite = new TextEncoder().encode(`${SQL_SQLITE_VERSION}\0`);
+  const bytes = new Uint8Array(prefix.length + 4 + name.length + sqlite.length + 4);
+  let offset = 0;
+  bytes.set(prefix, offset);
+  offset += prefix.length;
+  new DataView(bytes.buffer).setUint32(offset, name.length, false);
+  offset += 4;
+  bytes.set(name, offset);
+  offset += name.length;
+  bytes.set(sqlite, offset);
+  offset += sqlite.length;
+  new DataView(bytes.buffer).setUint32(offset, SQL_DATABASE_FORMAT_VERSION, false);
+  return sha256Bytes(bytes);
 }
 
 export function sqlRevisionPath(identityHex: string, revisionHex: string): string {

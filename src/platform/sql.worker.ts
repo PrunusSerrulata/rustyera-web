@@ -148,11 +148,15 @@ function runOperation(sqlite: Sqlite3Static, command: SqlWorkerExecuteCommand) {
         durableBytes: command.initialBytes?.slice(),
       };
       connections.set(handleKey(operation.connection), connection);
-      return encodeSqlResponse({
+      const response = encodeSqlResponse({
         provider: request.provider,
         database: databaseState(sqlite, connection),
         result: [0, [SQL_SQLITE_VERSION, limitsMap()]],
       });
+      // A new durable memory database needs an immutable empty revision before it can
+      // participate in owned saves, even when the game never executes a mutating statement.
+      preparePublication(sqlite, connection);
+      return response;
     }
     case "execute": {
       const connection = requiredConnection(operation.connection);

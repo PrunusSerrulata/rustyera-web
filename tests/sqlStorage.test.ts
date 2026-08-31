@@ -127,6 +127,22 @@ describe("SQL revision storage", () => {
     });
   });
 
+  it("stores memory revisions without a current pointer and reopens an exact revision", async () => {
+    const bridge = new MemorySqlBridge(new Uint8Array());
+    const storage = new SqlStorage(bridge as never);
+    const opened = await storage.openMemory("TR_DB", { kind: "current" });
+    const bytes = new TextEncoder().encode("memory database");
+    const revision = sha256Bytes(bytes);
+
+    await storage.publish(opened.chain, undefined, bytes, revision);
+    const restored = await storage.openMemory("tr_db", { kind: "exact", sha256: revision });
+
+    expect(bytesHex(restored.bytes!)).toBe(bytesHex(bytes));
+    expect(bytesHex(restored.durableRevision!)).toBe(bytesHex(revision));
+    expect(restored.chain.currentDatabaseRevision).toBe(bytesHex(revision));
+    expect(bridge.files.has(sqlCurrentPath(opened.chain.identityHex))).toBe(false);
+  });
+
   it("rejects a seed before writing when immutable chain quota is already exhausted", async () => {
     const seed = new TextEncoder().encode("new seed");
     const bridge = new MemorySqlBridge(seed);

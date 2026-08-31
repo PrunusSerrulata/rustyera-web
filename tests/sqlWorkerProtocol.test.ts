@@ -88,4 +88,36 @@ describe("SQL Worker structured-clone protocol", () => {
       "seed database",
     );
   });
+
+  it("allows a durable memory database to start without material but rejects partial material", () => {
+    const request = {
+      provider,
+      operation: {
+        kind: "open",
+        connection,
+        logicalName: "tr_db",
+        identity: {
+          source: { kind: "memory" },
+          sqliteVersion: SQL_SQLITE_VERSION,
+          formatVersion: 1,
+        },
+        revision: { kind: "current" },
+      },
+    };
+
+    expect(
+      decodeSqlWorkerCommand({
+        id: 3,
+        type: "execute",
+        value: { request, persistent: true },
+      }),
+    ).toMatchObject({ type: "execute", value: { persistent: true } });
+    expect(() =>
+      decodeSqlWorkerCommand({
+        id: 4,
+        type: "execute",
+        value: { request, persistent: true, initialBytes: Uint8Array.of(1) },
+      }),
+    ).toThrow("persistent SQL Worker database material");
+  });
 });

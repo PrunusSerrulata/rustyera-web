@@ -123,11 +123,19 @@ export class SqlProvider {
           workerCommand.durableRevision = material.durableRevision;
           workerCommand.persistent = true;
           pendingChain = material.chain;
-        } else if (request.operation.revision.kind !== "current") {
-          throw new SqlStorageError(
-            SqlErrorCode.InvalidRequest,
-            "memory SQL cannot open a revision",
-          );
+        } else {
+          const revision =
+            request.operation.revision.kind === "current"
+              ? { kind: "current" as const }
+              : {
+                  kind: "exact" as const,
+                  sha256: request.operation.revision.revision.sha256,
+                };
+          const material = await this.storage.openMemory(request.operation.logicalName, revision);
+          workerCommand.initialBytes = material.bytes;
+          workerCommand.durableRevision = material.durableRevision;
+          workerCommand.persistent = true;
+          pendingChain = material.chain;
         }
       }
 
@@ -167,7 +175,7 @@ export class SqlProvider {
     if (!publication)
       throw new SqlStorageError(SqlErrorCode.InvalidState, "SQL publication is missing");
     const chain = this.chains.get(handleKey(publication.connection));
-    if (!chain || !publication.expectedRevision)
+    if (!chain || (!publication.expectedRevision && chain.currentDatabaseRevision))
       throw new SqlStorageError(SqlErrorCode.InvalidState, "SQL publication has no durable base");
     const transport = this.transport;
     if (!transport)

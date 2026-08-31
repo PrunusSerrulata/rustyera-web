@@ -227,6 +227,36 @@ describe("SQL Worker provider", () => {
     expect(worker.terminated).toBe(true);
   });
 
+  it("publishes and exactly reopens a memory database revision", async () => {
+    vi.stubGlobal("Worker", ProviderWorkerStub);
+    const bridge = new ProviderBridge(new Uint8Array());
+    const provider = new SqlProvider(bridge as never);
+    const signal = new AbortController().signal;
+    await provider.handle(memoryOpenRequest(), signal);
+    const bytes = new TextEncoder().encode("memory database revision");
+    const revision = sha256Bytes(bytes);
+    ProviderBridge.nextPublication = {
+      token: 7,
+      connection: { serviceEpoch: 4n, id: 9n },
+      revision,
+      bytes,
+    };
+
+    const response = await provider.handle(executeRequest(), signal);
+
+    expect(
+      ((response.get(1) as Map<number, unknown>).get(3) as Map<number, Uint8Array>).get(0),
+    ).toEqual(revision);
+    expect([...bridge.files.keys()].some((path) => path.endsWith("/current"))).toBe(false);
+
+    provider.reset();
+    await provider.handle(memoryOpenRequest(5n, revision), signal);
+    const exact = ProviderWorkerStub.instance!.messages.at(-1).value;
+    expect(exact).toMatchObject({ persistent: true });
+    expect(bytesHex(exact.initialBytes)).toBe(bytesHex(bytes));
+    expect(bytesHex(exact.durableRevision)).toBe(bytesHex(revision));
+  });
+
   it("does not send rollback after current committed but its response metadata failed", async () => {
     vi.stubGlobal("Worker", ProviderWorkerStub);
     const seed = new TextEncoder().encode("seed database");
@@ -355,7 +385,7 @@ function openRequest(seed: Uint8Array): Map<number, unknown> {
   ]);
 }
 
-function memoryOpenRequest(epoch = 4n): Map<number, unknown> {
+function memoryOpenRequest(epoch = 4n, exactRevision?: Uint8Array): Map<number, unknown> {
   const provider = new Map<number, unknown>([
     [0, epoch],
     [1, 1n],
@@ -378,7 +408,7 @@ function memoryOpenRequest(epoch = 4n): Map<number, unknown> {
             [1, SQL_SQLITE_VERSION],
             [2, 1],
           ]),
-          [0, []],
+          exactRevision ? [1, [new Map<number, unknown>([[0, exactRevision]])]] : [0, []],
           limits,
         ],
       ],
