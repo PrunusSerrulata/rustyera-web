@@ -39,6 +39,23 @@ describe("image metadata header decoder", () => {
     });
   });
 
+  it("reads lossless WebP dimensions from a bounded prefix", () => {
+    const bytes = new Uint8Array(25);
+    bytes.set(ascii("RIFF"));
+    bytes.set(ascii("WEBP"), 8);
+    bytes.set(ascii("VP8L"), 12);
+    writeU32le(bytes, 16, 2 * 1024 * 1024);
+    bytes[20] = 0x2f;
+    writeU32le(bytes, 21, (640 - 1) | ((480 - 1) << 14));
+
+    expect(decodeImageMetadata(bytes)).toEqual({
+      width: 640,
+      height: 480,
+      format: "webp",
+      animated: false,
+    });
+  });
+
   it("rejects malformed resources", () => {
     expect(() => decodeImageMetadata(ascii("not an image"))).toThrow(
       "unsupported or malformed image resource",

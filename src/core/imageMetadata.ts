@@ -107,25 +107,30 @@ function webpSize(data: Uint8Array): [number, number, boolean] {
     const kind = ascii(data, offset, 4);
     const length = view.getUint32(offset + 4, true);
     const payload = offset + 8;
-    if (payload + length > data.length) break;
-    if (kind === "VP8X" && length >= 10) {
+    if (kind === "VP8X" && length >= 10 && payload + 10 <= data.length) {
       return [
         1 + uint24le(data, payload + 4),
         1 + uint24le(data, payload + 7),
         Boolean(data[payload] & 0x02),
       ];
     }
-    if (kind === "VP8 " && length >= 10 && startsWith(data, [0x9d, 0x01, 0x2a], payload + 3)) {
+    if (
+      kind === "VP8 " &&
+      length >= 10 &&
+      payload + 10 <= data.length &&
+      startsWith(data, [0x9d, 0x01, 0x2a], payload + 3)
+    ) {
       return [
         view.getUint16(payload + 6, true) & 0x3fff,
         view.getUint16(payload + 8, true) & 0x3fff,
         false,
       ];
     }
-    if (kind === "VP8L" && length >= 5 && data[payload] === 0x2f) {
+    if (kind === "VP8L" && length >= 5 && payload + 5 <= data.length && data[payload] === 0x2f) {
       const bits = view.getUint32(payload + 1, true);
       return [1 + (bits & 0x3fff), 1 + ((bits >>> 14) & 0x3fff), false];
     }
+    if (payload + length > data.length) break;
     offset += 8 + length + (length & 1);
   }
   throw new Error("malformed WebP header");
