@@ -83,7 +83,15 @@ export async function captureCompleteTauriSnapshot(browser, timeoutMs = SNAPSHOT
 }
 
 export function snapshotCaptureTimeout(previousSnapshot, interval = SNAPSHOT_INTERVAL_MS) {
-  return previousSnapshot?.runtime?.projectLoading === true ? interval * 4 : interval;
+  return usesExtendedSnapshotWatchdog(previousSnapshot) ? interval * 4 : interval;
+}
+
+function usesExtendedSnapshotWatchdog(snapshot) {
+  const runtime = snapshot?.runtime;
+  return (
+    runtime?.projectLoading === true ||
+    runtime?.transfer?.export?.name === "compiled-project.reracache"
+  );
 }
 
 export function assertSnapshotProgress(
@@ -96,7 +104,7 @@ export function assertSnapshotProgress(
     previousSnapshot != null &&
     snapshotProgressSignature(previousSnapshot) === snapshotProgressSignature(currentSnapshot)
   ) {
-    const requiredIntervals = currentSnapshot?.runtime?.projectLoading === true ? 4 : 1;
+    const requiredIntervals = usesExtendedSnapshotWatchdog(currentSnapshot) ? 4 : 1;
     if (identicalIntervals < requiredIntervals) return;
     throw new Error(
       `${label} end-to-end test stalled: ${identicalIntervals} consecutive 5-second intervals had identical complete snapshots: ${JSON.stringify(currentSnapshot)}`,

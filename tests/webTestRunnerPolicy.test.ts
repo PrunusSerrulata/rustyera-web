@@ -115,6 +115,9 @@ describe("browser game runner progress policy", () => {
     expect(firstAsyncScript).toBeGreaterThan(monitor);
     expect(snapshots).toContain("complete snapshot capture exceeded");
     expect(snapshots).toContain("Promise.race");
+    expect(snapshots).toContain('runtime?.transfer?.export?.name === "compiled-project.reracache"');
+    expect(library).toContain('includes("runtime.compiled_cache_failed")');
+    expect(library).toContain("compiled cache export failed:");
   });
 
   it("treats an output-marker compatibility probe as startup-only", () => {

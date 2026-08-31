@@ -770,9 +770,18 @@ export async function runAction(page, action) {
     return { semanticInput: action.semantic_input };
   }
   if (action.type === "wait_compiled_cache_saved") {
-    await page.waitForFunction(
-      () => window.__RUSTYERA_TEST__.snapshot().status === "项目缓存已保存。",
+    await page.waitForFunction(() => {
+      const state = window.__RUSTYERA_TEST__.snapshot();
+      return (
+        state.status === "项目缓存已保存。" ||
+        state.logs?.some((entry) => String(entry.message).includes("runtime.compiled_cache_failed"))
+      );
+    });
+    const state = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    const failure = state.logs?.find((entry) =>
+      String(entry.message).includes("runtime.compiled_cache_failed"),
     );
+    if (failure) throw new Error(`compiled cache export failed: ${String(failure.message)}`);
     return { semanticInput: action.semantic_input };
   }
   if (action.type === "assert_diagnosis_project_manifest") {
