@@ -329,7 +329,10 @@ export class HtmlMeasurementProvider {
       host.style.setProperty("--game-font", host.style.fontFamily);
       host.style.setProperty("--game-size", host.style.fontSize);
       host.style.setProperty("--game-line-height", `${scope.state.gameLineHeightPx}px`);
-      binding.viewport.append(host);
+      // Never let a transient measurement participate in the visible viewport's scrollable
+      // overflow. In classic-scrollbar environments the captured projection can be wider than
+      // the current client box, and mounting it inside the scroller would toggle its scrollbars.
+      binding.viewport.ownerDocument.body.append(host);
       app = createApp({
         render: () =>
           h(

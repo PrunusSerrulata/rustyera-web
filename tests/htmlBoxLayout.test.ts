@@ -435,7 +435,8 @@ describe("bounded offscreen HTML measurement", () => {
     const regular: string[] = [];
     fontLoad.mockImplementation(async () => {
       regular.push(
-        viewport.querySelector<HTMLElement>("[data-html-measurement-line]")!.style.fontWeight,
+        window.document.body.querySelector<HTMLElement>("[data-html-measurement-line]")!.style
+          .fontWeight,
       );
       return [];
     });
@@ -453,7 +454,7 @@ describe("bounded offscreen HTML measurement", () => {
     expect(result.cuts).toEqual([{ id: 7, advancePx: 6 }]);
     expect(regular).toEqual(["normal"]);
     expect(register).not.toHaveBeenCalled();
-    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
   });
 
   it("does not retain an unrelated project sprite catalog for a text measurement", async () => {
@@ -473,7 +474,7 @@ describe("bounded offscreen HTML measurement", () => {
 
     expect(result.advancePx).toBeGreaterThan(0);
     expect(binding.resourceBridge.readResource).not.toHaveBeenCalled();
-    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
   });
 
   it("measures all independent prefixes in one settled font layout", async () => {
@@ -536,7 +537,7 @@ describe("bounded offscreen HTML measurement", () => {
     const result = await pending;
     expect(result.advancePx).toBe(36);
     expect(result.cuts.map((cut) => cut.advancePx)).toEqual([0, 9, 18, 27, 36]);
-    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
   });
 
   it("reports an empty first forced row without using later visible text", async () => {
@@ -591,7 +592,7 @@ describe("bounded offscreen HTML measurement", () => {
       if (reason === "clear") provider.clear();
       finish();
       await rejected;
-      expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+      expect(document.body.querySelector(".html-measurement-host")).toBeNull();
     },
   );
 
@@ -609,15 +610,16 @@ describe("bounded offscreen HTML measurement", () => {
       { signal: new AbortController().signal, assertCurrent() {} },
     );
     await flushPromises();
-    const host = viewport.querySelector<HTMLElement>(".html-measurement-host");
+    const host = document.body.querySelector<HTMLElement>(".html-measurement-host");
     expect(host?.style.width).toBe("320px");
+    expect(viewport.contains(host)).toBe(false);
     Object.defineProperties(viewport, {
       clientWidth: { configurable: true, value: 307 },
       clientHeight: { configurable: true, value: 187 },
     });
     finish();
     await expect(pending).resolves.toMatchObject({ context: measurementBinding(viewport).context });
-    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
   });
 
   it("requires a mounted viewport and reports font failure instead of a zero-width success", async () => {
@@ -636,7 +638,7 @@ describe("bounded offscreen HTML measurement", () => {
     await expect(
       provider.measure(probe, measurementBinding(viewport), guard),
     ).rejects.toMatchObject({ category: "backend_failure" });
-    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
   });
 
   it("identifies blocked font-ready at the unchanged deadline and disposes its projection", async () => {
@@ -670,12 +672,12 @@ describe("bounded offscreen HTML measurement", () => {
     expect(fontLoad).toHaveBeenCalledOnce();
     expect(frame).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(9_999);
-    expect(viewport.querySelector(".html-measurement-host")).not.toBeNull();
+    expect(document.body.querySelector(".html-measurement-host")).not.toBeNull();
     expect(cancelAnimationFrame).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     await rejected;
     expect(returned).not.toHaveBeenCalled();
-    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
     expect(cancelAnimationFrame).not.toHaveBeenCalled();
   });
 
@@ -707,7 +709,7 @@ describe("bounded offscreen HTML measurement", () => {
           cuts: [{ id: 7, advancePx: 6 }],
         }),
       );
-      expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+      expect(document.body.querySelector(".html-measurement-host")).toBeNull();
     } finally {
       provider.clear();
       await pending;
@@ -741,7 +743,7 @@ describe("bounded offscreen HTML measurement", () => {
       expect(result).toEqual({ context: binding.context, type: "missing", fallbackAdvancePx: 30 });
     }
     expect(binding.resourceBridge.readImageMetadata).not.toHaveBeenCalled();
-    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
   });
 
   it.each([false, true])(
@@ -791,7 +793,7 @@ describe("bounded offscreen HTML measurement", () => {
       });
       expect(binding.resourceBridge.readImageMetadata).toHaveBeenCalledWith("atlas.png");
       expect(release).toHaveBeenCalledOnce();
-      expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+      expect(document.body.querySelector(".html-measurement-host")).toBeNull();
     },
   );
 
@@ -855,7 +857,7 @@ describe("bounded offscreen HTML measurement", () => {
         }),
       ).rejects.toMatchObject({ category: "backend_failure" });
       expect(fontLoad).not.toHaveBeenCalled();
-      expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+      expect(document.body.querySelector(".html-measurement-host")).toBeNull();
       if (reason === "decode") expect(release).toHaveBeenCalledOnce();
     },
   );
@@ -915,7 +917,7 @@ describe("bounded offscreen HTML measurement", () => {
       else await vi.advanceTimersByTimeAsync(10_000);
       await rejected;
       expect(release).toHaveBeenCalledOnce();
-      expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+      expect(document.body.querySelector(".html-measurement-host")).toBeNull();
       finish();
       const result = await provider.measure(
         { document: queryText("fi"), style: queryStyle(), mode: "text_part", cuts: [] },
@@ -947,7 +949,7 @@ describe("bounded offscreen HTML measurement", () => {
       ).rejects.toMatchObject({ category: "invalid_request" });
     }
     expect(fontLoad).not.toHaveBeenCalled();
-    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
   });
 
   it("confirms a fixed slot without exposing a DOM-derived width", async () => {
@@ -1008,7 +1010,7 @@ describe("bounded offscreen HTML measurement", () => {
           assertCurrent() {},
         }),
       ).rejects.toMatchObject({ category: "resource_limit" });
-      expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+      expect(document.body.querySelector(".html-measurement-host")).toBeNull();
     }
     expect(fontLoad).not.toHaveBeenCalled();
     expect(HTMLElement.prototype.getBoundingClientRect).not.toHaveBeenCalled();
@@ -1046,7 +1048,7 @@ describe("bounded offscreen HTML measurement", () => {
         assertCurrent() {},
       }),
     ).rejects.toMatchObject({ category: "backend_failure" });
-    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    expect(window.document.body.querySelector(".html-measurement-host")).toBeNull();
   });
 
   it("keeps queued measurements bound to their confirmed historical viewport size", async () => {
@@ -1074,7 +1076,7 @@ describe("bounded offscreen HTML measurement", () => {
       expect(second).resolves.toBeDefined(),
     ]);
     expect(fontLoad).toHaveBeenCalledTimes(2);
-    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
   });
 
   it("does not register canonical button interactions in an offscreen projection", () => {
