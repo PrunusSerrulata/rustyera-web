@@ -265,13 +265,16 @@ describe("Tauri project restart", () => {
   });
 
   it("streams state exports through the native atomic writer", async () => {
-    save.mockResolvedValue("/tmp/state.snapshot");
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    configureServiceLifecycle({ stateExportPath: "/tmp/state.snapshot" });
     invoke.mockResolvedValue(undefined);
     const bridge = new TauriBridge();
 
     await expect(bridge.beginStateExport("state.snapshot", 3)).resolves.toBe(true);
     await bridge.writeStateExportChunk(Uint8Array.of(1, 2, 3), true, false);
     await bridge.writeStateExportChunk(new Uint8Array(), false, true);
+
+    expect(save).not.toHaveBeenCalled();
 
     expect(commandCalls("write_export_chunk")).toEqual([
       [

@@ -290,6 +290,7 @@ const environment = {
           : "",
   VITE_RUSTYERA_TEST_STATE: state ?? "",
   VITE_RUSTYERA_TEST_STATE_TYPE: configuredStateType,
+  RUSTYERA_TAURI_STATE_EXPORT_PATH: path.join(path.dirname(project), "state-export.sav"),
   ...Object.fromEntries(
     Object.values(specProfiles).map(({ environmentFlag }) => [
       environmentFlag,
@@ -448,14 +449,16 @@ try {
     });
     // The fresh run directory owns this one-use archive; no case path enters the build.
     await browser.execute(
-      (projectPath, diagnosisExportPath) => {
+      (projectPath, diagnosisExportPath, stateExportPath) => {
         window.__RUSTYERA_TEST__.configureServiceLifecycle({
           projectPaths: [projectPath],
           diagnosisExportPath,
+          stateExportPath,
         });
       },
       project,
       path.join(path.dirname(project), "service-oracle-diagnosis.tar.zst"),
+      environment.RUSTYERA_TAURI_STATE_EXPORT_PATH,
     );
   }
 

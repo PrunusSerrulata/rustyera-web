@@ -3,6 +3,7 @@ export interface ServiceLifecycleConfiguration {
   gate?: { resourceId: string; sha256: string; byteLength: number; url: string };
   projectPaths?: string[];
   diagnosisExportPath?: string;
+  stateExportPath?: string;
 }
 
 type DecodeObservation = {
@@ -19,24 +20,16 @@ let failure: string | null = null;
 const records: Array<Record<string, unknown>> = [];
 const projectPaths: string[] = [];
 let diagnosisExportPath: string | undefined;
+let stateExportPath: string | undefined;
 
 export function configureServiceLifecycle(value: ServiceLifecycleConfiguration): void {
   if (import.meta.env.VITE_RUSTYERA_TEST !== "1")
     throw new Error("service lifecycle configuration requires a test build");
   // A new session/configuration must never inherit an unused export destination.
   diagnosisExportPath = undefined;
-  if (
-    value.diagnosisExportPath !== undefined &&
-    (typeof value.diagnosisExportPath !== "string" ||
-      !value.diagnosisExportPath.startsWith("/") ||
-      value.diagnosisExportPath.length > 32768 ||
-      value.diagnosisExportPath.includes("\0") ||
-      value.diagnosisExportPath
-        .split("/")
-        .slice(1)
-        .some((part) => !part || part === "." || part === ".."))
-  )
-    throw new Error("diagnosis export needs an absolute normalized isolated file path");
+  stateExportPath = undefined;
+  validateExportPath(value.diagnosisExportPath, "diagnosis");
+  validateExportPath(value.stateExportPath, "state");
   if (value.gate) {
     const gate = value.gate;
     const url = new URL(gate.url);
@@ -71,6 +64,7 @@ export function configureServiceLifecycle(value: ServiceLifecycleConfiguration):
     projectPaths.splice(0, projectPaths.length, ...value.projectPaths);
   }
   diagnosisExportPath = value.diagnosisExportPath;
+  stateExportPath = value.stateExportPath;
   configuration = { gate: value.gate ? { ...value.gate } : undefined };
 }
 
@@ -85,6 +79,29 @@ export function takeServiceLifecycleDiagnosisExportPath(): string | undefined {
   // Consume before any asynchronous work, including failed/cancelled exports.
   diagnosisExportPath = undefined;
   return import.meta.env.VITE_RUSTYERA_TEST === "1" ? path : undefined;
+}
+
+/** Only substitutes the save-dialog destination; native state chunks remain unchanged. */
+export function takeServiceLifecycleStateExportPath(): string | undefined {
+  const path = stateExportPath;
+  // Consume before any asynchronous work, including failed/cancelled exports.
+  stateExportPath = undefined;
+  return import.meta.env.VITE_RUSTYERA_TEST === "1" ? path : undefined;
+}
+
+function validateExportPath(path: string | undefined, label: string): void {
+  if (
+    path !== undefined &&
+    (typeof path !== "string" ||
+      !path.startsWith("/") ||
+      path.length > 32768 ||
+      path.includes("\0") ||
+      path
+        .split("/")
+        .slice(1)
+        .some((part) => !part || part === "." || part === ".."))
+  )
+    throw new Error(`${label} export needs an absolute normalized isolated file path`);
 }
 
 export function serviceLifecycleSnapshot(): Record<string, unknown> {

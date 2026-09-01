@@ -4,6 +4,7 @@ import { inputReplaySummary, isStableObservationCandidate } from "@/testing/cont
 import {
   configureServiceLifecycle,
   takeServiceLifecycleDiagnosisExportPath,
+  takeServiceLifecycleStateExportPath,
 } from "@/testing/serviceLifecycle";
 import { RuntimeEvidence, readTypedWatches } from "@/testing/runtimeEvidence";
 import { blake3 } from "@noble/hashes/blake3.js";
@@ -584,12 +585,21 @@ describe("test-only diagnosis export destination", () => {
 
   it("consumes once and clears unused destinations on the next session configuration", () => {
     vi.stubEnv("VITE_RUSTYERA_TEST", "1");
-    configureServiceLifecycle({ diagnosisExportPath: "/isolated/first/diagnosis.tar.zst" });
+    configureServiceLifecycle({
+      diagnosisExportPath: "/isolated/first/diagnosis.tar.zst",
+      stateExportPath: "/isolated/first/state.sav",
+    });
     expect(takeServiceLifecycleDiagnosisExportPath()).toBe("/isolated/first/diagnosis.tar.zst");
     expect(takeServiceLifecycleDiagnosisExportPath()).toBeUndefined();
-    configureServiceLifecycle({ diagnosisExportPath: "/isolated/old/diagnosis.tar.zst" });
+    expect(takeServiceLifecycleStateExportPath()).toBe("/isolated/first/state.sav");
+    expect(takeServiceLifecycleStateExportPath()).toBeUndefined();
+    configureServiceLifecycle({
+      diagnosisExportPath: "/isolated/old/diagnosis.tar.zst",
+      stateExportPath: "/isolated/old/state.sav",
+    });
     configureServiceLifecycle({ projectPaths: ["/isolated/new/project"] });
     expect(takeServiceLifecycleDiagnosisExportPath()).toBeUndefined();
+    expect(takeServiceLifecycleStateExportPath()).toBeUndefined();
   });
 
   it("rejects non-test configuration and never exposes a path outside test builds", () => {
@@ -600,6 +610,7 @@ describe("test-only diagnosis export destination", () => {
       configureServiceLifecycle({ diagnosisExportPath: "/isolated/other.tar.zst" }),
     ).toThrow("requires a test build");
     expect(takeServiceLifecycleDiagnosisExportPath()).toBeUndefined();
+    expect(takeServiceLifecycleStateExportPath()).toBeUndefined();
     vi.stubEnv("VITE_RUSTYERA_TEST", "1");
     expect(takeServiceLifecycleDiagnosisExportPath()).toBeUndefined();
   });
@@ -623,5 +634,15 @@ describe("test-only diagnosis export destination", () => {
       "absolute normalized isolated file path",
     );
     expect(takeServiceLifecycleDiagnosisExportPath()).toBeUndefined();
+    expect(takeServiceLifecycleStateExportPath()).toBeUndefined();
+  });
+
+  it("rejects invalid state-export destinations without keeping the previous path", () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    configureServiceLifecycle({ stateExportPath: "/isolated/old.sav" });
+    expect(() => configureServiceLifecycle({ stateExportPath: "relative.sav" })).toThrow(
+      "absolute normalized isolated file path",
+    );
+    expect(takeServiceLifecycleStateExportPath()).toBeUndefined();
   });
 });
