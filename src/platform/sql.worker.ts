@@ -185,14 +185,14 @@ function runOperation(sqlite: Sqlite3Static, command: SqlWorkerExecuteCommand) {
           result: [3, [handleMap(handle)]],
         });
       }
-      const result = withBudget(sqlite, connection, () =>
+      const execution = withBudget(sqlite, connection, () =>
         executeImmediate(sqlite, connection, operation),
       );
-      preparePublication(sqlite, connection);
+      if (execution.mutating) preparePublication(sqlite, connection);
       return encodeSqlResponse({
         provider: request.provider,
         database: databaseState(sqlite, connection),
-        result,
+        result: execution.result,
       });
     }
     case "reader_read": {
@@ -291,20 +291,25 @@ function executeImmediate(
   sqlite: Sqlite3Static,
   connection: Connection,
   operation: Extract<SqlRequest["operation"], { kind: "execute" }>,
-): unknown[] {
+): { result: unknown[]; mutating: boolean } {
   if (operation.mode === 0) {
     const before = connection.db.changes(true, true);
     connection.db.exec({ sql: operation.sql, bind: binding(operation.parameters) });
-    return [1, [checkedSqlI64(connection.db.changes(true, true) - before, "affected rows")]];
+    return {
+      result: [1, [checkedSqlI64(connection.db.changes(true, true) - before, "affected rows")]],
+      mutating: true,
+    };
   }
   const statement = connection.db.prepare(operation.sql);
   try {
+    const mutating = sqlite.capi.sqlite3_stmt_readonly(statement) === 0;
     bind(statement, operation.parameters);
-    if (!statement.step() || statement.columnCount === 0) return [2, [[0, []]]];
+    if (!statement.step() || statement.columnCount === 0)
+      return { result: [2, [[0, []]]], mutating };
     if (operation.mode === 3)
       throw new ProviderError(SqlErrorCode.InvalidState, "reader execution reached scalar path");
     const value = scalarValue(sqlite, statement, operation.mode);
-    return [2, [encodeSqlValue(value)]];
+    return { result: [2, [encodeSqlValue(value)]], mutating };
   } finally {
     statement.finalize();
   }
