@@ -907,6 +907,7 @@ describe("frontend host and image-line policy", () => {
   it("keeps game output on physical lines and exposes horizontal overflow", () => {
     const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
     expect(stylesheet).toMatch(/\.game-viewport\s*\{[^}]*overflow:\s*auto;/s);
+    expect(stylesheet).not.toMatch(/\.game-viewport\s*\{[^}]*scrollbar-gutter\s*:[^;]*\bstable\b/s);
     expect(stylesheet).toMatch(/\.game-viewport\s*\{[^}]*overflow-anchor:\s*none;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*width:\s*max-content;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*min-height:\s*var\(--game-line-height\);/s);

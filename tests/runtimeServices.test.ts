@@ -331,6 +331,7 @@ function htmlServiceHarness() {
   };
   const binding: HtmlMeasurementBinding = {
     viewport: document.createElement("div"),
+    viewportSize: { width: 300, height: 200 },
     context: projectionContext,
     resources: { canvases: [], sprites: [] },
     resourceGeneration: 1,
@@ -948,7 +949,7 @@ describe("projection runtime services", () => {
     "preserves %s rather than reporting unsupported",
     async (category) => {
       const { context, send } = serviceHarness();
-      context.projection!.prepare = async () => {
+      context.projection!.prepareEnvironment = async () => {
         throw new RuntimeServiceError(category, "query failed");
       };
       await handleRuntimeService(serviceRequest(), undefined, context);
@@ -1149,8 +1150,8 @@ describe("realized viewport identity", () => {
     const changedColumns = { ...measurement, lineColumns: 31 };
     await viewport.observe(changedColumns, true, 9, "", "layout-two", "font-one");
     expect(viewport.matches(expected, 9, measurement, "layout-two")).toBe(false);
-    expect(viewport.matchesEnvironment(expected, 9, measurement, "font-one")).toBe(true);
-    expect(viewport.matchesEnvironment(expected, 9, measurement, "font-two")).toBe(false);
+    expect(viewport.matchesEnvironment(expected, 9, "font-one")).toBe(true);
+    expect(viewport.matchesEnvironment(expected, 9, "font-two")).toBe(false);
     expect(
       JSON.parse(viewport.describeEnvironmentMismatch(expected, 9, measurement, "font-two")),
     ).toMatchObject({
@@ -1168,10 +1169,8 @@ describe("realized viewport identity", () => {
       },
       environmentStyleIdentity: "font-two",
     });
-    expect(viewport.matchesEnvironment(expected, 9, changedColumns, "font-one")).toBe(true);
-    expect(
-      viewport.matchesEnvironment(expected, 9, { ...measurement, width: 301 }, "font-one"),
-    ).toBe(false);
+    expect(viewport.matchesEnvironment(expected, 9, "font-one")).toBe(true);
+    expect(viewport.environment(expected, 9, "font-one")).toEqual({ width: 300, height: 200 });
   });
 });
 

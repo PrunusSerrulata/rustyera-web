@@ -771,6 +771,7 @@ describe("Era sprite images", () => {
     const controller = new AbortController();
     const binding: HtmlMeasurementBinding = {
       viewport,
+      viewportSize: { width: 320, height: 200 },
       context: { presentationRevision: 1, environmentRevision: 2, projectionSpaceRevision: 3 },
       resources: {
         sprites: [

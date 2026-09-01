@@ -22,6 +22,8 @@ export interface HtmlMeasurementResources extends CanvasReplayResources {
 }
 export interface HtmlMeasurementBinding {
   viewport: HTMLElement;
+  /** Immutable client size from the projection observation named by `context`. */
+  viewportSize: Readonly<{ width: number; height: number }>;
   context: ProjectionQueryContext;
   resources: HtmlMeasurementResources;
   resourceGeneration: number;
@@ -92,8 +94,8 @@ export class HtmlMeasurementScope implements HtmlMeasurementProjection {
     budget = new CanvasReplayBudget(),
   ) {
     this.budget = budget;
-    this.width = binding.viewport.clientWidth;
-    this.height = binding.viewport.clientHeight;
+    this.width = binding.viewportSize.width;
+    this.height = binding.viewportSize.height;
     this.styleIdentity = measurementViewportIdentity(binding.viewport);
     const fontSize =
       binding.preferences.fontSizeOverridePx ?? Number(style.base.font_millipixels) / 1000;
@@ -141,8 +143,6 @@ export class HtmlMeasurementScope implements HtmlMeasurementProjection {
     if (
       !viewport.isConnected ||
       viewport.ownerDocument !== document ||
-      viewport.clientWidth !== this.width ||
-      viewport.clientHeight !== this.height ||
       measurementViewportIdentity(viewport) !== this.styleIdentity
     )
       throw new RuntimeServiceError(
@@ -288,8 +288,6 @@ export function measurementViewportIdentity(viewport: HTMLElement): string {
   const style = getComputedStyle(viewport);
   return [
     viewport.isConnected,
-    viewport.clientWidth,
-    viewport.clientHeight,
     style.fontFamily,
     style.fontSize,
     style.lineHeight,

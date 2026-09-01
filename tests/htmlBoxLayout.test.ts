@@ -228,6 +228,7 @@ const queryText = (text: string): CanonicalHtmlDocument => ({ nodes: [{ type: "t
 function measurementBinding(viewport: HTMLElement): HtmlMeasurementBinding {
   return {
     viewport,
+    viewportSize: { width: viewport.clientWidth, height: viewport.clientHeight },
     context: { presentationRevision: 3, environmentRevision: 4, projectionSpaceRevision: 5 },
     resources: { sprites: [], canvases: [] },
     resourceGeneration: 8,
@@ -560,7 +561,7 @@ describe("bounded offscreen HTML measurement", () => {
     expect(result.firstRow).toEqual({ advancePx: 0, heightPx: 17, fragments: [] });
   });
 
-  it.each(["abort", "resize", "revision", "clear"])(
+  it.each(["abort", "revision", "clear"])(
     "disposes the DOM and refuses a reply after %s during font loading",
     async (reason) => {
       let finish!: () => void;
@@ -586,7 +587,6 @@ describe("bounded offscreen HTML measurement", () => {
       await flushPromises();
       expect(fontLoad).toHaveBeenCalledOnce();
       if (reason === "abort") controller.abort();
-      if (reason === "resize") Object.defineProperty(viewport, "clientWidth", { value: 321 });
       if (reason === "revision") current = false;
       if (reason === "clear") provider.clear();
       finish();
@@ -594,6 +594,31 @@ describe("bounded offscreen HTML measurement", () => {
       expect(viewport.querySelector(".html-measurement-host")).toBeNull();
     },
   );
+
+  it("keeps the captured projection width when demand-driven scrollbars change the viewport", async () => {
+    let finish!: () => void;
+    fontLoad.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const provider = new HtmlMeasurementProvider();
+    const pending = provider.measure(
+      { document: queryText("x"), mode: "text_part", cuts: [], style: queryStyle() },
+      measurementBinding(viewport),
+      { signal: new AbortController().signal, assertCurrent() {} },
+    );
+    await flushPromises();
+    const host = viewport.querySelector<HTMLElement>(".html-measurement-host");
+    expect(host?.style.width).toBe("320px");
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 307 },
+      clientHeight: { configurable: true, value: 187 },
+    });
+    finish();
+    await expect(pending).resolves.toMatchObject({ context: measurementBinding(viewport).context });
+    expect(viewport.querySelector(".html-measurement-host")).toBeNull();
+  });
 
   it("requires a mounted viewport and reports font failure instead of a zero-width success", async () => {
     const provider = new HtmlMeasurementProvider();
@@ -1024,7 +1049,7 @@ describe("bounded offscreen HTML measurement", () => {
     expect(viewport.querySelector(".html-measurement-host")).toBeNull();
   });
 
-  it("invalidates measurements queued before unconfirmed viewport geometry changes", async () => {
+  it("keeps queued measurements bound to their confirmed historical viewport size", async () => {
     let finish!: () => void;
     fontLoad.mockReturnValue(
       new Promise<void>((resolve) => {
@@ -1041,15 +1066,14 @@ describe("bounded offscreen HTML measurement", () => {
     };
     const first = provider.measure(probe, measurementBinding(viewport), guard);
     const second = provider.measure(probe, measurementBinding(viewport), guard);
-    const failures = [
-      expect(first).rejects.toMatchObject({ category: "stale_projection" }),
-      expect(second).rejects.toMatchObject({ category: "stale_projection" }),
-    ];
     await flushPromises();
     Object.defineProperty(viewport, "clientWidth", { value: 321 });
     finish();
-    await Promise.all(failures);
-    expect(fontLoad).toHaveBeenCalledOnce();
+    await Promise.all([
+      expect(first).resolves.toBeDefined(),
+      expect(second).resolves.toBeDefined(),
+    ]);
+    expect(fontLoad).toHaveBeenCalledTimes(2);
     expect(viewport.querySelector(".html-measurement-host")).toBeNull();
   });
 

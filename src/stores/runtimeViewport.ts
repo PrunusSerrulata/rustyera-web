@@ -150,22 +150,28 @@ export class RuntimeViewportState {
   matchesEnvironment(
     context: ProjectionQueryContext,
     publishedRevision: ServiceInteger,
-    measurement: Pick<GameViewportMeasurement, "width" | "height"> | undefined,
     environmentStyleIdentity = "",
   ): boolean {
+    return this.environment(context, publishedRevision, environmentStyleIdentity) != null;
+  }
+
+  environment(
+    context: ProjectionQueryContext,
+    publishedRevision: ServiceInteger,
+    environmentStyleIdentity = "",
+  ): { width: number; height: number } | undefined {
     const observed = [...this.submittedObservations.values()].find(
       (candidate) =>
         sameServiceInteger(context.environmentRevision, candidate.environmentRevision) &&
         sameServiceInteger(context.projectionSpaceRevision, candidate.projectionSpaceRevision),
     );
-    return (
+    if (
       observed != null &&
-      measurement != null &&
       sameServiceInteger(context.presentationRevision, publishedRevision) &&
-      observed.width === measurement.width &&
-      observed.height === measurement.height &&
       observed.environmentStyleIdentity === environmentStyleIdentity
-    );
+    )
+      return { width: observed.width, height: observed.height };
+    return undefined;
   }
 
   describeEnvironmentMismatch(

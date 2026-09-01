@@ -206,6 +206,7 @@ export class HtmlMeasurementProvider {
     const frozenStyle = cloneBounded(style);
     const frozenBinding = {
       ...binding,
+      viewportSize: { ...binding.viewportSize },
       context: { ...binding.context },
       preferences: { ...binding.preferences },
       resources: cloneResources(binding.resources, documents),
@@ -303,7 +304,7 @@ export class HtmlMeasurementProvider {
         position: "fixed",
         left: "-100000px",
         top: "0px",
-        width: `${binding.viewport.clientWidth}px`,
+        width: `${binding.viewportSize.width}px`,
         maxWidth: "none",
         height: "auto",
         visibility: "hidden",
@@ -624,14 +625,16 @@ function validateBinding(binding: HtmlMeasurementBinding, style: HtmlQueryStyle)
     !(binding.viewport instanceof HTMLElement) ||
     !binding.viewport.isConnected ||
     binding.viewport.ownerDocument !== document ||
-    binding.viewport.clientWidth <= 0 ||
-    binding.viewport.clientHeight <= 0
+    !Number.isSafeInteger(binding.viewportSize.width) ||
+    !Number.isSafeInteger(binding.viewportSize.height) ||
+    binding.viewportSize.width <= 0 ||
+    binding.viewportSize.height <= 0
   )
     throw new RuntimeServiceError(
       "stale_projection",
       "HTML measurement requires the confirmed mounted viewport",
     );
-  if (binding.viewport.clientWidth > 32768 || binding.viewport.clientHeight > 32768)
+  if (binding.viewportSize.width > 32768 || binding.viewportSize.height > 32768)
     throw new RuntimeServiceError(
       "resource_limit",
       "HTML viewport dimensions exceed the projection budget",

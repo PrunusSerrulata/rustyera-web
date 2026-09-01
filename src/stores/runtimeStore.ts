@@ -1523,17 +1523,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
     );
   }
 
-  function projectionEnvironmentMatches(expected: ProjectionQueryContext): boolean {
-    const viewport = currentGameViewport();
-    return (
-      sameServiceInteger(currentPresentation().revision, expected.presentationRevision) &&
-      runtimeViewport.matchesEnvironment(
-        expected,
-        presentation.revision,
-        viewport ? currentGameViewportMeasurement() : undefined,
-        viewportEnvironmentIdentity(),
-      )
+  function projectionEnvironment(
+    expected: ProjectionQueryContext,
+  ): { width: number; height: number } | undefined {
+    if (!sameServiceInteger(currentPresentation().revision, expected.presentationRevision))
+      return undefined;
+    return runtimeViewport.environment(
+      expected,
+      presentation.revision,
+      viewportEnvironmentIdentity(),
     );
+  }
+
+  function projectionEnvironmentMatches(expected: ProjectionQueryContext): boolean {
+    return projectionEnvironment(expected) != null;
   }
 
   async function handleService(
@@ -1624,6 +1627,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
                 "stale_projection",
                 "HTML measurement requires the confirmed mounted viewport",
               );
+            const viewportSize = projectionEnvironment(expected);
+            if (!viewportSize)
+              throw new RuntimeServiceError(
+                "stale_projection",
+                "HTML measurement requires the confirmed historical environment",
+              );
             const preferences = {
               fontFamilyOverride: effectivePreferences.value.fontFamilyOverride,
               fontSizeOverridePx: effectivePreferences.value.fontSizeOverridePx,
@@ -1653,6 +1662,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
             return {
               binding: {
                 viewport,
+                viewportSize,
                 context: { ...expected },
                 resources: projected.resources,
                 resourceGeneration: resources,
