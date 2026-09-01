@@ -414,7 +414,7 @@ describe("runtime evidence observations", () => {
     const commands: any[] = [];
     const stop = { program_generation: 7n };
     const result: any = await readTypedWatches(
-      ["RESULT:0", "RESULTS:1", "MISSING"],
+      ["RESULT:0", "RESULT@1:0", "RESULTS:1", "NAME", "NAME@3", "CFLAG@3:4", "MISSING"],
       stop,
       async (command) => {
         commands.push(command);
@@ -429,6 +429,22 @@ describe("runtime evidence observations", () => {
                   storage: "global",
                   dimensions: [100],
                 },
+                ...(command.cursor === null
+                  ? [
+                      {
+                        name: "NAME",
+                        symbol_key: [2],
+                        storage: "character",
+                        dimensions: [],
+                      },
+                      {
+                        name: "CFLAG",
+                        symbol_key: [3],
+                        storage: "character",
+                        dimensions: [100],
+                      },
+                    ]
+                  : []),
               ],
               next_cursor: command.cursor === null ? 1n : null,
             },
@@ -453,8 +469,23 @@ describe("runtime evidence observations", () => {
       present: true,
       value: { type: "string", value: "-9223372036854775808" },
     });
+    expect(result.values["NAME@3"].command.value).toMatchObject({
+      character: 3,
+      indices: [],
+    });
+    expect(result.values["CFLAG@3:4"].command.value).toMatchObject({
+      character: 3,
+      indices: [4],
+    });
+    expect(result.values.NAME).toEqual({ present: false, error: "character_required" });
+    expect(result.values["RESULT@1:0"]).toEqual({ present: false, error: "not_character" });
     expect(result.values.MISSING).toEqual({ present: false, error: "not_found" });
     expect(commands.filter((command) => command.type === "list_variables")).toHaveLength(2);
+    expect(
+      commands
+        .filter((command) => command.type === "list_variables")
+        .every((command) => command.limit === 1024),
+    ).toBe(true);
     expect(commands.at(-1).value.generation).toBe(7n);
   });
 
@@ -477,6 +508,40 @@ describe("runtime evidence observations", () => {
         },
       ),
     ).rejects.toThrow("changed stop");
+  });
+
+  it("deduplicates character descriptors and stops after all requested names are found", async () => {
+    const commands: any[] = [];
+    const descriptor = {
+      name: "NAME",
+      symbol_key: [7],
+      storage: "character",
+      value_kind: "string",
+      dimensions: [],
+      mutable: true,
+    };
+    const result: any = await readTypedWatches(
+      ["NAME@0"],
+      { program_generation: 3n },
+      async (command) => {
+        commands.push(command);
+        if (command.type === "list_variables")
+          return {
+            type: "variable_page",
+            value: { variables: [descriptor, { ...descriptor }], next_cursor: 1024n },
+          };
+        return {
+          type: "variable_value",
+          value: { value: { type: "string", value: "博丽灵梦" } },
+        };
+      },
+      () => {},
+    );
+    expect(result.values["NAME@0"]).toMatchObject({
+      present: true,
+      value: { type: "string", value: "博丽灵梦" },
+    });
+    expect(commands.filter((command) => command.type === "list_variables")).toHaveLength(1);
   });
 });
 

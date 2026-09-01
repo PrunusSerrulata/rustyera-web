@@ -224,31 +224,46 @@ export async function readTypedWatches(
   if (watches.length > 256 || new Set(watches).size !== watches.length)
     throw new Error("typed watch list exceeds its limit or contains duplicates");
   const parsed = watches.map((watch) => {
-    const match = /^([A-Za-z_][A-Za-z0-9_]*)(?::([0-9]+(?:,[0-9]+)*))?$/.exec(watch);
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)(?:@([0-9]+))?(?::([0-9]+(?:,[0-9]+)*))?$/.exec(watch);
     if (!match) throw new Error(`invalid typed watch: ${watch}`);
-    const indices = match[2]?.split(",").map(Number);
-    if (indices?.some((index) => !Number.isSafeInteger(index)))
+    const character = match[2] === undefined ? undefined : Number(match[2]);
+    const indices = match[3]?.split(",").map(Number);
+    if (
+      (character !== undefined && !Number.isSafeInteger(character)) ||
+      indices?.some((index) => !Number.isSafeInteger(index))
+    )
       throw new Error(`typed watch index is not exact: ${watch}`);
-    return { watch, name: match[1], indices };
+    return { watch, name: match[1], character, indices };
   });
   const names = new Set(parsed.map((watch) => watch.name));
-  const candidates = new Map<string, any[]>();
+  const candidates = new Map<string, Map<string, any>>();
   const cursors = new Set<string>();
   let cursor = null;
   for (let page = 0; ; page += 1) {
     if (page >= 256) throw new Error("typed variable enumeration exceeds its limit");
     assertCurrent();
-    const response = await request({ type: "list_variables", stop, cursor, limit: 256 });
+    const response = await request({ type: "list_variables", stop, cursor, limit: 1024 });
     assertCurrent();
     if (response.type !== "variable_page" || !Array.isArray(response.value?.variables))
       throw new Error("typed variable enumeration returned an unexpected response");
     for (const variable of response.value.variables) {
       if (names.has(variable.name)) {
-        const entries = candidates.get(variable.name) ?? [];
-        entries.push(variable);
+        const entries = candidates.get(variable.name) ?? new Map<string, any>();
+        const key = JSON.stringify(
+          [
+            variable.symbol_key,
+            variable.storage,
+            variable.value_kind,
+            variable.dimensions,
+            variable.mutable,
+          ],
+          (_key, value) => (typeof value === "bigint" ? value.toString() : value),
+        );
+        entries.set(key, variable);
         candidates.set(variable.name, entries);
       }
     }
+    if (candidates.size === names.size) break;
     cursor = response.value.next_cursor ?? null;
     if (cursor === null) break;
     const key = JSON.stringify(cursor, (_key, value) =>
@@ -258,13 +273,21 @@ export async function readTypedWatches(
     cursors.add(key);
   }
   const values: Record<string, unknown> = {};
-  for (const { watch, name, indices } of parsed) {
-    const found = candidates.get(name) ?? [];
+  for (const { watch, name, character, indices } of parsed) {
+    const found = [...(candidates.get(name)?.values() ?? [])];
     if (found.length !== 1) {
       values[watch] = { present: false, error: found.length ? "ambiguous" : "not_found" };
       continue;
     }
     const variable = found[0];
+    if (variable.storage === "character" && character === undefined) {
+      values[watch] = { present: false, error: "character_required" };
+      continue;
+    }
+    if (variable.storage !== "character" && character !== undefined) {
+      values[watch] = { present: false, error: "not_character" };
+      continue;
+    }
     const command = {
       type: "read_variable",
       stop,
@@ -274,7 +297,7 @@ export async function readTypedWatches(
         fiber_id: null,
         frame_id: null,
         generation: stop.program_generation,
-        character: null,
+        character: character ?? null,
         indices: indices ?? (variable.dimensions ?? []).map(() => 0),
       },
     };
