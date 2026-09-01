@@ -1786,7 +1786,39 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function skip(): Promise<void> {
     if (!runtimeReady.value || gameInteractionsBlocked.value || diagnosisExporting.value) return;
+    // Native message-skip input is submitted and pumped as one atomic host operation. Let the
+    // matching physical release reach the runtime first; otherwise a game that observes MOUSEB
+    // while processing the continuation can wait for an edge that the blocked host cannot accept.
+    if (heldMouseButtons.has(2)) {
+      await waitForPhysicalMouseRelease(2);
+      await awaitDeviceSubmissions();
+    }
     await runtimeInput.requestMessageSkip();
+  }
+
+  function waitForPhysicalMouseRelease(code: number): Promise<void> {
+    if (!heldMouseButtons.has(code)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const cleanup = () => {
+        document.removeEventListener("mouseup", onMouseUpRelease, true);
+        document.removeEventListener("visibilitychange", onClientBoundaryRelease);
+        window.removeEventListener("blur", onClientBoundaryRelease);
+      };
+      const finish = () => {
+        cleanup();
+        resolve();
+      };
+      const onMouseUpRelease = (event: MouseEvent) => {
+        if (mouseCode(event.button) === code) finish();
+      };
+      const onClientBoundaryRelease = () => {
+        if (!document.hasFocus() || document.visibilityState !== "visible") finish();
+      };
+      document.addEventListener("mouseup", onMouseUpRelease, true);
+      document.addEventListener("visibilitychange", onClientBoundaryRelease);
+      window.addEventListener("blur", onClientBoundaryRelease);
+      if (!heldMouseButtons.has(code)) finish();
+    });
   }
 
   async function continueFromViewport(): Promise<void> {

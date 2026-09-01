@@ -744,6 +744,50 @@ describe("runtime store cache-input", () => {
     expect(bridge.submitRuntime).not.toHaveBeenCalled();
   });
 
+  it("submits a physical secondary-button release before native message-skip pumping", async () => {
+    const store = useRuntimeStore();
+    await store.initialize();
+    await storeWithInputWait({
+      kind: "enter_key",
+      wait_id: 22,
+      submission_token: { epoch: 2, id: 9 },
+    });
+    const order: string[] = [];
+    bridge.submitRuntime.mockImplementation(async (message) => {
+      if (message.type === "device_state_changed")
+        order.push(message.value.pressed ? "mouse-down" : "mouse-up");
+      return 40;
+    });
+    const submitRuntimeAndPump = vi.fn(async () => {
+      order.push("input-and-pump");
+      return { ...emptyBatch(), submittedMessageId: 41 };
+    });
+    bridge.submitRuntimeAndPump = submitRuntimeAndPump;
+
+    document.dispatchEvent(new MouseEvent("mousedown", { button: 2, clientX: 17, clientY: 23 }));
+    const skipping = store.skip();
+    await flushMicrotasks();
+
+    expect(order).toEqual(["mouse-down"]);
+    expect(submitRuntimeAndPump).not.toHaveBeenCalled();
+
+    document.dispatchEvent(new MouseEvent("mouseup", { button: 2, clientX: 18, clientY: 24 }));
+    await skipping;
+
+    expect(order).toEqual(["mouse-down", "mouse-up", "input-and-pump"]);
+    expect(submitRuntimeAndPump).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "input",
+        value: expect.objectContaining({
+          wait_id: 22,
+          intent: { type: "enter" },
+          message_skip: true,
+        }),
+      }),
+      undefined,
+    );
+  });
+
   it("fails closed when native fast submission may already have accepted the input", async () => {
     const interaction = { epoch: 2, id: 8, enabled: true, generation: 1 };
     const store = await storeWithInputWait(
