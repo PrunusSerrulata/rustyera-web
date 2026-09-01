@@ -788,12 +788,10 @@ describe("runtime store cache-input", () => {
     expect(bridge.submitRuntime).not.toHaveBeenCalled();
   });
 
-  it.each<[string, { kind: string; stop_message_skip?: boolean }]>([
-    ["a stop-message-skip wait", { kind: "enter_key", stop_message_skip: true }],
-    ["a non-message wait", { kind: "integer_value" }],
-  ])("balances the compatibility mouse device event for %s", async (_, wait) => {
+  it("consumes the current stop-message-skip wait with a secondary action", async () => {
     const store = await storeWithInputWait({
-      ...wait,
+      kind: "enter_key",
+      stop_message_skip: true,
       wait_id: 22,
       submission_token: { epoch: 2, id: 9 },
     });
@@ -821,6 +819,34 @@ describe("runtime store cache-input", () => {
           pressed: false,
         }),
       }),
+    ]);
+    expect(bridge.submitRuntime).toHaveBeenLastCalledWith(
+      {
+        type: "input",
+        value: expect.objectContaining({
+          wait_id: 22,
+          token: { epoch: 2, id: 9 },
+          intent: { type: "enter" },
+          message_skip: true,
+        }),
+      },
+      undefined,
+    );
+  });
+
+  it("only balances the compatibility mouse event at a non-message wait", async () => {
+    const store = await storeWithInputWait({
+      kind: "integer_value",
+      wait_id: 22,
+      submission_token: { epoch: 2, id: 9 },
+    });
+    bridge.submitRuntime.mockClear();
+
+    await store.skip();
+
+    expect(bridge.submitRuntime.mock.calls.map(([message]) => message.type)).toEqual([
+      "device_state_changed",
+      "device_state_changed",
     ]);
   });
 

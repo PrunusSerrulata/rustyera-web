@@ -1,6 +1,10 @@
 import { ref } from "vue";
 
-import { isMessageSkipWait, messageWaitIntent } from "@/core/messageSkip";
+import {
+  isMessageContinuationWait,
+  isMessageSkipWait,
+  messageWaitIntent,
+} from "@/core/messageSkip";
 import {
   restoreButtonBoundary,
   restoreSubmittedButtonBoundary,
@@ -66,7 +70,12 @@ export class RuntimeInputState {
   async requestMessageSkip(): Promise<void> {
     if (this.pending.value || this.pendingUndo.value) return;
     const wait = this.context.presentation().inputWait;
-    if (isMessageSkipWait(wait)) {
+    if (isMessageContinuationWait(wait)) {
+      // Snake Emuera consumes the current FORCEWAIT on a secondary click, then
+      // lets that barrier stop automatic skipping at the next input boundary.
+      // Preserve the compatibility mouse edge for non-physical secondary
+      // actions before submitting the current continuation explicitly.
+      if (wait.stop_message_skip) await this.context.signalMessageSkip();
       await this.submit(messageWaitIntent(wait), true);
       return;
     }
