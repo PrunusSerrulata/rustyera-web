@@ -12,12 +12,12 @@ use era_runtime::{
     ProjectProgressReporter, RuntimeDriveBudget, RuntimeDriveState, RuntimeOptions, RuntimeSession,
 };
 use era_runtime_protocol::{
-    ClientCapabilities, ClientHello, ConfigurationClientProfile, ExternalResource, FileCategory,
-    FilePayload, InputModality, ProjectCompatibilityResolved, ProjectIdentity, ProjectLoadRequest,
-    ProjectManifest, RUNTIME_PROTOCOL_VERSION, ResolveProjectCompatibility, RuntimeFeature,
-    RuntimeLimits, RuntimeMessage, SQL_OPERATION, SequenceAcknowledgement, ServerHello,
-    ServiceCapability, ServiceKind, ServiceRequest, ServiceResponse, StorageCapabilities,
-    StorageRequest, StorageResponse, SubmittedFile,
+    AUDIO_OBSERVATION_OPERATION, ClientCapabilities, ClientHello, ConfigurationClientProfile,
+    ExternalResource, FileCategory, FilePayload, InputModality, ProjectCompatibilityResolved,
+    ProjectIdentity, ProjectLoadRequest, ProjectManifest, RUNTIME_PROTOCOL_VERSION,
+    ResolveProjectCompatibility, RuntimeFeature, RuntimeLimits, RuntimeMessage, SQL_OPERATION,
+    SequenceAcknowledgement, ServerHello, ServiceCapability, ServiceKind, ServiceRequest,
+    ServiceResponse, StorageCapabilities, StorageRequest, StorageResponse, SubmittedFile,
 };
 use erabasic_vm::VmConfig;
 use serde::{Deserialize, Serialize};
@@ -40,7 +40,7 @@ pub struct WebSessionOptions {
     pub available_fonts: Vec<String>,
     #[serde(default = "default_locales")]
     pub preferred_locales: Vec<String>,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub audio_available: bool,
     #[serde(default = "default_debug_scope_mask")]
     pub debug_scope_mask: u64,
@@ -58,7 +58,7 @@ impl Default for WebSessionOptions {
             client_name: default_client_name(),
             available_fonts: Vec::new(),
             preferred_locales: default_locales(),
-            audio_available: true,
+            audio_available: false,
             debug_scope_mask: default_debug_scope_mask(),
             maximum_envelope_bytes: DEFAULT_ENVELOPE_BYTES,
             configuration_profile: default_configuration_profile(),
@@ -985,7 +985,7 @@ pub fn project_identity(manifest: &ProjectManifest) -> Result<ProjectIdentity, S
 
 fn client_hello(options: WebSessionOptions, limits: RuntimeLimits) -> ClientHello {
     let v1 = VersionRange::exact(era_protocol::ProtocolVersion::new(1, 0));
-    let services = [
+    let mut services = [
         (ServiceKind::Entropy, "random_seed"),
         (ServiceKind::Clock, "local_date_time"),
         (ServiceKind::InputState, "get_key_state"),
@@ -1023,7 +1023,10 @@ fn client_hello(options: WebSessionOptions, limits: RuntimeLimits) -> ClientHell
                 versions: VersionRange::exact(era_protocol::ProtocolVersion::new(2, 0)),
             }),
     )
-    .collect();
+    .collect::<Vec<_>>();
+    if options.audio_available {
+        services.push(audio_observation_capability());
+    }
     ClientHello {
         runtime_versions: VersionRange::exact(RUNTIME_PROTOCOL_VERSION),
         client_name: options.client_name,
@@ -1077,6 +1080,14 @@ fn client_hello(options: WebSessionOptions, limits: RuntimeLimits) -> ClientHell
         },
         preferred_locales: options.preferred_locales,
         configuration_profile: Some(options.configuration_profile),
+    }
+}
+
+fn audio_observation_capability() -> ServiceCapability {
+    ServiceCapability {
+        kind: ServiceKind::Audio,
+        operation: AUDIO_OBSERVATION_OPERATION.into(),
+        versions: VersionRange::exact(era_protocol::ProtocolVersion::new(1, 0)),
     }
 }
 

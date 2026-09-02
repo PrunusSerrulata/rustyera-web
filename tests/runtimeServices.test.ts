@@ -215,6 +215,21 @@ function serviceRequest(
   };
 }
 
+function audioServiceRequest(expectedRevision = 7): RuntimeServiceRequest {
+  return {
+    request_id: 1,
+    kind: "audio",
+    operation: "audio_observation",
+    operation_version: { major: 1, minor: 0 },
+    payload: encodeServicePayload(
+      new Map<number, unknown>([
+        [0, [0, [3]]],
+        [1, expectedRevision],
+      ]),
+    ),
+  };
+}
+
 function serviceHarness(requestId: number | bigint = 1) {
   const requests = new RuntimeServiceRequests();
   requests.enterEpoch(1);
@@ -242,6 +257,67 @@ function serviceHarness(requestId: number | bigint = 1) {
   };
   return { requests, send, context };
 }
+
+describe("audio runtime service", () => {
+  it("returns the provider's exact revision-bound observation payload", async () => {
+    const harness = serviceHarness();
+    const response = new Map<number, unknown>([
+      [0, [0, [3]]],
+      [1, 7],
+      [2, 2_500],
+      [3, 1_234],
+      [4, 2],
+      [5, 500_000],
+      [6, 2_500_000],
+      [7, false],
+      [8, 999],
+    ]);
+    harness.context.audio = { observe: vi.fn(() => response) };
+
+    await handleRuntimeService(audioServiceRequest(), 42, harness.context);
+
+    expect(harness.context.audio.observe).toHaveBeenCalledWith(
+      new Map<number, unknown>([
+        [0, [0, [3]]],
+        [1, 7],
+      ]),
+    );
+    const [message, correlation] = harness.send.mock.calls[0] as unknown as [any, number];
+    expect(correlation).toBe(42);
+    expect(message.value.result.type).toBe("ready");
+    expect(decodeServicePayload(message.value.result.payload)).toEqual(response);
+  });
+
+  it("returns unsupported when no real audio provider was installed", async () => {
+    const harness = serviceHarness();
+
+    await handleRuntimeService(audioServiceRequest(), undefined, harness.context);
+
+    expect((harness.send.mock.calls[0] as any)[0].value.result).toMatchObject({
+      type: "error",
+      error: { code: "frontend.unsupported_service" },
+    });
+  });
+
+  it("returns a structured stale response instead of encoding a stopped value", async () => {
+    const harness = serviceHarness();
+    harness.context.audio = {
+      observe: vi.fn(() => {
+        throw new RuntimeServiceError("stale_response", "audio revision changed");
+      }),
+    };
+
+    await handleRuntimeService(audioServiceRequest(6), undefined, harness.context);
+
+    expect((harness.send.mock.calls[0] as any)[0].value.result).toMatchObject({
+      type: "error",
+      error: {
+        code: "frontend.stale_response",
+        message: expect.stringContaining("audio revision changed"),
+      },
+    });
+  });
+});
 
 // Numeric maps/enum arrays mirror minicbor's canonical model; they are not serde JSON.
 function htmlServicePayload(text = "a😀"): Map<number, unknown> {

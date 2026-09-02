@@ -41,6 +41,8 @@ import {
   focusNativeBrowser,
   runtimeProgressDiagnostic,
   runtimeProgressSignature,
+  snakeAudioRelations,
+  snakeAudioStressRelations,
   terminalRuntimeRejection,
   waitForWebDriverDocument,
 } from "./web-test-lib.mjs";
@@ -82,6 +84,9 @@ if (snakeData && projectFile) throw new Error("--snake-data requires the source 
 const snakeServices = process.argv.includes("--snake-services");
 const snakeBatch1 = process.argv.includes("--snake-batch1");
 const snakeServiceLifecycle = process.argv.includes("--snake-service-lifecycle");
+const snakeAudio = process.argv.includes("--snake-audio");
+const snakeAudioStress = process.argv.includes("--snake-audio-stress");
+const snakeAudioFlow = snakeAudio || snakeAudioStress;
 const replacementIndex = process.argv.indexOf("--replacement-project");
 const lifecycleReplacement =
   snakeServiceLifecycle && replacementIndex >= 0 && process.argv[replacementIndex + 1]
@@ -102,12 +107,14 @@ if (
     Number(snakeServices) +
     Number(snakeBatch1) +
     Number(snakeServiceLifecycle) +
+    Number(snakeAudio) +
+    Number(snakeAudioStress) +
     Number(snakeServiceOracle) >
   1
 )
   throw new Error("choose one snake fixture flow");
 if (
-  (snakeServices || snakeBatch1 || snakeServiceLifecycle || snakeServiceOracle) &&
+  (snakeServices || snakeBatch1 || snakeServiceLifecycle || snakeAudioFlow || snakeServiceOracle) &&
   (projectIndex < 0 || projectFile)
 )
   throw new Error("snake service flows require --project source directory");
@@ -118,6 +125,7 @@ const startupOnly =
   snakeServices ||
   snakeBatch1 ||
   snakeServiceLifecycle ||
+  snakeAudioFlow ||
   snakeServiceOracle;
 const cacheInputSmoke = process.argv.includes("--cache-input-smoke");
 const logInputSmoke = process.argv.includes("--log-input-smoke");
@@ -147,6 +155,11 @@ const snapshotDirectory = path.join(
 const snapshotPath = path.join(snapshotDirectory, "snapshots.ndjson");
 mkdirSync(snapshotDirectory, { recursive: true });
 console.log(JSON.stringify({ browser: browserName, type: "snapshot-log", path: snapshotPath }));
+
+function reportCompatibilityStage(stage) {
+  compatibilityStage = stage;
+  console.log(JSON.stringify({ browser: browserName, type: "browser-compat-stage", stage }));
+}
 
 async function persistCompatibilityEvidence(name, packet) {
   const directory = path.join(snapshotDirectory, name);
@@ -205,16 +218,14 @@ try {
     // non-interactive. Setting a concrete rect restores it according to the WebDriver window API.
     await browser.setWindowSize(1280, 900);
   }
-  if (browserName === "firefox") {
-    console.log(
-      JSON.stringify({
-        browser: browserName,
-        type: "webdriver-transport",
-        bidi: false,
-        capabilities: browser.capabilities,
-      }),
-    );
-  }
+  console.log(
+    JSON.stringify({
+      browser: browserName,
+      type: "webdriver-transport",
+      bidi: false,
+      capabilities: browser.capabilities,
+    }),
+  );
   compatibilityStage = "navigating to compatibility client";
   const targetUrl = `http://127.0.0.1:${port}`;
   await browser.url(targetUrl);
@@ -315,9 +326,9 @@ try {
     }),
   );
   let minimized = false;
-  compatibilityStage = projectFile
-    ? "installing packaged project picker"
-    : "installing portable project picker";
+  reportCompatibilityStage(
+    projectFile ? "installing packaged project picker" : "installing portable project picker",
+  );
   const setup = projectFile
     ? await installPackagedProjectPicker(
         browser,
@@ -326,6 +337,7 @@ try {
       )
     : await installPortableProjectPicker(browser, project, files);
   if (!setup.ok) throw new Error(`browser project import failed: ${setup.error}`);
+  reportCompatibilityStage("project picker installed");
 
   await browser.execute(() => {
     const progress = { active: false, completed: false, gaps: 0, labels: [] };
@@ -357,8 +369,8 @@ try {
     capture();
   });
 
-  compatibilityStage = projectFile ? "opening packaged project" : "opening fixture project";
-  if (snakeData || snakeServiceOracle) {
+  if (snakeData || snakeAudioFlow || snakeServiceOracle) {
+    reportCompatibilityStage("configuring snake test runtime");
     await browser.execute(() =>
       window.__RUSTYERA_TEST__.configure({
         start: { type: "new_game", seed: "123456" },
@@ -366,10 +378,17 @@ try {
       }),
     );
   }
-  const open = await browser.$(
-    projectFile ? "//button[normalize-space(.)='从项目文件启动…']" : "button.primary.large",
+  const openSelector = projectFile
+    ? "//button[normalize-space(.)='从项目文件启动…']"
+    : "button.primary.large";
+  reportCompatibilityStage(
+    projectFile
+      ? "waiting for packaged project open control"
+      : "waiting for fixture project open control",
   );
+  const open = await browser.$(openSelector);
   await open.waitForClickable({ timeout: 30_000 });
+  reportCompatibilityStage(projectFile ? "opening packaged project" : "opening fixture project");
   await clickElement(browser, open);
   let projectPreferencesDuringLoad;
   let projectPreferencesAfterLoad;
@@ -399,8 +418,31 @@ try {
     if (!startupOnly)
       projectPreferencesDuringLoad = await exerciseProjectPreferencesDuringLoad(browser);
   }
+  let snakeAudioResult;
   try {
-    await waitForCompatibilityRuntime(browser, browserName);
+    if (snakeAudioFlow) {
+      compatibilityStage = snakeAudioStress
+        ? "validating snake audio provider stress relations"
+        : "validating snake audio provider relations";
+      await browser.waitUntil(
+        async () => {
+          const state = await browser.execute(() => window.__RUSTYERA_TEST__?.snapshot());
+          if (state?.fault) throw new Error(JSON.stringify(state.fault));
+          const relations = (snakeAudioStress ? snakeAudioStressRelations : snakeAudioRelations)({
+            output: state?.output,
+            frontend: state,
+          });
+          snakeAudioResult = { state, relations };
+          return Object.values(relations).every(Boolean);
+        },
+        {
+          timeout: 30_000,
+          interval: 100,
+          timeoutMsg: () =>
+            `snake audio${snakeAudioStress ? " stress" : ""} relations failed: ${JSON.stringify(snakeAudioResult?.relations)}`,
+        },
+      );
+    } else await waitForCompatibilityRuntime(browser, browserName);
   } catch (error) {
     const diagnosis = await browser.execute(() => ({
       openButton: document.querySelector("button.primary.large")?.textContent?.trim(),
@@ -444,6 +486,17 @@ try {
         verified: SNAKE_SERVICE_MARKERS,
         output: observed.output,
         bridgeKind: observed.bridgeKind,
+      }),
+    );
+  }
+  if (snakeAudioFlow) {
+    console.log(
+      JSON.stringify({
+        browser: browserName,
+        type: snakeAudioStress ? "snake-audio-stress-integration" : "snake-audio-integration",
+        relations: snakeAudioResult.relations,
+        audioProvider: snakeAudioResult.state.audioProvider,
+        audioPlayback: snakeAudioResult.state.audioPlayback,
       }),
     );
   }

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "project": "../../../.rustyera/test-runs/snake-audio-stress-48k",
+  "mode": "fixed",
+  "seed": 123456,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [],
+  "goal": {
+    "output_contains": [
+      "stress_channels=0,1,2,3,4,5,6,7,8,9",
+      "stress_overwrite_duration=750",
+      "stress_bgm=1,duration=5000",
+      "BATCH5_STRESS_DONE"
+    ],
+    "snake_audio_stress_relations": true
+  },
+  "limits": { "max_steps": 4, "timeout_seconds": 30 }
+}

@@ -51,7 +51,7 @@
       "type": "assert_state",
       "expect": {
         "audio": {
-          "1": { "resourceId": "sound/坠落吧星光.mp3", "playing": true }
+          "bgm": { "resourceId": "sound/坠落吧星光.mp3", "playing": true }
         }
       }
     },
@@ -82,7 +82,7 @@
       "type": "assert_state",
       "expect": {
         "audio": {
-          "1": { "resourceId": "sound/王宫的入口.mp3", "playing": true }
+          "bgm": { "resourceId": "sound/王宫的入口.mp3", "playing": true }
         }
       }
     },
@@ -145,7 +145,7 @@
       "type": "assert_state",
       "expect": {
         "audio": {
-          "1": { "resourceId": "sound/萝乐娜的工房.mp3", "playing": true }
+          "bgm": { "resourceId": "sound/萝乐娜的工房.mp3", "playing": true }
         },
         "audioPlayback": {
           "sound/故事的开始.mp3": { "starts": 1 },

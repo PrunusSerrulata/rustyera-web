@@ -16,6 +16,7 @@ const reusableSpecs = new Set([
   "snake-batch1.spec.mjs",
   "snake-data.spec.mjs",
   "snake-sql.spec.mjs",
+  "snake-audio.spec.mjs",
   "snake-ingestion.spec.mjs",
   "snake-profile.spec.mjs",
 ]);
@@ -177,7 +178,9 @@ export async function reusableArtifact(manifestPath, contract, binary, { require
               "scripts/snake-services-test-support.mjs",
               "scripts/browser-compat-test.mjs",
               "scripts/cache-handoff-test.mjs",
+              "scripts/prepare-snake-audio-fixture.mjs",
               "scripts/web-test-lib.mjs",
+              "scripts/web-test-runtime.mjs",
             ].includes(name),
         ),
       };

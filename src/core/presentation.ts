@@ -14,6 +14,7 @@ import {
 import { applySceneDelta, emptyScene, validateScene, type SceneStateV1 } from "@/core/scene";
 import { decodeFixedColorMatrix } from "@/core/colorMatrix";
 import { sameServiceInteger, serviceInteger } from "@/core/runtimeServiceProtocol";
+import { parseAudioStates, type AudioStateProjection } from "@/core/audio/model";
 
 export interface PresentationState {
   revision: number;
@@ -21,7 +22,7 @@ export interface PresentationState {
   title: string;
   lines: DisplayLine[];
   scene: SceneStateV1;
-  audio: any[];
+  audio: AudioStateProjection[];
   inputWait: any | null;
   settings: Partial<PresentationSettings>;
   tooltip: TooltipSettings;
@@ -84,7 +85,7 @@ function applySnapshotCandidate(state: PresentationState, snapshot: any): void {
   const scene = { revision: sourceScene.revision, layers: [...sourceScene.layers] };
   validateScene(scene);
   state.scene = scene;
-  state.audio = snapshot.audio ?? [];
+  state.audio = parseAudioStates(snapshot.audio ?? []);
   state.inputWait = snapshot.input_wait ?? null;
   state.settings = snapshot.settings ?? {};
   state.tooltip = snapshot.tooltip ?? defaultTooltipSettings();
@@ -193,7 +194,7 @@ function applyDeltaCandidate(state: PresentationState, delta: any): void {
         previousSceneSequences = collectSceneSequences(state.scene);
         break;
       case "set_audio":
-        state.audio = operation.audio;
+        state.audio = parseAudioStates(operation.audio);
         break;
       case "set_input_wait":
         state.inputWait = operation.input_wait ?? null;

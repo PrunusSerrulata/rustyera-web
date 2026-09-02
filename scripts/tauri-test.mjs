@@ -98,6 +98,10 @@ const specProfiles = {
     environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_SQL",
     copyProject: true,
   },
+  "snake-audio.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_AUDIO",
+    copyProject: true,
+  },
   "snake-ingestion.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_INGESTION",
     copyProject: true,

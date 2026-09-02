@@ -4,6 +4,7 @@ import { computed, nextTick, ref } from "vue";
 import { blake3 } from "@noble/hashes/blake3.js";
 
 import { AudioEngine } from "@/core/audio";
+import { parseAudioEffect } from "@/core/audio/model";
 import { resourceUrlRegistry } from "@/core/resources";
 import { diagnosisProjectName, diagnosisProjectTitle } from "@/core/diagnosis";
 import {
@@ -299,6 +300,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let deviceSynchronizationPending = true;
   let deviceEventSequence = 0;
   let deviceGeneration = 0;
+  let devicePumpTimeAdvancePending = false;
   const testAudioPlayback = new Map<string, { starts: number; active: number }>();
   const audio = new AudioEngine(
     bridge,
@@ -317,6 +319,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let lifecycleGeneration = 0;
   // Observation identity follows host session creation, not the application's teardown lifetime.
   let runtimeSessionObservationGeneration = 0;
+  let sessionAudioAvailable = false;
   const runtimeConfiguration = new RuntimeConfigurationState({
     bridge,
     send,
@@ -672,6 +675,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimePump.setTransitioning(true);
     runtimePump.setReady(false);
     retireFrontendOwners(true);
+    audio.close();
     bridge.setProjectProgressListener(undefined);
     void bridge
       .dispose()
@@ -728,7 +732,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const attempt = (async () => {
       if (bridge.kind === "tauri") await requestSystemFonts();
       runtimeSessionObservationGeneration += 1;
-      const batch = await bridge.createSession(sessionOptions());
+      const options = sessionOptions();
+      const batch = await bridge.createSession(options);
+      sessionAudioAvailable = options.audioAvailable;
       runtimePump.setReady(true);
       try {
         await handleBatch(batch);
@@ -770,7 +776,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       // capability sampled when the runtime session is created.
       availableFonts: [...(systemFonts.value.length > 0 ? systemFonts.value : sessionFontFallback)],
       preferredLocales: [...preferredRuntimeLocales(navigator.languages)],
-      audioAvailable: true,
+      audioAvailable: audio.providerAvailable(),
       debugScopeMask: 1023,
       maximumEnvelopeBytes: 512 * 1024 * 1024,
       configurationProfile: bridge.kind,
@@ -823,7 +829,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     let runtimeProjectSubmissionLocked = false;
     try {
       const prepareAfterSelection = async () => {
-        if (replaceCurrent) {
+        const replaceForAudioCapability =
+          runtimePump.ready && audio.providerAvailable() && !sessionAudioAvailable;
+        if (replaceCurrent || replaceForAudioCapability) {
           currentSessionReplaced = true;
           await recreateSessionForProjectSelection();
         } else {
@@ -836,6 +844,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
               finishProjectLoad();
               projectLoad.acceptProgress();
             }
+          }
+          if (audio.providerAvailable() && !sessionAudioAvailable) {
+            currentSessionReplaced = true;
+            await recreateSessionForProjectSelection();
           }
         }
         runtimePump.setTransitioning(true);
@@ -974,6 +986,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await awaitDeviceSubmissions();
     await settlePendingGameInput();
     await flushDeferredViewportProjection(batchSequence);
+    // Device-pump AWAIT has completed once core resumes VM instructions. State may change back to
+    // running immediately after the acknowledgement while a positive delay is still pending, so
+    // phase changes alone cannot delimit this clock-sampling window.
+    if (batch.vmInstructions > 0) devicePumpTimeAdvancePending = false;
   }
 
   function handleRuntime(
@@ -1010,6 +1026,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   function handleRuntimeStateChanged(value: any): void {
     pendingReturnToTitleMessageId = undefined;
     phase.value = value.phase;
+    if (value.phase === "faulted" || value.phase === "stopped")
+      devicePumpTimeAdvancePending = false;
     if (value.phase === "faulted" || value.phase === "stopped") {
       gameProgressLossConfirmation.value = null;
       runtimeImport.reset();
@@ -1447,7 +1465,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     for (const effect of effects) {
       try {
         const kind = effect.kind;
-        if (kind.type === "audio") await audio.applyEffect(kind.value);
+        if (kind.type === "audio") await audio.applyEffect(parseAudioEffect(kind.value));
         else if (kind.type === "open_configuration") openPreferencesFromRuntime();
         else if (kind.type === "start_animation") {
           await new Promise(requestAnimationFrame);
@@ -1614,6 +1632,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           active() && lease.active() ? send(message, correlation) : Promise.resolve(undefined),
         resourceGeneration: resources,
         imagePixels,
+        audio,
         sql: sqlProvider,
         lease,
         html: {
@@ -1842,8 +1861,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function advanceTimedWait(): Promise<void> {
     if (diagnosisExporting.value) return;
     const wait = currentPresentation().inputWait;
+    const advancingDevicePump = devicePumpTimeAdvancePending;
     if (
-      wait?.deadline_ns == null ||
+      (wait?.deadline_ns == null && !advancingDevicePump) ||
       pendingGameInput.value != null ||
       pendingInputUndo.value != null
     )
@@ -1914,6 +1934,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function replaceRuntimeSession(): Promise<void> {
     clearSessionTimers();
+    audio.cancelPendingLoads();
     try {
       await runtimePump.waitUntilIdle();
       await cancelTimelineTransfers();
@@ -1922,7 +1943,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
       await yieldToPaint();
       await bridge.prepareSessionReplacement();
       runtimeSessionObservationGeneration += 1;
-      const batch = await bridge.createSession(sessionOptions());
+      const options = sessionOptions();
+      const batch = await bridge.createSession(options);
+      sessionAudioAvailable = options.audioAvailable;
       runtimePump.setReady(true);
       await handleBatch(batch);
     } catch (error) {
@@ -1951,6 +1974,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       return false;
     runtimePump.setTransitioning(true);
     clearSessionTimers();
+    audio.cancelPendingLoads();
     try {
       await runtimePump.waitUntilIdle();
       // The transition lock suppresses both browser and native pump scheduling. Once Runtime has
@@ -2099,8 +2123,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     canvasPixels.clear();
     htmlMeasurements.clear();
     projectResourceGeneration.value += 1;
-    resourceUrlRegistry.releaseBeforeGeneration(projectResourceGeneration.value);
     audio.resetResources(projectResourceGeneration.value);
+    resourceUrlRegistry.releaseBeforeGeneration(projectResourceGeneration.value);
     imagePixels.clear();
   }
 
@@ -2121,6 +2145,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (projectLoading.value || runtimePump.transitioning || diagnosisExporting.value) return;
     beginProjectLoad("正在重新加载项目…");
     runtimePump.setTransitioning(true);
+    audio.cancelPendingLoads();
     try {
       await runtimePump.waitUntilIdle();
       await compiledCacheExport.cancel();
@@ -2298,6 +2323,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     return Object.fromEntries(
       [...testAudioPlayback.entries()].sort(([left], [right]) => left.localeCompare(right)),
     );
+  }
+
+  function testAudioProviderState() {
+    return audio.providerSnapshot();
   }
 
   async function openTraditionalSaveDialog(mode: "export" | "import"): Promise<void> {
@@ -3322,7 +3351,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       value: {
         focused: document.hasFocus(),
         visible: document.visibilityState === "visible",
-        audio_available: true,
+        audio_available: audio.providerAvailable(),
         reduce_motion: matchMedia("(prefers-reduced-motion: reduce)").matches,
         high_contrast: matchMedia("(prefers-contrast: more)").matches,
         screen_reader: false,
@@ -3333,6 +3362,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   function resetDeviceInputState(clearPhysicalState: boolean): void {
     deviceGeneration += 1;
     deviceEventSequence = 0;
+    devicePumpTimeAdvancePending = false;
     deviceSubmissionFailure = undefined;
     deviceSynchronizationPending = true;
     if (!clearPhysicalState) return;
@@ -3448,6 +3478,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
         "invalid_request",
         "device pump watermark exceeds submitted events",
       );
+    // A positive snake AWAIT starts only after this acknowledgement. Its duration is retained by
+    // core rather than exposed in the device-pump ABI, so keep sampling frontend time until core
+    // leaves waiting_external. AWAIT 0 may receive one harmless sample before its phase update.
+    devicePumpTimeAdvancePending = true;
     return deviceEventSequence;
   }
 
@@ -3906,6 +3940,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     restoreState,
     testTransferState,
     testAudioPlaybackState,
+    testAudioProviderState,
     liveMemoryCounters,
   };
 });

@@ -56,7 +56,10 @@ fn state_export_chunks_project_bulk_bytes_separately() {
 #[test]
 fn client_advertises_canvas_image_decode() {
     let hello = client_hello(
-        WebSessionOptions::default(),
+        WebSessionOptions {
+            audio_available: true,
+            ..WebSessionOptions::default()
+        },
         RuntimeLimits {
             maximum_envelope_bytes: DEFAULT_ENVELOPE_BYTES,
             maximum_payload_bytes: DEFAULT_ENVELOPE_BYTES - 1024 * 1024,
@@ -80,6 +83,11 @@ fn client_advertises_canvas_image_decode() {
             1,
         ),
         (ServiceKind::Sql, era_runtime_protocol::SQL_OPERATION, 1),
+        (
+            ServiceKind::Audio,
+            era_runtime_protocol::AUDIO_OBSERVATION_OPERATION,
+            1,
+        ),
         (ServiceKind::PresentationQuery, "html_string_len", 2),
         (ServiceKind::PresentationQuery, "html_substring", 2),
         (ServiceKind::PresentationQuery, "html_string_lines", 2),
@@ -119,6 +127,27 @@ fn client_advertises_canvas_image_decode() {
         .into_iter()
         .collect()
     );
+}
+
+#[test]
+fn client_omits_audio_observation_without_a_ready_provider() {
+    let hello = client_hello(
+        WebSessionOptions::default(),
+        RuntimeLimits {
+            maximum_envelope_bytes: DEFAULT_ENVELOPE_BYTES,
+            maximum_payload_bytes: DEFAULT_ENVELOPE_BYTES - 1024 * 1024,
+            maximum_pending_requests: 128,
+            maximum_journal_entries: 4096,
+            maximum_journal_bytes: 64 * 1024 * 1024,
+            maximum_drive_instructions: 1_000_000,
+            maximum_transfer_bytes: DEFAULT_ENVELOPE_BYTES - 1024 * 1024,
+        },
+    );
+    assert!(!hello.capabilities.audio);
+    assert!(!hello.capabilities.services.iter().any(|capability| {
+        capability.kind == ServiceKind::Audio
+            && capability.operation == era_runtime_protocol::AUDIO_OBSERVATION_OPERATION
+    }));
 }
 
 #[test]

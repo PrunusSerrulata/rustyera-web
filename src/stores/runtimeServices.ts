@@ -51,6 +51,10 @@ export interface RuntimeProjectionServiceProvider {
   }>;
 }
 
+export interface RuntimeAudioServiceProvider {
+  observe(query: unknown): Map<number, unknown>;
+}
+
 export interface RuntimeServiceContext {
   lease: RuntimeServiceLease;
   projection?: RuntimeProjectionServiceProvider;
@@ -64,6 +68,7 @@ export interface RuntimeServiceContext {
   send(message: RuntimeMessage, correlationId?: ServiceInteger): Promise<unknown>;
   resourceGeneration: number;
   imagePixels: RuntimeImagePixelCache;
+  audio?: RuntimeAudioServiceProvider;
   sql?: SqlProvider;
 }
 
@@ -310,6 +315,11 @@ async function resolveRuntimeService(
     return context.sql.handle(query, context.lease.signal);
   }
   switch (`${request.kind}/${request.operation}`) {
+    case "audio/audio_observation": {
+      if (!context.audio)
+        throw new RuntimeServiceError("unsupported", "audio provider is not installed");
+      return context.audio.observe(query);
+    }
     case "input_state/device_pump": {
       const expected = devicePumpQuery(query);
       const through = await context.pumpDevices(expected.epoch, expected.afterEventSequence);

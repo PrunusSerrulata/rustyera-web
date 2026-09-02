@@ -42,9 +42,23 @@ export async function focusNativeBrowser(
   const handle = await browser.getWindowHandle();
   await browser.switchToWindow(handle);
   if (name === "safari") {
-    const heading = await browser.$(".welcome h1");
-    await heading.waitForDisplayed({ timeout: 3_000 });
-    await heading.click();
+    const point = await browser.execute(() => {
+      const heading = document.querySelector(".welcome h1");
+      if (!heading || heading.getClientRects().length === 0) return null;
+      const rectangle = heading.getBoundingClientRect();
+      if (rectangle.width <= 0 || rectangle.height <= 0) return null;
+      return {
+        x: Math.round(rectangle.left + rectangle.width / 2),
+        y: Math.round(rectangle.top + rectangle.height / 2),
+      };
+    });
+    if (!point) throw new Error("Safari welcome heading is not visible for foreground focus");
+    await browser
+      .action("pointer")
+      .move({ ...point, origin: "viewport" })
+      .down("left")
+      .up("left")
+      .perform();
   }
   await browser.waitUntil(
     () => browser.execute(() => document.visibilityState === "visible" && document.hasFocus()),
@@ -61,6 +75,8 @@ export {
   observationFromSnapshot,
   runtimeProgressDiagnostic,
   runtimeProgressSignature,
+  snakeAudioRelations,
+  snakeAudioStressRelations,
   terminalRuntimeRejection,
 } from "./web-test-runtime.mjs";
 export {

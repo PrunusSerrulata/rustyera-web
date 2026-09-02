@@ -1,5 +1,10 @@
 export type RuntimeServiceFailure =
-  "unsupported" | "invalid_request" | "stale_projection" | "resource_limit" | "backend_failure";
+  | "unsupported"
+  | "invalid_request"
+  | "stale_projection"
+  | "stale_response"
+  | "resource_limit"
+  | "backend_failure";
 
 export class RuntimeServiceError extends Error {
   constructor(

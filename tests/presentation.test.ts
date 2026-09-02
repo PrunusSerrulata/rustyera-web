@@ -568,6 +568,32 @@ describe("presentation projection", () => {
     }).toEqual(before);
   });
 
+  it("validates audio projections atomically before committing a delta", () => {
+    const state = emptyPresentation();
+    const audio = {
+      channel: { type: "bgm" },
+      resource_id: "sound/theme.wav",
+      repeat_count: -1,
+      volume_millionths: 1_000_000,
+      state: "playing",
+      revision: 1,
+      rate_millionths: 1_000_000,
+      preserve_pitch: true,
+    };
+
+    expect(() =>
+      applyDelta(state, {
+        base_revision: 0,
+        new_revision: 1,
+        operations: [
+          { type: "set_title", title: "must not commit" },
+          { type: "set_audio", audio: [audio, { ...audio, revision: 2 }] },
+        ],
+      }),
+    ).toThrow("audio target bgm is duplicated");
+    expect(state).toMatchObject({ revision: 0, title: "RustyEra", audio: [] });
+  });
+
   it("preserves positioned images when HTML_GETPRINTEDSTR serializes an HTML line", () => {
     const line: DisplayLine = {
       line_id: 1,
