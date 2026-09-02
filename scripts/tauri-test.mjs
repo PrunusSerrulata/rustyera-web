@@ -99,6 +99,11 @@ const specProfiles = {
     defaultState: "../games/erarorona/runtime_20260902-151756.snapshot",
     defaultStateType: "vm_snapshot",
   },
+  "rorona-help-overlay.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_RORONA_HELP_OVERLAY",
+    defaultState: "../games/erarorona/runtime_20260902-151836.snapshot",
+    defaultStateType: "vm_snapshot",
+  },
   "rorona-load-scroll.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_RORONA_LOAD_SCROLL",
   },
