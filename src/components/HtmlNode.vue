@@ -3,11 +3,13 @@ import { computed } from "vue";
 
 import MediaImage from "@/components/MediaImage.vue";
 import {
+  eraCharacterColumns,
   htmlTextSegments,
   lastRenderableTextNodeIndex,
   nextRenderableTextCharacter,
   type HtmlTextSegment,
 } from "@/core/htmlBoxLayout";
+import { projectMediaDimensions, projectMediaLength } from "@/core/mediaProjection";
 import {
   projectPresentationLength,
   projectRectangleShape,
@@ -22,6 +24,7 @@ const props = defineProps<{
   alignTrailingBoxEdge?: boolean;
   trailingBoxFill?: { character: string; columns: number };
   followingTextCharacter?: string;
+  positionedMediaRightColumns?: number;
 }>();
 const store = useRuntimeStore();
 const tags: Record<string, string> = {
@@ -119,14 +122,22 @@ const layeredDivisionStyle = computed(() => {
   };
 });
 const positionedHeight = computed(() => positionedMediaHeight(props.node));
+const positionedWidth = computed(() => positionedMediaWidth(props.node));
 const lockedPositionStyle = computed(() => {
   const semantic = props.node.semantic;
   if (!["button", "non_button"].includes(semantic?.type) || semantic.position == null) return null;
   const position = Number(semantic.position);
   if (!Number.isFinite(position)) return null;
   const height = positionedHeight.value;
+  const requestedLeft = (position * store.gameTextStyle.fontSizePx) / 100;
+  const width = positionedWidth.value;
+  const rightEdge = props.positionedMediaRightColumns;
+  const left =
+    width != null && rightEdge != null
+      ? `min(${requestedLeft}px, calc(${rightEdge}ch - ${width.columns}ch - ${width.pixels}px))`
+      : `${requestedLeft}px`;
   return {
-    left: `${(position * store.gameTextStyle.fontSizePx) / 100}px`,
+    left,
     height: height == null ? undefined : `${height}px`,
   };
 });
@@ -197,7 +208,10 @@ function positionedMediaHeight(node: any): number | undefined {
   let bottom = 0;
   const visit = (child: any): void => {
     if (child?.semantic?.type === "image") {
-      const projectedHeight = projectLength(child.semantic.height);
+      const projectedHeight = projectMediaLength(
+        child.semantic.height,
+        store.gameTextStyle.fontSizePx,
+      );
       const projectedY = child.semantic.y == null ? 0 : projectLength(child.semantic.y);
       if (projectedHeight == null || projectedHeight === 0 || projectedY == null) {
         measurable = false;
@@ -212,6 +226,45 @@ function positionedMediaHeight(node: any): number | undefined {
   return found && measurable
     ? Math.max(store.gameLineHeightPx, bottom * store.effectivePreferences.imageScale)
     : undefined;
+}
+
+function positionedMediaWidth(node: any): { columns: number; pixels: number } | undefined {
+  let columns = 0;
+  let pixels = 0;
+  let foundMedia = false;
+  let measurable = true;
+  const visit = (child: any): void => {
+    if (child?.type === "text") {
+      for (const character of Array.from(String(child.text ?? "")))
+        columns += eraCharacterColumns(character);
+      return;
+    }
+    if (child?.kind === "break") return;
+    if (child?.semantic?.type === "image") {
+      const source = String(child.semantic.source ?? "").toUpperCase();
+      const sprite = store.presentation.resources.sprites?.find(
+        (item: any) => String(item.name).toUpperCase() === source,
+      );
+      const { width } = projectMediaDimensions({
+        requestedWidth: child.semantic.width,
+        requestedHeight: child.semantic.height,
+        spriteWidth: sprite?.size?.[0],
+        spriteHeight: sprite?.size?.[1],
+        fontSizePx: store.gameTextStyle.fontSizePx,
+      });
+      if (width == null) measurable = false;
+      else pixels += width * store.effectivePreferences.imageScale;
+      foundMedia = true;
+      return;
+    }
+    if (child?.semantic?.type === "shape" || child?.semantic?.type === "division") {
+      measurable = false;
+      return;
+    }
+    for (const nested of child?.children ?? []) visit(nested);
+  };
+  for (const child of node?.children ?? []) visit(child);
+  return foundMedia && measurable ? { columns, pixels } : undefined;
 }
 
 function textSegments(value: unknown): HtmlTextSegment[] {
@@ -307,6 +360,7 @@ const trailingTextChildIndex = computed(() =>
       :following-text-character="
         nextRenderableTextCharacter(node.children ?? [], index, followingTextCharacter)
       "
+      :positioned-media-right-columns="positionedMediaRightColumns"
     />
   </component>
 </template>

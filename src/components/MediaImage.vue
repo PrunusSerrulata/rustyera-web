@@ -2,6 +2,11 @@
 import { computed, onBeforeUnmount, ref, shallowRef, watch, watchEffect } from "vue";
 
 import CanvasReplay from "@/components/CanvasReplay.vue";
+import {
+  projectLogicalPixels,
+  projectMediaDimensions,
+  projectMediaOffset,
+} from "@/core/mediaProjection";
 import { acquireResourceUrl } from "@/core/resources";
 import type { PresentationLength } from "@/core/types";
 import { platformBridge } from "@/platform";
@@ -112,24 +117,15 @@ watchEffect((onCleanup) => {
 });
 
 const dimensions = computed(() => {
-  const spriteWidth = positive(sprite.value?.size?.[0]) ?? naturalSize.value?.width;
-  const spriteHeight = positive(sprite.value?.size?.[1]) ?? naturalSize.value?.height;
-  const requestedWidth = projectLength(props.placement.requested_width);
-  const requestedHeight = projectLength(props.placement.requested_height);
-  const placementWidth = logicalPixels(props.placement.width);
-  const placementHeight = logicalPixels(props.placement.height);
-  let width = requestedWidth ?? placementWidth;
-  let height = requestedHeight ?? placementHeight;
-  if (width == null && height == null) {
-    width = spriteWidth;
-    height = spriteHeight;
-  }
-  if (width != null && height == null && spriteWidth && spriteHeight) {
-    height = (width * spriteHeight) / spriteWidth;
-  } else if (height != null && width == null && spriteWidth && spriteHeight) {
-    width = (height * spriteWidth) / spriteHeight;
-  }
-  return { width, height };
+  return projectMediaDimensions({
+    requestedWidth: props.placement.requested_width,
+    requestedHeight: props.placement.requested_height,
+    placementWidth: props.placement.width,
+    placementHeight: props.placement.height,
+    spriteWidth: positive(sprite.value?.size?.[0]) ?? naturalSize.value?.width,
+    spriteHeight: positive(sprite.value?.size?.[1]) ?? naturalSize.value?.height,
+    fontSizePx: store.gameTextStyle.fontSizePx,
+  });
 });
 const horizontallyFlipped = computed(() => Number(props.placement.requested_width?.value) < 0);
 const horizontalTransform = computed(() => (horizontallyFlipped.value ? "scaleX(-1)" : undefined));
@@ -148,7 +144,7 @@ const opacity = computed(() =>
 const scale = computed(() => store.effectivePreferences.imageScale);
 const escapesConsoleRow = computed(() => props.placement.requested_y != null);
 const positionedSlotHeight = computed(
-  () => logicalPixels(props.placement.height) ?? store.gameTextStyle.fontSizePx,
+  () => projectLogicalPixels(props.placement.height) ?? store.gameTextStyle.fontSizePx,
 );
 const positionedSlotScale = computed(() => (escapesConsoleRow.value ? 1 : scale.value));
 const directStyle = computed(() => ({
@@ -204,18 +200,6 @@ const spriteSourceStyle = computed(() => {
   };
 });
 
-function projectLength(value: PresentationLength | undefined): number | undefined {
-  if (!value) return undefined;
-  if (value.unit === "pixels") return Math.abs(Number(value.value));
-  if (value.unit === "logical") return Math.abs(Number(value.value)) / 1000;
-  return (Math.abs(Number(value.value)) * store.gameTextStyle.fontSizePx) / 100;
-}
-
-function logicalPixels(value: unknown): number | undefined {
-  const result = Math.abs(Number(value)) / 1000;
-  return Number.isFinite(result) && result > 0 ? result : undefined;
-}
-
 function positive(value: unknown): number | undefined {
   const result = Math.abs(Number(value));
   return Number.isFinite(result) && result > 0 ? result : undefined;
@@ -223,14 +207,10 @@ function positive(value: unknown): number | undefined {
 
 function verticalOffset(): string | undefined {
   const value = props.placement.requested_y as PresentationLength | undefined;
-  if (!value) return undefined;
-  const magnitude =
-    value.unit === "pixels"
-      ? Number(value.value)
-      : value.unit === "logical"
-        ? Number(value.value) / 1000
-        : (Number(value.value) * store.gameTextStyle.fontSizePx) / 100;
-  return Number.isFinite(magnitude) ? `${magnitude * scale.value}px` : undefined;
+  const magnitude = projectMediaOffset(value, store.gameTextStyle.fontSizePx);
+  return magnitude != null && Number.isFinite(magnitude)
+    ? `${magnitude * scale.value}px`
+    : undefined;
 }
 
 function imageLoaded(event: Event): void {

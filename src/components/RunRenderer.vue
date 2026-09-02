@@ -22,6 +22,7 @@ const props = defineProps<{
   viewportColumns?: number;
   alignTrailingBoxEdge?: boolean;
   trailingBoxFill?: { character: string; columns: number };
+  positionedMediaRightColumns?: number;
 }>();
 const store = useRuntimeStore();
 
@@ -123,7 +124,12 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
   >
     <template v-for="fragment in nestedFragments" :key="fragment.key">
       <TextRunGroup v-if="fragment.type === 'text_group'" :runs="fragment.runs" />
-      <RunRenderer v-else :run="fragment.run" :viewport-columns="viewportColumns" />
+      <RunRenderer
+        v-else
+        :run="fragment.run"
+        :viewport-columns="viewportColumns"
+        :positioned-media-right-columns="positionedMediaRightColumns"
+      />
     </template>
   </button>
   <template v-else-if="run.type === 'html_document'">
@@ -136,6 +142,7 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
         alignTrailingBoxEdge && index === trailingHtmlNodeIndex ? trailingBoxFill : undefined
       "
       :following-text-character="nextRenderableTextCharacter(run.document.nodes, index)"
+      :positioned-media-right-columns="positionedMediaRightColumns"
     />
   </template>
   <MediaImage v-else-if="run.type === 'image'" :placement="run.placement" :alt="run.alt_text" />
@@ -159,7 +166,12 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
   >
     <template v-for="fragment in nestedFragments" :key="fragment.key">
       <TextRunGroup v-if="fragment.type === 'text_group'" :runs="fragment.runs" />
-      <RunRenderer v-else :run="fragment.run" :viewport-columns="viewportColumns" />
+      <RunRenderer
+        v-else
+        :run="fragment.run"
+        :viewport-columns="viewportColumns"
+        :positioned-media-right-columns="positionedMediaRightColumns"
+      />
     </template>
   </span>
   <span

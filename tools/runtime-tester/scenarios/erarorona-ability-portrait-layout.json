@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/erarorona",
+  "mode": "fixed",
+  "compiled_cache": true,
+  "start": {
+    "type": "vm_snapshot",
+    "path": "../../../../games/erarorona/runtime_20260902-151756.snapshot"
+  },
+  "viewport": { "width": 1080, "height": 760 },
+  "actions": [
+    { "type": "reveal_text", "text": "角色解说" },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".game-line[data-index='328'] .media-positioned > .media-visual",
+        "nth": -1
+      },
+      "fields": ["count", "visible", "image_loaded"],
+      "expect": { "count": 1, "visible": true, "image_loaded": true }
+    },
+    {
+      "type": "assert_state",
+      "expect": { "phase": "waiting_input", "canInteract": true, "fault": null }
+    }
+  ],
+  "limits": { "max_steps": 8, "timeout_seconds": 120 }
+}

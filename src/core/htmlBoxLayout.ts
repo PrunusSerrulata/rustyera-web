@@ -1,4 +1,5 @@
 import type { DisplayLine } from "@/core/types";
+import { projectPositionedMediaVerticalSpan } from "@/core/mediaProjection";
 
 export interface HtmlBoxRowLayout {
   columns: number;
@@ -11,6 +12,12 @@ export interface HtmlTextSegment {
   kind: "text" | "space" | "box" | "edge" | "fill";
   width?: string;
   continuation?: string;
+}
+
+export interface PositionedMediaLayoutOptions {
+  fontSizePx: number;
+  lineHeightPx: number;
+  imageScale: number;
 }
 
 const TOP_LEFT = new Set(["┌", "┏", "╔"]);
@@ -31,6 +38,7 @@ const LEFT_HORIZONTAL_CONNECTION = new Set([
 ]);
 
 interface HtmlLineInfo {
+  text: string;
   columns: number;
   first: string;
   last: string;
@@ -98,6 +106,42 @@ export function htmlBoxRowLayoutsForRange(
     if (bottom) activeColumns = undefined;
   }
   return layouts;
+}
+
+/** Find the inner right edge of box rows crossed by upward-overflowing positioned media. */
+export function positionedMediaRightBoundariesForRange(
+  lines: readonly DisplayLine[],
+  start: number,
+  end: number,
+  options: PositionedMediaLayoutOptions,
+): Map<number, number> {
+  const boundaries = new Map<number, number>();
+  if (lines.length === 0 || end < start || options.lineHeightPx <= 0) return boundaries;
+  const first = Math.max(0, Math.min(start, lines.length - 1));
+  const last = Math.max(first, Math.min(end, lines.length - 1));
+  for (let index = first; index <= last; index += 1) {
+    const candidates = positionedMediaCandidates(lines[index], options);
+    if (candidates.length !== 1 || candidates[0].span.top >= 0) continue;
+    const candidate = candidates[0];
+    const span = candidate.span;
+    const overlapStart = Math.max(0, index + Math.floor(span.top / options.lineHeightPx));
+    const overlapEnd = Math.min(
+      index - 1,
+      index + Math.ceil(span.bottom / options.lineHeightPx) - 1,
+    );
+    if (overlapEnd < overlapStart) continue;
+    const crossedBoxes = htmlBoxRowLayoutsForRange(lines, overlapStart, overlapEnd);
+    let rightEdge: number | undefined;
+    for (const layout of crossedBoxes.values()) {
+      // The final two-column cell contains the visible right border; media stays to its left.
+      rightEdge = Math.min(rightEdge ?? Number.POSITIVE_INFINITY, layout.columns - 2);
+    }
+    for (const edge of trailingBoxRightEdgesForRange(lines, overlapStart, overlapEnd))
+      rightEdge = Math.min(rightEdge ?? Number.POSITIVE_INFINITY, edge);
+    if (rightEdge != null && rightEdge > 0 && candidate.requestedLeftColumns < rightEdge)
+      boundaries.set(index, rightEdge);
+  }
+  return boundaries;
 }
 
 export function htmlTextSegments(
@@ -178,13 +222,8 @@ function htmlLineInfo(line: DisplayLine): HtmlLineInfo | undefined {
   let trailingRunIndex = -1;
   for (let runIndex = 0; runIndex < line.runs.length; runIndex += 1) {
     const run = line.runs[runIndex];
-    if (run.type !== "html_document") return undefined;
-    let runText = "";
-    for (const node of run.document.nodes ?? []) {
-      const value = htmlNodeText(node);
-      if (value == null) return undefined;
-      runText += value;
-    }
+    const runText = displayRunText(run);
+    if (runText == null) return undefined;
     if (runText) trailingRunIndex = runIndex;
     text += runText;
   }
@@ -193,11 +232,97 @@ function htmlLineInfo(line: DisplayLine): HtmlLineInfo | undefined {
   const last = characters.at(-1);
   if (!first || !last || trailingRunIndex < 0) return undefined;
   return {
+    text,
     columns: characters.reduce((columns, character) => columns + eraCharacterColumns(character), 0),
     first,
     last,
     trailingRunIndex,
   };
+}
+
+function displayRunText(run: any): string | undefined {
+  switch (run?.type) {
+    case "text":
+    case "text_layout":
+      return String(run.text ?? "");
+    case "button":
+      return displayRunsText(run.runs ?? []);
+    case "html_document": {
+      let text = "";
+      for (const node of run.document?.nodes ?? []) {
+        const value = htmlNodeText(node);
+        if (value == null) return undefined;
+        text += value;
+      }
+      return text;
+    }
+    case "column_cell":
+      return displayRunsText(run.content ?? []);
+    case "separator":
+      return String(run.pattern ?? "");
+    case "space":
+      return " ";
+    default:
+      return undefined;
+  }
+}
+
+function displayRunsText(runs: readonly any[]): string | undefined {
+  let text = "";
+  for (const run of runs) {
+    const value = displayRunText(run);
+    if (value == null) return undefined;
+    text += value;
+  }
+  return text;
+}
+
+function trailingBoxRightEdgesForRange(
+  lines: readonly DisplayLine[],
+  start: number,
+  end: number,
+): number[] {
+  const edges: number[] = [];
+  let active: { leftColumn: number; rightColumn: number } | undefined;
+  for (let index = 0; index <= end; index += 1) {
+    const info = htmlLineInfo(lines[index]);
+    if (info == null) {
+      active = undefined;
+      continue;
+    }
+    const positions = characterColumnPositions(info.text);
+    const last = positions.at(-1);
+    const topLeft = TOP_RIGHT.has(last?.character ?? "")
+      ? positions.findLast((item) => TOP_LEFT.has(item.character))
+      : undefined;
+    if (topLeft != null) {
+      active = { leftColumn: topLeft.column, rightColumn: info.columns };
+      if (index >= start) edges.push(info.columns - 2);
+      continue;
+    }
+    if (active == null) continue;
+    const current = active;
+    const left = positions.find((item) => item.column === current.leftColumn)?.character;
+    const isInteriorRow = VERTICAL.has(left ?? "") && VERTICAL.has(info.last);
+    const isBottomRow = BOTTOM_LEFT.has(left ?? "") && BOTTOM_RIGHT.has(info.last);
+    if ((!isInteriorRow && !isBottomRow) || info.columns > current.rightColumn) {
+      active = undefined;
+      continue;
+    }
+    if (index >= start) edges.push(current.rightColumn - 2);
+    if (isBottomRow) active = undefined;
+  }
+  return edges.filter((edge) => edge > 0);
+}
+
+function characterColumnPositions(text: string): Array<{ character: string; column: number }> {
+  const positions: Array<{ character: string; column: number }> = [];
+  let column = 0;
+  for (const character of Array.from(text)) {
+    positions.push({ character, column });
+    column += eraCharacterColumns(character);
+  }
+  return positions;
 }
 
 function htmlNodeText(node: any): string | undefined {
@@ -225,7 +350,7 @@ function isBottom(info: HtmlLineInfo): boolean {
   return BOTTOM_LEFT.has(info.first) && BOTTOM_RIGHT.has(info.last);
 }
 
-function eraCharacterColumns(character: string): number {
+export function eraCharacterColumns(character: string): number {
   const codePoint = character.codePointAt(0) ?? 0;
   if (codePoint >= 0x2500 && codePoint <= 0x257f) return 2;
   if (
@@ -241,4 +366,70 @@ function eraCharacterColumns(character: string): number {
   )
     return 2;
   return 1;
+}
+
+function positionedMediaCandidates(
+  line: DisplayLine,
+  options: PositionedMediaLayoutOptions,
+): Array<{
+  requestedLeftColumns: number;
+  span: { top: number; bottom: number };
+}> {
+  const candidates: Array<{
+    requestedLeftColumns: number;
+    span: { top: number; bottom: number };
+  }> = [];
+  const visit = (node: any): void => {
+    const semantic = node?.semantic;
+    const locksPosition =
+      ["button", "non_button"].includes(semantic?.type) && semantic.position != null;
+    if (locksPosition) {
+      const position = Number(semantic.position);
+      const span = descendantMediaVerticalSpan(node, options);
+      if (Number.isFinite(position) && span != null) {
+        // Era positions use font-height hundredths; one half-width console column is 50 units.
+        candidates.push({ requestedLeftColumns: position / 50, span });
+      }
+      return;
+    }
+    for (const child of node?.children ?? []) visit(child);
+  };
+  for (const run of line.runs) {
+    if (run.type !== "html_document") continue;
+    for (const node of run.document?.nodes ?? []) visit(node);
+  }
+  return candidates;
+}
+
+function descendantMediaVerticalSpan(
+  node: any,
+  options: PositionedMediaLayoutOptions,
+): { top: number; bottom: number } | undefined {
+  let top = Number.POSITIVE_INFINITY;
+  let bottom = Number.NEGATIVE_INFINITY;
+  let found = false;
+  const visit = (child: any): void => {
+    const semantic = child?.semantic;
+    if (semantic?.type === "image") {
+      const bottomAnchored =
+        semantic.y?.unit === semantic.height?.unit &&
+        Number(semantic.y?.value) + Math.abs(Number(semantic.height?.value)) === 0;
+      const span = projectPositionedMediaVerticalSpan({
+        y: semantic.y,
+        height: semantic.height,
+        fontSizePx: options.fontSizePx,
+        imageScale: options.imageScale,
+        bottomAnchored,
+        lineHeightPx: options.lineHeightPx,
+      });
+      if (span != null) {
+        top = Math.min(top, span.top);
+        bottom = Math.max(bottom, span.bottom);
+        found = true;
+      }
+    }
+    for (const nested of child?.children ?? []) visit(nested);
+  };
+  for (const child of node?.children ?? []) visit(child);
+  return found ? { top, bottom } : undefined;
 }

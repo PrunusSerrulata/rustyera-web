@@ -94,6 +94,11 @@ const specProfiles = {
     defaultState: "../games/erarorona/runtime_20260825-100940.snapshot",
     defaultStateType: "vm_snapshot",
   },
+  "rorona-ability-portrait-layout.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_RORONA_ABILITY_PORTRAIT_LAYOUT",
+    defaultState: "../games/erarorona/runtime_20260902-151756.snapshot",
+    defaultStateType: "vm_snapshot",
+  },
   "rorona-load-scroll.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_RORONA_LOAD_SCROLL",
   },

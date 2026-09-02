@@ -12,6 +12,7 @@ const props = defineProps<{
   line: DisplayLine;
   viewportColumns: number;
   boxRowLayout?: HtmlBoxRowLayout;
+  positionedMediaRightColumns?: number;
 }>();
 
 interface SingleRun {
@@ -84,6 +85,7 @@ const fragments = computed<DisplayFragment[]>(() => {
         :trailing-box-fill="
           boxRowLayout?.trailingRunIndex === fragment.key ? boxRowLayout.trailingFill : undefined
         "
+        :positioned-media-right-columns="positionedMediaRightColumns"
       />
       <span
         v-else
@@ -97,6 +99,7 @@ const fragments = computed<DisplayFragment[]>(() => {
           :key="index"
           :run="cell"
           :viewport-columns="viewportColumns"
+          :positioned-media-right-columns="positionedMediaRightColumns"
         />
       </span>
     </template>
@@ -107,6 +110,7 @@ const fragments = computed<DisplayFragment[]>(() => {
       v-else-if="fragment.type === 'run'"
       :run="fragment.run"
       :viewport-columns="viewportColumns"
+      :positioned-media-right-columns="positionedMediaRightColumns"
     />
     <span
       v-else
@@ -120,6 +124,7 @@ const fragments = computed<DisplayFragment[]>(() => {
         :key="index"
         :run="cell"
         :viewport-columns="viewportColumns"
+        :positioned-media-right-columns="positionedMediaRightColumns"
       />
     </span>
   </template>

@@ -14,7 +14,10 @@ import HtmlNode from "@/components/HtmlNode.vue";
 import MediaImage from "@/components/MediaImage.vue";
 import { useTouchSecondaryAction } from "@/components/useTouchSecondaryAction";
 import { isViewportContinuationClick } from "@/core/viewportInteraction";
-import { htmlBoxRowLayoutsForRange } from "@/core/htmlBoxLayout";
+import {
+  htmlBoxRowLayoutsForRange,
+  positionedMediaRightBoundariesForRange,
+} from "@/core/htmlBoxLayout";
 import { usesConfiguredLineHeight } from "@/core/lineLayout";
 import type { DisplayLine as PresentationLine, DisplayRun, MediaPlacement } from "@/core/types";
 import { measureGameViewport } from "@/platform/viewportMeasurement";
@@ -153,6 +156,20 @@ const visibleBoxRowLayouts = computed(() => {
     store.presentation.lines,
     visibleItems[0].index,
     visibleItems.at(-1)?.index ?? visibleItems[0].index,
+  );
+});
+const visiblePositionedMediaRightBoundaries = computed(() => {
+  const visibleItems = items.value;
+  if (visibleItems.length === 0) return new Map();
+  return positionedMediaRightBoundariesForRange(
+    store.presentation.lines,
+    visibleItems[0].index,
+    visibleItems.at(-1)?.index ?? visibleItems[0].index,
+    {
+      fontSizePx: store.gameTextStyle.fontSizePx,
+      lineHeightPx: store.gameLineHeightPx,
+      imageScale: store.effectivePreferences.imageScale,
+    },
   );
 });
 const measuredHistoryHeight = computed(() => {
@@ -421,6 +438,7 @@ watch(
           :line="store.presentation.lines[item.index]"
           :viewport-columns="viewportColumns"
           :box-row-layout="visibleBoxRowLayouts.get(item.index)"
+          :positioned-media-right-columns="visiblePositionedMediaRightBoundaries.get(item.index)"
         />
       </div>
     </div>

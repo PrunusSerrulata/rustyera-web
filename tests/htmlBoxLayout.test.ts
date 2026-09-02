@@ -12,14 +12,22 @@ vi.mock("@/stores/runtime", () => ({
     gameLineHeightPx: 16,
     presentation: {
       settings: { line_height: 16_000 },
-      resources: { sprites: [], canvases: [] },
+      resources: {
+        sprites: [{ name: "portrait", size: [400, 600], frames: [] }],
+        canvases: [],
+      },
     },
   }),
 }));
 
 import DisplayLineComponent from "@/components/DisplayLine.vue";
 import HtmlNode from "@/components/HtmlNode.vue";
-import { htmlBoxRowLayoutsForRange, type HtmlBoxRowLayout } from "@/core/htmlBoxLayout";
+import {
+  htmlBoxRowLayoutsForRange,
+  positionedMediaRightBoundariesForRange,
+  type HtmlBoxRowLayout,
+} from "@/core/htmlBoxLayout";
+import { projectMediaDimensions, projectPositionedMediaVerticalSpan } from "@/core/mediaProjection";
 import type { DisplayLine } from "@/core/types";
 
 function htmlLine(lineId: number, ...documents: any[][]): DisplayLine {
@@ -35,6 +43,21 @@ function htmlLine(lineId: number, ...documents: any[][]): DisplayLine {
 
 function textLine(lineId: number, text: string): DisplayLine {
   return htmlLine(lineId, [{ type: "text", text }]);
+}
+
+function mixedTextLine(lineId: number, before: string, button: string, after: string): DisplayLine {
+  return {
+    line_id: lineId,
+    temporary: false,
+    logical_line_start: true,
+    line_end: true,
+    alignment: "left",
+    runs: [
+      { type: "html_document", document: { nodes: [{ type: "text", text: before }] } },
+      { type: "button", runs: [{ type: "text", text: button }] },
+      { type: "html_document", document: { nodes: [{ type: "text", text: after }] } },
+    ],
+  } as DisplayLine;
 }
 
 function mountLine(line: DisplayLine, boxRowLayout: HtmlBoxRowLayout) {
@@ -178,5 +201,161 @@ describe("Era HTML box layout", () => {
       },
     ]);
     expect(htmlBoxRowLayoutsForRange([unsafe], 0, 0).size).toBe(0);
+  });
+
+  it("keeps an upward-overflowing portrait inside the box rows it crosses", () => {
+    const lines = [
+      textLine(1, `┌${"─".repeat(61)}┐`),
+      ...Array.from({ length: 30 }, (_, index) => textLine(index + 2, `│${" ".repeat(122)}│`)),
+      textLine(32, `└${"─".repeat(61)}┘`),
+      htmlLine(33, [
+        {
+          kind: "non_button",
+          semantic: { type: "non_button", position: 4701 },
+          children: [
+            { type: "text", text: " " },
+            {
+              semantic: {
+                type: "image",
+                source: "portrait",
+                height: { unit: "font_height_hundredths", value: 2700 },
+                y: { unit: "font_height_hundredths", value: -3100 },
+              },
+            },
+            { kind: "break" },
+          ],
+        },
+      ]),
+    ];
+
+    const boundaries = positionedMediaRightBoundariesForRange(lines, 32, 32, {
+      fontSizePx: 16,
+      lineHeightPx: 16,
+      imageScale: 1,
+    });
+    expect(boundaries.get(32)).toBe(124);
+    expect(
+      projectMediaDimensions({
+        requestedWidth: { unit: "font_height_hundredths", value: -1800 },
+        requestedHeight: { unit: "font_height_hundredths", value: -2700 },
+        spriteWidth: 400,
+        spriteHeight: 600,
+        fontSizePx: 16,
+      }),
+    ).toEqual({ width: 288, height: 432 });
+    expect(
+      projectPositionedMediaVerticalSpan({
+        y: { unit: "font_height_hundredths", value: -100 },
+        height: { unit: "font_height_hundredths", value: -100 },
+        fontSizePx: 16,
+        imageScale: 2,
+        bottomAnchored: true,
+        lineHeightPx: 16,
+      }),
+    ).toEqual({ top: -48, bottom: -16 });
+  });
+
+  it("finds a trailing box that starts while a left-hand box remains open", () => {
+    const lines = [
+      textLine(1, `┌${"─".repeat(10)}┐${" ".repeat(4)}┌${"─".repeat(48)}┐`),
+      mixedTextLine(2, "│", "[q]", `${" ".repeat(17)}│${" ".repeat(4)}│${" ".repeat(96)}│`),
+      textLine(3, `│${" ".repeat(20)}│${" ".repeat(4)}│${" ".repeat(96)}│`),
+      textLine(4, `└${"─".repeat(10)}┘${" ".repeat(4)}│${" ".repeat(96)}│`),
+      htmlLine(5, [
+        {
+          kind: "non_button",
+          semantic: { type: "non_button", position: 4701 },
+          children: [
+            { type: "text", text: " " },
+            {
+              semantic: {
+                type: "image",
+                source: "portrait",
+                height: { unit: "font_height_hundredths", value: 300 },
+                y: { unit: "font_height_hundredths", value: -300 },
+              },
+            },
+            { kind: "break" },
+          ],
+        },
+      ]),
+    ];
+
+    expect(
+      positionedMediaRightBoundariesForRange(lines, 4, 4, {
+        fontSizePx: 16,
+        lineHeightPx: 16,
+        imageScale: 1,
+      }).get(4),
+    ).toBe(126);
+  });
+
+  it("preserves the requested portrait position when it crosses no box", () => {
+    const portrait = htmlLine(1, [
+      {
+        kind: "non_button",
+        semantic: { type: "non_button", position: 4701 },
+        children: [
+          { type: "text", text: " " },
+          {
+            semantic: {
+              type: "image",
+              source: "portrait",
+              width: { unit: "font_height_hundredths", value: 1800 },
+              height: { unit: "font_height_hundredths", value: 2700 },
+              y: { unit: "font_height_hundredths", value: -3100 },
+            },
+          },
+          { kind: "break" },
+        ],
+      },
+    ]);
+    expect(
+      positionedMediaRightBoundariesForRange([portrait], 0, 0, {
+        fontSizePx: 16,
+        lineHeightPx: 16,
+        imageScale: 1,
+      }).size,
+    ).toBe(0);
+  });
+
+  it("does not constrain ambiguous or intentionally outside positioned media", () => {
+    const box = [
+      textLine(1, `┌${"─".repeat(61)}┐`),
+      ...Array.from({ length: 30 }, (_, index) => textLine(index + 2, `│${" ".repeat(122)}│`)),
+      textLine(32, `└${"─".repeat(61)}┘`),
+    ];
+    const positioned = (position: number) => ({
+      kind: "non_button",
+      semantic: { type: "non_button", position },
+      children: [
+        {
+          semantic: {
+            type: "image",
+            source: "portrait",
+            height: { unit: "font_height_hundredths", value: 2700 },
+            y: { unit: "font_height_hundredths", value: -3100 },
+          },
+        },
+      ],
+    });
+    const options = { fontSizePx: 16, lineHeightPx: 16, imageScale: 1 };
+
+    expect(
+      positionedMediaRightBoundariesForRange(
+        [...box, htmlLine(33, [positioned(4701), positioned(5000)])],
+        32,
+        32,
+        options,
+      ).size,
+    ).toBe(0);
+    expect(
+      positionedMediaRightBoundariesForRange(
+        [...box, htmlLine(33, [positioned(6500)])],
+        32,
+        32,
+        options,
+      ).size,
+    ).toBe(0);
   });
 });
