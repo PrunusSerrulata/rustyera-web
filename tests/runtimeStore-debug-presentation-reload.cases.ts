@@ -5,6 +5,7 @@ import { watch } from "vue";
 import { HtmlMeasurementProvider } from "@/platform/htmlMeasurement";
 import { encodeProjectionServicePayload } from "@/core/serviceCodec";
 import { projectionMap, type ProjectionQueryContext } from "@/core/runtimeServiceProtocol";
+import { RuntimeServiceError } from "@/core/runtimeServiceError";
 import { describe, expect, it, vi } from "vitest";
 import {
   installRuntimeStoreTestHarness,
@@ -112,8 +113,18 @@ describe("runtime store debug-presentation-reload", () => {
           signal = guard.signal;
           expect(binding.viewport).toBe(viewport);
           expect(binding.resourceBridge).toBe(bridge);
+          const measuredWidth = binding.viewport.clientWidth;
+          const measuredHeight = binding.viewport.clientHeight;
           await gate.promise;
           guard.assertCurrent();
+          if (
+            binding.viewport.clientWidth !== measuredWidth ||
+            binding.viewport.clientHeight !== measuredHeight
+          )
+            throw new RuntimeServiceError(
+              "stale_projection",
+              "HTML viewport geometry changed during measurement",
+            );
           return {
             context: binding.context,
             advancePx: 9.25,

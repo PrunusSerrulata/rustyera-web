@@ -19,9 +19,15 @@ export function snakeCompatibility(): CompatibilityIdentity {
   return {
     ...referenceCompatibility(),
     profile: "emuera.skia.snake",
-    semantic_version: 8,
-    policy_version: 8,
+    semantic_version: 12,
+    policy_version: 12,
     arithmetic: "snake_saturating_i64_v1",
-    save_codec: "rustyera_envelope_v1:emuera1808",
+    save_codec: "snake_emuera1808_interop_v1",
+    services: [
+      { name: "rustyera.sql", version: 1 },
+      { name: "rustyera.sql.limits", version: 1 },
+      { name: "rustyera.scene", version: 1 },
+      { name: "rustyera.audio", version: 1 },
+    ],
   };
 }

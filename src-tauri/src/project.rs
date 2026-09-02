@@ -617,19 +617,23 @@ impl ProjectHost {
     }
 
     pub fn runtime_storage_root(&self) -> PathBuf {
-        let root = self.packaged_project.as_ref().map_or_else(
+        let root = self.runtime_save_root();
+        if self.compatibility.profile == CompatibilityProfileId::EmueraSkiaSnake {
+            root.join(".rustyera/profiles/emuera.skia.snake")
+        } else {
+            root
+        }
+    }
+
+    pub fn runtime_save_root(&self) -> PathBuf {
+        self.packaged_project.as_ref().map_or_else(
             || self.root.clone(),
             |project| {
                 self.root
                     .join(".rustyera/packaged-projects")
                     .join(&project.storage_key)
             },
-        );
-        if self.compatibility.profile == CompatibilityProfileId::EmueraSkiaSnake {
-            root.join(".rustyera/profiles/emuera.skia.snake")
-        } else {
-            root
-        }
+        )
     }
 
     pub(super) fn compiled_cache_path(&self) -> PathBuf {

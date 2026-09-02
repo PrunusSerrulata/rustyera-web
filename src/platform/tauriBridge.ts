@@ -39,8 +39,10 @@ import type {
   SessionOptions,
   SubmittedPumpBatch,
   SystemFontQueryResult,
+  TraditionalSaveAccess,
 } from "@/core/types";
 import { defaultProjectPreferences } from "@/core/types";
+import { saveSlotName } from "@/platform/browserProjectUtilities";
 
 type HostProjectOpenMetrics = Omit<ProjectOpenMetrics, "submittedAtMs" | "projectFonts">;
 type HostProjectFontSource = { relativePath: string; contentHash: number[]; byteLength: number };
@@ -49,6 +51,28 @@ export class TauriBridge implements FrontendBridge {
   readonly kind = "tauri" as const;
   readonly snapshotRestoreMode = "fresh_session" as const;
   readonly automaticCompiledCacheExport = true;
+  readonly traditionalSaves: TraditionalSaveAccess = {
+    listSlots: () => invoke("traditional_save_list_slots"),
+    exportSlot: async (slot) => {
+      const bytes = ipcBytes(await invoke<Uint8Array>("traditional_save_read", { slot }));
+      await this.saveDownload(saveSlotName(slot), bytes);
+    },
+    pickImport: async () => {
+      const path = await open({
+        directory: false,
+        multiple: false,
+        title: "选择传统存档",
+        filters: [{ name: "Emuera 存档", extensions: ["sav"] }],
+      });
+      if (typeof path !== "string") return undefined;
+      const name = path.split(/[\\/]/).filter(Boolean).at(-1) ?? "save.sav";
+      const bytes = ipcBytes(await invoke<Uint8Array>("read_import", { path }));
+      return { name, bytes };
+    },
+    inspect: async (bytes) => invoke("traditional_save_inspect", { bytes: encodeIpcBytes(bytes) }),
+    writeSlot: (slot, bytes) =>
+      invoke("traditional_save_write", { slot, bytes: encodeIpcBytes(bytes) }),
+  };
   private processMemory: Omit<
     RuntimeHostMemoryCounters,
     "workerGeneration" | "wasmLinearMemoryBytes"

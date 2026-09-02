@@ -27,6 +27,7 @@ use path::{
 pub struct StorageHost {
     project_root: PathBuf,
     data_root: PathBuf,
+    save_root: PathBuf,
     allow_root_read_fallback: bool,
     normalize_data_paths: bool,
     profile: era_runtime_protocol::CompatibilityProfileId,
@@ -162,14 +163,25 @@ impl StorageHost {
         )
     }
 
+    #[cfg(test)]
     pub fn with_data_root(
         project_root: PathBuf,
         data_root: PathBuf,
         profile: era_runtime_protocol::CompatibilityProfileId,
     ) -> Self {
+        Self::with_storage_roots(project_root, data_root.clone(), data_root, profile)
+    }
+
+    pub fn with_storage_roots(
+        project_root: PathBuf,
+        data_root: PathBuf,
+        save_root: PathBuf,
+        profile: era_runtime_protocol::CompatibilityProfileId,
+    ) -> Self {
         Self {
             project_root,
             data_root,
+            save_root,
             allow_root_read_fallback: profile
                 == era_runtime_protocol::CompatibilityProfileId::EmueraEm,
             normalize_data_paths: profile
@@ -179,6 +191,98 @@ impl StorageHost {
             idempotent_order: VecDeque::new(),
             idempotent_bytes: 0,
         }
+    }
+
+    pub fn list_traditional_save_slots(
+        &self,
+        slot_count: u32,
+    ) -> Result<Vec<TraditionalSaveSlot>, String> {
+        let directory = self.save_root.join("sav");
+        let mut slots = (0..slot_count)
+            .map(|slot| TraditionalSaveSlot {
+                slot,
+                occupied: false,
+            })
+            .collect::<Vec<_>>();
+        match fs::symlink_metadata(&directory) {
+            Ok(_) => ensure_inside(&self.save_root, &directory)
+                .map_err(|error| format!("cannot list traditional saves: {error}"))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(slots),
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect traditional save directory: {error}"
+                ));
+            }
+        }
+        let entries = fs::read_dir(&directory)
+            .map_err(|error| format!("cannot list traditional saves: {error}"))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| format!("cannot list traditional saves: {error}"))?;
+            if !entry
+                .file_type()
+                .map_err(|error| format!("cannot inspect traditional save entry: {error}"))?
+                .is_file()
+            {
+                continue;
+            }
+            let Some(slot) = traditional_save_slot(&entry.file_name().to_string_lossy()) else {
+                continue;
+            };
+            if let Some(item) = slots.get_mut(slot as usize) {
+                item.occupied = true;
+            }
+        }
+        Ok(slots)
+    }
+
+    pub fn read_traditional_save(&self, slot: u32) -> Result<Vec<u8>, String> {
+        if slot > 99 {
+            return Err("traditional save slot must be between 00 and 99".into());
+        }
+        let relative = format!("save{slot:02}.sav");
+        let resolved = self
+            .resolve_for_read(StorageNamespace::Save, &relative)
+            .map_err(|error| format!("cannot resolve traditional save: {error}"))?;
+        if !resolved.existed {
+            return Err("traditional save does not exist".into());
+        }
+        fs::read(resolved.path).map_err(|error| format!("cannot read traditional save: {error}"))
+    }
+
+    pub fn write_traditional_save(&self, slot: u32, bytes: &[u8]) -> Result<(), String> {
+        if bytes.len() > MAXIMUM_FULL_READ_BYTES {
+            return Err("traditional save exceeds the native host memory budget".into());
+        }
+        let target = self.traditional_save_path(slot)?;
+        let directory = target
+            .parent()
+            .ok_or_else(|| "traditional save path has no parent".to_owned())?;
+        fs::create_dir_all(directory)
+            .map_err(|error| format!("cannot create traditional save directory: {error}"))?;
+        ensure_inside(&self.save_root, directory)
+            .map_err(|error| format!("cannot resolve traditional save directory: {error}"))?;
+        let mut temporary = tempfile::NamedTempFile::new_in(directory)
+            .map_err(|error| format!("cannot create temporary traditional save: {error}"))?;
+        std::io::Write::write_all(&mut temporary, bytes)
+            .map_err(|error| format!("cannot write traditional save: {error}"))?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|error| format!("cannot sync traditional save: {error}"))?;
+        temporary
+            .persist(target)
+            .map_err(|error| format!("cannot replace traditional save: {}", error.error))?;
+        Ok(())
+    }
+
+    fn traditional_save_path(&self, slot: u32) -> Result<PathBuf, String> {
+        if slot > 99 {
+            return Err("traditional save slot must be between 00 and 99".into());
+        }
+        Ok(self
+            .save_root
+            .join("sav")
+            .join(format!("save{slot:02}.sav")))
     }
 
     #[cfg(test)]
@@ -403,7 +507,7 @@ impl StorageHost {
         match namespace {
             StorageNamespace::Project => self.data_root.join("project"),
             // Emuera stores normal slots and global.sav in the project's sav directory.
-            StorageNamespace::Save | StorageNamespace::GlobalSave => self.data_root.join("sav"),
+            StorageNamespace::Save | StorageNamespace::GlobalSave => self.save_root.join("sav"),
             StorageNamespace::Data => self.data_root.join("data"),
             StorageNamespace::Log => self.data_root.join("logs"),
             StorageNamespace::Resource => self.project_root.clone(),
@@ -450,6 +554,21 @@ impl StorageHost {
         }
         validate_read_path(&root, primary, existed)
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraditionalSaveSlot {
+    pub slot: u32,
+    pub occupied: bool,
+}
+
+fn traditional_save_slot(name: &str) -> Option<u32> {
+    let lower = name.to_ascii_lowercase();
+    let digits = lower.strip_prefix("save")?.strip_suffix(".sav")?;
+    (digits.len() == 2 && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| digits.parse().ok())
+        .flatten()
 }
 
 pub(crate) fn budget_exceeded(subject: &str) -> std::io::Error {
@@ -1630,7 +1749,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_data_root_isolates_slots_and_globals_but_keeps_resource_root() {
+    fn snake_profile_uses_project_saves_and_isolates_other_runtime_data() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         let snake = root.join(".rustyera/profiles/emuera.skia.snake");
@@ -1638,15 +1757,16 @@ mod tests {
         fs::create_dir_all(snake.join("sav")).unwrap();
         fs::write(root.join("sav/save00.sav"), b"reference").unwrap();
         fs::write(snake.join("sav/save00.sav"), b"snake").unwrap();
-        let mut storage = StorageHost::with_data_root(
+        let mut storage = StorageHost::with_storage_roots(
             root.to_owned(),
             snake.clone(),
+            root.to_owned(),
             era_runtime_protocol::CompatibilityProfileId::EmueraSkiaSnake,
         );
         assert_eq!(storage.namespace_root(StorageNamespace::Resource), root);
         assert_eq!(
             storage.namespace_root(StorageNamespace::GlobalSave),
-            snake.join("sav")
+            root.join("sav")
         );
         let response = storage.handle(StorageRequest {
             request_id: 1,
@@ -1657,10 +1777,104 @@ mod tests {
             deadline_ns: None,
         });
         let StorageResult::Read { data, .. } = response.result else {
-            panic!("expected snake save");
+            panic!("expected project save");
         };
-        assert_eq!(data.as_slice(), b"snake");
+        assert_eq!(data.as_slice(), b"reference");
         assert_eq!(fs::read(root.join("sav/save00.sav")).unwrap(), b"reference");
+        assert_eq!(
+            storage.namespace_root(StorageNamespace::Data),
+            snake.join("data")
+        );
+    }
+
+    #[test]
+    fn traditional_save_management_routes_bytes_transparently_to_the_shared_save_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path();
+        let private = project.join(".rustyera/profiles/emuera.skia.snake");
+        let storage = StorageHost::with_storage_roots(
+            project.to_owned(),
+            private,
+            project.to_owned(),
+            era_runtime_protocol::CompatibilityProfileId::EmueraSkiaSnake,
+        );
+        storage
+            .write_traditional_save(1, b"opaque core-validated bytes")
+            .unwrap();
+        assert_eq!(
+            storage.read_traditional_save(1).unwrap(),
+            b"opaque core-validated bytes"
+        );
+        let slots = storage.list_traditional_save_slots(3).unwrap();
+        assert_eq!(
+            slots,
+            vec![
+                TraditionalSaveSlot {
+                    slot: 0,
+                    occupied: false
+                },
+                TraditionalSaveSlot {
+                    slot: 1,
+                    occupied: true
+                },
+                TraditionalSaveSlot {
+                    slot: 2,
+                    occupied: false
+                },
+            ]
+        );
+        assert!(
+            !project
+                .join(".rustyera/profiles/emuera.skia.snake/sav")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn packaged_snake_project_separates_persistent_saves_from_private_data_and_logs() {
+        let directory = tempfile::tempdir().unwrap();
+        let resource_root = directory.path().join("package-source");
+        let save_root = directory.path().join("packaged-projects/game-key");
+        let data_root = save_root.join(".rustyera/profiles/emuera.skia.snake");
+        fs::create_dir_all(&resource_root).unwrap();
+        let mut storage = StorageHost::with_storage_roots(
+            resource_root.clone(),
+            data_root.clone(),
+            save_root.clone(),
+            era_runtime_protocol::CompatibilityProfileId::EmueraSkiaSnake,
+        );
+
+        storage
+            .write_traditional_save(0, b"shared 1808 save")
+            .unwrap();
+        for (request_id, namespace, relative_path) in [
+            (1, StorageNamespace::Data, "state.db"),
+            (2, StorageNamespace::Log, "runtime.log"),
+        ] {
+            let response = storage.handle(StorageRequest {
+                request_id,
+                namespace,
+                relative_path: relative_path.into(),
+                operation: StorageOperation::Write {
+                    data: ProtocolBytes::new(vec![u8::try_from(request_id).unwrap()]),
+                    atomic_replace: true,
+                    precondition: StoragePrecondition::Any,
+                },
+                idempotency_key: format!("packaged-{request_id}"),
+                deadline_ns: None,
+            });
+            assert!(matches!(response.result, StorageResult::Written { .. }));
+        }
+
+        assert_eq!(
+            fs::read(save_root.join("sav/save00.sav")).unwrap(),
+            b"shared 1808 save"
+        );
+        assert_eq!(fs::read(data_root.join("data/state.db")).unwrap(), [1]);
+        assert_eq!(fs::read(data_root.join("logs/runtime.log")).unwrap(), [2]);
+        assert!(!resource_root.join("sav").exists());
+        assert!(!save_root.join("data").exists());
+        assert!(!save_root.join("logs").exists());
     }
 
     #[test]

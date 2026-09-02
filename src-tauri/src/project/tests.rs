@@ -73,10 +73,18 @@ fn invalid_root_profile_does_not_rebind_storage() {
 #[test]
 fn packaged_project_cache_is_scoped_with_its_runtime_storage() {
     let directory = tempfile::tempdir().unwrap();
-    let first = packaged_host(directory.path().join("first.reraproj"));
-    let second = packaged_host(directory.path().join("second.reraproj"));
+    let mut first = packaged_host(directory.path().join("first.reraproj"));
+    let mut second = packaged_host(directory.path().join("second.reraproj"));
+    first.compatibility.profile = CompatibilityProfileId::EmueraSkiaSnake;
+    second.compatibility.profile = CompatibilityProfileId::EmueraSkiaSnake;
 
     assert_ne!(first.compiled_cache_path(), second.compiled_cache_path());
+    assert_eq!(
+        first.runtime_storage_root(),
+        first
+            .runtime_save_root()
+            .join(".rustyera/profiles/emuera.skia.snake")
+    );
     assert_eq!(
         first.compiled_cache_path(),
         first

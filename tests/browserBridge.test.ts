@@ -1701,6 +1701,55 @@ describe("browser startup bridge", () => {
     });
   });
 
+  it("keeps packaged snake saves in the persistent copy without writing the selected file", async () => {
+    const storage = new MemoryDirectoryHandle("storage");
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    const originalBytes = Uint8Array.of(1, 2, 3, 4);
+    const file = new File([originalBytes], "game.reraproj");
+    pickBrowserFile.mockResolvedValue(file);
+    respond = (method) => {
+      if (method === "traditionalSaveSlotCount") return 2;
+      if (method === "resolveProjectCompatibility")
+        return {
+          request_id: 0,
+          identity: snakeCompatibility(),
+          configuration_digest: null,
+          diagnostics: [],
+        };
+      if (method === "projectFileManifest")
+        return {
+          project_revision: 3,
+          compatibility: snakeCompatibility(),
+          files: [],
+        };
+      if (method === "loadProjectFileBytes")
+        return {
+          storageKey: "packaged-snake",
+          manifest: {
+            project_revision: 3,
+            compatibility: snakeCompatibility(),
+            files: [],
+          },
+          cacheImported: true,
+        };
+      return 1n;
+    };
+    const bridge = new BrowserBridge();
+
+    await bridge.openProjectFile();
+    await bridge.traditionalSaves.writeSlot(0, Uint8Array.of(9, 8, 7));
+
+    expect(file.size).toBe(originalBytes.byteLength);
+    expect("createWritable" in file).toBe(false);
+    const projectRoot = await (
+      await storage.getDirectoryHandle(".rustyera-project-files")
+    ).getDirectoryHandle("packaged-snake");
+    const saved = await (await projectRoot.getDirectoryHandle("sav")).getFileHandle("save00.sav");
+    expect(new Uint8Array(await (await saved.getFile()).arrayBuffer())).toEqual(
+      Uint8Array.of(9, 8, 7),
+    );
+  });
+
   it("reuses a refreshed packaged-project cache and retains the embedded fallback", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });

@@ -1247,7 +1247,7 @@ export class BrowserProject {
 
   async listTraditionalSaveSlots(slotCount: number): Promise<BrowserTraditionalSaveSlot[]> {
     const count = checkedSaveSlotCount(slotCount);
-    const directory = await (await this.dataRoot()).getDirectoryHandle("sav", { create: true });
+    const directory = await this.root.getDirectoryHandle("sav", { create: true });
     const occupied = new Set<number>();
     for await (const [name, handle] of directory.entries()) {
       if (handle.kind !== "file") continue;
@@ -1260,13 +1260,13 @@ export class BrowserProject {
   }
 
   async readTraditionalSave(slot: number): Promise<Uint8Array> {
-    const directory = await (await this.dataRoot(false)).getDirectoryHandle("sav");
+    const directory = await this.root.getDirectoryHandle("sav");
     const handle = await directory.getFileHandle(saveSlotName(slot));
     return new Uint8Array(await (await handle.getFile()).arrayBuffer());
   }
 
   async writeTraditionalSave(slot: number, bytes: Uint8Array): Promise<void> {
-    const directory = await (await this.dataRoot()).getDirectoryHandle("sav", { create: true });
+    const directory = await this.root.getDirectoryHandle("sav", { create: true });
     const handle = await directory.getFileHandle(saveSlotName(slot), { create: true });
     const writable = await handle.createWritable({ keepExistingData: false });
     await writable.write(bytes as FileSystemWriteChunkType);
@@ -1281,7 +1281,9 @@ export class BrowserProject {
         request.namespace,
         request.relative_path,
         request.operation,
-        request.namespace === "resource" ? this.root : await this.dataRoot(),
+        ["save", "global_save", "resource"].includes(request.namespace)
+          ? this.root
+          : await this.dataRoot(),
         this.compatibility().profile === "emuera.em",
         request.namespace === "resource" ? this.storageResources() : [],
         this.compatibility().profile === "emuera.skia.snake" ? "nfc_lower" : "literal",

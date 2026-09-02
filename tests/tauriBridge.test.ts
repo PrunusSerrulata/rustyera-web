@@ -218,6 +218,45 @@ describe("Tauri project restart", () => {
     expect(invoke).toHaveBeenCalledWith("cancel_compiled_cache_export");
   });
 
+  it("exposes native traditional-save listing, inspection, import, export, and overwrite", async () => {
+    open.mockResolvedValue("/tmp/save01.sav");
+    save.mockResolvedValue("/tmp/exported-save01.sav");
+    invoke.mockImplementation(async (command) => {
+      if (command === "traditional_save_list_slots")
+        return [
+          { slot: 0, occupied: false },
+          { slot: 1, occupied: true },
+        ];
+      if (command === "traditional_save_read" || command === "read_import")
+        return Uint8Array.of(1, 2, 3);
+      if (command === "traditional_save_inspect") return { description: "slot one" };
+      return undefined;
+    });
+    const saves = new TauriBridge().traditionalSaves;
+
+    await expect(saves.listSlots()).resolves.toEqual([
+      { slot: 0, occupied: false },
+      { slot: 1, occupied: true },
+    ]);
+    await expect(saves.inspect(Uint8Array.of(1, 2, 3))).resolves.toEqual({
+      description: "slot one",
+    });
+    await expect(saves.pickImport()).resolves.toEqual({
+      name: "save01.sav",
+      bytes: Uint8Array.of(1, 2, 3),
+    });
+    await saves.exportSlot(1);
+    await saves.writeSlot(1, Uint8Array.of(3, 2, 1));
+
+    expect(commandCalls("traditional_save_read")).toEqual([["traditional_save_read", { slot: 1 }]]);
+    expect(commandCalls("write_export")).toEqual([
+      ["write_export", { path: "/tmp/exported-save01.sav", bytes: { $rustyeraBytes: "AQID" } }],
+    ]);
+    expect(commandCalls("traditional_save_write")).toEqual([
+      ["traditional_save_write", { slot: 1, bytes: { $rustyeraBytes: "AwIB" } }],
+    ]);
+  });
+
   it("disposes native owners and listeners without closing the containing window", async () => {
     const unlisten = vi.fn();
     listen.mockResolvedValueOnce(unlisten);

@@ -31,18 +31,53 @@ function referenceProject(...args: ConstructorParameters<typeof BrowserProject>)
   return project;
 }
 
-it("isolates snake save slots, globals, caches and keeps source resources shared", async () => {
+it("shares snake project saves while isolating runtime data and caches", async () => {
   const root = new SaveDirectoryHandle("game");
   const reference = referenceProject(root as unknown as FileSystemDirectoryHandle);
   reference.setCompatibility(referenceCompatibility());
   const snake = referenceProject(root as unknown as FileSystemDirectoryHandle);
   snake.setCompatibility(snakeCompatibility());
   await reference.writeTraditionalSave(0, Uint8Array.of(1));
-  await expect(snake.readTraditionalSave(0)).rejects.toMatchObject({ name: "NotFoundError" });
+  await expect(snake.readTraditionalSave(0)).resolves.toEqual(Uint8Array.of(1));
   await snake.writeTraditionalSave(0, Uint8Array.of(2));
-  expect(await reference.readTraditionalSave(0)).toEqual(Uint8Array.of(1));
+  expect(await reference.readTraditionalSave(0)).toEqual(Uint8Array.of(2));
   expect(await snake.readTraditionalSave(0)).toEqual(Uint8Array.of(2));
   expect(await snake.cacheDirectory(true)).not.toBe(await reference.cacheDirectory(true));
+  const snakeData = await snake.storage({
+    request_id: 2,
+    namespace: "data",
+    relative_path: "state.db",
+    operation: {
+      type: "write",
+      data: [3],
+      atomic_replace: true,
+      precondition: { type: "any" },
+    },
+  });
+  expect(snakeData.result.type).toBe("written");
+  await expect(root.getDirectoryHandle("data")).rejects.toMatchObject({ name: "NotFoundError" });
+  const snakeLog = await snake.storage({
+    request_id: 4,
+    namespace: "log",
+    relative_path: "runtime.log",
+    operation: {
+      type: "write",
+      data: [4],
+      atomic_replace: true,
+      precondition: { type: "any" },
+    },
+  });
+  expect(snakeLog.result.type).toBe("written");
+  await expect(root.getDirectoryHandle("logs")).rejects.toMatchObject({ name: "NotFoundError" });
+  const globalDirectory = await root.getDirectoryHandle("sav");
+  await writeFixtureFile(globalDirectory, "global.sav", "standard global");
+  const snakeGlobal = await snake.storage({
+    request_id: 3,
+    namespace: "global_save",
+    relative_path: "global.sav",
+    operation: { type: "read" },
+  });
+  expect(snakeGlobal.result.data).toEqual([...new TextEncoder().encode("standard global")]);
   await writeFixtureFile(root, "resource.txt", "shared");
   await snake.scanQuick();
   const response = await snake.storage({

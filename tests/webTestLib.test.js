@@ -893,7 +893,8 @@ describe("web game test scenario", () => {
     const waitForStableObservation = vi.fn(() => new Promise(() => {}));
     vi.stubGlobal("window", {
       __RUSTYERA_TEST__: {
-        snapshot: () => snapshots.shift() ?? timed,
+        snapshot: () => timed,
+        snapshotSummary: () => snapshots.shift() ?? timed,
         waitForStableObservation,
       },
       requestAnimationFrame: (callback) => callback(),
@@ -910,7 +911,11 @@ describe("web game test scenario", () => {
     const stable = { ...current, output: ["stable"] };
     const waitForStableObservation = vi.fn(async () => stable);
     vi.stubGlobal("window", {
-      __RUSTYERA_TEST__: { snapshot: () => current, waitForStableObservation },
+      __RUSTYERA_TEST__: {
+        snapshot: () => current,
+        snapshotSummary: () => current,
+        waitForStableObservation,
+      },
       requestAnimationFrame: vi.fn(),
     });
     const page = { evaluate: vi.fn((callback, argument) => callback(argument)) };

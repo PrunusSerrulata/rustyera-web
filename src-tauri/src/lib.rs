@@ -46,7 +46,7 @@ use crate::ipc::{
 };
 use crate::project::{ProjectFontSource, ProjectHost, ProjectReloadScope, ProjectReloadTargets};
 use crate::services::native_service;
-use crate::storage::StorageHost;
+use crate::storage::{StorageHost, TraditionalSaveSlot};
 
 #[derive(Clone, Default)]
 struct AppState {
@@ -407,10 +407,11 @@ async fn open_project(
         let resource_root = host.root().to_owned();
         let profile = host.identity().compatibility.profile;
         let storage_root = host.runtime_storage_root();
+        let save_root = host.runtime_save_root();
         install_project_state(
             &state,
             host,
-            StorageHost::with_data_root(resource_root, storage_root, profile),
+            StorageHost::with_storage_roots(resource_root, storage_root, save_root, profile),
             preferences::ProjectPreferenceLocation {
                 path: path.clone(),
                 project_file: false,
@@ -470,6 +471,7 @@ async fn open_project_file(
         }
         let submit_ms = started.elapsed().as_secs_f64() * 1000.0;
         let storage_root = host.runtime_storage_root();
+        let save_root = host.runtime_save_root();
         let profile = host.identity().compatibility.profile;
         let resource_root = host.root().to_owned();
         // Keep only packaged resource lookup data while the cache candidate is pending. If both a
@@ -478,7 +480,7 @@ async fn open_project_file(
         install_project_state(
             &state,
             host,
-            StorageHost::with_data_root(resource_root, storage_root, profile),
+            StorageHost::with_storage_roots(resource_root, storage_root, save_root, profile),
             preferences::ProjectPreferenceLocation {
                 path,
                 project_file: true,
@@ -718,6 +720,97 @@ async fn storage_request(state: State<'_, AppState>, request: Value) -> Result<R
 }
 
 #[tauri::command]
+async fn traditional_save_list_slots(
+    state: State<'_, AppState>,
+) -> Result<Vec<TraditionalSaveSlot>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = state.session.lock().map_err(lock_error)?;
+        let slot_count = session
+            .as_ref()
+            .ok_or_else(|| "runtime session has not been created".to_owned())?
+            .traditional_save_slot_count()?;
+        state
+            .storage
+            .lock()
+            .map_err(lock_error)?
+            .as_ref()
+            .ok_or_else(|| "no project is open".to_owned())?
+            .list_traditional_save_slots(slot_count)
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn traditional_save_read(state: State<'_, AppState>, slot: u32) -> Result<Response, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = state.session.lock().map_err(lock_error)?;
+        let slot_count = session
+            .as_ref()
+            .ok_or_else(|| "runtime session has not been created".to_owned())?
+            .traditional_save_slot_count()?;
+        if slot >= slot_count {
+            return Err("traditional save slot is outside the active project range".into());
+        }
+        state
+            .storage
+            .lock()
+            .map_err(lock_error)?
+            .as_ref()
+            .ok_or_else(|| "no project is open".to_owned())?
+            .read_traditional_save(slot)
+            .map(Response::new)
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn traditional_save_inspect(
+    state: State<'_, AppState>,
+    bytes: Value,
+) -> Result<era_web_bridge::WebTraditionalSaveInspection, String> {
+    let bytes = decode_ipc_bytes(bytes)?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        with_session(&state, |session| session.inspect_traditional_save(&bytes))
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn traditional_save_write(
+    state: State<'_, AppState>,
+    slot: u32,
+    bytes: Value,
+) -> Result<(), String> {
+    let bytes = decode_ipc_bytes(bytes)?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = state.session.lock().map_err(lock_error)?;
+        let session = session
+            .as_ref()
+            .ok_or_else(|| "runtime session has not been created".to_owned())?;
+        if slot >= session.traditional_save_slot_count()? {
+            return Err("traditional save slot is outside the active project range".into());
+        }
+        session.inspect_traditional_save(&bytes)?;
+        state
+            .storage
+            .lock()
+            .map_err(lock_error)?
+            .as_ref()
+            .ok_or_else(|| "no project is open".to_owned())?
+            .write_traditional_save(slot, &bytes)
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
 fn list_fonts() -> Vec<String> {
     let mut database = fontdb::Database::new();
     database.load_system_fonts();
@@ -824,6 +917,10 @@ pub fn run() {
             read_project_font,
             write_project_configuration,
             storage_request,
+            traditional_save_list_slots,
+            traditional_save_read,
+            traditional_save_inspect,
+            traditional_save_write,
             list_fonts,
             memory::memory_snapshot,
             preferences::load_preferences,

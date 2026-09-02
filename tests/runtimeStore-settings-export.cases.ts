@@ -835,6 +835,7 @@ describe("runtime store settings-export", () => {
   });
 
   it("accepts the traditional-save transfer kind for the test download", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
     const store = useRuntimeStore();
     await store.enableDebug();
 

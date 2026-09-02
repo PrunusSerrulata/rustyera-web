@@ -74,8 +74,9 @@ Use JSON `schema_version: 1`. The format is a compatible superset of the TUI sce
 - `start.type`: `new_game`, `traditional_save`, or `vm_snapshot`; restores require `path` or CLI
   `--state`.
 - `seed`: Optional unsigned 64-bit integer for `new_game`. Use a decimal string above JavaScript's
-  safe integer range. If absent, the runner creates and records a random seed. Restored state owns
-  its RNG and ignores `seed`.
+  safe integer range. If absent, the runner creates and records a random seed. A VM snapshot owns
+  its RNG and ignores `seed`; a standard snake traditional save preserves the runtime's current
+  SFMT state and does not restore SQL state or the other variable scope.
 - `clock`: Optional ISO timestamp; default `2026-01-01T00:00:00Z`.
 - `compiled_cache`: Copy an existing v8 project cache into the isolated browser fixture and verify
   the browser import path; absent or false forces a cold source load.
