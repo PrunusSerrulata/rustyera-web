@@ -94,6 +94,9 @@ const specProfiles = {
     defaultState: "../games/erarorona/runtime_20260825-100940.snapshot",
     defaultStateType: "vm_snapshot",
   },
+  "rorona-load-scroll.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_RORONA_LOAD_SCROLL",
+  },
   "rorona-settlement-performance.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_RORONA_SETTLEMENT_PERFORMANCE",
     release: true,

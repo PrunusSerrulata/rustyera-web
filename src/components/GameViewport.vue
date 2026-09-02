@@ -196,20 +196,17 @@ watch(
     // The pre-flush extractor made the new tail part of this commit. Select it immediately so the
     // browser can paint the final interactive row without waiting for a second virtualizer range.
     goBottom();
-    // Dynamic rows are measured only after the first scroll makes the tail
-    // visible. Follow the corrected size on the next frame, then clamp to the
-    // actual DOM bottom after Vue Virtual has applied that measurement.
+    // Dynamic rows are measured only after the first scroll makes the tail visible. Follow the
+    // corrected size on the next frame, then restore the natural range before the final clamp:
+    // mounting its overscan can increase the DOM scroll height again.
     await nextAnimationFrame();
     if (followRevision !== bottomFollowRevision) return;
     goBottom();
+    releaseTerminalRange();
     await nextAnimationFrame();
     if (followRevision !== bottomFollowRevision) return;
     if (viewport.value) viewport.value.scrollTop = viewport.value.scrollHeight;
     followingBottom = false;
-    // The terminal extractor only has to make the new tail part of the first commit. Keeping it
-    // beyond the two measurement frames can hide the user's scrolled-back range when natural
-    // range synchronization is delayed, so the newest follow generation always releases it.
-    releaseTerminalRange();
   },
   { flush: "post" },
 );

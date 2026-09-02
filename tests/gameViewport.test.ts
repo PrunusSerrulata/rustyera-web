@@ -274,7 +274,7 @@ describe("game viewport", () => {
 
     callbacks.shift()?.(0);
     await flushPromises();
-    expect(virtualOptions.value.value.rangeExtractor).not.toBe(defaultRangeExtractor);
+    expect(virtualOptions.value.value.rangeExtractor).toBe(defaultRangeExtractor);
     callbacks.shift()?.(0);
     await flushPromises();
     expect(virtualOptions.value.value.rangeExtractor).toBe(defaultRangeExtractor);
@@ -388,10 +388,13 @@ describe("game viewport", () => {
     wrapper.unmount();
   });
 
-  it("clamps to the measured DOM bottom after virtual rows settle", async () => {
+  it("clamps after restoring the natural virtual range", async () => {
     const wrapper = shallowMount(GameViewport);
     const viewport = wrapper.get<HTMLElement>("main").element;
-    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 640 });
+    Object.defineProperty(viewport, "scrollHeight", {
+      configurable: true,
+      get: () => (virtualOptions.value.value.rangeExtractor === defaultRangeExtractor ? 640 : 320),
+    });
 
     store.presentation.historyRevision += 1;
     await nextTick();
@@ -421,7 +424,7 @@ describe("game viewport", () => {
     expect(virtualOptions.value.value.rangeExtractor).not.toBe(defaultRangeExtractor);
     callbacks.shift()?.(0);
     await flushPromises();
-    expect(virtualOptions.value.value.rangeExtractor).not.toBe(defaultRangeExtractor);
+    expect(virtualOptions.value.value.rangeExtractor).toBe(defaultRangeExtractor);
     callbacks.shift()?.(0);
     await flushPromises();
     expect(virtualOptions.value.value.rangeExtractor).toBe(defaultRangeExtractor);
