@@ -74,8 +74,8 @@ describe("browser game runner progress policy", () => {
 
     expect(library).not.toContain("webSocketUrl: true");
     expect(library).toContain('pageLoadStrategy: "none"');
-    expect(library).toContain('geckoDriverVersion: "0.37.1"');
-    expect(library).toContain('cacheDir: path.resolve(".rustyera", "webdriver")');
+    expect(library).toContain('const geckoDriverVersion = "0.37.1"');
+    expect(library).toContain('binary: path.resolve(".rustyera", "webdriver"');
     expect(library).toContain('"wdio:enforceWebDriverClassic": true');
     expect(runner).toContain("connectionRetryTimeout: 20_000");
     expect(runner).not.toContain("browser.isBidi !== true");
@@ -103,7 +103,7 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain("verifyGlobalPreferencesBeforeProject(browser)");
     expect(runner).toContain('activeBrowser.$("#welcome-preferences")');
     expect(runner).toContain('if (browserName === "safari")');
-    expect(runner).toContain("activeBrowser.execute((target) => target.click(), element)");
+    expect(runner).toContain("window.setTimeout(() => target.click(), 0)");
     expect(runner).toContain('document.querySelector("#welcome-preferences")?.click()');
     expect(runner).toContain("project preferences were enabled without a project");
     expect(runner).toContain('imageScale.setValue("1.25")');

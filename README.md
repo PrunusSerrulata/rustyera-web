@@ -69,6 +69,7 @@ Deterministic game-flow tests use the real Vue UI and browser WASM worker:
 ```sh
 npm run test:game -- run --scenario tools/runtime-tester/scenarios/reference-fixture.json
 npm run test:game -- serve --scenario tools/runtime-tester/scenarios/eratw-autonomous.json
+npm run install:geckodriver
 npm run test:browser-compat -- --browser firefox
 npm run test:browser-compat -- --browser safari
 ```
@@ -80,10 +81,13 @@ random seed recorded in the trace; set it to reproduce a run. Override long-test
 `--reference-command` (and `--reference-path-command` for Wine when required).
 
 Browser/WASM acceptance covers Chromium plus the installed native Firefox and Safari applications.
-Firefox runs headless. Safari requires **Allow remote automation** in its developer settings and the
-runner minimizes its separate automation window when supported. The native-browser runner imports
-the short reference fixture into OPFS, starts the real WASM worker, and reports the browser version,
-compile status, and visible output.
+Firefox runs headless and requires the one-time `install:geckodriver` command. It downloads the pinned
+geckodriver 0.37.1 release into the ignored `.rustyera/webdriver/` test-tool directory; compatibility
+tests reuse that exact local executable and fail instead of downloading implicitly when it is absent.
+Safari requires **Allow remote automation** in its developer settings and the runner minimizes its
+separate automation window when supported. The native-browser runner imports the short reference
+fixture into OPFS, starts the real WASM worker, and reports the browser version, compile status, and
+visible output.
 
 Both hosts can open source directories or self-contained `.reraproj` files, export compiled project
 files and VM snapshots, and edit the runtime-provided project configuration. Directory-backed

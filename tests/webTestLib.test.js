@@ -84,7 +84,7 @@ describe("web game test scenario", () => {
     expect(capabilities.pageLoadStrategy).toBe("none");
     expect(capabilities["wdio:enforceWebDriverClassic"]).toBe(true);
     expect(capabilities["wdio:geckodriverOptions"]).toEqual({
-      cacheDir: path.resolve(".rustyera", "webdriver"),
+      binary: path.resolve(".rustyera", "webdriver", "geckodriver-0.37.1"),
       geckoDriverVersion: "0.37.1",
     });
     expect(capabilities["moz:firefoxOptions"]).toEqual({
@@ -98,7 +98,7 @@ describe("web game test scenario", () => {
     expect(capabilities.pageLoadStrategy).toBe("none");
     expect(capabilities["wdio:enforceWebDriverClassic"]).toBe(true);
     expect(capabilities["wdio:geckodriverOptions"]).toEqual({
-      cacheDir: path.resolve(".rustyera", "webdriver"),
+      binary: path.resolve(".rustyera", "webdriver", "geckodriver-0.37.1"),
       geckoDriverVersion: "0.37.1",
     });
     expect(capabilities["moz:firefoxOptions"]).toEqual({

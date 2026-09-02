@@ -15,6 +15,7 @@
     "test:e2e": "node scripts/playwright.mjs test",
     "test:pwa": "node scripts/pwa-test.mjs",
     "test:browser-compat": "node scripts/browser-compat-test.mjs",
+    "install:geckodriver": "node scripts/install-geckodriver.mjs",
     "test:tauri": "node scripts/tauri-test.mjs",
     "test:game": "node scripts/web-test.mjs",
     "test:cache-handoff": "node scripts/cache-handoff-test.mjs",

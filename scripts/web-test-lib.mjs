@@ -395,6 +395,7 @@ export function injectInteractionAssistFlow(source) {
 
 export function nativeFirefoxCapabilities(platform = process.platform) {
   const options = { args: ["-headless"] };
+  const geckoDriverVersion = "0.37.1";
   if (platform === "darwin") {
     options.binary = "/Applications/Firefox.app/Contents/MacOS/firefox";
   }
@@ -406,8 +407,8 @@ export function nativeFirefoxCapabilities(platform = process.platform) {
     pageLoadStrategy: "none",
     "wdio:enforceWebDriverClassic": true,
     "wdio:geckodriverOptions": {
-      cacheDir: path.resolve(".rustyera", "webdriver"),
-      geckoDriverVersion: "0.37.1",
+      binary: path.resolve(".rustyera", "webdriver", `geckodriver-${geckoDriverVersion}`),
+      geckoDriverVersion,
     },
     "moz:firefoxOptions": options,
   };

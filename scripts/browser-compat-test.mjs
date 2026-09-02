@@ -1194,7 +1194,9 @@ async function clickFileMenuAction(activeBrowser, label) {
 
 async function clickElement(activeBrowser, element) {
   if (browserName === "safari") {
-    await activeBrowser.execute((target) => target.click(), element);
+    await activeBrowser.execute((target) => {
+      window.setTimeout(() => target.click(), 0);
+    }, element);
     return;
   }
   await element.click();
