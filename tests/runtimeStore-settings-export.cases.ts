@@ -1,3 +1,5 @@
+import * as runtimeSupport from "@/core/runtimeSupport";
+
 import { bridge } from "./runtimeStoreTestSupport";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -935,6 +937,7 @@ describe("runtime store settings-export", () => {
     await store.enableDebug();
     await vi.advanceTimersByTimeAsync(0);
 
+    const concatenate = vi.spyOn(runtimeSupport, "concatenateChunks");
     await store.exportProjectFile();
     expect(store.gameInteractionsBlocked).toBe(true);
     expect(store.canInteract).toBe(false);
@@ -960,6 +963,8 @@ describe("runtime store settings-export", () => {
         .map((message) => message.value?.maximum_bytes),
     ).toEqual([1024 * 1024]);
     expect(bridge.writeProjectFileChunk).toHaveBeenCalledWith(Uint8Array.of(1, 2, 3), true, true);
+    expect(concatenate).not.toHaveBeenCalled();
+    concatenate.mockRestore();
     expect(store.gameInteractionsBlocked).toBe(false);
   });
 
@@ -978,6 +983,7 @@ describe("runtime store settings-export", () => {
         ...emptyBatch(),
         events: [runtimeEvent("state_import_accepted", { transfer_id: 19 }, 1)],
       })
+      .mockResolvedValueOnce(emptyBatch())
       .mockResolvedValueOnce({
         ...emptyBatch(),
         events: [
@@ -990,7 +996,7 @@ describe("runtime store settings-export", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     await store.exportProjectFile();
-    await vi.advanceTimersByTimeAsync(48);
+    await vi.advanceTimersByTimeAsync(80);
 
     const messages = bridge.submitRuntime.mock.calls.map(([message]) => message);
     expect(messages).toContainEqual({
@@ -1062,6 +1068,8 @@ describe("runtime store settings-export", () => {
         ...emptyBatch(),
         events: [runtimeEvent("state_import_accepted", { transfer_id: 19 }, 1)],
       })
+      .mockResolvedValueOnce(emptyBatch())
+      .mockResolvedValueOnce(emptyBatch())
       .mockResolvedValueOnce({
         ...emptyBatch(),
         events: [
@@ -1074,7 +1082,7 @@ describe("runtime store settings-export", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     await store.exportProjectFile();
-    await vi.advanceTimersByTimeAsync(48);
+    await vi.advanceTimersByTimeAsync(80);
 
     expect(bridge.readFullProjectManifestChunk.mock.calls).toEqual([
       [0, 4 * 1024 * 1024],
@@ -1105,6 +1113,7 @@ describe("runtime store settings-export", () => {
         ...emptyBatch(),
         events: [runtimeEvent("state_import_accepted", { transfer_id: 19 }, 1)],
       })
+      .mockResolvedValueOnce(emptyBatch())
       .mockResolvedValueOnce({
         ...emptyBatch(),
         events: [
@@ -1118,7 +1127,7 @@ describe("runtime store settings-export", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     await store.exportProjectFile();
-    await vi.advanceTimersByTimeAsync(48);
+    await vi.advanceTimersByTimeAsync(80);
 
     expect(
       bridge.submitRuntime.mock.calls.some(
@@ -1166,6 +1175,68 @@ describe("runtime store settings-export", () => {
     });
     expect(messages.some((message) => message.type === "state_import_chunk")).toBe(false);
     expect(messages.some((message) => message.type === "state_import_commit")).toBe(false);
+  });
+
+  it("drains each full-manifest chunk before reading the next and stops on rejection", async () => {
+    let messageId = 1;
+    let queuedChunk: number | undefined;
+    bridge.submitRuntime.mockImplementation(async (message) => {
+      const id = messageId++;
+      if (message.type === "state_import_chunk") {
+        expect(queuedChunk, "only one chunk may await a runtime pump").toBeUndefined();
+        queuedChunk = id;
+      }
+      return id;
+    });
+    bridge.stageFullProjectManifest.mockResolvedValueOnce({ totalBytes: 12 * 1024 * 1024 });
+    bridge.readFullProjectManifestChunk.mockImplementation(async (_offset, maximum) => {
+      expect(queuedChunk).toBeUndefined();
+      return new Uint8Array(maximum).fill(7);
+    });
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 })],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("state_import_accepted", { transfer_id: 19 }, 1)],
+      })
+      .mockImplementationOnce(async () => {
+        expect(queuedChunk).toBe(2);
+        queuedChunk = undefined;
+        return emptyBatch();
+      })
+      .mockImplementationOnce(async () => {
+        const rejected = queuedChunk;
+        queuedChunk = undefined;
+        return {
+          ...emptyBatch(),
+          events: [
+            runtimeEvent(
+              "command_rejected",
+              { code: "invalid_value", message: "rejected chunk" },
+              rejected,
+            ),
+          ],
+        };
+      });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+    await store.exportProjectFile();
+    await vi.advanceTimersByTimeAsync(80);
+
+    expect(bridge.readFullProjectManifestChunk.mock.calls).toEqual([
+      [0, 4 * 1024 * 1024],
+      [4 * 1024 * 1024, 4 * 1024 * 1024],
+    ]);
+    expect(
+      bridge.submitRuntime.mock.calls.some(([message]) => message.type === "state_import_commit"),
+    ).toBe(false);
+    expect(store.projectFileExporting).toBe(false);
+    expect(bridge.cancelProjectFileExport).toHaveBeenCalledOnce();
   });
 
   it("cancels a late manifest Accepted after cancellation during begin submission", async () => {
@@ -1317,6 +1388,7 @@ describe("runtime store settings-export", () => {
         ...emptyBatch(),
         events: [runtimeEvent("state_import_accepted", { transfer_id: 19 }, 1)],
       })
+      .mockResolvedValueOnce(emptyBatch())
       .mockResolvedValueOnce({
         ...emptyBatch(),
         events: [
@@ -1373,10 +1445,10 @@ describe("runtime store settings-export", () => {
   it.each([
     { phase: "begin", rejectionBatch: 2, correlation: 1, accepted: false },
     { phase: "chunk", rejectionBatch: 3, correlation: 2, accepted: true },
-    { phase: "commit", rejectionBatch: 3, correlation: 3, accepted: true },
+    { phase: "commit", rejectionBatch: 4, correlation: 3, accepted: true },
   ])(
     "cleans a rejected full-manifest $phase command",
-    async ({ rejectionBatch, correlation, accepted }) => {
+    async ({ phase, rejectionBatch, correlation, accepted }) => {
       let messageId = 1;
       bridge.submitRuntime.mockImplementation(async () => messageId++);
       bridge.stageFullProjectManifest.mockResolvedValueOnce({ totalBytes: 1 });
@@ -1391,6 +1463,7 @@ describe("runtime store settings-export", () => {
           events: [runtimeEvent("state_import_accepted", { transfer_id: 19 }, 1)],
         });
       }
+      if (phase === "commit") bridge.pump.mockResolvedValueOnce(emptyBatch());
       bridge.pump.mockResolvedValueOnce({
         ...emptyBatch(),
         events: [

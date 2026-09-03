@@ -552,6 +552,7 @@ export class TauriBridge implements FrontendBridge {
   async beginProjectFileExport(name: string): Promise<boolean> {
     const testPath = import.meta.env.VITE_RUSTYERA_TAURI_EXPORT_PATH;
     const path =
+      takeServiceLifecycleStateExportPath() ||
       testPath ||
       (await save({
         defaultPath: name,

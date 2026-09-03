@@ -16,6 +16,10 @@ npm run test:browser-compat -- --browser safari
 Pass `--project-file PATH --startup-only` to either native-browser command when validating a real
 packaged-project cache path rather than the default portable directory fixture.
 
+Use `--full-project-export` with a source directory to export through the visible file menu,
+check the streamed download header and length, and require restored interaction. The observer
+reads only the header; it does not materialize a second complete project byte array.
+
 For acceptance requiring native driver input, use `--native-driver-inputs` with a startup,
 output-marker, or audio flow. It uses WebDriver clicks and file upload, retaining the production
 file input and handler while suppressing the OS sheet. It never injects a FileList or change

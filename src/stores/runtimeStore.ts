@@ -991,6 +991,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     // running immediately after the acknowledgement while a positive delay is still pending, so
     // phase changes alone cannot delimit this clock-sampling window.
     if (batch.vmInstructions > 0) devicePumpTimeAdvancePending = false;
+    // Submit at most one manifest chunk after processing the previous pump's responses.
+    // Awaiting the entire upload here would prevent Runtime from draining its inbound queue.
+    await advanceFullManifestImport();
   }
 
   function handleRuntime(
@@ -2318,6 +2321,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
             descriptor: exportState.descriptor,
           }
         : null,
+      fullManifest: fullManifestImport
+        ? {
+            submittedBytes: fullManifestImport.submittedBytes,
+            totalBytes: fullManifestImport.totalBytes,
+            commitStarted: fullManifestImport.commitStarted,
+            cancelled: fullManifestImport.cancelled,
+          }
+        : null,
       ...runtimeImport.testState(),
     };
   }
@@ -2476,6 +2487,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const pending: NonNullable<typeof fullManifestImport> = {
       activeExport,
       totalBytes: descriptor.totalBytes,
+      submittedBytes: 0,
+      hasher: blake3.create(),
       purpose,
       commandMessageIds: new Set<string>(),
       cancelled: false,
@@ -2515,38 +2528,60 @@ export const useRuntimeStore = defineStore("runtime", () => {
       await requestFullManifestTransferCancel(pending);
       return true;
     }
-    const hasher = blake3.create();
-    for (let offset = 0; offset < pending.totalBytes; offset += FULL_PROJECT_MANIFEST_CHUNK_BYTES) {
-      if (pending.cancelled) return true;
+    return true;
+  }
+
+  async function advanceFullManifestImport(): Promise<void> {
+    const pending = fullManifestImport;
+    if (!pending || pending.cancelled || pending.transferId == null || pending.commitStarted)
+      return;
+    try {
+      await submitNextFullManifestChunk(pending);
+    } catch (error) {
+      if (pending.cancelled) return;
+      await cleanupFullManifestImport(true, pending);
+      const message = `完整项目 manifest 传输失败：${String(error)}`;
+      if (pending.activeExport.kind === "diagnosis_project")
+        await failDiagnosisExport(pending.activeExport, message);
+      else await finishProjectFileExport("failed", message);
+    }
+  }
+
+  async function submitNextFullManifestChunk(
+    pending: FullManifestImportTransaction,
+  ): Promise<void> {
+    const offset = pending.submittedBytes;
+    if (offset < pending.totalBytes) {
       const expected = Math.min(FULL_PROJECT_MANIFEST_CHUNK_BYTES, pending.totalBytes - offset);
-      let data: Uint8Array;
-      try {
-        data = await bridge.readFullProjectManifestChunk(offset, expected);
-      } catch (error) {
-        if (pending.cancelled) return true;
-        throw error;
-      }
-      if (pending.cancelled) return true;
+      const data = await bridge.readFullProjectManifestChunk(offset, expected);
+      if (pending.cancelled) return;
       if (data.byteLength !== expected) throw new Error("完整项目 manifest 临时文件读取不完整");
-      hasher.update(data);
+      pending.hasher.update(data);
       await submitFullManifestCommand(pending, {
         type: "state_import_chunk",
         value: {
-          transfer_id: value.transfer_id,
+          transfer_id: pending.transferId,
           offset,
           data,
         },
       });
-      if (pending.cancelled) return true;
+      if (pending.cancelled) return;
+      pending.submittedBytes += expected;
+      if (pending.purpose === "project_file")
+        projectFileExportState.setProgress({
+          stage: "submitting",
+          completed: pending.submittedBytes,
+          total: pending.totalBytes,
+        });
+      return;
     }
     pending.commitStarted = true;
     const messageId = await submitFullManifestCommand(pending, {
       type: "state_import_commit",
-      value: { transfer_id: value.transfer_id, digest: hasher.digest() },
+      value: { transfer_id: pending.transferId, digest: pending.hasher.digest() },
     });
     pending.commitMessageId = String(messageId);
     await releaseFullManifestHost(pending);
-    return true;
   }
 
   async function finishFullManifestImport(
@@ -2734,6 +2769,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (completed.hostWriteFailure) throw completed.hostWriteFailure.error;
     const result =
       completed.kind === "compiled_cache" ||
+      completed.kind === "project_file" ||
       completed.kind === "download" ||
       completed.kind === "input_replay_download"
         ? new Uint8Array()

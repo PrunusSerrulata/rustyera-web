@@ -110,6 +110,8 @@ export interface FullProjectRequestSubmission {
 export interface FullManifestImportTransaction {
   activeExport: FullProjectExportState;
   totalBytes: number;
+  submittedBytes: number;
+  hasher: NonNullable<ExportState["digestHasher"]>;
   purpose: "project_file" | "diagnosis_project";
   beginMessageId?: string;
   transferId?: number;

@@ -84,6 +84,9 @@ if (expectedOutputIndex >= 0 && !process.argv[expectedOutputIndex + 1])
   throw new Error("--expect-output requires a marker");
 const expectedOutput = expectedOutputIndex >= 0 ? process.argv[expectedOutputIndex + 1] : undefined;
 const checkTooltip = process.argv.includes("--check-tooltip");
+const fullProjectExport = process.argv.includes("--full-project-export");
+if (fullProjectExport && projectFile)
+  throw new Error("full project export requires a source directory");
 const snakeData = process.argv.includes("--snake-data");
 const snakeServiceOracle = process.argv.includes("--snake-service-oracle");
 const oracleConfig = snakeServiceOracle
@@ -161,6 +164,7 @@ if (
 if (snakeAudioFlow && projectIndex < 0)
   throw new Error("snake audio flows require --project source directory for fixture identity");
 const startupOnly =
+  fullProjectExport ||
   process.argv.includes("--startup-only") ||
   Boolean(expectedOutput) ||
   snakeData ||
@@ -705,6 +709,64 @@ try {
     const observed = await collectCompatibilityReport(browser);
     if (projectFile) assertPackagedStartup(observed.startupTelemetry);
     else assertColdStartup(observed.startupTelemetry);
+    if (fullProjectExport) {
+      compatibilityStage = "exporting the full project through the visible menu";
+      // Observe the Blob produced by the real download path without replacing its click handler.
+      // Keep only its header and length, never a second complete project byte array.
+      await browser.execute(() => {
+        window.__FULL_PROJECT_DOWNLOAD__ = null;
+        const observe = async (event) => {
+          const anchor = event.target;
+          if (!(anchor instanceof HTMLElement) || !anchor.matches("a[download$='.reraproj']"))
+            return;
+          document.removeEventListener("click", observe, true);
+          try {
+            const response = await fetch(anchor.href);
+            const size = Number(response.headers.get("Content-Length"));
+            const reader = response.body.getReader();
+            const header = new Uint8Array(8);
+            let received = 0;
+            try {
+              while (received < header.length) {
+                const { done, value } = await reader.read();
+                if (done) throw new Error("project download header is truncated");
+                const count = Math.min(value.length, header.length - received);
+                header.set(value.subarray(0, count), received);
+                received += count;
+              }
+            } finally {
+              await reader.cancel();
+            }
+            window.__FULL_PROJECT_DOWNLOAD__ = {
+              name: anchor.download,
+              size,
+              magic: new TextDecoder().decode(header),
+            };
+          } catch (error) {
+            window.__FULL_PROJECT_DOWNLOAD__ = { error: String(error) };
+          }
+        };
+        document.addEventListener("click", observe, true);
+      });
+      await clickFileMenuAction(browser, "导出全量项目文件…");
+      await browser.waitUntil(
+        () =>
+          browser.execute(() => {
+            const download = window.__FULL_PROJECT_DOWNLOAD__;
+            if (download?.error) throw new Error(download.error);
+            return Boolean(
+              download &&
+              !document.querySelector(".full-project-export") &&
+              window.__RUSTYERA_TEST__.snapshotSummary().canInteract,
+            );
+          }),
+        { timeout: 180_000, interval: 50, timeoutMsg: "full project export did not finish" },
+      );
+      const download = await browser.execute(() => window.__FULL_PROJECT_DOWNLOAD__);
+      assert.equal(download.magic, "RERAPROJ");
+      assert.ok(download.size > 8);
+      console.log(JSON.stringify({ type: "full-project-export", browser: browserName, download }));
+    }
     if (snakeServiceLifecycle) {
       // Keep the initial cold-start proof separate from the intentional later restart telemetry.
       compatibilityStage =

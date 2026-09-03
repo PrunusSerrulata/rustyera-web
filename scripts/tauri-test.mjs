@@ -503,7 +503,9 @@ try {
       },
       project,
       path.join(path.dirname(project), "service-oracle-diagnosis.tar.zst"),
-      environment.RUSTYERA_TAURI_STATE_EXPORT_PATH,
+      specName === "full-project-export.spec.mjs"
+        ? environment.VITE_RUSTYERA_TAURI_EXPORT_PATH
+        : environment.RUSTYERA_TAURI_STATE_EXPORT_PATH,
     );
   }
 

@@ -337,6 +337,22 @@ describe("Tauri project restart", () => {
     ]);
   });
 
+  it("consumes the lifecycle full-project destination once for the native writer", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    configureServiceLifecycle({ stateExportPath: "/tmp/full-export.reraproj" });
+    invoke.mockResolvedValue(undefined);
+    const bridge = new TauriBridge();
+    await expect(bridge.beginProjectFileExport("game.reraproj")).resolves.toBe(true);
+    await bridge.writeProjectFileChunk(Uint8Array.of(1), true, true);
+    expect(commandCalls("write_export_chunk")[0]?.[1]).toMatchObject({
+      path: "/tmp/full-export.reraproj",
+    });
+    expect(save).not.toHaveBeenCalled();
+    save.mockResolvedValueOnce(null);
+    await expect(bridge.beginProjectFileExport("again.reraproj")).resolves.toBe(false);
+    expect(save).toHaveBeenCalledOnce();
+  });
+
   it("tags compiled-cache chunks, including the empty completion write", async () => {
     invoke.mockResolvedValue(undefined);
     const bridge = new TauriBridge();

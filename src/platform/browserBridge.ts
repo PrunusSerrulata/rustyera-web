@@ -967,11 +967,7 @@ export class BrowserBridge implements FrontendBridge {
   }
 
   async beginProjectFileExport(name: string): Promise<boolean> {
-    if (import.meta.env.VITE_RUSTYERA_TEST === "1") {
-      this.projectFileFallback = { name, chunks: [], receivedBytes: 0 };
-      return true;
-    }
-    if (window.showSaveFilePicker) {
+    if (import.meta.env.VITE_RUSTYERA_TEST !== "1" && window.showSaveFilePicker) {
       try {
         const handle = await window.showSaveFilePicker({
           suggestedName: name,
