@@ -92,6 +92,13 @@ The snapshot cadence is independent from action pacing. Poll actionable browser 
 never insert a 5-second sleep between folder navigation, selection, confirmation, permission, and
 page-load transitions.
 
+When the user explicitly authorizes the temporary loading allowance, set
+`RUSTYERA_TEST_LOADING_STALL_INTERVALS=4` for that run. Only `projectLoading=true` without
+an active wait, interactive state or export may accumulate four unchanged five-second intervals
+before failing. Actual progress resets the count. All captures still have a five-second deadline;
+faults and protocol rejections still fail immediately. After loading, the first unchanged interval
+fails again. This override does not resolve or waive the underlying loading performance problem.
+
 After clicking the native compatibility runner's visible project-open button, require the portable
 directory-file fallback or project-open state to become observable within 10 seconds. On failure,
 report every created file input's type, multiplicity, accept filter, and directory property/attribute

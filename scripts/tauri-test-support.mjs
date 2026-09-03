@@ -187,8 +187,18 @@ export function assertSnapshotProgress(
   identicalIntervals = 1,
   signatures,
 ) {
+  // Temporary, explicitly authorized loading-only policy. Capture deadlines,
+  // terminal failures, exports and interactive runtime states keep the default.
+  const loadingAllowance =
+    process.env.RUSTYERA_TEST_LOADING_STALL_INTERVALS === "4" &&
+    currentSnapshot?.runtime?.projectLoading === true &&
+    currentSnapshot.runtime.canInteract !== true &&
+    currentSnapshot.runtime.wait == null &&
+    currentSnapshot.runtime.transfer?.export == null;
+  const maximumIdenticalIntervals = loadingAllowance ? 4 : 1;
   if (
     previousSnapshot != null &&
+    identicalIntervals >= maximumIdenticalIntervals &&
     (signatures?.previous ?? snapshotProgressSignature(previousSnapshot)) ===
       (signatures?.current ?? snapshotProgressSignature(currentSnapshot))
   ) {

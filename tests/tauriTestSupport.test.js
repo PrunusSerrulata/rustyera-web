@@ -150,6 +150,7 @@ describe("structured snake profile notifications", () => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   document.body.replaceChildren();
   delete window.__RUSTYERA_TEST__;
 });
@@ -924,6 +925,33 @@ describe("Tauri end-to-end test support", () => {
     );
   });
 
+  it("permits only the authorized first three unchanged loading intervals", () => {
+    vi.stubEnv("RUSTYERA_TEST_LOADING_STALL_INTERVALS", "4");
+    const snapshot = {
+      document: [{ tag: "main" }],
+      runtime: { phase: "ready", projectLoading: true, canInteract: false, wait: null },
+    };
+    for (const count of [1, 2, 3])
+      expect(() =>
+        assertSnapshotProgress(snapshot, structuredClone(snapshot), "Browser", count),
+      ).not.toThrow();
+    expect(() => assertSnapshotProgress(snapshot, structuredClone(snapshot), "Browser", 4)).toThrow(
+      /4 consecutive 5-second intervals/,
+    );
+    for (const runtime of [
+      { ...snapshot.runtime, projectLoading: false },
+      { ...snapshot.runtime, canInteract: true },
+      { ...snapshot.runtime, wait: { kind: "integer_value" } },
+      { ...snapshot.runtime, transfer: { export: { name: "full.reraproj" } } },
+    ]) {
+      const active = { ...snapshot, runtime };
+      expect(() => assertSnapshotProgress(active, structuredClone(active), "Browser", 1)).toThrow(
+        /1 consecutive 5-second interval/,
+      );
+    }
+    expect(snapshotCaptureTimeout(snapshot)).toBe(5_000);
+  });
+
   it("does not count growing capture history as game progress", () => {
     const first = {
       document: [{ tag: "body", text: "waiting", visible: true }],
@@ -1068,6 +1096,36 @@ describe("Tauri end-to-end test support", () => {
     await expect(monitor.failure).rejects.toThrow(/1 consecutive 5-second interval/);
     await expect(monitor.stop()).rejects.toThrow(/1 consecutive 5-second interval/);
     expect(browser.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("resets the authorized loading interval count on progress and restores the normal limit", async () => {
+    vi.stubEnv("RUSTYERA_TEST_LOADING_STALL_INTERVALS", "4");
+    const loading = (status) => ({
+      document: [],
+      runtime: { projectLoading: true, status },
+    });
+    const running = { document: [], runtime: { projectLoading: false, phase: "running" } };
+    const snapshots = [
+      ...Array.from({ length: 4 }, () => loading("reading 10")),
+      ...Array.from({ length: 4 }, () => loading("reading 20")),
+      running,
+      running,
+    ];
+    const browser = { execute: vi.fn(async () => structuredClone(snapshots.shift())) };
+    const monitor = startTauriSessionMonitor(browser, { interval: 1, output: vi.fn() });
+    await expect(monitor.failure).rejects.toThrow(/1 consecutive 5-second interval/);
+    await expect(monitor.stop()).rejects.toThrow(/1 consecutive 5-second interval/);
+    expect(browser.execute).toHaveBeenCalledTimes(10);
+  });
+
+  it("fails at the fourth unchanged loading interval when explicitly authorized", async () => {
+    vi.stubEnv("RUSTYERA_TEST_LOADING_STALL_INTERVALS", "4");
+    const snapshot = { document: [], runtime: { projectLoading: true } };
+    const browser = { execute: vi.fn(async () => structuredClone(snapshot)) };
+    const monitor = startTauriSessionMonitor(browser, { interval: 1, output: vi.fn() });
+    await expect(monitor.failure).rejects.toThrow(/4 consecutive 5-second intervals/);
+    await expect(monitor.stop()).rejects.toThrow(/4 consecutive 5-second intervals/);
+    expect(browser.execute).toHaveBeenCalledTimes(5);
   });
 
   it("stops cleanly while waiting for the next snapshot", async () => {
