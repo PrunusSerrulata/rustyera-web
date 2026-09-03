@@ -227,6 +227,46 @@ describe("runtime evidence observations", () => {
     expect(disabled.snapshot()).toMatchObject({ enabled: false, overflow: false, records: [] });
   });
 
+  it("retains scoped export commands after startup exhausts the general ledger", () => {
+    const evidence = new RuntimeEvidence(true, 1024, 1);
+    evidence.sent("runtime", { type: "start" }, 1n, 2n);
+    evidence.sent("runtime", { type: "service_response" }, 2n, 2n);
+    const bytes = new Uint8Array(4 * 1024 * 1024).fill(19);
+    const digest = [...blake3(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const prepared = evidence.prepareMessage({
+      type: "state_import_chunk",
+      value: { transfer_id: 7n, offset: 0, data: bytes },
+    });
+    structuredClone(bytes, { transfer: [bytes.buffer] });
+    evidence.sent("runtime", prepared, 3n, 2n);
+    evidence.sent("runtime", { type: "state_transfer_cancel", value: { transfer_id: 7n } }, 4n, 2n);
+    const scoped = evidence.snapshot(
+      1,
+      new Set(["state_import_chunk", "state_transfer_cancel"]),
+    ) as any;
+    expect(scoped).toMatchObject({
+      scope: "export_commands",
+      failure: null,
+      primaryFailure: "observation_limit",
+    });
+    expect(scoped.records.map((record: any) => record.message.type)).toEqual([
+      "state_import_chunk",
+      "state_transfer_cancel",
+    ]);
+    expect(scoped.records[0].message.value.data).toEqual({
+      observation: "bulk_bytes_digest",
+      byteLength: 4 * 1024 * 1024,
+      blake3: digest,
+    });
+    expect(evidence.snapshot()).toMatchObject({ failure: "observation_limit" });
+    expect((evidence.snapshot() as any).records).toHaveLength(1);
+    const bounded = new RuntimeEvidence(true, 512, 1, new Set(["state_transfer_cancel"]));
+    bounded.sent("runtime", { type: "start" }, 1n, 2n);
+    bounded.sent("runtime", { type: "state_transfer_cancel" }, 2n, 2n);
+    bounded.sent("runtime", { type: "state_transfer_cancel" }, 3n, 2n);
+    expect(bounded.snapshot()).toMatchObject({ failure: "observation_limit" });
+  });
+
   it("retains bounded bulk-byte identity after Worker transfer without altering service bytes", () => {
     const evidence = new RuntimeEvidence(true, 4096);
     const bytes = new Uint8Array(4 * 1024 * 1024).fill(19);

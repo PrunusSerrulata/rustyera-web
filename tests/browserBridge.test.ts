@@ -1643,6 +1643,112 @@ describe("browser startup bridge", () => {
     );
   });
 
+  it("releases a manifest spool that finishes after export cancellation", async () => {
+    pickBrowserDirectory.mockResolvedValue({
+      handle: new MemoryDirectoryHandle("game"),
+      persistHandle: false,
+      projectName: "game",
+    });
+    const bridge = new BrowserBridge();
+    await bridge.openProject();
+    let finishStaging!: (
+      value: import("@/platform/browserProject").BrowserFullManifestSpool,
+    ) => void;
+    const release = vi.fn(async () => {});
+    const entered = deferred<void>();
+    const stagingSpy = vi
+      .spyOn(BrowserProject.prototype, "stageFullManifest")
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishStaging = resolve;
+            entered.resolve();
+          }),
+      );
+    try {
+      const staging = bridge.stageFullProjectManifest();
+      const rejected = expect(staging).rejects.toMatchObject({ name: "AbortError" });
+      await entered.promise;
+      await bridge.cancelProjectFileExport();
+      finishStaging({ totalBytes: 1, read: async () => Uint8Array.of(1), release });
+      await rejected;
+      expect(release).toHaveBeenCalledOnce();
+      await expect(bridge.readFullProjectManifestChunk(0, 1)).rejects.toThrow("尚未暂存");
+    } finally {
+      stagingSpy.mockRestore();
+    }
+  });
+
+  it.each(
+    (["write", "close", "getFile"] as const).flatMap((phase) =>
+      [false, true].map((reject) => ({ phase, reject })),
+    ),
+  )(
+    "does not publish a cancelled OPFS download after late $phase (reject=$reject)",
+    async ({ phase, reject }) => {
+      const storage = new MemoryDirectoryHandle("storage");
+      vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+      const blocked = deferred<void>();
+      const entered = deferred<void>();
+      const originalCreate = MemoryFileHandle.prototype.createWritable;
+      const create = vi
+        .spyOn(MemoryFileHandle.prototype, "createWritable")
+        .mockImplementation(async function (this: MemoryFileHandle, options) {
+          const writer = await originalCreate.call(this, options);
+          if (phase === "write") {
+            const original = writer.write;
+            writer.write = async (input) => {
+              entered.resolve();
+              await blocked.promise;
+              return original(input);
+            };
+          } else if (phase === "close") {
+            writer.close = async () => {
+              entered.resolve();
+              await blocked.promise;
+            };
+          }
+          return writer;
+        });
+      const bridge = new BrowserBridge();
+      try {
+        await bridge.beginProjectFileExport("first.reraproj");
+        if (phase === "getFile") {
+          const [name] = await directoryEntryNames(storage);
+          const handle = await storage.getFileHandle(name!);
+          const original = handle.getFile.bind(handle);
+          vi.spyOn(handle, "getFile").mockImplementationOnce(async () => {
+            const file = await original();
+            entered.resolve();
+            await blocked.promise;
+            return file;
+          });
+        }
+        const write = bridge.writeProjectFileChunk(Uint8Array.of(1), true, true);
+        await entered.promise;
+        await bridge.cancelProjectFileExport();
+        create.mockRestore();
+        await bridge.beginProjectFileExport("replacement.reraproj");
+        if (reject) {
+          const rejection = expect(write).rejects.toThrow("writer aborted");
+          blocked.reject(new Error("writer aborted"));
+          await rejection;
+        } else {
+          blocked.resolve();
+          await write;
+        }
+        // The replacement remains writable and owns its own completion lifecycle.
+        await expect(
+          bridge.writeProjectFileChunk(Uint8Array.of(2), true, false),
+        ).resolves.toBeUndefined();
+        await bridge.cancelProjectFileExport();
+        expect(await directoryEntryNames(storage)).toEqual([]);
+      } finally {
+        create.mockRestore();
+      }
+    },
+  );
+
   it("defers the fallback project-file OPFS copy until configuration is edited", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
@@ -2379,10 +2485,12 @@ function diagnosisInput() {
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((complete) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((complete, fail) => {
     resolve = complete;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 async function flushMicrotasks(): Promise<void> {

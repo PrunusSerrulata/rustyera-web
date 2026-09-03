@@ -250,6 +250,7 @@ describe("verified Tauri build reuse", () => {
           ["scripts/web-test-runtime.mjs", "old-runtime-observer"],
           ["scripts/prepare-snake-audio-fixture.mjs", "old-audio-fixture-builder"],
           ["scripts/web-test-lib.d.mts", "old-node-helper-types"],
+          ["scripts/project-export-cancel.mjs", "old-export-observer"],
         ],
         coreSources: [["crates/runtime.rs", "same-core"]],
         environment: { RUSTFLAGS: "same-flags" },
@@ -267,7 +268,7 @@ describe("verified Tauri build reuse", () => {
       changedRuntimeHelper.inputs.webSources[2][1] = "native-foreground-precondition";
       changedRuntimeHelper.inputs.webSources[4][1] = "transport-identity-before-image-gate";
       expect(await reusableArtifact(manifest, changedRuntimeHelper, binary)).toBeDefined();
-      for (const index of [5, 6, 7, 8, 9, 10, 11]) {
+      for (const index of [5, 6, 7, 8, 9, 10, 11, 12]) {
         const changedNodeHelper = structuredClone(changedRuntimeHelper);
         changedNodeHelper.inputs.webSources[index][1] = "node-only-observation-or-foreground";
         expect(compiledBuildInputs(changedNodeHelper.inputs)).toEqual(compiledBuildInputs(inputs));

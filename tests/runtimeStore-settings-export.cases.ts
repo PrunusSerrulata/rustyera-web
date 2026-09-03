@@ -1023,6 +1023,41 @@ describe("runtime store settings-export", () => {
     await store.cancelProjectFileExport();
   });
 
+  it("ignores a cancelled project's late writer rejection instead of faulting the pump", async () => {
+    let rejectWrite!: (error: Error) => void;
+    bridge.writeProjectFileChunk.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectWrite = reject;
+        }),
+    );
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 })],
+      })
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          stateExportReadyEvent("full_project_file", 7, [1, 2, 3]),
+          stateExportChunkEvent(7, [1, 2, 3]),
+        ],
+      });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+    await store.exportProjectFile();
+    await vi.advanceTimersByTimeAsync(16);
+    await store.cancelProjectFileExport();
+    rejectWrite(new DOMException("writer aborted", "AbortError"));
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.fault).toBeNull();
+    expect(store.projectFileExporting).toBe(false);
+    expect(store.status).toBe("已取消导出全量项目文件");
+    expect(bridge.cancelProjectFileExport).toHaveBeenCalledOnce();
+  });
+
   it("does not start a full project export when the active WASM project file is ineligible", async () => {
     bridge.kind = "browser";
     bridge.fullProjectExportSupported.mockReturnValue(false);
@@ -1237,6 +1272,49 @@ describe("runtime store settings-export", () => {
     ).toBe(false);
     expect(store.projectFileExporting).toBe(false);
     expect(bridge.cancelProjectFileExport).toHaveBeenCalledOnce();
+  });
+
+  it("aborts host staging before waiting for runtime cancellation and keeps replacement blocked", async () => {
+    let rejectStaging!: (error: Error) => void;
+    let finishCancel!: (id: number) => void;
+    bridge.stageFullProjectManifest.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectStaging = reject;
+        }),
+    );
+    bridge.cancelProjectFileExport.mockImplementationOnce(async () => {
+      rejectStaging(new DOMException("Export cancelled", "AbortError"));
+    });
+    bridge.submitRuntime.mockImplementation(async (message) => {
+      if (message.type === "state_export_cancel")
+        return new Promise<number>((resolve) => {
+          finishCancel = resolve;
+        });
+      return 1;
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 })],
+    });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(0);
+    const exporting = store.exportProjectFile();
+    await vi.advanceTimersByTimeAsync(0);
+    const cancelling = store.cancelProjectFileExport();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(bridge.cancelProjectFileExport).toHaveBeenCalledOnce();
+    expect(store.projectFileExporting).toBe(true);
+    await store.exportProjectFile();
+    expect(bridge.beginProjectFileExport).toHaveBeenCalledOnce();
+    await store.cancelProjectFileExport();
+    finishCancel(2);
+    await Promise.all([exporting, cancelling]);
+    expect(store.projectFileExporting).toBe(false);
+    expect(store.status).toBe("已取消导出全量项目文件");
   });
 
   it("cancels a late manifest Accepted after cancellation during begin submission", async () => {

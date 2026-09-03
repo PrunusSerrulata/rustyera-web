@@ -2429,9 +2429,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     try {
       await stageFullManifestImport(activeExport, "project_file");
     } catch (error) {
-      const cancelled = !projectFileExporting.value && exportState == null;
-      await finishProjectFileExport(cancelled ? "cancelled" : "failed");
-      if (cancelled) return;
+      if (exportState !== activeExport) return;
+      await finishProjectFileExport("failed");
       throw error;
     }
   }
@@ -2729,7 +2728,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function cancelProjectFileExport(): Promise<void> {
-    if (!projectFileExporting.value) return;
+    if (!projectFileExporting.value || exportState?.kind !== "project_file") return;
     await finishProjectFileExport("cancelled", "已取消导出全量项目文件", true);
   }
 
@@ -2739,8 +2738,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
     cancelRuntime = outcome !== "success",
   ): Promise<void> {
     const pendingManifest = fullManifestImport;
+    if (pendingManifest) pendingManifest.cancelled = true;
     exportState = undefined;
-    const resumeCache = projectFileExportState.finish();
+    // Stop host reads/writes before waiting for queued Runtime commands. Otherwise cancellation
+    // can leave the producer allocating data while Runtime is busy draining the transfer.
+    if (outcome !== "success") {
+      try {
+        await bridge.cancelProjectFileExport();
+      } catch (error) {
+        log("warning", `清理全量项目导出临时文件失败：${String(error)}`);
+      }
+    }
     if (pendingManifest) await cleanupFullManifestImport(cancelRuntime, pendingManifest);
     if (outcome !== "success") {
       try {
@@ -2748,14 +2756,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
           await send({ type: "state_export_cancel", value: { kind: "full_project_file" } });
       } catch (error) {
         log("warning", `取消 Runtime 全量项目导出失败：${String(error)}`);
-      } finally {
-        try {
-          await bridge.cancelProjectFileExport();
-        } catch (error) {
-          log("warning", `清理全量项目导出临时文件失败：${String(error)}`);
-        }
       }
     }
+    const resumeCache = projectFileExportState.finish();
     if (message) baseStatus.value = message;
     if (resumeCache) scheduleCompiledCacheExport();
     if (diagnosisExporting.value && !exportState)

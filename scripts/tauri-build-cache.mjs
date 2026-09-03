@@ -172,6 +172,7 @@ export function compiledBuildInputs(inputs) {
             "scripts/web-test-lib.d.mts",
             "scripts/web-test.mjs",
             "scripts/project-load-failure.mjs",
+            "scripts/project-export-cancel.mjs",
             "scripts/dom-test-input.mjs",
             "scripts/web-test-runtime.mjs",
           ].includes(name),

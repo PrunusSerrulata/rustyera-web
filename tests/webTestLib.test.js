@@ -35,6 +35,80 @@ import { SNAKE_DATA_MARKERS } from "../scripts/snake-data-test-support.mjs";
 import { snakeAudioRelations, snakeAudioStressRelations } from "../scripts/web-test-runtime.mjs";
 
 describe("web game test scenario", () => {
+  it("finishes export cancellation when background cache generation resumes", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rustyera-export-cancel-"));
+    const evidencePath = path.join(root, "evidence.json");
+    let dialog = false;
+    let state = {
+      memory: { wasmLinearMemoryBytes: 1234 },
+      fault: null,
+      canInteract: true,
+      status: "background cache",
+      transfer: { export: { name: "compiled-project.reracache" }, fullManifest: null },
+    };
+    const run = (callback) =>
+      runInNewContext(`(${callback.toString()})()`, {
+        window: {
+          __RUSTYERA_TEST__: {
+            snapshotSummary: () => state,
+            protocolEvidence: () => ({
+              failure: null,
+              records: [{ direction: "send", message: { type: "state_transfer_cancel" } }],
+            }),
+          },
+        },
+        document: { querySelector: () => (dialog ? {} : null) },
+      });
+    const page = {
+      evaluate: async (callback) => run(callback),
+      waitForFunction: async (callback) => expect(run(callback)).toBe(true),
+      locator: () => ({
+        waitFor: async () => expect(dialog).toBe(true),
+        click: async () => {
+          dialog = true;
+          state = {
+            ...state,
+            canInteract: false,
+            transfer: {
+              export: { name: "project.reraproj" },
+              fullManifest: { submittedBytes: 8 * 1024 * 1024 },
+            },
+          };
+        },
+      }),
+      getByRole: () => ({
+        getByRole: () => ({
+          click: async () => {
+            dialog = false;
+            state = {
+              ...state,
+              canInteract: true,
+              transfer: { export: { name: "compiled-project.reracache" }, fullManifest: null },
+            };
+          },
+        }),
+      }),
+    };
+    try {
+      await runAction(page, {
+        type: "cancel_project_export",
+        selector: "export",
+        evidence_path: evidencePath,
+      });
+      const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
+      expect(evidence.status).toBe("passed");
+      expect(evidence.samples.map((sample) => sample.phase)).toEqual([
+        "before",
+        "before-cancel",
+        "cancel-submitted",
+        "finished",
+      ]);
+      expect(evidence.samples.at(-1).transfer.export.name).toBe("compiled-project.reracache");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps complete snapshots in the file event while compacting console output", () => {
     const event = {
       type: "browser-game-snapshot",

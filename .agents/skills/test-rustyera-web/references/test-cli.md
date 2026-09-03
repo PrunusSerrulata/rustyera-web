@@ -239,6 +239,10 @@ An action has `type`:
 - `save_download`: arms a native Playwright download event, then clicks the visible export control
   at `selector` and saves the actual bytes to an unused absolute `path`. Requires its filename to
   end in `name_suffix`. Use to retain a streamed artifact for another native client.
+- `cancel_project_export`: clicks the export control at `selector`, waits for at least 8 MiB of
+  actual manifest submissions, then clicks the visible cancellation button. Requires an unused
+  absolute `evidence_path`; records memory, transfer state and cancellation protocol evidence.
+  Use a project whose full manifest exceeds 8 MiB, followed by `save_download` to prove retry.
 - `assert_diagnosis_project_manifest`: hashes each declared UTF-8 `sources` value and compares it
   with the manifest decoded from the exported `.reraproj` by the real WASM worker.
 - `wait_compiled_cache_saved`: waits until the production cache export has completed.

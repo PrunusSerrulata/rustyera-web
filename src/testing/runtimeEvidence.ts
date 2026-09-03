@@ -5,6 +5,13 @@ import { blake3 } from "@noble/hashes/blake3.js";
 const MAXIMUM_STATE_CHUNK_BYTES = 16 * 1024 * 1024;
 const MAXIMUM_STORAGE_BYTES = 64 * 1024 * 1024;
 const HASH_CHUNK_BYTES = 64 * 1024;
+const EXPORT_MESSAGE_TYPES = new Set([
+  "state_import_chunk",
+  "state_import_commit",
+  "state_transfer_cancel",
+  "state_export_cancel",
+  "state_export_request",
+]);
 
 declare global {
   interface Window {
@@ -20,6 +27,7 @@ export class RuntimeEvidence {
   private readonly pointerSamples: string[] = [];
   private bytes = 0;
   private failure: string | null = null;
+  private readonly exportEvidence: RuntimeEvidence | undefined;
 
   constructor(
     private readonly enabled: boolean,
@@ -27,9 +35,17 @@ export class RuntimeEvidence {
     // retaining a finite ledger bound; periodic snapshots use summary(), not this payload.
     private readonly maximumBytes = 64 * 1024 * 1024,
     private readonly maximumRecords = 8192,
-  ) {}
+    private readonly selectedTypes?: ReadonlySet<string>,
+  ) {
+    // Startup diagnostics can exhaust the general ledger before a large project's export.
+    // Keep its failure intact, and independently bound the narrow transfer-command evidence.
+    if (enabled && !selectedTypes)
+      this.exportEvidence = new RuntimeEvidence(true, 8 * 1024 * 1024, 4096, EXPORT_MESSAGE_TYPES);
+  }
 
   receive(event: WebEvent, sessionGeneration = 0): void {
+    this.exportEvidence?.receive(event, sessionGeneration);
+    if (this.selectedTypes && !this.selectedTypes.has(event.message.type)) return;
     this.record({
       direction: "receive",
       ...event,
@@ -46,9 +62,16 @@ export class RuntimeEvidence {
   /** Snapshot bulk transfers before Worker ownership detaches the source buffer. Service CBOR and
    * typed values remain complete; only file/snapshot chunks use an explicit length/hash observation. */
   prepareMessage(message: unknown): unknown {
-    if (!this.enabled || this.failure !== null || message == null || typeof message !== "object")
-      return message;
+    if (!this.enabled || message == null || typeof message !== "object") return message;
     const entry = message as { type?: string; value?: Record<string, unknown> };
+    if (this.selectedTypes && !this.selectedTypes.has(entry.type ?? "")) return message;
+    if (this.exportEvidence && EXPORT_MESSAGE_TYPES.has(entry.type ?? "")) {
+      const prepared = this.exportEvidence.prepareMessage(message);
+      if (this.exportEvidence.failure === "unserializable_observation")
+        this.failure ??= "unserializable_observation";
+      return prepared;
+    }
+    if (this.failure !== null) return message;
     if (entry.type === "state_import_chunk" || entry.type === "state_export_chunk")
       return {
         ...entry,
@@ -136,6 +159,9 @@ export class RuntimeEvidence {
     correlationId?: number | bigint,
     sessionGeneration = 0,
   ): void {
+    this.exportEvidence?.sent(channel, message, messageId, epoch, correlationId, sessionGeneration);
+    const type = (message as { type?: string } | null)?.type;
+    if (this.selectedTypes && !this.selectedTypes.has(type ?? "")) return;
     this.record({
       direction: "send",
       channel,
@@ -169,6 +195,16 @@ export class RuntimeEvidence {
   }
 
   snapshot(sessionGeneration = 0, messageTypes?: ReadonlySet<string>): Record<string, unknown> {
+    if (
+      this.exportEvidence &&
+      messageTypes?.size &&
+      [...messageTypes].every((type) => EXPORT_MESSAGE_TYPES.has(type))
+    )
+      return {
+        ...this.exportEvidence.snapshot(sessionGeneration, messageTypes),
+        scope: "export_commands",
+        primaryFailure: this.failure,
+      };
     return {
       ...this.summary(sessionGeneration),
       bytes: this.bytes,

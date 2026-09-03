@@ -214,6 +214,7 @@ export class RuntimeExportTransferState {
         activeExport.chunks.push(bytes);
       }
     } catch (error) {
+      if (this.context.exportState() !== activeExport) return;
       if (activeExport.kind === "project_file") {
         await this.context.failProjectFile();
       } else if (
@@ -232,6 +233,7 @@ export class RuntimeExportTransferState {
         throw error;
       return;
     }
+    if (this.context.exportState() !== activeExport) return;
     if (activeExport.kind === "compiled_cache") {
       this.context.continueCompiledCache(activeExport, chunk.complete);
       return;

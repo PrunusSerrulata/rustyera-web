@@ -1006,8 +1006,12 @@ export class BrowserBridge implements FrontendBridge {
     try {
       await this.releaseFullProjectManifest();
       abort.signal.throwIfAborted();
-      this.fullManifestSpool = await project.stageFullManifest(this.scanProgress, abort.signal);
-      abort.signal.throwIfAborted();
+      const spool = await project.stageFullManifest(this.scanProgress, abort.signal);
+      if (abort.signal.aborted) {
+        await spool.release();
+        abort.signal.throwIfAborted();
+      }
+      this.fullManifestSpool = spool;
       return { totalBytes: this.fullManifestSpool.totalBytes };
     } finally {
       if (this.memoryConstrained) project.releaseSubmittedSourcePayloads();
@@ -1035,10 +1039,13 @@ export class BrowserBridge implements FrontendBridge {
     _reset: boolean,
     complete: boolean,
   ): Promise<void> {
-    if (this.projectFileWriter) {
-      await this.projectFileWriter.write(bytes as FileSystemWriteChunkType);
+    const writer = this.projectFileWriter;
+    if (writer) {
+      await writer.write(bytes as FileSystemWriteChunkType);
+      if (this.projectFileWriter !== writer) return;
       if (complete) {
-        await this.projectFileWriter.close();
+        await writer.close();
+        if (this.projectFileWriter !== writer) return;
         this.projectFileWriter = undefined;
       }
       return;
@@ -1066,9 +1073,14 @@ export class BrowserBridge implements FrontendBridge {
       return;
     }
     await fallback.writer.write(bytes as FileSystemWriteChunkType);
+    if (this.projectFileFallback !== fallback) return;
     if (!complete) return;
     await fallback.writer.close();
-    const file = await (await fallback.root.getFileHandle(fallback.temporaryName)).getFile();
+    if (this.projectFileFallback !== fallback) return;
+    const handle = await fallback.root.getFileHandle(fallback.temporaryName);
+    if (this.projectFileFallback !== fallback) return;
+    const file = await handle.getFile();
+    if (this.projectFileFallback !== fallback) return;
     downloadBrowserBlob(fallback.name, file, () => {
       void fallback.root.removeEntry(fallback.temporaryName).catch(() => undefined);
     });
@@ -1078,13 +1090,13 @@ export class BrowserBridge implements FrontendBridge {
   async cancelProjectFileExport(): Promise<void> {
     this.projectFileExportAbort?.abort(new DOMException("Export cancelled", "AbortError"));
     this.projectFileExportAbort = undefined;
-    await this.releaseFullProjectManifest().catch(() => undefined);
-    if (this.projectFileWriter) {
-      await this.projectFileWriter.abort().catch(() => undefined);
-      this.projectFileWriter = undefined;
-    }
+    const writer = this.projectFileWriter;
+    this.projectFileWriter = undefined;
     const fallback = this.projectFileFallback;
     this.projectFileFallback = undefined;
+    if (fallback && "chunks" in fallback) fallback.chunks.length = 0;
+    await this.releaseFullProjectManifest().catch(() => undefined);
+    await writer?.abort().catch(() => undefined);
     if (fallback && "writer" in fallback) {
       await fallback.writer.abort().catch(() => undefined);
       await fallback.root.removeEntry(fallback.temporaryName).catch(() => undefined);

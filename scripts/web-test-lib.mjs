@@ -1,3 +1,4 @@
+import { cancelProjectExportDuringTransfer } from "./project-export-cancel.mjs";
 /* global document, window, HTMLImageElement */
 
 import { constants as fsConstants, createWriteStream } from "node:fs";
@@ -1002,6 +1003,8 @@ async function stopAtomicPresentationProbe(page) {
 }
 
 export async function runAction(page, action) {
+  if (action.type === "cancel_project_export")
+    return cancelProjectExportDuringTransfer(page, action);
   if (action.type === "save_download") {
     assert.ok(typeof action.path === "string" && path.isAbsolute(action.path));
     assert.ok(typeof action.name_suffix === "string" && action.name_suffix.length > 0);
