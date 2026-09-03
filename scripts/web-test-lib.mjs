@@ -1559,7 +1559,20 @@ export async function runAction(page, action) {
     );
     return { query: { media_replay: actual }, semanticInput: action.semantic_input };
   } else if (action.type === "assert_state") {
-    const state = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    // Ordinary state checks must not clone the entire startup wire ledger. Explicit
+    // evidence assertions still receive the full records and lifecycle observations.
+    const needsEvidence = [action.expect, action.expect_prefix].some(
+      (expected) =>
+        expected != null &&
+        (Object.hasOwn(expected, "serviceEvidence") || Object.hasOwn(expected, "serviceLifecycle")),
+    );
+    const state = await page.evaluate(
+      (fullEvidence) =>
+        fullEvidence
+          ? window.__RUSTYERA_TEST__.snapshot()
+          : window.__RUSTYERA_TEST__.snapshotSummary(),
+      needsEvidence,
+    );
     assertSubset(state, action.expect ?? {});
     assertStringPrefixes(state, action.expect_prefix ?? {});
     return { state };

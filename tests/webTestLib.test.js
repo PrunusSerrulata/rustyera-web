@@ -179,6 +179,57 @@ describe("web game test scenario", () => {
     );
   });
 
+  it("checks ordinary runtime state without materializing protocol records", async () => {
+    const state = { canInteract: true, wait: { stability: "stable_input" }, fault: null };
+    const snapshot = vi.fn(() => {
+      throw new Error("full protocol ledger must not be materialized");
+    });
+    const snapshotSummary = vi.fn(() => state);
+    const page = {
+      evaluate: (callback, argument) =>
+        runInNewContext(`(${callback.toString()})(argument)`, {
+          argument,
+          window: { __RUSTYERA_TEST__: { snapshot, snapshotSummary } },
+        }),
+    };
+    await expect(runAction(page, { type: "assert_state", expect: state })).resolves.toEqual({
+      state,
+    });
+    expect(snapshot).not.toHaveBeenCalled();
+    expect(snapshotSummary).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["expect", "serviceEvidence"],
+    ["expect_prefix", "serviceEvidence"],
+    ["expect", "serviceLifecycle"],
+    ["expect_prefix", "serviceLifecycle"],
+  ])("retains full evidence for %s assertions on %s", async (assertion, field) => {
+    const state = { [field]: { records: [{ message: "observed wire payload" }] } };
+    const snapshot = vi.fn(() => state);
+    const snapshotSummary = vi.fn(() => {
+      throw new Error("an explicit evidence assertion requires full records");
+    });
+    const page = {
+      evaluate: (callback, argument) =>
+        runInNewContext(`(${callback.toString()})(argument)`, {
+          argument,
+          window: { __RUSTYERA_TEST__: { snapshot, snapshotSummary } },
+        }),
+    };
+    const expected =
+      assertion === "expect_prefix"
+        ? { [field]: { records: { 0: { message: "observed wire" } } } }
+        : state;
+    await expect(runAction(page, { type: "assert_state", [assertion]: expected })).resolves.toEqual(
+      {
+        state,
+      },
+    );
+    expect(snapshot).toHaveBeenCalledOnce();
+    expect(snapshotSummary).not.toHaveBeenCalled();
+  });
+
   it("focuses Safari through its WebDriver automation window", async () => {
     const calls = [];
     const execute = vi.fn(async (...args) => calls.push(["activate", ...args]));
