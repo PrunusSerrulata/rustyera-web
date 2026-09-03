@@ -6,7 +6,7 @@ import {
 } from "@/testing/serviceLifecycle";
 import type { Pinia } from "pinia";
 
-import { plainLine } from "@/core/presentation";
+import { observedLineText } from "@/testing/presentationText";
 import { hex } from "@/platform/browserProjectFilesystem";
 import type { RuntimeTestConfiguration } from "@/stores/runtime";
 import { useRuntimeStore } from "@/stores/runtime";
@@ -79,7 +79,7 @@ export function installWebTestControl(pinia: Pinia): void {
       wait: store.presentation.inputWait,
       presentationRevision: store.presentation.revision,
       historyRevision: store.presentation.historyRevision,
-      output: store.presentation.lines.map(plainLine),
+      output: store.presentation.lines.map(observedLineText),
       htmlIsland: store.presentation.htmlIsland,
       audio: Object.fromEntries(
         store.presentation.audio.map((channel) => [
