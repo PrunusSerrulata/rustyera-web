@@ -3,6 +3,10 @@ import { shallowReactive } from "vue";
 import type { LogNotificationState } from "@/core/log";
 import type { LogEntry, LogNotificationPolicy } from "@/stores/runtimeState";
 
+// A compile failure may fill the entire log. Bound alerts before Vue mounts them;
+// viewport fitting happens after rendering and cannot protect against that burst.
+export const MAXIMUM_PENDING_LOG_NOTIFICATIONS = 32;
+
 export class RuntimeLogState {
   readonly entries = shallowReactive<LogEntry[]>([]);
   readonly notifications = shallowReactive<LogNotificationState[]>([]);
@@ -45,13 +49,26 @@ export class RuntimeLogState {
         this.retainedBytes += bytes;
       }
     }
-    for (const [index, entry] of retained.entries()) {
+    const pending: Array<Pick<LogNotificationState, "level" | "message">> = [];
+    const maximumNotifications = Math.min(this.maximumEntries, MAXIMUM_PENDING_LOG_NOTIFICATIONS);
+    for (
+      let index = retained.length - 1;
+      index >= 0 && pending.length < maximumNotifications;
+      index -= 1
+    ) {
+      const entry = retained[index];
       const policy =
         typeof notificationPolicy === "string"
           ? notificationPolicy
           : (notificationPolicy[retainedStart + index] ?? "all");
       if (policy === "none") continue;
       if (entry.level !== "error" && !(entry.level === "warning" && policy === "all")) continue;
+      pending.push({ level: entry.level, message: entry.message });
+    }
+    this.removeOldestNotifications(
+      Math.max(0, this.notifications.length + pending.length - maximumNotifications),
+    );
+    for (const entry of pending.reverse()) {
       this.notifications.push({
         id: ++this.notificationId,
         level: entry.level,
@@ -59,8 +76,6 @@ export class RuntimeLogState {
       });
       this.notificationBytes += stringBytes(entry.message);
     }
-    const notificationOverflow = Math.max(0, this.notifications.length - this.maximumEntries);
-    this.removeOldestNotifications(notificationOverflow);
     while (this.notifications.length > 0 && this.notificationBytes > this.maximumTotalBytes)
       this.removeOldestNotifications(1);
   }

@@ -961,9 +961,12 @@ describe("runtime store configuration", () => {
     await store.enableDebug();
 
     expect(store.logs).toHaveLength(10_000);
-    expect(store.logNotifications).toHaveLength(10_000);
+    expect(store.logNotifications).toHaveLength(32);
     expect(store.logs[0].message).toContain("error 5");
-    expect(store.logNotifications[0]?.message).toContain("error 5");
+    expect(store.logNotifications[0]?.message).toContain("error 9973");
+    expect(store.status).toBe("项目加载失败，请查看日志");
+    expect(store.projectLoading).toBe(false);
+    expect(store.canOpenProject).toBe(true);
   });
 
   it("does not notify when a pump failure opens the fatal dialog", async () => {
