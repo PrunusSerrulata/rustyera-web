@@ -4,7 +4,7 @@ import { referenceCompatibility, snakeCompatibility } from "./compatibilityTestS
 import { describe, expect, it, vi } from "vitest";
 import { blake3 } from "@noble/hashes/blake3.js";
 import { compatibilityCbor } from "@/core/compatibility";
-import { encodeServicePayload } from "@/core/serviceCodec";
+import { decodeServicePayload, encodeServicePayload } from "@/core/serviceCodec";
 
 import {
   BrowserProject,
@@ -208,6 +208,58 @@ describe("browser resource manifest normalization", () => {
 });
 
 describe("browser project font resources", () => {
+  it("spools many files in bounded writes without changing CBOR payloads or hashes", async () => {
+    const root = new SaveDirectoryHandle("game");
+    for (let index = 0; index < 1000; index += 1)
+      await writeFixtureFile(root, `source-${index}.erb`, `;${"脚本".repeat(100)}\n`);
+    const project = referenceProject(root as any);
+    const manifest = await project.scan();
+    const storage = new SaveDirectoryHandle("opfs");
+    const originalGet = storage.getFileHandle.bind(storage);
+    const sizes: number[] = [];
+    vi.spyOn(storage, "getFileHandle").mockImplementation(async (...args) => {
+      const handle = await originalGet(...args);
+      const originalCreate = handle.createWritable.bind(handle);
+      vi.spyOn(handle, "createWritable").mockImplementation(async (options) => {
+        const writer = await originalCreate(options);
+        const originalWrite = writer.write.bind(writer);
+        writer.write = async (bytes) => {
+          sizes.push(bytes.byteLength);
+          // The producer must await consumption before reusing its buffer.
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          await originalWrite(bytes);
+        };
+        return writer;
+      });
+      return handle;
+    });
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    try {
+      const spool = await project.stageFullManifest();
+      const decoded = decodeServicePayload(await spool.read(0, spool.totalBytes)) as Map<
+        number,
+        any
+      >;
+      expect(decoded.get(0)).toBe(manifest.project_revision);
+      expect(decoded.get(2)).toEqual(compatibilityCbor(manifest.compatibility));
+      expect(decoded.get(1)).toHaveLength(manifest.files.length);
+      for (const [index, file] of manifest.files.entries()) {
+        if (file.payload.type !== "utf8") throw new Error("fixture must contain source text");
+        const encoded = decoded.get(1)[index] as Map<number, any>;
+        expect(encoded.get(0)).toBe(file.relative_path);
+        expect(encoded.get(2)).toEqual([0, [file.payload.value]]);
+        expect(encoded.get(3)).toEqual(file.content_hash);
+      }
+      expect(sizes.length).toBeGreaterThan(1);
+      expect(sizes.length).toBeLessThan(10);
+      expect(Math.max(...sizes)).toBeLessThanOrEqual(256 * 1024);
+      expect(sizes.reduce((sum, size) => sum + size, 0)).toBe(spool.totalBytes);
+      await spool.release();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("packages supported files below the case-insensitive font directory", () => {
     for (const extension of ["ttf", "otf", "ttc", "woff", "woff2"]) {
       const bytes = new TextEncoder().encode(extension);

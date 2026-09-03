@@ -869,12 +869,29 @@ export class BrowserProject {
     const name = `.rustyera-full-manifest-${crypto.randomUUID()}.cbor`;
     const handle = await root.getFileHandle(name, { create: true });
     const writer = await handle.createWritable({ keepExistingData: false });
+    // CBOR emits many one-byte headers. Coalesce them into bounded writes instead
+    // of scheduling an OPFS operation for every field of every project file.
+    const buffer = new Uint8Array(256 * 1024);
+    let buffered = 0;
+    const flush = async () => {
+      if (!buffered) return;
+      throwIfAborted(signal);
+      await writer.write(buffer.subarray(0, buffered) as FileSystemWriteChunkType);
+      buffered = 0;
+    };
     let totalBytes = 0;
     const write = async (bytes: Uint8Array) => {
       totalBytes += bytes.byteLength;
       if (totalBytes > 1024 * 1024 * 1024)
         throw new Error("full project manifest exceeds the 1 GiB transfer limit");
-      await writer.write(bytes as FileSystemWriteChunkType);
+      for (let offset = 0; offset < bytes.byteLength;) {
+        throwIfAborted(signal);
+        const count = Math.min(buffer.length - buffered, bytes.byteLength - offset);
+        buffer.set(bytes.subarray(offset, offset + count), buffered);
+        buffered += count;
+        offset += count;
+        if (buffered === buffer.length) await flush();
+      }
     };
     let completed = 0;
     progress?.(completed, manifest.files.length);
@@ -916,6 +933,7 @@ export class BrowserProject {
           compatibilityCbor(manifest.compatibility),
         ),
       );
+      await flush();
       await writer.close();
     } catch (error) {
       await writer.abort().catch(() => undefined);
