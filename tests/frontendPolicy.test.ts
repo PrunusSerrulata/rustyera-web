@@ -206,7 +206,9 @@ describe("frontend host and image-line policy", () => {
 
   it("stops the Tauri suite at its first failing spec", () => {
     const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
-    expect(runner).toContain('new Mocha({ reporter: "spec", timeout: 300_000, bail: true })');
+    const options = runner.match(/new Mocha\(\{([\s\S]*?)\}\)/)?.[1];
+    expect(options).toBeDefined();
+    expect(options).toMatch(/\bbail:\s*true\b/);
   });
 
   it("gives the reraconfig Tauri spec a deterministic schema-v1 project copy", () => {
