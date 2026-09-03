@@ -251,6 +251,8 @@ enabled("Tauri native input provider", () => {
         "native window switch did not deliver a trusted window blur",
       );
       const eventBoundary = restored.sequence;
+      const stationaryPointer = restored.events.findLast((event) => event.type === "pointermove");
+      assert.ok(stationaryPointer?.trusted, "restored probe has no trusted pointer baseline");
       await browser.keys("Enter");
       await browser.waitUntil(
         async () =>
@@ -269,11 +271,23 @@ enabled("Tauri native input provider", () => {
           .filter((event) => event.sequence > eventBoundary)
           .some((event) => event.type === "keydown" && event.key === "Enter" && event.trusted),
       );
+      const keyboardPointerEvents = afterEnter.events.filter(
+        (event) => event.sequence > eventBoundary && event.type.startsWith("pointer"),
+      );
+      // WebKit's EventHandler::fakeMouseMoveEventTimerFired refreshes the last mouse position
+      // after scrolling. A trusted, stationary move is a recorded platform difference; a key
+      // must still never move the pointer or generate pointer down/up/out/cancel events.
+      // https://github.com/WebKit/WebKit/blob/main/Source/WebCore/page/EventHandler.cpp
       assert.ok(
-        !afterEnter.events
-          .filter((event) => event.sequence > eventBoundary)
-          .some((event) => event.type.startsWith("pointer")),
-        "keyboard-only input unexpectedly generated a new pointer observation after restored focus",
+        keyboardPointerEvents.every(
+          (event) =>
+            event.type === "pointermove" &&
+            event.trusted &&
+            event.target === stationaryPointer.target &&
+            event.x === stationaryPointer.x &&
+            event.y === stationaryPointer.y,
+        ),
+        `keyboard-only input changed the pointer after restored focus: ${JSON.stringify(keyboardPointerEvents)}`,
       );
       assert.equal(
         afterEnter.clicks,
@@ -288,6 +302,7 @@ enabled("Tauri native input provider", () => {
           scrolled,
           restored,
           afterEnter,
+          stationaryPointerRefreshes: keyboardPointerEvents,
         }),
       );
     } catch (error) {

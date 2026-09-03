@@ -4,6 +4,7 @@ import {
   validateNativeWebdriverSource,
 } from "../scripts/tauri-native-webdriver-support.mjs";
 import {
+  compiledBuildInputs,
   fileIdentity,
   recordBuiltArtifact,
   reusableArtifact,
@@ -247,6 +248,7 @@ describe("verified Tauri build reuse", () => {
           ["scripts/web-test-lib.mjs", "old-browser-helper"],
           ["scripts/web-test-runtime.mjs", "old-runtime-observer"],
           ["scripts/prepare-snake-audio-fixture.mjs", "old-audio-fixture-builder"],
+          ["scripts/web-test-lib.d.mts", "old-node-helper-types"],
         ],
         coreSources: [["crates/runtime.rs", "same-core"]],
         environment: { RUSTFLAGS: "same-flags" },
@@ -258,18 +260,21 @@ describe("verified Tauri build reuse", () => {
       changedHarness.sha256 = "changed-harness";
       changedHarness.inputs.webSources[0][1] = "fixed-retry-policy";
       expect(await reusableArtifact(manifest, changedHarness, binary)).toBeDefined();
+      expect(compiledBuildInputs(changedHarness.inputs)).toEqual(compiledBuildInputs(inputs));
       const changedRuntimeHelper = structuredClone(changedHarness);
       changedRuntimeHelper.sha256 = "changed-runtime-helper";
       changedRuntimeHelper.inputs.webSources[2][1] = "native-foreground-precondition";
       changedRuntimeHelper.inputs.webSources[4][1] = "transport-identity-before-image-gate";
       expect(await reusableArtifact(manifest, changedRuntimeHelper, binary)).toBeDefined();
-      for (const index of [5, 6, 7, 8, 9, 10]) {
+      for (const index of [5, 6, 7, 8, 9, 10, 11]) {
         const changedNodeHelper = structuredClone(changedRuntimeHelper);
         changedNodeHelper.inputs.webSources[index][1] = "node-only-observation-or-foreground";
+        expect(compiledBuildInputs(changedNodeHelper.inputs)).toEqual(compiledBuildInputs(inputs));
         expect(await reusableArtifact(manifest, changedNodeHelper, binary)).toBeDefined();
       }
       const changedApp = structuredClone(changedRuntimeHelper);
       changedApp.inputs.webSources[1][1] = "different-app";
+      expect(compiledBuildInputs(changedApp.inputs)).not.toEqual(compiledBuildInputs(inputs));
       expect(await reusableArtifact(manifest, changedApp, binary)).toBeUndefined();
       const changedBuild = structuredClone(changedHarness);
       changedBuild.inputs.args.push("--release");
@@ -290,6 +295,7 @@ describe("verified Tauri build reuse", () => {
       ]) {
         const changed = structuredClone(changedRuntimeHelper);
         change(changed);
+        expect(compiledBuildInputs(changed.inputs)).not.toEqual(compiledBuildInputs(inputs));
         expect(await reusableArtifact(manifest, changed, binary)).toBeUndefined();
       }
       await writeFile(binary, "replaced-during-helper-repair");
@@ -729,6 +735,27 @@ describe("Tauri end-to-end test support", () => {
     );
   });
 
+  it("captures selected protocol evidence without cloning unrelated payloads", async () => {
+    const fault = { code: "service_failure" };
+    const records = [{ message: { type: "command_rejected", value: { code: "stale_request" } } }];
+    const full = vi.fn(() => {
+      throw new Error("full ledger must not be cloned");
+    });
+    const protocolEvidence = vi.fn(() => ({ records }));
+    window.__RUSTYERA_TEST_PROTOCOL_TYPES__ = ["command_rejected"];
+    window.__RUSTYERA_TEST__ = {
+      snapshotSummary: () => ({ fault, serviceEvidence: { enabled: true } }),
+      snapshot: full,
+      protocolEvidence,
+    };
+    const browser = { execute: vi.fn(async (callback) => callback()) };
+    const snapshot = await captureCompleteTauriSnapshot(browser);
+    expect(snapshot.runtime.serviceEvidence.records).toEqual(records);
+    expect(full).not.toHaveBeenCalled();
+    expect(protocolEvidence).toHaveBeenCalledWith(["command_rejected"]);
+    delete window.__RUSTYERA_TEST_PROTOCOL_TYPES__;
+  });
+
   it("resolves visibility once per element while preserving nested text", async () => {
     document.body.innerHTML = "<main><span>map</span><button value='1'>move</button></main>";
     const computed = vi.spyOn(window, "getComputedStyle");
@@ -856,10 +883,10 @@ describe("Tauri end-to-end test support", () => {
     );
   });
 
-  it("allows four capture intervals only while the previous snapshot is loading", () => {
+  it("keeps the five-second capture deadline during project loading", () => {
     expect(snapshotCaptureTimeout(undefined, 5_000)).toBe(5_000);
     expect(snapshotCaptureTimeout({ runtime: { projectLoading: false } }, 5_000)).toBe(5_000);
-    expect(snapshotCaptureTimeout({ runtime: { projectLoading: true } }, 5_000)).toBe(20_000);
+    expect(snapshotCaptureTimeout({ runtime: { projectLoading: true } }, 5_000)).toBe(5_000);
   });
 
   it("rejects the second consecutive identical complete snapshot", () => {
@@ -887,18 +914,13 @@ describe("Tauri end-to-end test support", () => {
     ).not.toThrow();
   });
 
-  it("allows three unchanged loading intervals and rejects the fourth", () => {
+  it("rejects the first unchanged loading interval", () => {
     const snapshot = {
       document: [{ tag: "main" }],
       runtime: { phase: "negotiating", projectLoading: true },
     };
-    for (const interval of [1, 2, 3]) {
-      expect(() =>
-        assertSnapshotProgress(snapshot, structuredClone(snapshot), "Browser", interval),
-      ).not.toThrow();
-    }
-    expect(() => assertSnapshotProgress(snapshot, structuredClone(snapshot), "Browser", 4)).toThrow(
-      /4 consecutive 5-second intervals/,
+    expect(() => assertSnapshotProgress(snapshot, structuredClone(snapshot), "Browser", 1)).toThrow(
+      /1 consecutive 5-second intervals/,
     );
   });
 

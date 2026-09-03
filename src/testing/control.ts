@@ -15,9 +15,10 @@ export interface WebTestControl {
   configure(configuration: RuntimeTestConfiguration): void;
   configureServiceLifecycle(configuration: ServiceLifecycleConfiguration): void;
   openProject(): Promise<void>;
-  waitForStableObservation(timeoutMs?: number): Promise<Record<string, unknown>>;
+  waitForStableObservation(timeoutMs?: number, summary?: boolean): Promise<Record<string, unknown>>;
   snapshot(): Record<string, unknown>;
   snapshotSummary(): Record<string, unknown>;
+  protocolEvidence(messageTypes: string[]): Record<string, unknown>;
   mediaPlacements(): Record<string, unknown>;
   mediaReplay(resourceName: string): Record<string, unknown>;
   inspect(watches: string[]): Promise<Record<string, unknown>>;
@@ -44,6 +45,14 @@ export function isStableObservationCandidate(
       fault != null ||
       ["debug_paused", "stopped", "faulted", "shutting_down"].includes(phase))
   );
+}
+
+export function stableObservationSignature(snapshot: Record<string, unknown>): string {
+  const observed = { ...snapshot };
+  // Servicing the background pump does not change an otherwise ready input boundary.
+  // This affects only action settling; the complete-snapshot watchdog keeps this field.
+  delete observed.cooperativeBackgroundWorkRevision;
+  return JSON.stringify(observed);
 }
 
 export function installWebTestControl(pinia: Pinia): void {
@@ -126,6 +135,7 @@ export function installWebTestControl(pinia: Pinia): void {
     openProject: () => store.openProject(),
     snapshot,
     snapshotSummary,
+    protocolEvidence: (messageTypes) => serialize(store.testRuntimeEvidence(messageTypes)),
     mediaPlacements: () => presentationMedia(store.presentation),
     mediaReplay: (resourceName) => mediaReplay(store.presentation.resources, resourceName),
     inspect: (watches) => store.inspectWatches(watches),
@@ -153,12 +163,12 @@ export function installWebTestControl(pinia: Pinia): void {
         )}`,
       );
     },
-    async waitForStableObservation(timeoutMs = 30_000) {
+    async waitForStableObservation(timeoutMs = 30_000, summary = false) {
       const deadline = performance.now() + timeoutMs;
       let previous = "";
       let stableFrames = 0;
       while (performance.now() < deadline) {
-        const current = JSON.stringify(snapshotSummary());
+        const current = stableObservationSignature(snapshotSummary());
         const observable = isStableObservationCandidate(
           store.phase,
           store.canInteract,
@@ -168,7 +178,7 @@ export function installWebTestControl(pinia: Pinia): void {
         );
         if (observable && current === previous) stableFrames += 1;
         else stableFrames = 0;
-        if (stableFrames >= 2) return snapshot();
+        if (stableFrames >= 2) return summary ? snapshotSummary() : snapshot();
         previous = current;
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }

@@ -1,4 +1,4 @@
-import { RuntimeEvidence, readTypedWatches } from "@/testing/runtimeEvidence";
+import { RuntimeEvidence, createTypedWatchReader } from "@/testing/runtimeEvidence";
 import { defineStore } from "pinia";
 import { computed, nextTick, ref } from "vue";
 import { blake3 } from "@noble/hashes/blake3.js";
@@ -258,6 +258,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   );
   const testEnvironment = new RuntimeTestEnvironment();
   const testEvidence = new RuntimeEvidence(import.meta.env.VITE_RUSTYERA_TEST === "1");
+  const readTestTypedWatches = createTypedWatchReader();
   const logs = runtimeLogs.entries;
   const projectSettingsOpen = ref(false);
   const preferencesOpen = ref(false);
@@ -3055,9 +3056,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
         sameServiceInteger(stop[field], debugStopToken(debugStop.value)?.[field]),
       );
     try {
-      return await readTypedWatches(watches, stop, debugRequest, () => {
-        if (!current()) throw new Error("typed watch stop or session changed");
-      });
+      return await readTestTypedWatches(
+        watches,
+        stop,
+        debugRequest,
+        () => {
+          if (!current()) throw new Error("typed watch stop or session changed");
+        },
+        lifecycle,
+      );
     } finally {
       // Never resume a replacement session or somebody else's newer stop.
       if (!alreadyStopped && current()) await continueDebug();
@@ -3934,7 +3941,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
     debugCommand,
     inspectWatches,
     inspectTypedWatches,
-    testRuntimeEvidence: () => testEvidence.snapshot(runtimeSessionObservationGeneration),
+    testRuntimeEvidence: (messageTypes?: string[]) =>
+      testEvidence.snapshot(
+        runtimeSessionObservationGeneration,
+        messageTypes ? new Set(messageTypes) : undefined,
+      ),
     testRuntimeEvidenceSummary: () => testEvidence.summary(runtimeSessionObservationGeneration),
     testBackgroundWorkRevision: () => runtimePump.backgroundWorkRevision,
     openDebugDialog,

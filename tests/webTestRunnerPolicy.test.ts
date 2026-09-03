@@ -5,7 +5,11 @@ import path, { resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { startCompleteSnapshotMonitor } from "../scripts/tauri-test-support.mjs";
+import {
+  assertSnapshotProgress,
+  snapshotCaptureTimeout,
+  startCompleteSnapshotMonitor,
+} from "../scripts/tauri-test-support.mjs";
 import {
   installRemoteFileSystem,
   isolatedProject,
@@ -245,7 +249,15 @@ describe("browser game runner progress policy", () => {
     expect(firstAsyncScript).toBeGreaterThan(monitor);
     expect(snapshots).toContain("complete snapshot capture exceeded");
     expect(snapshots).toContain("Promise.race");
-    expect(snapshots).toContain('runtime?.transfer?.export?.name === "compiled-project.reracache"');
+    const cacheExport = {
+      document: [],
+      runtime: {
+        projectLoading: true,
+        transfer: { export: { name: "compiled-project.reracache" } },
+      },
+    };
+    expect(snapshotCaptureTimeout(cacheExport)).toBe(5000);
+    expect(() => assertSnapshotProgress(cacheExport, cacheExport)).toThrow("identical");
     expect(library).toContain('includes("runtime.compiled_cache_failed")');
     expect(library).toContain("compiled cache export failed:");
     expect(library).toContain("{ timeout: 0 },");
@@ -302,10 +314,17 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain("chunks.push(Uint8Array.from(raw");
     expect(runner).toContain("new File(chunks");
     expect(runner).not.toContain('atob(chunks.join(""))');
+    const portablePicker = runner.slice(
+      runner.indexOf("async function installPortableProjectPicker("),
+      runner.indexOf("async function exerciseProjectPreferencesDuringLoad("),
+    );
+    expect(portablePicker).toContain("if (allowFocusEvent)");
+    expect(portablePicker).toContain("!backgroundDom");
   });
 
   it("drives native Firefox and Safari through a real packaged-project picker", () => {
     const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+    const library = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
 
     expect(runner).toContain('process.argv.indexOf("--project-file")');
     expect(runner).toContain('element.accept.includes(".reraproj")');
@@ -317,11 +336,11 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain('browserName === "safari" ? "/__rustyera_compat_project_file"');
     expect(runner).toContain("picker?.injected === true");
     expect(runner).toContain("assertPackagedStartup(observed.startupTelemetry)");
-    expect(runner).toContain("source preparation slow path");
+    expect(library).toContain("source preparation slow path");
     expect(runner).toContain("projectPreferencesDuringLoad");
-    expect(runner).toContain("project preferences during loading");
+    expect(library).toContain("project preferences during loading");
     expect(runner).toContain("verifyProjectPreferencesAfterLoad(browser)");
-    expect(runner).toContain("project preferences after loading");
+    expect(library).toContain("project preferences after loading");
   });
 
   it("provides a native-browser game-log input smoke flow", () => {

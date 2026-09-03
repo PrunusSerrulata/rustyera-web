@@ -8,6 +8,7 @@ import path from "node:path";
 
 const execute = promisify(execFile);
 const reusableSpecs = new Set([
+  "project-load-failure.spec.mjs",
   "native-input.spec.mjs",
   "cache-settings.spec.mjs",
   "snake-service-oracle.spec.mjs",
@@ -17,6 +18,7 @@ const reusableSpecs = new Set([
   "snake-data.spec.mjs",
   "snake-sql.spec.mjs",
   "snake-audio.spec.mjs",
+  "snake-interop.spec.mjs",
   "snake-ingestion.spec.mjs",
   "snake-profile.spec.mjs",
 ]);
@@ -146,6 +148,36 @@ export async function buildContract({ repository, binary, args, environment, pro
   return { inputs, sha256: createHash("sha256").update(JSON.stringify(inputs)).digest("hex") };
 }
 
+// Node-only runner files are not embedded by Vite or Cargo; effective build
+// arguments, environment, provider and all product inputs remain in the contract.
+export function compiledBuildInputs(inputs) {
+  return (
+    inputs && {
+      ...inputs,
+      webSources: inputs.webSources?.filter(
+        ([name]) =>
+          ![
+            "scripts/tauri-test.mjs",
+            "scripts/tauri-test-support.mjs",
+            "scripts/tauri-build-cache.mjs",
+            "scripts/snake-service-lifecycle-test-support.mjs",
+            "scripts/snake-service-lifecycle-races.mjs",
+            "scripts/snake-services-test-support.mjs",
+            "scripts/browser-compat-test.mjs",
+            "scripts/cache-handoff-test.mjs",
+            "scripts/prepare-snake-audio-fixture.mjs",
+            "scripts/web-test-lib.mjs",
+            "scripts/web-test-lib.d.mts",
+            "scripts/web-test.mjs",
+            "scripts/project-load-failure.mjs",
+            "scripts/dom-test-input.mjs",
+            "scripts/web-test-runtime.mjs",
+          ].includes(name),
+      ),
+    }
+  );
+}
+
 export async function reusableArtifact(manifestPath, contract, binary, { required = false } = {}) {
   const miss = (reason) => {
     if (required) throw new Error(`Tauri cached build required: ${reason}; no build was started`);
@@ -161,37 +193,14 @@ export async function reusableArtifact(manifestPath, contract, binary, { require
   }
   if (manifest?.schemaVersion !== 1) return miss("manifest schema mismatch");
   if (manifest.contract?.sha256 !== contract.sha256) {
-    // These Node-only test helpers are not embedded by Vite or Cargo. The effective
-    // build argv/environment are already separate contract inputs. Keep old build
-    // evidence intact while permitting a proven harness-only repair to use it.
-    const compiled = (inputs) =>
-      inputs && {
-        ...inputs,
-        webSources: inputs.webSources?.filter(
-          ([name]) =>
-            ![
-              "scripts/tauri-test.mjs",
-              "scripts/tauri-test-support.mjs",
-              "scripts/tauri-build-cache.mjs",
-              "scripts/snake-service-lifecycle-test-support.mjs",
-              "scripts/snake-service-lifecycle-races.mjs",
-              "scripts/snake-services-test-support.mjs",
-              "scripts/browser-compat-test.mjs",
-              "scripts/cache-handoff-test.mjs",
-              "scripts/prepare-snake-audio-fixture.mjs",
-              "scripts/web-test-lib.mjs",
-              "scripts/web-test-runtime.mjs",
-            ].includes(name),
-        ),
-      };
     if (
       !manifest.contract?.inputs ||
       !contract.inputs ||
-      JSON.stringify(compiled(manifest.contract.inputs)) !==
-        JSON.stringify(compiled(contract.inputs))
+      JSON.stringify(compiledBuildInputs(manifest.contract.inputs)) !==
+        JSON.stringify(compiledBuildInputs(contract.inputs))
     ) {
-      const previous = compiled(manifest.contract?.inputs);
-      const current = compiled(contract.inputs);
+      const previous = compiledBuildInputs(manifest.contract?.inputs);
+      const current = compiledBuildInputs(contract.inputs);
       const changed = [...new Set([...Object.keys(previous ?? {}), ...Object.keys(current ?? {})])]
         .filter((key) => JSON.stringify(previous?.[key]) !== JSON.stringify(current?.[key]))
         .flatMap((key) =>

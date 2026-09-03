@@ -16,6 +16,8 @@ use serde_json::Value;
 use tauri::ipc::Response;
 
 mod listing;
+#[cfg(any(test, feature = "webdriver"))]
+mod observation;
 pub(crate) mod path;
 
 use path::{
@@ -291,6 +293,22 @@ impl StorageHost {
     }
 
     pub fn handle_with_project(
+        &mut self,
+        request: StorageRequest,
+        project: Option<&crate::project::ProjectHost>,
+    ) -> StorageResponse {
+        #[cfg(any(test, feature = "webdriver"))]
+        let observation =
+            observation::Pending::begin(&request, &self.project_root, &self.save_root);
+        let response = self.handle_project_request(request, project);
+        #[cfg(any(test, feature = "webdriver"))]
+        if let Some(observation) = observation {
+            observation.finish(&response);
+        }
+        response
+    }
+
+    fn handle_project_request(
         &mut self,
         request: StorageRequest,
         project: Option<&crate::project::ProjectHost>,

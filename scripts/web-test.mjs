@@ -27,6 +27,7 @@ import {
 import { finalizeBrowserGameRun } from "./web-test-lifecycle.mjs";
 import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs";
 import { createLoopbackViteServer, viteServerPort } from "./vite-test-server.mjs";
+import { assertProjectLoadFailure, captureProjectLoadFailure } from "./project-load-failure.mjs";
 
 const repository = fileURLToPath(new URL("..", import.meta.url));
 const OBSERVATION_SLICE_MS = 5_000;
@@ -116,6 +117,13 @@ async function execute(args) {
   const captureFailureArtifacts = async () => {
     if (!page) return;
     const artifacts = path.dirname(tracePath);
+    const runtime = await page
+      .evaluate(() => window.__RUSTYERA_TEST__?.snapshot())
+      .catch(() => undefined);
+    if (runtime !== undefined)
+      await writeFile(path.join(artifacts, "failure-runtime.json"), JSON.stringify(runtime)).catch(
+        () => {},
+      );
     await page
       .screenshot({ path: path.join(artifacts, "failure.png"), fullPage: true })
       .catch(() => {});
@@ -268,6 +276,10 @@ async function execute(args) {
     }
     await page.goto(`http://127.0.0.1:${port}`);
     await page.waitForFunction(() => window.__RUSTYERA_TEST__ != null);
+    if (args.protocol_types)
+      await page.evaluate((types) => {
+        window.__RUSTYERA_TEST_PROTOCOL_TYPES__ = types;
+      }, args.protocol_types.split(","));
     snapshotMonitor = startCompleteSnapshotMonitor(
       { execute: (script) => page.evaluate(script) },
       {
@@ -335,7 +347,11 @@ async function execute(args) {
         if (remaining <= 0) throw new Error("scenario timeout exhausted");
         try {
           return await Promise.race([
-            waitForRuntimeObservation(page, Math.min(OBSERVATION_SLICE_MS, remaining)),
+            waitForRuntimeObservation(
+              page,
+              Math.min(OBSERVATION_SLICE_MS, remaining),
+              scenario.summary_observations === true,
+            ),
             snapshotMonitor.failure,
           ]);
         } catch (error) {
@@ -450,6 +466,30 @@ async function execute(args) {
       userAgent: args.user_agent,
       trace: tracePath,
     });
+    if (scenario.expect_project_load_failure) {
+      await Promise.race([
+        page.waitForFunction(
+          () => {
+            const state = window.__RUSTYERA_TEST__.snapshotSummary();
+            return state.fault != null || state.startupTelemetry?.outcome === "failure";
+          },
+          undefined,
+          { timeout: Math.max(1, deadline - Date.now()) },
+        ),
+        snapshotMonitor.failure,
+      ]);
+      const state = await page.evaluate(captureProjectLoadFailure);
+      trace.emit({ type: "project-load-failure", state });
+      assertProjectLoadFailure(state, scenario.expect_project_load_failure);
+      if (state.bridgeKind !== "browser") throw new Error("browser bridge required");
+      await page.locator("#menu-file").click();
+      const open = page.getByRole("button", { name: "打开项目…", exact: true });
+      if (!(await open.isVisible()) || !(await open.isEnabled()))
+        throw new Error("project open must remain available after compilation rejection");
+      return outcome("passed", 0, {
+        expectedProjectLoadFailure: scenario.expect_project_load_failure,
+      });
+    }
     let current = await observe();
     if (scenario.project_file) {
       const exactCacheHit = current.rust.frontend.logs.some((entry) =>

@@ -16,13 +16,16 @@ declare global {
 /** Bounded observations only: capture failure must never change execution or invent a reply. */
 export class RuntimeEvidence {
   private readonly records: string[] = [];
+  private readonly messageTypes: Array<string | undefined> = [];
   private readonly pointerSamples: string[] = [];
   private bytes = 0;
   private failure: string | null = null;
 
   constructor(
     private readonly enabled: boolean,
-    private readonly maximumBytes = 16 * 1024 * 1024,
+    // A real TW failed compile report alone exceeds 16 MiB. Keep it lossless while
+    // retaining a finite ledger bound; periodic snapshots use summary(), not this payload.
+    private readonly maximumBytes = 64 * 1024 * 1024,
     private readonly maximumRecords = 8192,
   ) {}
 
@@ -165,12 +168,15 @@ export class RuntimeEvidence {
     }
   }
 
-  snapshot(sessionGeneration = 0): Record<string, unknown> {
+  snapshot(sessionGeneration = 0, messageTypes?: ReadonlySet<string>): Record<string, unknown> {
     return {
       ...this.summary(sessionGeneration),
       bytes: this.bytes,
-      records: this.records.map((record) => JSON.parse(record)),
-      pointerSamples: this.pointerSamples.map((record) => JSON.parse(record)),
+      ...(messageTypes ? { selectedMessageTypes: [...messageTypes] } : {}),
+      records: this.records
+        .filter((_, index) => !messageTypes || messageTypes.has(this.messageTypes[index] ?? ""))
+        .map((record) => JSON.parse(record)),
+      pointerSamples: messageTypes ? [] : this.pointerSamples.map((record) => JSON.parse(record)),
     };
   }
 
@@ -207,6 +213,8 @@ export class RuntimeEvidence {
         return;
       }
       destination.push(record);
+      if (destination === this.records)
+        this.messageTypes.push((value as { message?: { type?: string } }).message?.type);
       this.bytes += length;
     } catch {
       this.failure = "unserializable_observation";
@@ -215,15 +223,10 @@ export class RuntimeEvidence {
 }
 
 /** Read the actual typed debug value; do not parse the UI's formatted value string. */
-export async function readTypedWatches(
-  watches: string[],
-  stop: any,
-  request: (command: any) => Promise<any>,
-  assertCurrent: () => void,
-): Promise<Record<string, unknown>> {
+function parseTypedWatches(watches: string[]) {
   if (watches.length > 256 || new Set(watches).size !== watches.length)
     throw new Error("typed watch list exceeds its limit or contains duplicates");
-  const parsed = watches.map((watch) => {
+  return watches.map((watch) => {
     const match = /^([A-Za-z_][A-Za-z0-9_]*)(?:@([0-9]+))?(?::([0-9]+(?:,[0-9]+)*))?$/.exec(watch);
     if (!match) throw new Error(`invalid typed watch: ${watch}`);
     const character = match[2] === undefined ? undefined : Number(match[2]);
@@ -235,14 +238,53 @@ export async function readTypedWatches(
       throw new Error(`typed watch index is not exact: ${watch}`);
     return { watch, name: match[1], character, indices };
   });
+}
+
+type TypedDescriptors = Map<string, Map<string, any>>;
+
+/** Reuse only symbol metadata in the same loaded program. Every value is read again
+ * with the current stop; a restart, replacement, hot reload, or watch change discards it. */
+export function createTypedWatchReader() {
+  let identity: string | undefined;
+  let descriptors: TypedDescriptors = new Map();
+  return (
+    watches: string[],
+    stop: any,
+    request: (command: any) => Promise<any>,
+    assertCurrent: () => void,
+    lifecycle: number,
+  ) => {
+    const current = JSON.stringify(
+      [lifecycle, stop.session_epoch, stop.program_generation, watches],
+      (_key, value) => (typeof value === "bigint" ? value.toString() : value),
+    );
+    if (identity !== current) {
+      identity = current;
+      descriptors = new Map();
+    }
+    return readTypedWatches(watches, stop, request, assertCurrent, descriptors);
+  };
+}
+
+export async function readTypedWatches(
+  watches: string[],
+  stop: any,
+  request: (command: any) => Promise<any>,
+  assertCurrent: () => void,
+  candidates: TypedDescriptors = new Map(),
+): Promise<Record<string, unknown>> {
+  const parsed = parseTypedWatches(watches);
   const names = new Set(parsed.map((watch) => watch.name));
-  const candidates = new Map<string, Map<string, any>>();
   const cursors = new Set<string>();
   let cursor = null;
-  for (let page = 0; ; page += 1) {
-    if (page >= 256) throw new Error("typed variable enumeration exceeds its limit");
+  // Large projects resolve each descriptor against their symbol table. Bound each
+  // synchronous request while preserving the same total enumeration allowance.
+  const pageLimit = 256;
+  const maximumPages = (256 * 1024) / pageLimit;
+  for (let page = 0; candidates.size < names.size; page += 1) {
+    if (page >= maximumPages) throw new Error("typed variable enumeration exceeds its limit");
     assertCurrent();
-    const response = await request({ type: "list_variables", stop, cursor, limit: 1024 });
+    const response = await request({ type: "list_variables", stop, cursor, limit: pageLimit });
     assertCurrent();
     if (response.type !== "variable_page" || !Array.isArray(response.value?.variables))
       throw new Error("typed variable enumeration returned an unexpected response");

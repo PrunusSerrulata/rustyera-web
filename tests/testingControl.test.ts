@@ -1,15 +1,71 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { inputReplaySummary, isStableObservationCandidate } from "@/testing/control";
+import {
+  inputReplaySummary,
+  isStableObservationCandidate,
+  stableObservationSignature,
+} from "@/testing/control";
 import {
   configureServiceLifecycle,
   takeServiceLifecycleDiagnosisExportPath,
   takeServiceLifecycleStateExportPath,
 } from "@/testing/serviceLifecycle";
-import { RuntimeEvidence, readTypedWatches } from "@/testing/runtimeEvidence";
+import {
+  RuntimeEvidence,
+  createTypedWatchReader,
+  readTypedWatches,
+} from "@/testing/runtimeEvidence";
 import { blake3 } from "@noble/hashes/blake3.js";
 
 describe("runtime evidence observations", () => {
+  it("filters protocol records before parsing unrelated large payloads", () => {
+    const evidence = new RuntimeEvidence(true);
+    evidence.sent(
+      "runtime",
+      { type: "project_load_report", value: { text: "x".repeat(1000) } },
+      1,
+      1,
+    );
+    evidence.sent(
+      "runtime",
+      { type: "projection_observation", value: { presentation_revision: 3 } },
+      2,
+      1,
+    );
+    const selected = evidence.snapshot(4, new Set(["projection_observation"])) as any;
+    expect(selected.selectedMessageTypes).toEqual(["projection_observation"]);
+    expect(selected.records).toHaveLength(1);
+    expect(selected.records[0]).toMatchObject({
+      index: 1,
+      messageId: 2,
+      message: { type: "projection_observation" },
+    });
+    expect((evidence.snapshot() as any).records).toHaveLength(2);
+  });
+
+  it("retains a large failed compile report without copying it into periodic summaries", () => {
+    const evidence = new RuntimeEvidence(true);
+    const message = "invalid HIR ".repeat(1_600_000);
+    evidence.receive({
+      channel: "runtime",
+      epoch: 1n,
+      sequence: 1n,
+      messageId: 2n,
+      message: {
+        type: "project_load_report",
+        value: {
+          success: false,
+          diagnostics: [{ code: "compiler.invalidhir", level: "error", message }],
+        },
+      },
+    });
+    expect(evidence.summary()).toMatchObject({ overflow: false, failure: null });
+    expect(evidence.summary()).not.toHaveProperty("records");
+    expect(evidence.snapshot()).toMatchObject({
+      records: [{ message: { value: { success: false, diagnostics: [{ message }] } } }],
+    });
+  });
+
   afterEach(() => {
     delete window.__RUSTYERA_POINTER_OBSERVATION__;
   });
@@ -485,9 +541,54 @@ describe("runtime evidence observations", () => {
     expect(
       commands
         .filter((command) => command.type === "list_variables")
-        .every((command) => command.limit === 1024),
+        .every((command) => command.limit === 256),
     ).toBe(true);
     expect(commands.at(-1).value.generation).toBe(7n);
+  });
+
+  it("reuses program descriptors but reads fresh values with each current stop", async () => {
+    const read = createTypedWatchReader();
+    const commands: any[] = [];
+    let value = 7;
+    const request = async (command: any) => {
+      commands.push(command);
+      return command.type === "list_variables"
+        ? {
+            type: "variable_page",
+            value: {
+              variables: [{ name: "MONEY", symbol_key: [9], storage: "global", dimensions: [] }],
+            },
+          }
+        : { type: "variable_value", value: { value: { type: "integer", value } } };
+    };
+    const stop = {
+      session_epoch: 3n,
+      program_generation: 1n,
+      runtime_revision: 10n,
+      pause_epoch: 1n,
+    };
+    await read(["MONEY"], stop, request, () => {}, 4);
+    value = 14;
+    const laterStop = { ...stop, runtime_revision: 20n, pause_epoch: 2n };
+    const later: any = await read(["MONEY"], laterStop, request, () => {}, 4);
+    expect(later.values.MONEY.value).toEqual({ type: "integer", value: 14 });
+    expect(commands.at(-1).stop).toEqual(laterStop);
+    expect(commands.filter((command) => command.type === "list_variables")).toHaveLength(1);
+    const reloadedStop = { ...stop, program_generation: 2n };
+    await read(["MONEY"], reloadedStop, request, () => {}, 4);
+    const replacedSession = { ...reloadedStop, session_epoch: 4n };
+    await read(["MONEY"], replacedSession, request, () => {}, 4);
+    await read(["MONEY"], replacedSession, request, () => {}, 5);
+    expect(commands.filter((command) => command.type === "list_variables")).toHaveLength(4);
+    const changedWatches: any = await read(
+      ["MONEY", "MISSING"],
+      replacedSession,
+      request,
+      () => {},
+      5,
+    );
+    expect(changedWatches.values.MISSING).toEqual({ present: false, error: "not_found" });
+    expect(commands.filter((command) => command.type === "list_variables")).toHaveLength(5);
   });
 
   it("rejects repeated cursors and a changed stop before reading stale values", async () => {
@@ -547,6 +648,28 @@ describe("runtime evidence observations", () => {
 });
 
 describe("Web test observation boundaries", () => {
+  it("settles ready input while the background pump advances, retaining real state changes", () => {
+    const state = {
+      phase: "waiting_input",
+      wait: { wait_id: "8" },
+      output: ["ready"],
+      fault: null,
+      cooperativeBackgroundWorkRevision: 1,
+    };
+    const signature = stableObservationSignature(state);
+    expect(stableObservationSignature({ ...state, cooperativeBackgroundWorkRevision: 9 })).toBe(
+      signature,
+    );
+    for (const change of [
+      { wait: { wait_id: "9" } },
+      { output: ["changed"] },
+      { phase: "running" },
+      { fault: { code: "failed" } },
+    ]) {
+      expect(stableObservationSignature({ ...state, ...change })).not.toBe(signature);
+    }
+    expect(state.cooperativeBackgroundWorkRevision).toBe(1);
+  });
   it("keeps waiting while the runtime is running without an input boundary", () => {
     expect(isStableObservationCandidate("running", false, null)).toBe(false);
     expect(isStableObservationCandidate("waiting_external", false, null)).toBe(false);

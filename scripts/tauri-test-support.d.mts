@@ -17,6 +17,14 @@ export function snapshotProgressSignature(snapshot: unknown): string;
 
 export function snapshotCaptureTimeout(previousSnapshot: unknown, interval?: number): number;
 
+export function assertSnapshotProgress(
+  previousSnapshot: unknown,
+  currentSnapshot: unknown,
+  label?: string,
+  identicalIntervals?: number,
+  signatures?: { previous?: string; current?: string },
+): void;
+
 export function resolveTauriBinary(
   targetDirectory: string,
   release: boolean,

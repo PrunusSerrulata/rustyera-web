@@ -4,9 +4,19 @@
 import { appendFileSync, createReadStream, mkdirSync } from "node:fs";
 import { readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
+import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
 import { remote } from "webdriverio";
+import {
+  inspectWebdriverTyped,
+  assertProjectStorage,
+  typedValues,
+  validateExpectedValues,
+} from "./interop-assertions.mjs";
+import { prepareNativeProjectUpload, uploadNativeProject } from "./native-project-upload.mjs";
+import { applyBackgroundDomInput } from "./dom-test-input.mjs";
+import { seedPackagedInteropStorage } from "./packaged-interop-storage.mjs";
 
 import {
   captureCompleteTauriSnapshot,
@@ -35,6 +45,7 @@ import {
 
 import {
   browserProjectProgressErrors,
+  packagedProjectProgressErrors,
   injectInGameSaveFlow,
   injectInteractionAssistFlow,
   nativeFirefoxCapabilities,
@@ -87,6 +98,34 @@ const snakeServiceLifecycle = process.argv.includes("--snake-service-lifecycle")
 const snakeAudio = process.argv.includes("--snake-audio");
 const snakeAudioStress = process.argv.includes("--snake-audio-stress");
 const snakeAudioFlow = snakeAudio || snakeAudioStress;
+const snakeInterop = process.argv.includes("--snake-interop");
+const nativeDriverInputs = process.argv.includes("--native-driver-inputs");
+const backgroundDom = process.argv.includes("--background-dom");
+const webdriverOpen = process.argv.includes("--webdriver-open");
+const safariAllowAutoplay = process.argv.includes("--safari-allow-autoplay");
+if (safariAllowAutoplay && browserName !== "safari")
+  throw new Error("--safari-allow-autoplay requires Safari");
+if (webdriverOpen && (!backgroundDom || browserName !== "safari"))
+  throw new Error("--webdriver-open requires Safari --background-dom");
+if (backgroundDom && nativeDriverInputs)
+  throw new Error("--background-dom and --native-driver-inputs are distinct input modes");
+const stateIndex = process.argv.indexOf("--traditional-state");
+const expectationsIndex = process.argv.indexOf("--expect-watches");
+if (stateIndex >= 0 && !process.argv[stateIndex + 1])
+  throw new Error("--traditional-state requires a save path");
+if (expectationsIndex >= 0 && !process.argv[expectationsIndex + 1])
+  throw new Error("--expect-watches requires a JSON object path");
+const traditionalState =
+  stateIndex >= 0 ? [...(await readFile(path.resolve(process.argv[stateIndex + 1])))] : undefined;
+const expectedWatches =
+  expectationsIndex >= 0
+    ? JSON.parse(await readFile(path.resolve(process.argv[expectationsIndex + 1]), "utf8"))
+    : undefined;
+if (expectationsIndex >= 0) validateExpectedValues(expectedWatches);
+if (snakeInterop && (projectIndex < 0 || !expectedWatches || traditionalState))
+  throw new Error(
+    "--snake-interop requires --project and --expect-watches, without --traditional-state",
+  );
 const replacementIndex = process.argv.indexOf("--replacement-project");
 const lifecycleReplacement =
   snakeServiceLifecycle && replacementIndex >= 0 && process.argv[replacementIndex + 1]
@@ -109,15 +148,18 @@ if (
     Number(snakeServiceLifecycle) +
     Number(snakeAudio) +
     Number(snakeAudioStress) +
+    Number(snakeInterop) +
     Number(snakeServiceOracle) >
   1
 )
   throw new Error("choose one snake fixture flow");
 if (
-  (snakeServices || snakeBatch1 || snakeServiceLifecycle || snakeAudioFlow || snakeServiceOracle) &&
+  (snakeServices || snakeBatch1 || snakeServiceLifecycle || snakeServiceOracle) &&
   (projectIndex < 0 || projectFile)
 )
   throw new Error("snake service flows require --project source directory");
+if (snakeAudioFlow && projectIndex < 0)
+  throw new Error("snake audio flows require --project source directory for fixture identity");
 const startupOnly =
   process.argv.includes("--startup-only") ||
   Boolean(expectedOutput) ||
@@ -126,7 +168,13 @@ const startupOnly =
   snakeBatch1 ||
   snakeServiceLifecycle ||
   snakeAudioFlow ||
-  snakeServiceOracle;
+  snakeInterop ||
+  snakeServiceOracle ||
+  Boolean(traditionalState);
+if (nativeDriverInputs && (!startupOnly || snakeServiceLifecycle || snakeServiceOracle))
+  throw new Error("--native-driver-inputs requires a startup, output, or audio acceptance flow");
+if (backgroundDom && (!startupOnly || snakeServiceLifecycle || snakeServiceOracle))
+  throw new Error("--background-dom requires a startup, output, or audio acceptance flow");
 const cacheInputSmoke = process.argv.includes("--cache-input-smoke");
 const logInputSmoke = process.argv.includes("--log-input-smoke");
 const settingsHotApply = process.argv.includes("--settings-hot-apply");
@@ -180,7 +228,9 @@ try {
     mode: "test",
     define: { "import.meta.env.VITE_RUSTYERA_TEST": JSON.stringify("1") },
     plugins:
-      browserName === "safari" && projectFile ? [safariProjectFilePlugin(projectFile)] : undefined,
+      !nativeDriverInputs && browserName === "safari" && projectFile
+        ? [safariProjectFilePlugin(projectFile)]
+        : undefined,
   });
   const port = viteServerPort(server);
   if (
@@ -209,9 +259,12 @@ try {
         : {
             browserName: "safari",
             "wdio:enforceWebDriverClassic": true,
+            // SafariDriver applies this only to the new automation session. Omit
+            // the capability entirely when testing the default playback policy.
+            ...(safariAllowAutoplay ? { "webkit:alwaysAllowAutoplay": true } : {}),
           },
   });
-  if (browserName === "safari") {
+  if (browserName === "safari" && !backgroundDom) {
     compatibilityStage = "restoring Safari automation window";
     await browser.maximizeWindow().catch(() => undefined);
     // SafariDriver can report maximize success while a window minimized by the previous run stays
@@ -235,6 +288,16 @@ try {
     stage: compatibilityStage,
   });
   console.log(JSON.stringify({ browser: browserName, type: "document-ready", ...documentReady }));
+  console.log(
+    JSON.stringify({
+      browser: browserName,
+      type: "browser-input-mode",
+      mode: backgroundDom ? "background-dom" : nativeDriverInputs ? "native" : "compatibility",
+      projectOpenInput: webdriverOpen ? "webdriver-element" : "mode-default",
+      autoplayPolicy: safariAllowAutoplay ? "session-allow" : "default",
+      trustedInputCoverage: nativeDriverInputs && !backgroundDom,
+    }),
+  );
   snapshotMonitor = startCompleteSnapshotMonitor(browser, {
     eventType: "browser-compat-snapshot",
     label: `${browserName} compatibility`,
@@ -264,7 +327,7 @@ try {
     snapshotMonitorError = error;
     await browser?.deleteSession().catch(() => undefined);
   });
-  if (browserName === "safari" || snakeServiceLifecycle) {
+  if (!backgroundDom && (browserName === "safari" || snakeServiceLifecycle)) {
     compatibilityStage = "establishing native browser foreground";
     await focusNativeBrowser(browser, browserName);
   }
@@ -317,7 +380,10 @@ try {
   ) {
     throw new Error(`browser startup guidance mismatch: ${JSON.stringify(startupGuidance)}`);
   }
-  const globalPreferencesBeforeProject = await verifyGlobalPreferencesBeforeProject(browser);
+  const globalPreferencesBeforeProject =
+    nativeDriverInputs || backgroundDom
+      ? { scope: "project acceptance; preferences covered separately" }
+      : await verifyGlobalPreferencesBeforeProject(browser);
   console.log(
     JSON.stringify({
       browser: browserName,
@@ -326,16 +392,38 @@ try {
     }),
   );
   let minimized = false;
+  if (snakeInterop && projectFile) {
+    compatibilityStage = "preparing reference saves in isolated packaged project storage";
+    const expected = JSON.parse(
+      await readFile(path.join(project, "batch5-interop-expect.json"), "utf8"),
+    );
+    const seeded = await seedPackagedInteropStorage(browser, {
+      projectFile,
+      savesDirectory: path.join(project, "sav"),
+      expectedHashes: expected.file_sha256,
+    });
+    const evidence = await persistCompatibilityEvidence("interop-storage-fixture", seeded);
+    console.log(
+      JSON.stringify({
+        browser: browserName,
+        type: "interop-storage-fixture",
+        ...seeded,
+        evidence,
+      }),
+    );
+  }
   reportCompatibilityStage(
     projectFile ? "installing packaged project picker" : "installing portable project picker",
   );
-  const setup = projectFile
-    ? await installPackagedProjectPicker(
-        browser,
-        projectFile,
-        browserName === "safari" ? "/__rustyera_compat_project_file" : undefined,
-      )
-    : await installPortableProjectPicker(browser, project, files);
+  const setup = nativeDriverInputs
+    ? await prepareNativeProjectUpload(browser)
+    : projectFile
+      ? await installPackagedProjectPicker(
+          browser,
+          projectFile,
+          browserName === "safari" ? "/__rustyera_compat_project_file" : undefined,
+        )
+      : await installPortableProjectPicker(browser, project, files);
   if (!setup.ok) throw new Error(`browser project import failed: ${setup.error}`);
   reportCompatibilityStage("project picker installed");
 
@@ -369,13 +457,17 @@ try {
     capture();
   });
 
-  if (snakeData || snakeAudioFlow || snakeServiceOracle) {
+  if (snakeData || snakeAudioFlow || snakeServiceOracle || snakeInterop || traditionalState) {
     reportCompatibilityStage("configuring snake test runtime");
-    await browser.execute(() =>
-      window.__RUSTYERA_TEST__.configure({
-        start: { type: "new_game", seed: "123456" },
-        clock: "2026-01-01T00:00:00Z",
-      }),
+    await browser.execute(
+      (bytes) =>
+        window.__RUSTYERA_TEST__.configure({
+          start: bytes
+            ? { type: "traditional_save", bytes: new Uint8Array(bytes) }
+            : { type: "new_game", seed: "123456" },
+          clock: "2026-01-01T00:00:00Z",
+        }),
+      traditionalState,
     );
   }
   const openSelector = projectFile
@@ -389,13 +481,41 @@ try {
   const open = await browser.$(openSelector);
   await open.waitForClickable({ timeout: 30_000 });
   reportCompatibilityStage(projectFile ? "opening packaged project" : "opening fixture project");
-  await clickElement(browser, open);
+  if (webdriverOpen) {
+    await browser.execute((element) => {
+      window.__RUSTYERA_OPEN_EVENTS__ = [];
+      for (const type of ["pointerdown", "mousedown", "click"])
+        element.addEventListener(
+          type,
+          (event) =>
+            window.__RUSTYERA_OPEN_EVENTS__.push({
+              type: event.type,
+              trusted: event.isTrusted,
+              activation: navigator.userActivation?.isActive ?? null,
+              documentFocused: document.hasFocus(),
+              visibility: document.visibilityState,
+            }),
+          { once: true },
+        );
+    }, open);
+    await open.click();
+    console.log(
+      JSON.stringify({
+        browser: browserName,
+        type: "webdriver-project-open-events",
+        events: await browser.execute(() => window.__RUSTYERA_OPEN_EVENTS__),
+      }),
+    );
+  } else await clickElement(browser, open);
+  if (nativeDriverInputs) {
+    reportCompatibilityStage("uploading project through native WebDriver");
+    const upload = await uploadNativeProject(browser, { project, projectFile });
+    console.log(JSON.stringify({ browser: browserName, type: "native-project-upload", ...upload }));
+  }
   let projectPreferencesDuringLoad;
   let projectPreferencesAfterLoad;
-  if (projectFile) {
+  if (projectFile && !nativeDriverInputs) {
     compatibilityStage = "uploading packaged project";
-    const input = await browser.$('input[type="file"][accept*=".reraproj"]');
-    await input.waitForExist({ timeout: 5_000 });
     if (browserName === "safari") {
       await browser.waitUntil(
         () =>
@@ -411,6 +531,8 @@ try {
         },
       );
     } else {
+      const input = await browser.$('input[type="file"][accept*=".reraproj"]');
+      await input.waitForExist({ timeout: 5_000 });
       // setValue clears first, which GeckoDriver rejects for the intentionally hidden fallback
       // input. addValue sends the local file path through the native file-upload command directly.
       await input.addValue(projectFile);
@@ -512,6 +634,31 @@ try {
       { timeout: 10_000, interval: 100, timeoutMsg: `missing output marker ${expectedOutput}` },
     );
   }
+  if (expectedWatches) {
+    if (snakeInterop) await loadSnakeInteropSlot(browser);
+    compatibilityStage = "comparing restored state through the debug protocol";
+    const watches = { values: await inspectWebdriverTyped(browser, Object.keys(expectedWatches)) };
+    const evidence = await persistCompatibilityEvidence("interop-watches", watches);
+    const values = typedValues(watches.values, Object.keys(expectedWatches));
+    const storage = await browser.execute(() => {
+      return window.__RUSTYERA_TEST__.protocolEvidence(["storage_request", "storage_response"]);
+    });
+    const storageEvidence = await persistCompatibilityEvidence("interop-storage", storage);
+    assertProjectStorage(storage);
+    console.log(
+      JSON.stringify({
+        browser: browserName,
+        type: "interop-watches",
+        values,
+        evidence,
+        storageEvidence,
+        restorePath: snakeInterop
+          ? "visible title Continue → save1000 → confirm → LOADDATA"
+          : "lifecycle restore of explicit file bytes; not a Save/read claim",
+      }),
+    );
+    assert.deepEqual(values, expectedWatches, "restored save differs from reference state");
+  }
   if (projectFile && !startupOnly)
     projectPreferencesAfterLoad = await verifyProjectPreferencesAfterLoad(browser);
   compatibilityStage = "validating project progress";
@@ -536,9 +683,15 @@ try {
   });
   projectProgress.projectPreferencesDuringLoad = projectPreferencesDuringLoad;
   projectProgress.projectPreferencesAfterLoad = projectPreferencesAfterLoad;
+  // Select progress policy by the actual project source, independently of the input driver.
   const projectProgressErrors = projectFile
     ? packagedProjectProgressErrors(projectProgress, !startupOnly)
-    : browserProjectProgressErrors(projectProgress);
+    : nativeDriverInputs
+      ? [
+          !projectProgress.completed && "load did not complete",
+          projectProgress.gaps > 0 && "progress gaps",
+        ].filter(Boolean)
+      : browserProjectProgressErrors(projectProgress);
   if (projectProgressErrors.length > 0) {
     throw new Error(
       `project progress was incomplete (${projectProgressErrors.join(", ")}): ${JSON.stringify(projectProgress)}`,
@@ -1236,76 +1389,82 @@ async function installPortableProjectPicker(activeBrowser, selectedProject, file
       projectName,
     );
   }
-  return activeBrowser.executeAsync(async (selectedProjectName, done) => {
-    try {
-      const selected = window.__RUSTYERA_COMPAT_SELECTED__;
-      const nativeCreateElement = document.createElement;
-      const pickerDescriptor = Object.getOwnPropertyDescriptor(window, "showDirectoryPicker");
-      const picker = {
-        fallback: false,
-        focusBeforeChange: false,
-        confirmationDelayMs: 50,
-        attempts: [],
-      };
-      const restoreCreateElement = () => {
-        document.createElement = nativeCreateElement;
-      };
-      window.__RUSTYERA_COMPAT_PICKER_CLEANUP__ = () => {
-        restoreCreateElement();
-        if (pickerDescriptor)
-          Object.defineProperty(window, "showDirectoryPicker", pickerDescriptor);
-        else delete window.showDirectoryPicker;
-      };
-      Object.defineProperty(window, "showDirectoryPicker", {
-        configurable: true,
-        value: undefined,
-      });
-      document.createElement = function (tagName, options) {
-        const element = nativeCreateElement.call(this, tagName, options);
-        if (!(element instanceof HTMLInputElement)) return element;
-        const nativeClick = element.click.bind(element);
-        Object.defineProperty(element, "click", {
+  return activeBrowser.executeAsync(
+    async (selectedProjectName, allowFocusEvent, done) => {
+      try {
+        const selected = window.__RUSTYERA_COMPAT_SELECTED__;
+        const nativeCreateElement = document.createElement;
+        const pickerDescriptor = Object.getOwnPropertyDescriptor(window, "showDirectoryPicker");
+        const picker = {
+          fallback: false,
+          focusBeforeChange: false,
+          confirmationDelayMs: 50,
+          attempts: [],
+        };
+        const restoreCreateElement = () => {
+          document.createElement = nativeCreateElement;
+        };
+        window.__RUSTYERA_COMPAT_PICKER_CLEANUP__ = () => {
+          restoreCreateElement();
+          if (pickerDescriptor)
+            Object.defineProperty(window, "showDirectoryPicker", pickerDescriptor);
+          else delete window.showDirectoryPicker;
+        };
+        Object.defineProperty(window, "showDirectoryPicker", {
           configurable: true,
-          value() {
-            const isDirectoryPicker =
-              element.type === "file" && element.multiple && !element.accept;
-            picker.attempts.push({
-              accept: element.accept,
-              directoryAttribute: element.hasAttribute("webkitdirectory"),
-              directoryProperty: Boolean(element.webkitdirectory),
-              isDirectoryPicker,
-              multiple: element.multiple,
-              type: element.type,
-            });
-            if (!isDirectoryPicker) {
-              nativeClick();
-              return;
-            }
-            picker.fallback = true;
-            window.dispatchEvent(new Event("focus"));
-            picker.focusBeforeChange = true;
-            window.setTimeout(() => {
-              Object.defineProperty(element, "files", { configurable: true, value: selected });
-              element.dispatchEvent(new Event("change", { bubbles: true }));
-              restoreCreateElement();
-            }, picker.confirmationDelayMs);
-          },
+          value: undefined,
         });
-        return element;
-      };
-      window.__RUSTYERA_COMPAT_PICKER__ = picker;
-      delete document.documentElement.dataset.rustyeraTestFileBatch;
-      delete window.__RUSTYERA_COMPAT_BATCH__;
-      delete window.__RUSTYERA_COMPAT_PAYLOADS__;
-      done({
-        ok: true,
-        projectName: selectedProjectName,
-        opfs: typeof navigator.storage.getDirectory === "function",
-      });
-    } catch (error) {
-      done({ ok: false, error: `${error?.name ?? "Error"}: ${error?.message ?? String(error)}` });
-    }
-  }, projectName);
+        document.createElement = function (tagName, options) {
+          const element = nativeCreateElement.call(this, tagName, options);
+          if (!(element instanceof HTMLInputElement)) return element;
+          const nativeClick = element.click.bind(element);
+          Object.defineProperty(element, "click", {
+            configurable: true,
+            value() {
+              const isDirectoryPicker =
+                element.type === "file" && element.multiple && !element.accept;
+              picker.attempts.push({
+                accept: element.accept,
+                directoryAttribute: element.hasAttribute("webkitdirectory"),
+                directoryProperty: Boolean(element.webkitdirectory),
+                isDirectoryPicker,
+                multiple: element.multiple,
+                type: element.type,
+              });
+              if (!isDirectoryPicker) {
+                nativeClick();
+                return;
+              }
+              picker.fallback = true;
+              if (allowFocusEvent) {
+                window.dispatchEvent(new Event("focus"));
+                picker.focusBeforeChange = true;
+              }
+              window.setTimeout(() => {
+                Object.defineProperty(element, "files", { configurable: true, value: selected });
+                element.dispatchEvent(new Event("change", { bubbles: true }));
+                restoreCreateElement();
+              }, picker.confirmationDelayMs);
+            },
+          });
+          return element;
+        };
+        window.__RUSTYERA_COMPAT_PICKER__ = picker;
+        delete document.documentElement.dataset.rustyeraTestFileBatch;
+        delete window.__RUSTYERA_COMPAT_BATCH__;
+        delete window.__RUSTYERA_COMPAT_PAYLOADS__;
+        done({
+          ok: true,
+          projectName: selectedProjectName,
+          opfs: typeof navigator.storage.getDirectory === "function",
+        });
+      } catch (error) {
+        done({ ok: false, error: `${error?.name ?? "Error"}: ${error?.message ?? String(error)}` });
+      }
+    },
+    projectName,
+    !backgroundDom,
+  );
 }
 
 async function exerciseProjectPreferencesDuringLoad(activeBrowser) {
@@ -1467,7 +1626,14 @@ async function clickFileMenuAction(activeBrowser, label) {
 }
 
 async function clickElement(activeBrowser, element) {
-  if (browserName === "safari") {
+  if (backgroundDom) {
+    const evidence = await activeBrowser.execute(applyBackgroundDomInput, element);
+    console.log(
+      JSON.stringify({ browser: browserName, type: "background-dom-input", ...evidence }),
+    );
+    return;
+  }
+  if (browserName === "safari" && !nativeDriverInputs) {
     await activeBrowser.execute((target) => target.click(), element);
     return;
   }
@@ -1807,6 +1973,58 @@ async function waitForChangedInput(activeBrowser, previousWaitId) {
     { timeout: 30_000, interval: 50, timeoutMsg: "game input did not advance" },
   );
 }
+
+async function loadSnakeInteropSlot(activeBrowser) {
+  // SYSTEM_TITLE initializes TW's SQL connections before the real LOADDATA path.
+  // Lifecycle restoration from a fresh session cannot replace that initialization.
+  for (const [label, selector] of [
+    ["continue game", "//button[contains(normalize-space(.), '[1] 继续游戏')]"],
+    ["load save1000", "//button[contains(normalize-space(.), '[1000]')]"],
+    [
+      "confirm load",
+      "//button[contains(normalize-space(.), '[0]') and contains(normalize-space(.), '是')]",
+    ],
+  ]) {
+    compatibilityStage = `snake interoperability: ${label}`;
+    const buttons = await activeBrowser.$$(selector);
+    assert.equal(buttons.length, 1, `${label}: one matching game button required`);
+    const button = buttons[0];
+    assert.ok(await button.isDisplayed(), `${label}: visible button required`);
+    assert.ok(await button.isEnabled(), `${label}: enabled button required`);
+    const before = await activeBrowser.execute(() => window.__RUSTYERA_TEST__.snapshotSummary());
+    if (label === "confirm load")
+      assert.ok(before.output.some((line) => line.includes("读取该存档")));
+    console.log(
+      JSON.stringify({
+        type: "snake-interop-input",
+        label,
+        text: await button.getText(),
+        wait: before.wait,
+      }),
+    );
+    await clickElement(activeBrowser, button);
+    let lastWait = before.wait?.wait_id;
+    let continuations = 0;
+    await activeBrowser.waitUntil(
+      async () => {
+        const state = await activeBrowser.execute(() => window.__RUSTYERA_TEST__.snapshotSummary());
+        if (state.fault) throw new Error(JSON.stringify(state.fault));
+        if (!state.canInteract || !state.wait || state.wait.wait_id === lastWait) return false;
+        if (!["enter_key", "any_key"].includes(state.wait.kind)) return true;
+        assert.ok(continuations++ < 16, `${label}: too many message continuations`);
+        const input = await activeBrowser.$(".prompt-bar input");
+        if (backgroundDom) {
+          const evidence = await activeBrowser.execute(applyBackgroundDomInput, input, "");
+          console.log(JSON.stringify({ type: "background-dom-input", ...evidence }));
+        } else await input.setValue("");
+        lastWait = state.wait.wait_id;
+        await clickElement(activeBrowser, await activeBrowser.$(".prompt-bar button[type=submit]"));
+        return false;
+      },
+      { timeout: 300_000, interval: 100, timeoutMsg: `${label}: next input was not reached` },
+    );
+  }
+}
 if (snapshotMonitorError) throw snapshotMonitorError;
 if (runError) throw runError;
 
@@ -1884,47 +2102,6 @@ function assertPackagedStartup(telemetry) {
   }
 }
 
-function packagedProjectProgressErrors(progress, requirePreferences = true) {
-  const errors = [];
-  const labels = progress.labels ?? [];
-  if (!progress.cacheHit) errors.push("compiled cache hit");
-  if (!labels.some((label) => label.startsWith("正在读取项目文件："))) errors.push("file read");
-  if (!labels.some((label) => label.startsWith("项目缓存命中，正在准备脚本热重载…")))
-    errors.push("cache handoff");
-  if (
-    labels.some(
-      (label) =>
-        label.startsWith("正在准备 Runtime 资源：") &&
-        !/^正在准备 Runtime 资源：[01]\/1（(?:0|100)%）/.test(label),
-    )
-  ) {
-    errors.push("source preparation slow path");
-  }
-  if (progress.active || !progress.completed) {
-    errors.push("continuous completed progress");
-  }
-  if (requirePreferences) {
-    if (
-      !progress.projectPreferencesDuringLoad?.observedLoading ||
-      !progress.projectPreferencesDuringLoad.dialogOpened ||
-      !progress.projectPreferencesDuringLoad.projectTabEnabled ||
-      !progress.projectPreferencesDuringLoad.projectFieldEditable ||
-      !progress.projectPreferencesDuringLoad.saveSubmitted ||
-      !progress.projectPreferencesDuringLoad.saveCompleted
-    ) {
-      errors.push("project preferences during loading");
-    }
-    if (
-      !progress.projectPreferencesAfterLoad?.projectTabEnabled ||
-      !progress.projectPreferencesAfterLoad.projectFieldEditable ||
-      !progress.projectPreferencesAfterLoad.savedOverrideSelected
-    ) {
-      errors.push("project preferences after loading");
-    }
-  }
-  return errors;
-}
-
 function byteSignature(bytes) {
   let hash = 0x811c9dc5;
   for (const byte of bytes) {
@@ -1945,7 +2122,7 @@ async function waitForCompatibilityRuntime(browser, browserName) {
     const observation = await browser.execute(() => ({
       picker: window.__RUSTYERA_COMPAT_PICKER__,
       progress: window.__RUSTYERA_COMPAT_PROGRESS__?.progress,
-      state: window.__RUSTYERA_TEST__?.snapshot(),
+      state: window.__RUSTYERA_TEST__?.snapshotSummary(),
       status: document.querySelector(".runtime-status")?.textContent,
       viewport: Boolean(document.querySelector(".game-viewport")),
     }));

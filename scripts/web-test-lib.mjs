@@ -1,6 +1,6 @@
 /* global document, window, HTMLImageElement */
 
-import { createWriteStream } from "node:fs";
+import { constants as fsConstants, createWriteStream } from "node:fs";
 import {
   copyFile,
   cp,
@@ -20,8 +20,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import assert from "node:assert/strict";
 
 import { blake3 } from "@noble/hashes/blake3.js";
+import {
+  assertProjectStorage,
+  typedValues,
+  validateExpectedValues,
+} from "./interop-assertions.mjs";
 
 /** Select the native browser's actual automation window and establish document focus. */
 export async function focusNativeBrowser(
@@ -96,9 +102,7 @@ export function browserProjectProgressErrors(progress) {
     coldStartup.outcome === "success" &&
     ["importing", "compiling", "finalizing"].every((stage) => runtimeStages[stage] > 0);
   const portableImportCompleted =
-    progress.portableImport?.fallback === true &&
-    progress.portableImport.focusBeforeChange === true &&
-    progress.portableImport.directoryPicker === true;
+    progress.portableImport?.fallback === true && progress.portableImport.directoryPicker === true;
   const copied =
     portableImportCompleted ||
     labels.some((label) => /^正在复制项目文件：\d+\/\d+（\d+%）$/.test(label));
@@ -128,6 +132,47 @@ export function browserProjectProgressErrors(progress) {
   return errors;
 }
 
+export function packagedProjectProgressErrors(progress, requirePreferences = true) {
+  const errors = [];
+  const labels = progress.labels ?? [];
+  if (!progress.cacheHit) errors.push("compiled cache hit");
+  if (!labels.some((label) => label.startsWith("正在读取项目文件："))) errors.push("file read");
+  if (!labels.some((label) => label.startsWith("项目缓存命中，正在准备脚本热重载…")))
+    errors.push("cache handoff");
+  if (
+    labels.some(
+      (label) =>
+        label.startsWith("正在准备 Runtime 资源：") &&
+        !/^正在准备 Runtime 资源：[01]\/1（(?:0|100)%）/.test(label),
+    )
+  ) {
+    errors.push("source preparation slow path");
+  }
+  if (progress.active || !progress.completed) {
+    errors.push("continuous completed progress");
+  }
+  if (requirePreferences) {
+    if (
+      !progress.projectPreferencesDuringLoad?.observedLoading ||
+      !progress.projectPreferencesDuringLoad.dialogOpened ||
+      !progress.projectPreferencesDuringLoad.projectTabEnabled ||
+      !progress.projectPreferencesDuringLoad.projectFieldEditable ||
+      !progress.projectPreferencesDuringLoad.saveSubmitted ||
+      !progress.projectPreferencesDuringLoad.saveCompleted
+    ) {
+      errors.push("project preferences during loading");
+    }
+    if (
+      !progress.projectPreferencesAfterLoad?.projectTabEnabled ||
+      !progress.projectPreferencesAfterLoad.projectFieldEditable ||
+      !progress.projectPreferencesAfterLoad.savedOverrideSelected
+    ) {
+      errors.push("project preferences after loading");
+    }
+  }
+  return errors;
+}
+
 export async function loadScenario(file, projectOverride, stateOverride) {
   const scenarioPath = path.resolve(file);
   const raw = JSON.parse(await readFile(scenarioPath, "utf8"));
@@ -136,6 +181,17 @@ export async function loadScenario(file, projectOverride, stateOverride) {
   if (!["fixed", "autonomous"].includes(raw.mode ?? "fixed"))
     throw new Error("scenario mode must be fixed or autonomous");
   if (raw.inputs && raw.actions) throw new Error("scenario cannot contain both inputs and actions");
+  if (
+    raw.expect_project_load_failure != null &&
+    (typeof raw.expect_project_load_failure !== "string" ||
+      !raw.expect_project_load_failure.trim() ||
+      raw.comparison?.reference ||
+      raw.inputs?.length ||
+      raw.actions?.length)
+  )
+    throw new Error(
+      "expect_project_load_failure requires a diagnostic code and no gameplay or reference comparison",
+    );
   const resolveFromScenario = (value) => path.resolve(path.dirname(scenarioPath), value ?? ".");
   const start = raw.start ?? { type: "new_game" };
   if (!["new_game", "traditional_save", "vm_snapshot"].includes(start.type))
@@ -168,6 +224,8 @@ export async function loadScenario(file, projectOverride, stateOverride) {
     throw new Error("scenario viewport must contain integer width/height of at least 320x240");
   if (raw.has_touch != null && typeof raw.has_touch !== "boolean")
     throw new Error("scenario has_touch must be a boolean");
+  if (raw.summary_observations != null && typeof raw.summary_observations !== "boolean")
+    throw new Error("scenario summary_observations must be a boolean");
   const actions = raw.actions
     ? raw.actions.map((item) => ({ ...item }))
     : (raw.inputs ?? []).map((item) => ({
@@ -944,6 +1002,75 @@ async function stopAtomicPresentationProbe(page) {
 }
 
 export async function runAction(page, action) {
+  if (action.type === "save_download") {
+    assert.ok(typeof action.path === "string" && path.isAbsolute(action.path));
+    assert.ok(typeof action.name_suffix === "string" && action.name_suffix.length > 0);
+    assert.ok(typeof action.selector === "string" && action.selector.length > 0);
+    await lstat(action.path).then(
+      () => {
+        throw new Error("download destination already exists");
+      },
+      (error) => {
+        if (error.code !== "ENOENT") throw error;
+      },
+    );
+    // Full-project exports stream through a real Blob download, not the small test download
+    // queue. Arm the native framework event before clicking so fast exports cannot be missed.
+    // The scenario deadline and complete-state watchdog close the browser on failure;
+    // a separate default 30-second event timeout must not cut off an advancing export.
+    const [download] = await Promise.all([
+      page.waitForEvent("download", { timeout: 0 }),
+      page.locator(action.selector).click(),
+    ]);
+    const name = download.suggestedFilename();
+    assert.ok(name.endsWith(action.name_suffix), "unexpected downloaded artifact");
+    assert.equal(await download.failure(), null, "native download failed");
+    const source = await download.path();
+    assert.ok(source, "native download path missing");
+    const bytes = (await stat(source)).size;
+    assert.ok(bytes > 0, "native download is empty");
+    await mkdir(path.dirname(action.path), { recursive: true });
+    await copyFile(source, action.path, fsConstants.COPYFILE_EXCL);
+    return {
+      query: { download: { name, path: action.path, bytes } },
+    };
+  }
+  if (action.type === "assert_interop") {
+    const expected = validateExpectedValues(action.expect);
+    assert.ok(
+      typeof action.evidence_path === "string" && path.isAbsolute(action.evidence_path),
+      "assert_interop requires an absolute evidence_path",
+    );
+    const watches = Object.keys(expected);
+    const typed = await page.evaluate(
+      (names) => window.__RUSTYERA_TEST__.inspectTyped(names),
+      watches,
+    );
+    const state = await page.evaluate(() => {
+      const state = window.__RUSTYERA_TEST__.snapshotSummary();
+      return {
+        bridgeKind: state.bridgeKind,
+        buildIdentity: state.buildIdentity,
+        fault: state.fault,
+        storage: window.__RUSTYERA_TEST__.protocolEvidence(["storage_request", "storage_response"]),
+      };
+    });
+    const observation = {
+      ...state,
+      typed,
+      restorePath: "see scenario actions and correlated storage records",
+    };
+    // Retain raw protocol values even when comparison or storage validation fails.
+    await mkdir(path.dirname(action.evidence_path), { recursive: true });
+    await writeFile(action.evidence_path, JSON.stringify(observation, null, 2) + "\n", {
+      flag: "wx",
+    });
+    assert.equal(state.bridgeKind, "browser");
+    assert.equal(state.fault, null);
+    assert.deepEqual(typedValues(typed, watches), expected);
+    assertProjectStorage(state.storage);
+    return { query: { interop: observation } };
+  }
   if (action.type === "edit_project_source") {
     await page.evaluate(
       (request) =>
@@ -1049,7 +1176,7 @@ export async function runAction(page, action) {
 
       const snapshot = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
       if (!snapshot.wait) {
-        await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+        await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true));
         continue;
       }
       if (snapshot.wait.deadline_ns != null) {
@@ -1078,7 +1205,7 @@ export async function runAction(page, action) {
         const current = window.__RUSTYERA_TEST__.snapshot();
         return current.fault != null || current.wait?.wait_id !== previousWaitId;
       }, waitId);
-      await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+      await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true));
     }
   }
   if (action.type === "advance_enter_waits_until") {
@@ -1093,7 +1220,7 @@ export async function runAction(page, action) {
         "advance_enter_waits_until requires until.output_tail_contains or until.locator",
       );
     for (let attempt = 0; attempt <= maximum; attempt += 1) {
-      const snapshot = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+      const snapshot = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshotSummary());
       const textReached =
         !expectedText || snapshot.output.slice(-tailLines).join("\n").includes(expectedText);
       const locatorReached =
@@ -1105,7 +1232,7 @@ export async function runAction(page, action) {
           `Enter wait budget exhausted before target screen ${JSON.stringify(action.until)}`,
         );
       if (!snapshot.wait) {
-        await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+        await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true));
         continue;
       }
       if (snapshot.wait?.deadline_ns != null) {
@@ -1128,10 +1255,10 @@ export async function runAction(page, action) {
         await page.locator(".game-viewport .game-button").first().click();
       else await page.locator(".prompt-bar button[type=submit]").click();
       await page.waitForFunction((previousWaitId) => {
-        const current = window.__RUSTYERA_TEST__.snapshot();
+        const current = window.__RUSTYERA_TEST__.snapshotSummary();
         return current.fault != null || current.wait?.wait_id !== previousWaitId;
       }, waitId);
-      await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+      await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true));
     }
   }
   if (action.type === "drain_void_waits") {
@@ -1171,7 +1298,7 @@ export async function runAction(page, action) {
   }
   if (action.type === "input") {
     const beforeWaitId = await page.evaluate(
-      () => window.__RUSTYERA_TEST__.snapshot().wait?.wait_id,
+      () => window.__RUSTYERA_TEST__.snapshotSummary().wait?.wait_id,
     );
     const input = page.locator(".prompt-bar input");
     const value = String(action.value ?? "");
@@ -1181,12 +1308,12 @@ export async function runAction(page, action) {
     else await page.locator(".prompt-bar button[type=submit]").click();
     if (beforeWaitId != null)
       await page.waitForFunction((waitId) => {
-        const snapshot = window.__RUSTYERA_TEST__.snapshot();
+        const snapshot = window.__RUSTYERA_TEST__.snapshotSummary();
         return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
       }, beforeWaitId);
     if (action.message_skip) {
       await page.waitForFunction(() => {
-        const snapshot = window.__RUSTYERA_TEST__.snapshot();
+        const snapshot = window.__RUSTYERA_TEST__.snapshotSummary();
         return snapshot.canInteract && snapshot.wait?.kind === "enter_key";
       });
       await page.locator(".game-viewport").click({ button: "right" });
@@ -1216,7 +1343,7 @@ export async function runAction(page, action) {
           const snapshot = window.__RUSTYERA_TEST__.snapshot();
           return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
         }, beforeWaitId);
-      await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+      await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true));
     }
   }
   if (action.type === "sample_queries") return sampleQueries(page, action);
@@ -1355,7 +1482,7 @@ export async function runAction(page, action) {
       ),
     );
     const beforeWaitId = runtimeInput
-      ? await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot().wait?.wait_id)
+      ? await page.evaluate(() => window.__RUSTYERA_TEST__.snapshotSummary().wait?.wait_id)
       : undefined;
     let transitionSamples;
     let completedRevision;
@@ -1369,12 +1496,12 @@ export async function runAction(page, action) {
       else await locator.click({ button: action.button ?? "left", force: action.force === true });
       if (beforeWaitId != null)
         await page.waitForFunction((waitId) => {
-          const snapshot = window.__RUSTYERA_TEST__.snapshot();
+          const snapshot = window.__RUSTYERA_TEST__.snapshotSummary();
           return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
         }, beforeWaitId);
       if (action.expect_atomic_presentation === true)
         completedRevision = await page.evaluate(async () => {
-          await window.__RUSTYERA_TEST__.waitForStableObservation(30_000);
+          await window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true);
           return String(window.__RUSTYERA_TEST__.snapshot().presentationRevision);
         });
     } finally {
@@ -1446,33 +1573,38 @@ export async function waitForAutomaticWaitChange(page, waitId) {
     const current = window.__RUSTYERA_TEST__.snapshotSummary();
     return current.fault != null || current.wait?.wait_id !== previousWaitId;
   }, waitId);
-  await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+  await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true));
 }
 
-export async function waitForRuntimeObservation(page, timeout) {
-  return page.evaluate(async (timeoutMs) => {
-    let observing = true;
-    const timedInput = new Promise((resolve) => {
-      const poll = () => {
-        if (!observing) return;
-        const current = window.__RUSTYERA_TEST__.snapshotSummary();
-        if (current.canInteract && current.wait?.deadline_ns != null) {
-          resolve(window.__RUSTYERA_TEST__.snapshot());
-          return;
-        }
-        window.requestAnimationFrame(poll);
-      };
-      poll();
-    });
-    try {
-      return await Promise.race([
-        window.__RUSTYERA_TEST__.waitForStableObservation(timeoutMs),
-        timedInput,
-      ]);
-    } finally {
-      observing = false;
-    }
-  }, timeout);
+export async function waitForRuntimeObservation(page, timeout, summary = false) {
+  return page.evaluate(
+    async ({ timeoutMs, summary }) => {
+      let observing = true;
+      const timedInput = new Promise((resolve) => {
+        const poll = () => {
+          if (!observing) return;
+          const current = window.__RUSTYERA_TEST__.snapshotSummary();
+          if (current.canInteract && current.wait?.deadline_ns != null) {
+            resolve(summary ? current : window.__RUSTYERA_TEST__.snapshot());
+            return;
+          }
+          window.requestAnimationFrame(poll);
+        };
+        poll();
+      });
+      try {
+        return await Promise.race([
+          summary
+            ? window.__RUSTYERA_TEST__.waitForStableObservation(timeoutMs, true)
+            : window.__RUSTYERA_TEST__.waitForStableObservation(timeoutMs),
+          timedInput,
+        ]);
+      } finally {
+        observing = false;
+      }
+    },
+    { timeoutMs: timeout, summary },
+  );
 }
 
 async function sampleQueries(page, action) {

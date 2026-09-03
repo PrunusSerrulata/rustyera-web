@@ -27,6 +27,7 @@ import {
 } from "./tauri-test-support.mjs";
 import {
   buildContract,
+  compiledBuildInputs,
   recordBuiltArtifact,
   reusableArtifact,
   reusableBuildEnvironment,
@@ -61,6 +62,7 @@ const releaseRequested = arguments_.includes("--release");
 const requireReuseBuild = arguments_.includes("--require-reuse-build");
 const reuseBuild = requireReuseBuild || arguments_.includes("--reuse-build");
 const buildOnly = arguments_.includes("--build-only");
+const backgroundDom = arguments_.includes("--background-dom");
 const configuredProject =
   projectIndex >= 0 ? arguments_[projectIndex + 1] : process.env.ERATW_PROJECT;
 let project = path.resolve(repository, configuredProject ?? "../games/eraTW");
@@ -69,7 +71,25 @@ const requestedSpec = specIndex >= 0 ? arguments_[specIndex + 1] : undefined;
 // Keep game-specific image flows opt-in while they are under investigation.
 const configuredSpec = requestedSpec;
 const specName = configuredSpec ? path.basename(configuredSpec) : undefined;
+if (
+  backgroundDom &&
+  !["project-load-failure.spec.mjs", "snake-interop.spec.mjs", "snake-audio.spec.mjs"].includes(
+    specName,
+  )
+)
+  throw new Error("--background-dom requires a supported DOM-only acceptance spec");
 const specProfiles = {
+  "project-load-failure.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_PROJECT_LOAD_FAILURE",
+    copyProject: true,
+  },
+  "snake-interop.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_INTEROP",
+    copyProject: true,
+    // This flow includes two independently bounded typed inspections plus real
+    // project load/save. A measured TW inspection alone takes about three minutes.
+    timeoutMs: 900_000,
+  },
   "native-input.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_NATIVE_INPUT",
     copyProject: true,
@@ -268,6 +288,7 @@ if (["snake-service-lifecycle.spec.mjs", "snake-sql.spec.mjs"].includes(specName
 
 const environment = {
   ...process.env,
+  RUSTYERA_TEST_BACKGROUND_DOM: backgroundDom ? "1" : "0",
   // WebdriverIO's bundled Undici dispatcher is incompatible with Node 26 when
   // it creates the local Tauri WebDriver session. Select Node's native fetch
   // before importing the service so the choice is cross-platform and stable.
@@ -362,7 +383,11 @@ if (artifact) {
     () => deadlineDiagnostic(),
   );
   if (contract) {
-    if ((await buildContract(contractOptions)).sha256 !== contract.sha256)
+    const completedContract = await buildContract(contractOptions);
+    if (
+      JSON.stringify(compiledBuildInputs(completedContract.inputs)) !==
+      JSON.stringify(compiledBuildInputs(contract.inputs))
+    )
       throw new Error("Tauri build inputs changed during compilation; artifact is not reusable");
     artifact = await recordBuiltArtifact(manifestPath, contract, binary);
   }
@@ -385,6 +410,11 @@ if (buildOnly) {
   });
   console.log(JSON.stringify({ type: "tauri-build-only-complete", guiStarted: false }));
   process.exit(0);
+}
+if (specName === "snake-interop.spec.mjs") {
+  const trace = path.join(project, ".rustyera", "native-storage.jsonl");
+  await mkdir(path.dirname(trace), { recursive: true });
+  environment.RUSTYERA_TEST_NATIVE_STORAGE_TRACE = trace;
 }
 environment.RUSTYERA_SERVICE_CAPTURE_NATIVE_BINARY = binary;
 Object.assign(process.env, environment);
@@ -440,7 +470,14 @@ try {
     },
   });
 
-  if (nativeProvider) {
+  console.log(
+    JSON.stringify({
+      type: "tauri-input-mode",
+      mode: backgroundDom ? "background-dom" : "native",
+      trustedInputCoverage: !backgroundDom,
+    }),
+  );
+  if (nativeProvider && !backgroundDom) {
     activeStage = "establishing the current native WebDriver window foreground";
     const handle = await focusCurrentTauriWindow(browser);
     console.log(JSON.stringify({ type: "tauri-native-window-focused", handle }));
@@ -473,7 +510,11 @@ try {
         .sort()
         .map((name) => path.resolve(repository, "tests/tauri", name));
   activeStage = `running Tauri specs: ${specs.map((spec) => path.basename(spec)).join(", ")}`;
-  const mocha = new Mocha({ reporter: "spec", timeout: 300_000, bail: true });
+  const mocha = new Mocha({
+    reporter: "spec",
+    timeout: specProfile?.timeoutMs ?? 300_000,
+    bail: true,
+  });
   for (const spec of specs) mocha.addFile(spec);
   await mocha.loadFilesAsync();
   let runner;

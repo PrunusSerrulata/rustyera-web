@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { access, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { clickTauriTestElement } from "../../scripts/dom-test-input.mjs";
 
 import { waitForRuntimeProgress } from "./runtime-progress.mjs";
 import { snakeAudioRelations } from "../../scripts/web-test-runtime.mjs";
@@ -24,7 +25,7 @@ enabled("Tauri snake audio provider", () => {
         clock: "2026-01-01T00:00:00Z",
       }),
     );
-    await $(".welcome .primary").click();
+    await clickTauriTestElement(browser, await $(".welcome .primary"));
     const snapshot = () => browser.execute(() => window.__RUSTYERA_TEST__.snapshot());
     if (stage === "cache") {
       const cache = path.join(
@@ -113,7 +114,7 @@ enabled("Tauri snake audio provider", () => {
       assert.ok(paused.audioProvider?.["sound:0"]?.positionMs > 0);
       assert.equal(paused.audioPlayback?.["sound/batch5-audible.wav"]?.starts, 1);
       assert.equal(paused.audioPlayback?.["sound/batch5-audible.wav"]?.active, 1);
-      await $(".prompt-bar button[type=submit]").click();
+      await clickTauriTestElement(browser, await $(".prompt-bar button[type=submit]"));
       const result = await waitForRuntimeProgress({
         browser,
         snapshot,
@@ -168,7 +169,7 @@ enabled("Tauri snake audio provider", () => {
       const pausedPosition = paused.audioProvider["sound:0"].positionMs;
       assert.equal(paused.audioPlayback?.["sound/batch5-audible-long.wav"]?.starts, 1);
       assert.equal(paused.audioPlayback?.["sound/batch5-audible-long.wav"]?.active, 1);
-      await $(".prompt-bar button[type=submit]").click();
+      await clickTauriTestElement(browser, await $(".prompt-bar button[type=submit]"));
       const resumed = await waitForRuntimeProgress({
         browser,
         snapshot,
@@ -197,7 +198,7 @@ enabled("Tauri snake audio provider", () => {
       assert.ok(resumed.audioProvider?.["sound:0"]?.positionMs > pausedPosition);
       assert.equal(resumed.audioPlayback?.["sound/batch5-audible-long.wav"]?.starts, 1);
       assert.equal(resumed.audioPlayback?.["sound/batch5-audible-long.wav"]?.active, 1);
-      await $(".prompt-bar button[type=submit]").click();
+      await clickTauriTestElement(browser, await $(".prompt-bar button[type=submit]"));
       const result = await waitForRuntimeProgress({
         browser,
         snapshot,
@@ -233,7 +234,7 @@ enabled("Tauri snake audio provider", () => {
       assert.equal(playing.audioProvider?.["sound:0"]?.state, "playing");
       assert.equal(playing.audioProvider?.["sound:0"]?.rateMillionths, 2_500_000);
       assert.equal(playing.audioProvider?.["sound:0"]?.preservePitch, false);
-      await $(".prompt-bar button[type=submit]").click();
+      await clickTauriTestElement(browser, await $(".prompt-bar button[type=submit]"));
       const result = await waitForRuntimeProgress({
         browser,
         snapshot,
@@ -269,7 +270,7 @@ enabled("Tauri snake audio provider", () => {
       });
       assert.equal(playing.audioProvider?.["sound:0"]?.state, "playing");
       assert.equal(playing.audioProvider?.["sound:0"]?.rateMillionths, 2_500_000);
-      await $(".prompt-bar button[type=submit]").click();
+      await clickTauriTestElement(browser, await $(".prompt-bar button[type=submit]"));
       const result = await waitForRuntimeProgress({
         browser,
         snapshot,
@@ -329,7 +330,7 @@ enabled("Tauri snake audio provider", () => {
       assert.ok(playing.audioProvider?.["sound:0"]?.positionMs > Number(before[1]));
       assert.equal(playing.audioPlayback?.["sound/batch5-audible-rate.wav"]?.starts, 1);
       assert.equal(playing.audioPlayback?.["sound/batch5-audible-rate.wav"]?.active, 1);
-      await $(".prompt-bar button[type=submit]").click();
+      await clickTauriTestElement(browser, await $(".prompt-bar button[type=submit]"));
       const result = await waitForRuntimeProgress({
         browser,
         snapshot,
@@ -430,7 +431,7 @@ enabled("Tauri snake audio provider", () => {
       assert.equal(playing.audioPlayback?.["sound/batch5-long.wav"]?.starts, 1);
       assert.equal(playing.audioPlayback?.["sound/batch5-long.wav"]?.active, 1);
       assert.equal(playing.memory?.audioBuffers?.count, 1);
-      await $(".prompt-bar button[type=submit]").click();
+      await clickTauriTestElement(browser, await $(".prompt-bar button[type=submit]"));
       const result = await waitForRuntimeProgress({
         browser,
         snapshot,
@@ -462,7 +463,7 @@ enabled("Tauri snake audio provider", () => {
       assert.equal(playing.audioProvider?.["sound:0"]?.rateMillionths, 100_000);
       assert.equal(playing.audioPlayback?.["sound/batch5-audible-rate.wav"]?.starts, 1);
       assert.equal(playing.audioPlayback?.["sound/batch5-audible-rate.wav"]?.active, 1);
-      await $(".prompt-bar button[type=submit]").click();
+      await clickTauriTestElement(browser, await $(".prompt-bar button[type=submit]"));
       const result = await waitForRuntimeProgress({
         browser,
         snapshot,
@@ -491,7 +492,7 @@ enabled("Tauri snake audio provider", () => {
       assert.ok(high.output.join("\n").includes("rate_high_ret=1,speed=1000"));
       assert.equal(high.audioProvider?.["sound:0"]?.rateMillionths, 10_000_000);
       assert.equal(high.audioPlayback?.["sound/batch5-audible-rate.wav"]?.starts, 1);
-      await $(".prompt-bar button[type=submit]").click();
+      await clickTauriTestElement(browser, await $(".prompt-bar button[type=submit]"));
       const result = await waitForRuntimeProgress({
         browser,
         snapshot,
@@ -528,7 +529,7 @@ enabled("Tauri snake audio provider", () => {
       assert.equal(full.audioPlayback?.["sound/batch5-long.wav"]?.active, 10);
       assert.equal(full.memory?.audioBuffers?.count, 10);
       assert.ok(full.memory?.audioBuffers?.estimatedBytes > 0);
-      await $(".prompt-bar button[type=submit]").click();
+      await clickTauriTestElement(browser, await $(".prompt-bar button[type=submit]"));
       const result = await waitForRuntimeProgress({
         browser,
         snapshot,
@@ -629,7 +630,7 @@ enabled("Tauri snake audio provider", () => {
       assert.ok(paused.audioProvider?.bgm?.positionMs > 0);
       assert.equal(paused.audioPlayback?.["sound/batch5-long.wav"]?.starts, 1);
       assert.equal(paused.audioPlayback?.["sound/batch5-long.wav"]?.active, 1);
-      await $(".prompt-bar button[type=submit]").click();
+      await clickTauriTestElement(browser, await $(".prompt-bar button[type=submit]"));
       const result = await waitForRuntimeProgress({
         browser,
         snapshot,

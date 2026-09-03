@@ -130,12 +130,16 @@ export async function captureCompleteTauriSnapshot(browser, timeoutMs = SNAPSHOT
               visible,
             };
           });
+          const control = window.__RUSTYERA_TEST__;
+          const runtime = control?.snapshotSummary?.() ?? control?.snapshot() ?? null;
+          // Read only requested wire records: a failed compile report can be tens of MiB.
+          // Filtering in the ledger avoids cloning unrelated payloads during the watchdog.
+          const messageTypes = window.__RUSTYERA_TEST_PROTOCOL_TYPES__;
+          if (runtime && messageTypes && control?.protocolEvidence)
+            runtime.serviceEvidence = control.protocolEvidence(messageTypes);
           return {
             document: elements,
-            runtime:
-              window.__RUSTYERA_TEST__?.snapshotSummary?.() ??
-              window.__RUSTYERA_TEST__?.snapshot() ??
-              null,
+            runtime,
           };
         })
         .then(expandCompleteTauriSnapshot),
@@ -172,16 +176,8 @@ export function expandCompleteTauriSnapshot(snapshot) {
   return snapshot;
 }
 
-export function snapshotCaptureTimeout(previousSnapshot, interval = SNAPSHOT_INTERVAL_MS) {
-  return usesExtendedSnapshotWatchdog(previousSnapshot) ? interval * 4 : interval;
-}
-
-function usesExtendedSnapshotWatchdog(snapshot) {
-  const runtime = snapshot?.runtime;
-  return (
-    runtime?.projectLoading === true ||
-    runtime?.transfer?.export?.name === "compiled-project.reracache"
-  );
+export function snapshotCaptureTimeout(_previousSnapshot, interval = SNAPSHOT_INTERVAL_MS) {
+  return interval;
 }
 
 export function assertSnapshotProgress(
@@ -196,8 +192,6 @@ export function assertSnapshotProgress(
     (signatures?.previous ?? snapshotProgressSignature(previousSnapshot)) ===
       (signatures?.current ?? snapshotProgressSignature(currentSnapshot))
   ) {
-    const requiredIntervals = usesExtendedSnapshotWatchdog(currentSnapshot) ? 4 : 1;
-    if (identicalIntervals < requiredIntervals) return;
     throw new Error(
       `${label} end-to-end test stalled: ${identicalIntervals} consecutive 5-second intervals had identical complete snapshots: ${JSON.stringify(currentSnapshot)}`,
     );
