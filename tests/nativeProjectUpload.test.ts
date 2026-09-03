@@ -47,3 +47,24 @@ it("uses native file send keys without clearing the input", async () => {
   );
   expect(input.addValue).not.toHaveBeenCalled();
 });
+
+it("restores native input behavior before the driver supplies the file", async () => {
+  const nativeClick = HTMLInputElement.prototype.click;
+  await prepareNativeProjectUpload({ execute: async (callback) => callback() });
+  const input = document.createElement("input");
+  input.type = "file";
+  const driverInput = {
+    waitForExist: vi.fn(),
+    addValue: vi.fn(async () => {
+      expect(HTMLInputElement.prototype.click).toBe(nativeClick);
+    }),
+  };
+  await uploadNativeProject(
+    {
+      $: async () => driverInput,
+      execute: async (callback) => callback(input),
+    },
+    { project: "/isolated/project", projectFile: "/isolated/project.reraproj" },
+  );
+  expect(driverInput.addValue).toHaveBeenCalledWith("/isolated/project.reraproj");
+});

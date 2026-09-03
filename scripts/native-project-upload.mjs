@@ -22,15 +22,17 @@ export async function uploadNativeProject(browser, { project, projectFile }) {
     : 'input[type="file"][webkitdirectory]';
   const input = await browser.$(selector);
   await input.waitForExist({ timeout: 5_000, interval: 50 });
-  const attributes = await browser.execute(
-    (element) => ({
+  const attributes = await browser.execute((element) => {
+    // Suppression is needed only while the app creates its input. Restore native
+    // behavior before handing the element to the browser's file-upload command.
+    window.__RUSTYERA_COMPAT_PICKER_CLEANUP__?.();
+    return {
       type: element.type,
       multiple: element.multiple,
       directory: element.webkitdirectory,
       accept: element.accept,
-    }),
-    input,
-  );
+    };
+  }, input);
   if (attributes.type !== "file" || (!projectFile && !attributes.directory))
     throw new Error(`unexpected native upload input: ${JSON.stringify(attributes)}`);
   // addValue does not issue Element Clear, which is invalid for file inputs.
