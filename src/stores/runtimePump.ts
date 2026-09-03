@@ -99,7 +99,7 @@ export class RuntimePumpCoordinator {
       }
       if (import.meta.env.VITE_RUSTYERA_TEST === "1")
         performance.mark("rustyera:settlement-batch-handled");
-      this.schedule(batch.state === "more_work" || batch.state === "output_ready" ? 0 : 16);
+      this.schedule(hasPendingWork(batch) ? 0 : 16);
       return batch;
     } catch (error) {
       this.callbacks.handleError(error);
@@ -129,15 +129,16 @@ export class RuntimePumpCoordinator {
           this.#handlingBatch = false;
         }
         pumps += 1;
-        // Compute-only slices have no frame for the browser to present. Continue them without a
-        // zero-delay timer (and its nested-timer clamp), but retain a hard fairness boundary.
+        // VM and cooperative slices can both leave the actor idle while work remains. Avoid an
+        // idle delay for every exported file, while retaining the same hard fairness boundary.
       } while (
-        batch.state === "more_work" &&
+        (batch.state === "more_work" ||
+          (batch.state === "idle" && batch.cooperativeBackgroundWork)) &&
         pumps < MAXIMUM_CONTIGUOUS_COMPUTE_PUMPS &&
         this.ready &&
         !this.transitioning
       );
-      this.schedule(batch.state === "more_work" || batch.state === "output_ready" ? 0 : 16);
+      this.schedule(hasPendingWork(batch) ? 0 : 16);
     } catch (error) {
       this.callbacks.handleError(error);
     } finally {
@@ -152,6 +153,14 @@ export class RuntimePumpCoordinator {
         this.#backgroundWorkRevision + 1,
       );
   }
+}
+
+function hasPendingWork(batch: PumpBatch): boolean {
+  return Boolean(
+    batch.cooperativeBackgroundWork ||
+    batch.state === "more_work" ||
+    batch.state === "output_ready",
+  );
 }
 
 export class RuntimePumpSubmissionError extends Error {
