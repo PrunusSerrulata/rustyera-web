@@ -50,18 +50,33 @@ describe("browser blob downloads", () => {
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:download-id");
   });
 
-  it("releases an object-URL backing resource only after the download task", () => {
+  it("retains the URL and backing file beyond timers until explicit download confirmation", () => {
     vi.useFakeTimers();
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:backed-download");
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
     const release = vi.fn();
+    let request: BrowserFileSaveRequest | undefined;
+    window.addEventListener(
+      BROWSER_FILE_SAVE_EVENT,
+      (event) => {
+        request = (event as CustomEvent<BrowserFileSaveRequest>).detail;
+      },
+      { once: true },
+    );
 
     downloadBrowserBlob("game.reraproj", new Blob(), release);
 
-    expect(release).not.toHaveBeenCalled();
+    expect(request?.mode).toBe("download");
+    expect(request?.file.name).toBe("game.reraproj");
+    expect(document.querySelector('a[download="game.reraproj"]')).toBeNull();
     vi.runAllTimers();
+    expect(release).not.toHaveBeenCalled();
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    request?.release?.();
+    request?.release?.();
     expect(release).toHaveBeenCalledOnce();
+    expect(URL.revokeObjectURL).toHaveBeenCalledExactlyOnceWith("blob:backed-download");
   });
 
   it("cleans up immediately and preserves a synchronous click failure", () => {
