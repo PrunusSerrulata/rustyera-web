@@ -1122,10 +1122,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
         await runtimeConfiguration.persistGenerated();
         if (value.success) {
           refreshProjectPreferences();
-          void runtimeClientPreferences
-            .apply()
-            .then(() => continueLoadedProject(runtimeAcceptedCompiledCache))
+          const startupLifecycle = lifecycleGeneration;
+          // Migration confirmation can change canonical presentation settings. Let
+          // the pump handle that reply before preferences or the initial viewport
+          // are submitted; awaiting it inside this batch handler would deadlock.
+          void runtimeConfiguration
+            .whenSettled()
+            .then(async () => {
+              if (startupLifecycle !== lifecycleGeneration) return;
+              await runtimeClientPreferences.apply();
+              if (startupLifecycle === lifecycleGeneration)
+                await continueLoadedProject(runtimeAcceptedCompiledCache);
+            })
             .catch((error) => {
+              if (startupLifecycle !== lifecycleGeneration) return;
               pendingStart = { type: "new_game" };
               const message = `客户端偏好初始化失败：${String(error)}`;
               startupTelemetryState.fail(message);

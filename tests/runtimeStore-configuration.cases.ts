@@ -1201,6 +1201,11 @@ describe("runtime store configuration", () => {
     const store = useRuntimeStore();
     await store.enableDebug();
     await Promise.resolve();
+    expect(
+      bridge.submitRuntime.mock.calls.some(([message]) =>
+        ["apply_client_preferences", "start"].includes(message.type),
+      ),
+    ).toBe(false);
     bridge.pump
       .mockResolvedValueOnce({
         ...emptyBatch(),
@@ -1232,12 +1237,16 @@ describe("runtime store configuration", () => {
                 generated_source: null,
               },
             },
-            22,
+            21,
           ),
         ],
       });
     await vi.advanceTimersByTimeAsync(64);
     expect(store.configurationReadOnly).toBe(false);
+    const startupCommands = bridge.submitRuntime.mock.calls.map(([message]) => message.type);
+    expect(startupCommands.indexOf("apply_client_preferences")).toBeGreaterThan(
+      startupCommands.indexOf("finalize_configuration_update"),
+    );
 
     const saving = store.saveProjectSettings([{ code: "FontSize", value: "22" }]);
     await Promise.resolve();

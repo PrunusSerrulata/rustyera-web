@@ -42,6 +42,7 @@ export class RuntimeConfigurationState {
   readonly sessionOnly;
   readonly restartPending;
   private pending: PendingConfigurationUpdate | undefined;
+  private completion: Promise<void> = Promise.resolve();
 
   constructor(private readonly context: RuntimeConfigurationContext) {
     this.entries = computed(() =>
@@ -124,6 +125,10 @@ export class RuntimeConfigurationState {
     return update.application;
   }
 
+  whenSettled(): Promise<void> {
+    return this.completion;
+  }
+
   async beginUpdate(
     changes: ProjectConfigurationChange[],
     automatic: boolean,
@@ -152,6 +157,7 @@ export class RuntimeConfigurationState {
       resolve = fulfilled;
       reject = rejected;
     });
+    this.completion = completion;
     this.pending = {
       stage: "preparing",
       prepareMessageId,
@@ -246,6 +252,7 @@ export class RuntimeConfigurationState {
   reset(): void {
     this.snapshot.value = null;
     this.writable.value = false;
+    this.completion = Promise.resolve();
     if (!this.pending) return;
     const pending = this.pending;
     this.pending = undefined;
