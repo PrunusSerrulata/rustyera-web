@@ -21,6 +21,7 @@ const reusableSpecs = new Set([
   "snake-interop.spec.mjs",
   "snake-ingestion.spec.mjs",
   "snake-profile.spec.mjs",
+  "snake-save-menu.spec.mjs",
 ]);
 
 // These specs choose directories through the existing test-only picker configuration.

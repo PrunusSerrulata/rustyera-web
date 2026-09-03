@@ -404,6 +404,161 @@ describe("runtime store debug-presentation-reload", () => {
     }
   });
 
+  it.each(["tauri", "browser"] as const)(
+    "keeps all 41 save-slot measurements off-screen until the next input wait in %s",
+    async (kind) => {
+      bridge.kind = kind;
+      const viewport = document.createElement("main");
+      viewport.className = "game-viewport";
+      Object.defineProperties(viewport, {
+        clientWidth: { value: 640 },
+        clientHeight: { value: 480 },
+      });
+      document.body.append(viewport);
+      const line = (lineId: number, text: string) => ({
+        line_id: lineId,
+        temporary: false,
+        logical_line_start: true,
+        line_end: true,
+        alignment: "left",
+        runs: [{ type: "text", text, style: {} }],
+      });
+      const firstWait = {
+        kind: "integer_value",
+        wait_id: 17,
+        submission_token: { epoch: 2, id: 5 },
+      };
+      const store = await storeWithInputWait(firstWait, [
+        runtimeEvent("presentation_snapshot", {
+          revision: 1,
+          title: "title menu",
+          history: { logical_lines: [line(1, "Continue game")] },
+          input_wait: firstWait,
+        }),
+      ]);
+      let measuredSlots = 0;
+      const measured = vi
+        .spyOn(HtmlMeasurementProvider.prototype, "measure")
+        .mockImplementation(async (_probe, binding, guard) => {
+          guard.assertCurrent();
+          measuredSlots += 1;
+          expect(binding.context.presentationRevision).toBe(measuredSlots + 1);
+          expect(binding.resources).toMatchObject({ animation_timer_ms: 37 });
+          expect(store.presentation.revision).toBe(1);
+          expect(store.presentation.lines.map(plainLine)).toEqual(["Continue game"]);
+          return {
+            context: binding.context,
+            advancePx: 36,
+            cuts: [],
+            textNodes: [],
+            firstRow: { advancePx: 36, heightPx: 18, fragments: [] },
+          };
+        });
+      const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+      try {
+        await store.projectViewport({
+          width: 640,
+          height: 480,
+          lineColumns: 80,
+          chromeWidth: 0,
+          chromeHeight: 0,
+        });
+        const observation = bridge.submitRuntime.mock.calls
+          .map(([message]) => message)
+          .filter((message) => message.type === "projection_observation")
+          .at(-1)!.value;
+        const paint = vi.fn((callback: FrameRequestCallback) => {
+          callback(0);
+          return 1;
+        });
+        vi.stubGlobal("requestAnimationFrame", paint);
+        const slotLines = Array.from({ length: 41 }, (_, slot) => `[${slot}] ----`);
+        for (const [slot, text] of slotLines.entries()) {
+          bridge.pump.mockResolvedValueOnce({
+            ...emptyBatch(),
+            events: [
+              runtimeEvent("presentation_delta", {
+                base_revision: slot + 1,
+                new_revision: slot + 2,
+                operations: [
+                  ...(slot === 0
+                    ? [
+                        { type: "set_input_wait", input_wait: null },
+                        { type: "set_redraw", redraw: { enabled: false } },
+                        { type: "clear" },
+                        {
+                          type: "set_resources",
+                          resources: { sprites: [], canvases: [], animation_timer_ms: 37 },
+                        },
+                      ]
+                    : []),
+                  { type: "append_line", line: line(slot + 2, text) },
+                ],
+              }),
+              runtimeEvent(
+                "service_request",
+                {
+                  ...storeHtmlQuery({
+                    presentationRevision: slot + 2,
+                    environmentRevision: observation.environment_revision,
+                    projectionSpaceRevision: observation.projection_space_revision,
+                  }),
+                  request_id: 901 + slot,
+                },
+                941 + slot,
+                2,
+              ),
+            ],
+          });
+          await advanceUntil(
+            () =>
+              bridge.submitRuntime.mock.calls.filter(
+                ([message]) => message.type === "service_response",
+              ).length ===
+              slot + 1,
+          );
+          const response = bridge.submitRuntime.mock.calls
+            .map(([message]) => message)
+            .filter((message) => message.type === "service_response")
+            .at(-1)!;
+          expect(response.value.result.type).toBe("ready");
+          expect(store.presentation.revision).toBe(1);
+          expect(store.presentation.lines.map(plainLine)).toEqual(["Continue game"]);
+          expect(store.presentation.resources.animation_timer_ms).toBe(0);
+        }
+        expect(measured).toHaveBeenCalledTimes(41);
+        expect(paint).not.toHaveBeenCalled();
+        const nextWait = {
+          ...firstWait,
+          wait_id: 18,
+          submission_token: { epoch: 2, id: 6 },
+        };
+        bridge.pump.mockResolvedValueOnce({
+          ...emptyBatch(),
+          events: [
+            runtimeEvent("presentation_delta", {
+              base_revision: 42,
+              new_revision: 43,
+              operations: [
+                { type: "set_redraw", redraw: { enabled: true } },
+                { type: "set_input_wait", input_wait: nextWait },
+              ],
+            }),
+            runtimeEvent("wait_changed", { type: "opened", value: nextWait }),
+          ],
+        });
+        await advanceUntil(() => store.presentation.revision === 43);
+        expect(store.presentation.lines.map(plainLine)).toEqual(slotLines);
+        expect(store.presentation.inputWait?.wait_id).toBe(18);
+        expect(store.presentation.resources.animation_timer_ms).toBe(37);
+      } finally {
+        store.teardown();
+        measured.mockRestore();
+        visibility.mockRestore();
+      }
+    },
+  );
+
   it("rejects HTML queries without a confirmed mounted viewport before DOM measurement", async () => {
     const measured = vi.spyOn(HtmlMeasurementProvider.prototype, "measure");
     bridge.createSession.mockResolvedValueOnce({

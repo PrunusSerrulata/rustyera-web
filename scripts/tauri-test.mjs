@@ -79,6 +79,10 @@ if (
 )
   throw new Error("--background-dom requires a supported DOM-only acceptance spec");
 const specProfiles = {
+  "snake-save-menu.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_SAVE_MENU",
+    copyProject: true,
+  },
   "project-load-failure.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_PROJECT_LOAD_FAILURE",
     copyProject: true,

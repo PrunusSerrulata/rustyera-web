@@ -1554,12 +1554,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   function projectionEnvironment(
     expected: ProjectionQueryContext,
+    presentationRevision: ServiceInteger = presentation.revision,
   ): { width: number; height: number } | undefined {
     if (!sameServiceInteger(currentPresentation().revision, expected.presentationRevision))
       return undefined;
     return runtimeViewport.environment(
       expected,
-      presentation.revision,
+      presentationRevision,
       viewportEnvironmentIdentity(),
     );
   }
@@ -1649,15 +1650,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
         html: {
           measurement: htmlMeasurements,
           async prepare(expected, lease) {
-            const projected = await prepareProjection(expected, lease, false);
             lease.assertActive();
+            // HTML probes render in their own hidden host. Bind canonical resources and the
+            // confirmed environment without painting an unfinished REDRAW 0 game frame.
+            const projected = currentPresentation();
             const viewport = currentGameViewport();
             if (!viewport || !viewport.isConnected)
               throw new RuntimeServiceError(
                 "stale_projection",
                 "HTML measurement requires the confirmed mounted viewport",
               );
-            const viewportSize = projectionEnvironment(expected);
+            const viewportSize = projectionEnvironment(expected, projected.revision);
             if (!viewportSize)
               throw new RuntimeServiceError(
                 "stale_projection",
@@ -1675,7 +1678,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
               if (
                 !active() ||
                 currentGameViewport() !== viewport ||
-                !projectionEnvironmentMatches(expected) ||
+                !projectionEnvironment(expected, currentPresentation().revision) ||
                 replaceFullWidthSpaces.value !== spaces ||
                 JSON.stringify({
                   fontFamilyOverride: effectivePreferences.value.fontFamilyOverride,
