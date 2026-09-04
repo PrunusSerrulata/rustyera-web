@@ -25,8 +25,63 @@
     },
     {
       "path": "src/platform/executor.rs",
-      "bytes": 77267,
-      "sha256": "75f0043e1ede2962019b35d786697c24013be5cf01398e388ce45912a9cb8fd9"
+      "bytes": 35155,
+      "sha256": "d5169d3874b140332ef98e19be3b6bbb1d4f05ff5ec124eda7c62e0e8bdeb7c0"
+    },
+    {
+      "path": "src/platform/executor_body_dispatch_key_event.rs",
+      "bytes": 8597,
+      "sha256": "a4de980690580062fdbff004e31c144fd9e4e82866fda04b5c863a4647083059"
+    },
+    {
+      "path": "src/platform/executor_body_dispatch_pointer_event.rs",
+      "bytes": 1259,
+      "sha256": "00a97ff9f1e2c4eb5c2c84c0441c658243b2e1325357953b2d8790d0310683eb"
+    },
+    {
+      "path": "src/platform/executor_body_dispatch_regular_key.rs",
+      "bytes": 5068,
+      "sha256": "84992a67914f5fa5dfb3a638916d192eae0cac6d6d7b4dea89faa91b5847a854"
+    },
+    {
+      "path": "src/platform/executor_body_execute_script.rs",
+      "bytes": 5480,
+      "sha256": "52743a244cb3f6b758ea2eb069676e12ba531ff348c0686a0cd2cce03c966b44"
+    },
+    {
+      "path": "src/platform/executor_body_get_element_attribute.rs",
+      "bytes": 1583,
+      "sha256": "ca828340a3e48bb711340c91031a5bfbb666951edcd421eeae8d60f51c78bf02"
+    },
+    {
+      "path": "src/platform/executor_body_get_element_center.rs",
+      "bytes": 1138,
+      "sha256": "57947eef23bbcd94d9e38b935869a43f9abaa415c98dbcf84665f4e82bdd543a"
+    },
+    {
+      "path": "src/platform/executor_body_get_element_computed_label.rs",
+      "bytes": 2986,
+      "sha256": "3e35b0470342cf0aac53193279daece748ffa98f6b8b4a97ddc327064752652b"
+    },
+    {
+      "path": "src/platform/executor_body_get_element_computed_role.rs",
+      "bytes": 3549,
+      "sha256": "c22d0406112dd07437f61904092cc3a520185a789b1834f9331ceab918a04aad"
+    },
+    {
+      "path": "src/platform/executor_body_send_keys_to_element.rs",
+      "bytes": 1568,
+      "sha256": "a29615a13983e52a8e8d9ce0a04cd8947d409b82903548e62118037856632c10"
+    },
+    {
+      "path": "src/platform/executor_support.rs",
+      "bytes": 8792,
+      "sha256": "4647a8338c5a1c66df005280d863faab39bd02059feefd7dfc3530f7e159e9a4"
+    },
+    {
+      "path": "src/platform/executor_types.rs",
+      "bytes": 3367,
+      "sha256": "749fa538d1dd85d072b43bf3b4725c6697403c862a039815b8979722b9e8a44d"
     }
   ]
 }
