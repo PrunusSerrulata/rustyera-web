@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eratw-sub-modding",
+  "mode": "fixed",
+  "compiled_cache": false,
+  "start": {
+    "type": "traditional_save",
+    "path": "../../../../games/eratw-sub-modding/sav/save1000.sav"
+  },
+  "actions": [
+    { "type": "input", "value": 120 },
+    {
+      "type": "sample_queries",
+      "count": 4,
+      "interval_ms": 250,
+      "queries": [
+        {
+          "name": "viewport",
+          "locator": { "css": ".game-viewport" },
+          "fields": ["scroll_top", "client_height"]
+        },
+        {
+          "name": "map",
+          "locator": { "css": ".game-line" },
+          "fields": ["count", "content_signature"]
+        }
+      ],
+      "expect": {
+        "maximum_sample_duration_ms": 1000,
+        "maximum_change_interval_ms": {
+          "runtime.presentation_revision": 700,
+          "map.content_signature": 700
+        },
+        "stable": ["viewport.scroll_top", "viewport.client_height"],
+        "changes": [
+          "runtime.presentation_revision",
+          "runtime.history_revision",
+          "map.content_signature"
+        ]
+      }
+    },
+    {
+      "type": "hover",
+      "locator": { "role": "button", "name": "[预览图切换(1)]", "exact": true }
+    },
+    { "type": "wait_timed_input_change" },
+    { "type": "wait_timed_input_change" },
+    {
+      "type": "sample_queries",
+      "count": 2,
+      "interval_ms": 100,
+      "queries": [
+        {
+          "name": "viewport",
+          "locator": { "css": ".game-viewport" },
+          "fields": ["scroll_top", "scroll_height", "client_height", "at_scroll_bottom"]
+        },
+        {
+          "name": "map",
+          "locator": { "css": ".game-line" },
+          "fields": ["count", "content_signature"]
+        },
+        {
+          "name": "control",
+          "locator": { "role": "button", "name": "[预览图切换(1)]", "exact": true },
+          "fields": ["count", "visible", "enabled", "box"]
+        }
+      ],
+      "expect": {
+        "maximum_sample_duration_ms": 1000,
+        "stable": [
+          "viewport.scroll_top",
+          "viewport.client_height",
+          "runtime.presentation_revision",
+          "runtime.history_revision",
+          "control.count",
+          "control.visible",
+          "control.enabled",
+          "control.box.top",
+          "control.box.left",
+          "control.box.width",
+          "control.box.height"
+        ]
+      }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "[预览图切换(1)]", "exact": true },
+      "advances_game": true,
+      "expect_atomic_presentation": true,
+      "semantic_input": 1997
+    }
+  ],
+  "limits": {
+    "max_steps": 20,
+    "timeout_seconds": 900
+  }
+}

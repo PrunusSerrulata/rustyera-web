@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   assertAtomicPresentationTransition,
+  assertSampleExpectations,
   browserProjectProgressErrors,
   packagedProjectProgressErrors,
   compactTraceEvent,
@@ -35,6 +36,59 @@ import { SNAKE_DATA_MARKERS } from "../scripts/snake-data-test-support.mjs";
 import { snakeAudioRelations, snakeAudioStressRelations } from "../scripts/web-test-runtime.mjs";
 
 describe("web game test scenario", () => {
+  it("waits for a stable real-client observation without a fixed sleep", async () => {
+    const stable = { phase: "waiting_input", canInteract: true };
+    const page = {
+      evaluate: vi.fn().mockResolvedValue(stable),
+    };
+
+    await expect(
+      runAction(page, { type: "wait_stable_observation", timeout_ms: 12_000 }),
+    ).resolves.toEqual({ state: stable });
+    expect(page.evaluate).toHaveBeenCalledWith(expect.any(Function), 12_000);
+  });
+
+  it("bounds sampled projection time and intervals between animated changes", () => {
+    const sample = (at, duration, revision, signature) => ({
+      runtime: {
+        sampled_at_ms: at,
+        sample_duration_ms: duration,
+        presentation_revision: revision,
+      },
+      map: { content_signature: signature },
+    });
+    const samples = [
+      sample(0, 20, 1, "a"),
+      sample(250, 30, 2, "b"),
+      sample(500, 25, 3, "c"),
+      sample(750, 35, 4, "d"),
+    ];
+    const expected = {
+      maximum_sample_duration_ms: 50,
+      maximum_change_interval_ms: {
+        "runtime.presentation_revision": 300,
+        "map.content_signature": 300,
+      },
+    };
+
+    expect(() => assertSampleExpectations(samples, expected)).not.toThrow();
+    expect(() =>
+      assertSampleExpectations(
+        samples.map((entry) => ({ ...entry, map: { content_signature: "still" } })),
+        expected,
+      ),
+    ).toThrow("maximum_change_interval_ms.map.content_signature");
+    expect(() =>
+      assertSampleExpectations(
+        [
+          { ...samples[0], runtime: { ...samples[0].runtime, sample_duration_ms: 75 } },
+          ...samples.slice(1),
+        ],
+        expected,
+      ),
+    ).toThrow("maximum_sample_duration_ms");
+  });
+
   it("finishes export cancellation when background cache generation resumes", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "rustyera-export-cancel-"));
     const evidencePath = path.join(root, "evidence.json");
@@ -1320,6 +1374,7 @@ describe("web game test scenario", () => {
   });
 
   it("waits for a timed input to advance without submitting an input", async () => {
+    const pending = { canInteract: false, wait: null };
     const before = {
       wait: {
         wait_id: "283",
@@ -1336,7 +1391,7 @@ describe("web game test scenario", () => {
         viewport_policy: "preserve_user_viewport",
       },
     };
-    const snapshots = [before, after];
+    const snapshots = [pending, before, after];
     const page = {
       evaluate: vi.fn(async (callback) => {
         if (String(callback).includes("waitForStableObservation")) return undefined;
@@ -1356,7 +1411,8 @@ describe("web game test scenario", () => {
         },
       },
     });
-    expect(page.waitForFunction).toHaveBeenCalledWith(expect.any(Function), "283");
+    expect(page.waitForFunction).toHaveBeenNthCalledWith(1, expect.any(Function));
+    expect(page.waitForFunction).toHaveBeenNthCalledWith(2, expect.any(Function), "283");
   });
 
   it("scrolls a focused production viewport with real keyboard input", async () => {

@@ -1006,6 +1006,16 @@ async function stopAtomicPresentationProbe(page) {
 export async function runAction(page, action) {
   if (action.type === "cancel_project_export")
     return cancelProjectExportDuringTransfer(page, action);
+  if (action.type === "wait_stable_observation") {
+    const timeoutMs = Number(action.timeout_ms ?? 30_000);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+      throw new Error("wait_stable_observation timeout_ms must be positive");
+    const state = await page.evaluate(
+      (timeout) => window.__RUSTYERA_TEST__.waitForStableObservation(timeout, true),
+      timeoutMs,
+    );
+    return { state };
+  }
   if (action.type === "save_download") {
     assert.ok(typeof action.path === "string" && path.isAbsolute(action.path));
     assert.ok(typeof action.name_suffix === "string" && action.name_suffix.length > 0);
@@ -1283,7 +1293,14 @@ export async function runAction(page, action) {
     throw new Error(`void wait budget exhausted after ${maximum} attempts`);
   }
   if (action.type === "wait_timed_input_change") {
-    const before = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    let before = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    if (before.wait?.deadline_ns == null) {
+      await page.waitForFunction(() => {
+        const current = window.__RUSTYERA_TEST__.snapshotSummary();
+        return current.fault != null || (current.canInteract && current.wait?.deadline_ns != null);
+      });
+      before = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    }
     if (before.wait?.deadline_ns == null)
       throw new Error("wait_timed_input_change requires an active timed input wait");
     await waitForAutomaticWaitChange(page, before.wait.wait_id);
@@ -1640,6 +1657,7 @@ async function sampleQueries(page, action) {
 
   const samples = [];
   for (let index = 0; index < count; index += 1) {
+    const sampledAtMs = performance.now();
     const runtime = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
     if (runtime.fault && !action.allow_fault)
       throw new Error(`runtime fault while sampling queries: ${JSON.stringify(runtime.fault)}`);
@@ -1648,10 +1666,12 @@ async function sampleQueries(page, action) {
         presentation_revision: runtime.presentationRevision,
         history_revision: runtime.historyRevision,
         output_count: runtime.output?.length,
+        sampled_at_ms: sampledAtMs,
       },
     };
     for (const query of queries)
       sample[query.name] = await queryLocator(resolveLocator(page, query.locator), query.fields);
+    sample.runtime.sample_duration_ms = performance.now() - sampledAtMs;
     samples.push(sample);
     if (index + 1 < count) await page.waitForTimeout(interval);
   }
@@ -1659,7 +1679,7 @@ async function sampleQueries(page, action) {
   return { query: { samples }, semanticInput: action.semantic_input };
 }
 
-function assertSampleExpectations(samples, expected) {
+export function assertSampleExpectations(samples, expected) {
   for (const path of expected.stable ?? []) {
     const values = samples.map((sample, index) => valueAtPath(sample, path, index));
     if (values.some((value) => JSON.stringify(value) !== JSON.stringify(values[0])))
@@ -1672,6 +1692,41 @@ function assertSampleExpectations(samples, expected) {
     if (new Set(values.map((value) => JSON.stringify(value))).size < 2)
       throw new Error(
         `assertion failed at sample_queries.changes.${path}: got ${JSON.stringify(values)}`,
+      );
+  }
+  const maximumSampleDuration = Number(expected.maximum_sample_duration_ms);
+  if (expected.maximum_sample_duration_ms != null) {
+    if (!Number.isFinite(maximumSampleDuration) || maximumSampleDuration < 0)
+      throw new Error("sample_queries maximum_sample_duration_ms must be non-negative");
+    const durations = samples.map((sample) => Number(sample.runtime.sample_duration_ms));
+    if (
+      durations.some((duration) => !Number.isFinite(duration) || duration > maximumSampleDuration)
+    )
+      throw new Error(
+        `assertion failed at sample_queries.maximum_sample_duration_ms: maximum ${Math.max(...durations)} exceeded ${maximumSampleDuration}`,
+      );
+  }
+  for (const [path, maximum] of Object.entries(expected.maximum_change_interval_ms ?? {})) {
+    const maximumMs = Number(maximum);
+    if (!Number.isFinite(maximumMs) || maximumMs < 0)
+      throw new Error(`sample_queries maximum_change_interval_ms.${path} must be non-negative`);
+    const observed = samples.map((sample, index) => ({
+      at: Number(sample.runtime.sampled_at_ms),
+      value: valueAtPath(sample, path, index),
+    }));
+    let lastChangeAt = observed[0]?.at;
+    let previous = observed[0]?.value;
+    let longest = 0;
+    for (const current of observed.slice(1)) {
+      if (JSON.stringify(current.value) === JSON.stringify(previous)) continue;
+      longest = Math.max(longest, current.at - lastChangeAt);
+      lastChangeAt = current.at;
+      previous = current.value;
+    }
+    if (observed.length > 1) longest = Math.max(longest, observed.at(-1).at - lastChangeAt);
+    if (!Number.isFinite(longest) || longest > maximumMs)
+      throw new Error(
+        `assertion failed at sample_queries.maximum_change_interval_ms.${path}: longest ${longest} ms exceeded ${maximumMs} ms`,
       );
   }
 }

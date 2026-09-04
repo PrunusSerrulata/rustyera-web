@@ -202,11 +202,14 @@ An action has `type`:
   itself or its first descendant `img`.
 - `assert_dom`: same query fields plus an `expect` subset.
 - `sample_queries`: `count` (at least 2), `interval_ms`, named `queries` with the same locator and
-  field schema, and `expect.stable`/`expect.changes` dotted paths. It records every sample and fails
-  unless stable fields remain identical and changing fields have at least two distinct values. Each
-  sample also includes `runtime.presentation_revision`, `runtime.history_revision`, and
-  `runtime.output_count`. Use it for animations that must update content without creating history
-  or moving their layout anchor.
+  field schema, and `expect.stable`/`expect.changes` dotted paths. Optional
+  `expect.maximum_sample_duration_ms` bounds each complete runtime/DOM sample, while
+  `expect.maximum_change_interval_ms` maps dotted paths to the longest allowed interval between
+  observed value changes. It records every sample and fails unless stable fields remain identical,
+  changing fields have at least two distinct values, and any timing bounds hold. Each sample also
+  includes `runtime.presentation_revision`, `runtime.history_revision`, `runtime.output_count`,
+  `runtime.sampled_at_ms`, and `runtime.sample_duration_ms`. Use it for animations that must update
+  content without creating history, moving their layout anchor, or monopolizing the main thread.
 - `assert_layout`: `locator`, optional `relative_to`, and `expect`. It measures production DOM
   boxes and accepts `count`, `visible`, `same_left_within`, `same_top_within`, `no_overlap`,
   `above`/`below` gap ranges (`min`/`max`), `inside.tolerance`, `right_aligned_within`, and
@@ -307,3 +310,7 @@ Do not patch visibility, animation frames, activation, Pinia state, or runtime r
 For bounded protocol diagnosis, `test:game` accepts `--protocol-types TYPE,TYPE`. The watchdog reads
 only those immutable wire records, filtering before parsing large unrelated payloads. Raw records
 retain their original indices and the selection is explicit in the evidence.
+
+Use a `wait_stable_observation` action after hover or another device-state update when the next
+assertion requires the real client to finish its resulting runtime transition. It waits for the
+existing stable-observation contract and does not substitute a fixed sleep.
