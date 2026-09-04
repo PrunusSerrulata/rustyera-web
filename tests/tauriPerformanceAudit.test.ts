@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import {
   classifyWindowCalibration,
   performanceAuditOptions,
+  performanceWindowArguments,
+  performanceWindowMode,
 } from "../scripts/tauri-performance-audit.mjs";
 import { readPerformanceTrace, summarizeSamples } from "../scripts/tauri-performance-trace.mjs";
 import { PerformanceAuditRingBuffer } from "../src/testing/performanceAudit";
@@ -11,24 +13,22 @@ import { PerformanceAuditRingBuffer } from "../src/testing/performanceAudit";
 describe("Tauri performance audit runner policy", () => {
   const valid = [
     "--perf-audit",
-    "--background-dom",
     "--release",
     "--project",
     "/isolated/snake-tw",
     "--spec",
     "tests/tauri/snake-runtime-performance.spec.mjs",
-    "--window-mode",
-    "minimized",
   ];
 
-  it("accepts only the release background single-spec profile", () => {
+  it("defaults to an ordinary visible window for the release single-spec profile", () => {
     expect(performanceAuditOptions(valid, "snake-runtime-performance.spec.mjs")).toEqual({
       enabled: true,
-      windowMode: "minimized",
+      background: false,
+      windowMode: "visible",
     });
-    for (const required of ["--background-dom", "--release", "--project", "--window-mode"]) {
+    for (const required of ["--release", "--project"]) {
       const index = valid.indexOf(required);
-      const length = required === "--project" || required === "--window-mode" ? 2 : 1;
+      const length = required === "--project" ? 2 : 1;
       expect(() =>
         performanceAuditOptions(
           [...valid.slice(0, index), ...valid.slice(index + length)],
@@ -37,6 +37,44 @@ describe("Tauri performance audit runner policy", () => {
       ).toThrow();
     }
     expect(() => performanceAuditOptions(valid, "snake-profile.spec.mjs")).toThrow("single");
+  });
+
+  it("enables hidden-window safeguards only when explicitly requested", () => {
+    const minimized = [...valid, "--background-dom", "--window-mode", "minimized"];
+    expect(performanceAuditOptions(minimized, "snake-runtime-performance.spec.mjs")).toEqual({
+      enabled: true,
+      background: true,
+      windowMode: "minimized",
+    });
+    expect(() =>
+      performanceAuditOptions(
+        [...valid, "--window-mode", "offscreen"],
+        "snake-runtime-performance.spec.mjs",
+      ),
+    ).toThrow("requires --background-dom");
+    expect(() =>
+      performanceAuditOptions([...valid, "--background-dom"], "snake-runtime-performance.spec.mjs"),
+    ).toThrow("requires minimized or offscreen");
+  });
+
+  it("parses one shared window policy for capture and replay child processes", () => {
+    expect(performanceWindowMode([])).toBe("visible");
+    expect(performanceWindowMode(["--window-mode", "visible"])).toBe("visible");
+    expect(performanceWindowArguments("visible")).toEqual(["--window-mode", "visible"]);
+    expect(performanceWindowArguments("minimized")).toEqual([
+      "--background-dom",
+      "--window-mode",
+      "minimized",
+    ]);
+    expect(performanceWindowArguments("offscreen")).toEqual([
+      "--background-dom",
+      "--window-mode",
+      "offscreen",
+    ]);
+    expect(() => performanceWindowMode(["--window-mode", "hidden"])).toThrow("must be visible");
+    expect(() =>
+      performanceWindowMode(["--window-mode", "visible", "--window-mode", "offscreen"]),
+    ).toThrow("only once");
   });
 
   it("selects offscreen evidence when minimized WebKit is throttled", () => {
@@ -77,8 +115,9 @@ describe("Tauri performance audit runner policy", () => {
   it("rejects duplicate values, injected state, and incomplete options", () => {
     expect(() => performanceAuditOptions([...valid, "--project", "/other"], "snake-runtime-performance.spec.mjs")).toThrow("exactly");
     expect(() => performanceAuditOptions([...valid, "--state", "/save"], "snake-runtime-performance.spec.mjs")).toThrow("forbidden");
-    const mode = valid.indexOf("minimized");
-    expect(() => performanceAuditOptions([...valid.slice(0, mode)], "snake-runtime-performance.spec.mjs")).toThrow("value");
+    expect(() =>
+      performanceAuditOptions([...valid, "--window-mode"], "snake-runtime-performance.spec.mjs"),
+    ).toThrow("value");
   });
 
   it("reports input percentiles and coefficient of variation", () => {

@@ -8,6 +8,8 @@ import {
   capturePerformanceProcessTree,
   classifyWindowCalibration,
   performanceProjectDigest,
+  performanceWindowArguments,
+  performanceWindowMode,
   validatePerformanceAuditProject,
 } from "./tauri-performance-audit.mjs";
 import {
@@ -22,7 +24,8 @@ const arguments_ = process.argv.slice(2);
 const project = option("--project");
 const output = option("--output");
 const trace = option("--trace");
-rejectUnknown(arguments_, new Set(["--project", "--output", "--trace"]));
+const requestedWindowMode = performanceWindowMode(arguments_);
+rejectUnknown(arguments_, new Set(["--project", "--output", "--trace", "--window-mode"]));
 const identity = await validatePerformanceAuditProject(project);
 const outputParent = await realpath(path.dirname(output));
 const resolvedOutput = path.join(outputParent, path.basename(output));
@@ -39,12 +42,8 @@ if (traceIdentity.projectDigest !== identity.manifestSha256)
   throw new Error("frozen trace projectDigest does not match the selected snake TW source");
 let buildPrepared = false;
 
-const minimized = await runAudit("calibration", "minimized");
-const offscreen = await runAudit("calibration", "offscreen");
-const calibration = classifyWindowCalibration(minimized.calibration, offscreen.calibration);
-if (!calibration.offscreenUsable)
-  throw new Error("off-screen no-focus calibration did not produce 100 usable frames");
-await writeEvidence("calibration.json", { identity, minimized, offscreen, calibration });
+const { calibration, evidence: calibrationEvidence } = await calibrateWindow(requestedWindowMode);
+await writeEvidence("calibration.json", { identity, ...calibrationEvidence, calibration });
 
 const warmup = await runAudit("warmup", calibration.selectedMode);
 const baselineRuns = [];
@@ -114,15 +113,13 @@ async function runAudit(round, mode, profilers = [], measuredRound = round) {
   const args = [
     "scripts/tauri-test.mjs",
     "--perf-audit",
-    "--background-dom",
     "--release",
     buildPrepared ? "--require-reuse-build" : "--reuse-build",
     "--project",
     project,
     "--spec",
     "tests/tauri/snake-runtime-performance.spec.mjs",
-    "--window-mode",
-    mode,
+    ...performanceWindowArguments(mode),
   ];
   const child = spawn(process.execPath, args, { cwd: repository, env: environment, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
@@ -149,6 +146,31 @@ async function runAudit(round, mode, profilers = [], measuredRound = round) {
     result: records.findLast((record) => record.type === "tauri-snake-runtime-performance"),
     telemetrySegments: summarizeTelemetrySegments(records),
     profiles,
+  };
+}
+
+async function calibrateWindow(mode) {
+  if (mode === "minimized") {
+    const minimized = await runAudit("calibration", "minimized");
+    const offscreen = await runAudit("calibration", "offscreen");
+    const calibration = {
+      requestedMode: mode,
+      ...classifyWindowCalibration(minimized.calibration, offscreen.calibration),
+    };
+    if (!calibration.offscreenUsable)
+      throw new Error("off-screen no-focus calibration did not produce 100 usable frames");
+    return { calibration, evidence: { minimized, offscreen } };
+  }
+  const selected = await runAudit("calibration", mode);
+  const sample = selected.calibration;
+  const usable =
+    sample?.timedOut !== true &&
+    Number(sample?.observedFrames ?? 0) === Number(sample?.requestedFrames ?? 100) &&
+    (mode === "visible" || Number(sample?.nonBusinessStallsOver100Ms ?? 0) === 0);
+  if (!usable) throw new Error(`${mode} calibration did not produce 100 usable frames`);
+  return {
+    calibration: { requestedMode: mode, selectedMode: mode, usable },
+    evidence: { [mode]: selected },
   };
 }
 

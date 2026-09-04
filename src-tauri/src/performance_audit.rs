@@ -135,15 +135,21 @@ pub(super) fn configure_window<R: Runtime>(
     let window = app
         .get_webview_window("main")
         .ok_or("performance audit main window is missing")?;
-    window.set_focusable(false)?;
     match mode.as_str() {
+        "visible" => {
+            window.set_focusable(true)?;
+            window.show()?;
+            window.set_focus()?;
+        }
         "minimized" => {
             // The test config creates the window hidden. Minimize before showing it so there is
             // never an on-screen, focusable transition frame.
+            window.set_focusable(false)?;
             window.minimize()?;
             window.show()?;
         }
         "offscreen" => {
+            window.set_focusable(false)?;
             let monitors = window.available_monitors()?;
             let right = monitors
                 .iter()
@@ -164,9 +170,13 @@ pub(super) fn configure_window<R: Runtime>(
             window.set_position(PhysicalPosition::new(x, y))?;
             window.show()?;
         }
-        _ => return Err("performance audit window mode must be minimized or offscreen".into()),
+        _ => {
+            return Err(
+                "performance audit window mode must be visible, minimized, or offscreen".into(),
+            );
+        }
     }
-    if window.is_focused()? {
+    if mode != "visible" && window.is_focused()? {
         return Err("performance audit window unexpectedly acquired focus".into());
     }
     Ok(())

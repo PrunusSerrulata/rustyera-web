@@ -1,7 +1,17 @@
 export interface PerformanceAuditOptions {
   enabled: boolean;
-  windowMode: "minimized" | "offscreen" | undefined;
+  background: boolean;
+  windowMode: "visible" | "minimized" | "offscreen" | undefined;
 }
+
+export const DEFAULT_PERFORMANCE_WINDOW_MODE: "visible";
+export const PERFORMANCE_WINDOW_MODES: ReadonlySet<"visible" | "minimized" | "offscreen">;
+export function performanceWindowMode(
+  arguments_: string[],
+): "visible" | "minimized" | "offscreen";
+export function performanceWindowArguments(
+  mode: "visible" | "minimized" | "offscreen",
+): string[];
 
 export function performanceAuditOptions(
   arguments_: string[],

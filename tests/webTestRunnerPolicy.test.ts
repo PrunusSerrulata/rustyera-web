@@ -618,7 +618,7 @@ describe("browser game runner progress policy", () => {
     );
   });
 
-  it("uses the background snake audit as the only Tauri performance probe", () => {
+  it("uses the unified snake audit as the only Tauri performance probe", () => {
     const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
     const bridge = readFileSync(resolve("src/platform/tauriBridge.ts"), "utf8");
     const pump = readFileSync(resolve("src/stores/runtimePump.ts"), "utf8");

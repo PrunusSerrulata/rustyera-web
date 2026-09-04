@@ -482,8 +482,8 @@ let browser;
 let monitor;
 let runError;
 let finalizationError;
-const foregroundBaseline = perfAudit.enabled ? await observeForegroundApplication() : undefined;
-if (perfAudit.enabled)
+const foregroundBaseline = perfAudit.background ? await observeForegroundApplication() : undefined;
+if (perfAudit.background)
   console.log(
     JSON.stringify({ type: "tauri-performance-foreground-baseline", foregroundBaseline }),
   );
@@ -507,7 +507,7 @@ try {
     : undefined;
   if (performanceRootPid != null)
     process.env.RUSTYERA_TAURI_PERF_ROOT_PID = String(performanceRootPid);
-  const windowSafety = perfAudit.enabled
+  const inspectPerformanceWindow = perfAudit.enabled
     ? () =>
         capturePerformanceWindowSafety(
           browser,
@@ -516,12 +516,13 @@ try {
           performanceRootPid,
         )
     : undefined;
-  if (windowSafety) {
-    const state = await windowSafety();
+  if (inspectPerformanceWindow) {
+    const state = await inspectPerformanceWindow();
     console.log(
       JSON.stringify({ type: "tauri-performance-window-safety", stage: "connected", state }),
     );
   }
+  const windowSafety = perfAudit.background ? inspectPerformanceWindow : undefined;
   activeStage = "running Tauri end-to-end specs";
   monitor = startTauriSessionMonitor(browser, {
     deadline: taskDeadline,

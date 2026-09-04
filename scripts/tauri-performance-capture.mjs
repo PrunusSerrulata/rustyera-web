@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 
 import {
   performanceProjectDigest,
+  performanceWindowArguments,
+  performanceWindowMode,
   validatePerformanceAuditProject,
 } from "./tauri-performance-audit.mjs";
 import { freezePerformanceTrace } from "./tauri-performance-trace.mjs";
@@ -39,10 +41,8 @@ if (command === "freeze") {
   const template = option("--template");
   const candidate = option("--candidate");
   const actions = option("--actions");
-  const windowMode = optionalValue("--window-mode") ?? "offscreen";
+  const windowMode = performanceWindowMode(arguments_);
   rejectUnknown(new Set(["--project", "--template", "--candidate", "--actions", "--window-mode"]));
-  if (!new Set(["minimized", "offscreen"]).has(windowMode))
-    throw new Error("--window-mode must be minimized or offscreen");
   const identity = await validatePerformanceAuditProject(project);
   assertOutsideSource(identity.source, candidate, "--candidate");
   assertOutsideSource(identity.source, actions, "--actions");
@@ -55,14 +55,12 @@ if (command === "freeze") {
     [
       "scripts/tauri-test.mjs",
       "--perf-audit",
-      "--background-dom",
       "--release",
       "--project",
       project,
       "--spec",
       "tests/tauri/snake-runtime-performance.spec.mjs",
-      "--window-mode",
-      windowMode,
+      ...performanceWindowArguments(windowMode),
     ],
     {
       cwd: repository,
@@ -82,7 +80,7 @@ if (command === "freeze") {
     child.once("error", reject);
     child.once("exit", resolve);
   });
-  if (exitCode !== 0) throw new Error(`background capture exited ${exitCode}`);
+  if (exitCode !== 0) throw new Error(`performance capture exited ${exitCode}`);
 } else {
   throw new Error("usage: tauri-performance-capture.mjs capture|freeze [options]");
 }
@@ -93,14 +91,6 @@ function option(name) {
   const value = arguments_[indexes[0] + 1];
   if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
   return path.resolve(repository, value);
-}
-function optionalValue(name) {
-  const indexes = arguments_.flatMap((value, index) => (value === name ? [index] : []));
-  if (indexes.length > 1) throw new Error(`${name} may be specified only once`);
-  if (!indexes.length) return undefined;
-  const value = arguments_[indexes[0] + 1];
-  if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
-  return value;
 }
 function rejectUnknown(allowed) {
   for (let index = 0; index < arguments_.length; index += 2) {

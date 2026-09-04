@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
 
-import { clickTauriTestElement, setTauriTestInput } from "./dom-test-input.mjs";
+import {
+  clickTauriTestElement,
+  hoverTauriTestElement,
+  setTauriTestInput,
+} from "./dom-test-input.mjs";
 
 export const PERFORMANCE_PATHS = ["loading", "steady-runtime", "map-nf-sql", "save-load"];
 const REQUIRED_EVIDENCE = {
@@ -366,10 +370,7 @@ async function performAction(browser, action) {
   assert.ok(await element.isExisting(), `trace target does not exist: ${action.selector}`);
   if (action.expectedText != null) assert.equal((await element.getText()).trim(), action.expectedText);
   if (action.type === "click") return clickTauriTestElement(browser, element);
-  await browser.execute((target) => {
-    target.dispatchEvent(new PointerEvent("pointermove", { bubbles: true }));
-    target.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
-  }, element);
+  await hoverTauriTestElement(browser, element);
 }
 
 async function waitForNextObservation(browser, previous, settle, watches) {

@@ -20,7 +20,7 @@
       "capabilities": [
         {
           "identifier": "webdriver-performance-audit",
-          "description": "Capabilities enabled only for the background Tauri performance audit",
+          "description": "Capabilities enabled only for the Tauri performance audit",
           "windows": ["main"],
           "permissions": [
             "core:default",

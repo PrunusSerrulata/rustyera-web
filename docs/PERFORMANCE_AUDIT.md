@@ -6,15 +6,21 @@ repository for both project loading and steady runtime. It is compiled only with
 `VITE_RUSTYERA_PERF_AUDIT=1`; normal Tauri and Web builds do not create telemetry buffers or run
 the audit timing branches.
 
+The audit uses a normal visible, focusable Tauri window by default. Background operation is an
+explicit policy choice, never an implicit safety default: pass `--window-mode minimized` or
+`--window-mode offscreen` to the outer capture/measurement runner only when the caller requires a
+hidden run. Those modes add the internal `--background-dom` flag and activate placement, focus and
+foreground-owner checks. With no `--window-mode`, or with `--window-mode visible`, WebdriverIO drives
+the ordinary window and focus/foreground ownership are allowed.
+
 The former `rorona-settlement-performance.spec.mjs` probe and its
-`rustyera:settlement-*` performance marks were removed. They required a visible focused window,
-duplicated part of the native-to-paint timing chain, and cannot be used by the background-only
-audit policy.
+`rustyera:settlement-*` performance marks were removed. They duplicated part of the native-to-paint
+timing chain and cannot be used by the unified audit policy.
 
 The former standalone `scripts/startup-benchmark.mjs` implementation and its private aggregation
 schema were also removed. `benchmark:startup` is now only an alias for the same unified Tauri
-runner, so it requires the same frozen trace, isolated project, background window policy and
-evidence directory. The unified JSONL sample schema always includes `schemaVersion`, `epoch`,
+runner, so it requires the same frozen trace, isolated project, explicit window policy and evidence
+directory. The unified JSONL sample schema always includes `schemaVersion`, `epoch`,
 `sequence`, `origin`, `segment`, `phase`, `operation` and timing fields. `segment` is `loading` or
 `runtime`; both are emitted by the same run and retained in the same evidence stream.
 
@@ -32,7 +38,7 @@ evidence directory. The unified JSONL sample schema always includes `schemaVersi
 
 The checked-in `tests/fixtures/snake-runtime-performance-trace.v1.json` is intentionally marked
 `captureRequired: true`. It is a schema/template, not fabricated evidence. A future autonomous
-background play session must record the real snake TW path, then freeze a versioned trace with:
+play session must record the real snake TW path, then freeze a versioned trace with:
 
 - the exact `emuera.skia.snake` project identity, seed and clock;
 - all four paths: loading/title-to-day-1, daily/long-output runtime, map hover/click/NF/scene/
@@ -48,8 +54,10 @@ reported as measured coverage.
 
 Capture is driven by `audit:tauri-performance-capture -- capture`: a low-reasoning autonomous
 player appends JSONL `action` records to an isolated inbox after each emitted observation. The same
-background Tauri lifecycle executes each DOM input/click/hover and atomically updates a candidate;
-manual editing is not a capture path. DOM clicks must include their `semanticInput`. After review,
+Tauri lifecycle executes each input/click/hover and atomically updates a candidate; manual editing
+is not a capture path. Visible mode uses normal WebdriverIO element operations, while an explicitly
+hidden mode uses DOM handlers without claiming trusted native input. DOM clicks must include their
+`semanticInput`. After review,
 `audit:tauri-performance-capture -- freeze` requires distinct `--output` and `--core-output` paths.
 It writes the frozen Tauri trace plus a deterministic Core `perf-run` companion derived from that
 one capture artifact. The Tauri trace schema and Core trace schema are independently versioned;
@@ -68,6 +76,12 @@ frontend-only. The emitted companion contains only fields accepted by Core's str
 npm run audit:tauri-performance-capture -- capture --project /absolute/snake-tw \
   --template tests/fixtures/snake-runtime-performance-trace.v1.json \
   --candidate /absolute/evidence/candidate.json --actions /absolute/evidence/actions.jsonl
+
+# Only when a hidden run is explicitly required:
+npm run audit:tauri-performance-capture -- capture --project /absolute/snake-tw \
+  --template tests/fixtures/snake-runtime-performance-trace.v1.json \
+  --candidate /absolute/evidence/candidate.json --actions /absolute/evidence/actions.jsonl \
+  --window-mode minimized
 
 npm run audit:tauri-performance-capture -- freeze \
   --candidate /absolute/evidence/candidate.json \
@@ -89,21 +103,32 @@ After capture is reviewed and frozen, use the isolated outer runner:
 ```text
 npm run audit:tauri-performance -- --project /absolute/snake-tw-copy-source \
   --trace /absolute/frozen-trace.v1.json --output /absolute/empty-evidence-directory
+
+# Only when a hidden run is explicitly required:
+npm run audit:tauri-performance -- --project /absolute/snake-tw-copy-source \
+  --trace /absolute/frozen-trace.v1.json --output /absolute/empty-evidence-directory \
+  --window-mode minimized
 ```
 
 The runner validates the snake profile, source/copy realpaths and the same project digest framing
 used by Core `perf-run` (submitted-input classification, strict text decoding and raw resources).
-Each measurement reports project loading separately from the four frozen action-path classes. It calibrates 100 actual frames
-in both minimized and fully off-screen/unfocused modes, chooses off-screen when minimized timing
-differs by more than 20% or has a non-business stall over 100 ms, performs one disposable warmup,
-then five baselines in independent project copies. CPU and allocation rounds run separately at a
-checkpoint using `sample`, `heap`, `vmmap`, `leaks` and `malloc_history`. Evidence files are hashed;
-profiled timing with more than 5% overhead is retained only for hotspot attribution.
+Each measurement reports project loading separately from the four frozen action-path classes. It
+calibrates 100 actual frames in the requested mode. The default visible mode and an explicit
+off-screen mode calibrate only that mode. An explicit minimized request calibrates both minimized
+and fully off-screen/unfocused modes, then chooses off-screen when minimized timing differs by more
+than 20% or has a non-business stall over 100 ms. It performs one disposable warmup, then five
+baselines in independent project copies. CPU and allocation rounds run separately at a checkpoint
+using `sample`, `heap`, `vmmap`, `leaks` and `malloc_history`. Evidence files are hashed; profiled
+timing with more than 5% overhead is retained only for hotspot attribution.
 The outer runner owns one shared 60-minute deadline across calibration, warmup, five baselines and
 both profiler rounds; child sessions receive that same deadline rather than starting new budgets.
 
-The performance window starts hidden and non-focusable. Minimized mode minimizes before its first
-show; off-screen mode moves beyond the union of all displays before show. The five-second watchdog
-asserts placement, focus, foreground ownership and the exact launched PID tree. Telemetry,
-profiler and process metadata are excluded from its progress signature, so instrumentation cannot
-hide a frozen game. The audit never invokes native keyboard/mouse input or a system picker.
+The performance configuration creates the window hidden so policy can be applied before its first
+show. Visible mode makes it focusable, shows it and requests ordinary focus. Minimized mode minimizes
+before its first show; off-screen mode moves beyond the union of all displays before show. Only the
+two explicit background modes use the five-second placement/focus/foreground-owner safety check;
+all modes verify the launched PID tree when the session connects and before profiling, while only
+background modes repeat the process-tree check in the window watchdog. All modes retain complete
+DOM/runtime progress snapshots. Telemetry, profiler and process metadata are excluded from the
+progress signature, so instrumentation cannot hide a frozen game. The audit never invokes native OS
+keyboard/mouse injection or a system picker.

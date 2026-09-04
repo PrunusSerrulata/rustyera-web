@@ -14,7 +14,7 @@ const enabled = process.env.VITE_RUSTYERA_TAURI_SNAKE_RUNTIME_PERFORMANCE === "1
 const tracePath = process.env.RUSTYERA_TAURI_PERF_TRACE;
 
 enabled("Tauri snake runtime performance audit", () => {
-  it("replays four versioned runtime paths with calibrated background presentation", async () => {
+  it("replays four versioned runtime paths with calibrated presentation", async () => {
     assert.ok(tracePath, "runner must provide an externally captured, frozen performance trace");
     if (process.env.RUSTYERA_TAURI_PERF_CAPTURE === "1") {
       const template = JSON.parse(await readFile(tracePath, "utf8"));

@@ -7,19 +7,41 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 export const PERFORMANCE_AUDIT_SPEC = "snake-runtime-performance.spec.mjs";
-export const PERFORMANCE_WINDOW_MODES = new Set(["minimized", "offscreen"]);
+export const DEFAULT_PERFORMANCE_WINDOW_MODE = "visible";
+export const PERFORMANCE_WINDOW_MODES = new Set(["visible", "minimized", "offscreen"]);
+
+export function performanceWindowMode(arguments_) {
+  const indexes = arguments_.flatMap((value, index) =>
+    value === "--window-mode" ? [index] : [],
+  );
+  if (indexes.length > 1) throw new Error("--window-mode may be specified only once");
+  if (indexes.length === 0) return DEFAULT_PERFORMANCE_WINDOW_MODE;
+  const mode = arguments_[indexes[0] + 1];
+  if (!mode || mode.startsWith("--")) throw new Error("--window-mode requires a value");
+  if (!PERFORMANCE_WINDOW_MODES.has(mode))
+    throw new Error("--window-mode must be visible, minimized, or offscreen");
+  return mode;
+}
+
+export function performanceWindowArguments(mode) {
+  if (!PERFORMANCE_WINDOW_MODES.has(mode))
+    throw new Error("performance window mode must be visible, minimized, or offscreen");
+  return [...(mode === "visible" ? [] : ["--background-dom"]), "--window-mode", mode];
+}
 
 export function performanceAuditOptions(arguments_, specName, paths = {}) {
   const enabled = arguments_.includes("--perf-audit");
-  const modeIndex = arguments_.indexOf("--window-mode");
-  const windowMode = modeIndex >= 0 ? arguments_[modeIndex + 1] : undefined;
+  const backgroundDom = arguments_.includes("--background-dom");
+  const hasWindowMode = arguments_.includes("--window-mode");
+  const windowMode = performanceWindowMode(arguments_);
   if (!enabled) {
-    if (modeIndex >= 0) throw new Error("--window-mode requires --perf-audit");
-    return { enabled: false, windowMode: undefined };
+    if (hasWindowMode) throw new Error("--window-mode requires --perf-audit");
+    return { enabled: false, background: false, windowMode: undefined };
   }
-  for (const flag of ["--perf-audit", "--background-dom", "--release"])
+  for (const flag of ["--perf-audit", "--release"])
     requireOccurrences(arguments_, flag, 1);
-  for (const option of ["--project", "--spec", "--window-mode"])
+  if (backgroundDom) requireOccurrences(arguments_, "--background-dom", 1);
+  for (const option of ["--project", "--spec"])
     requireSingleOptionValue(arguments_, option);
   for (const optionalFlag of ["--reuse-build", "--require-reuse-build"])
     if (arguments_.includes(optionalFlag)) requireOccurrences(arguments_, optionalFlag, 1);
@@ -44,13 +66,16 @@ export function performanceAuditOptions(arguments_, specName, paths = {}) {
   )
     throw new Error(`--perf-audit spec must be tests/tauri/${PERFORMANCE_AUDIT_SPEC}`);
   if (!arguments_.includes("--release")) throw new Error("--perf-audit requires --release");
-  if (!arguments_.includes("--background-dom"))
-    throw new Error("--perf-audit requires --background-dom");
   if (!arguments_.includes("--project"))
     throw new Error("--perf-audit requires an explicit isolated source project");
-  if (!PERFORMANCE_WINDOW_MODES.has(windowMode))
-    throw new Error("--window-mode must be minimized or offscreen");
-  return { enabled: true, windowMode };
+  const background = windowMode !== "visible";
+  if (background !== backgroundDom)
+    throw new Error(
+      background
+        ? "minimized or offscreen performance mode requires --background-dom"
+        : "--background-dom requires minimized or offscreen performance mode",
+    );
+  return { enabled: true, background, windowMode };
 }
 
 export async function validatePerformanceAuditProject(sourceProject, copiedProject) {
@@ -240,16 +265,22 @@ export async function capturePerformanceWindowSafety(
       visibilityState: document.visibilityState,
     };
   }, windowMode);
-  const foreground = await observeForegroundApplication();
+  const foreground =
+    windowMode === "visible" ? null : await observeForegroundApplication();
   const processTree = await capturePerformanceProcessTree(rootPid);
   const ownsForeground = processTree.some((process) => process.pid === foreground?.pid);
   const validPlacement =
-    windowMode === "minimized"
-      ? windowState.visible && windowState.minimized
-      : windowState.visible && !windowState.minimized && windowState.offscreen;
-  if (!validPlacement || windowState.focused || windowState.documentFocused || ownsForeground) {
+    windowMode === "visible"
+      ? windowState.visible && !windowState.minimized && !windowState.offscreen
+      : windowMode === "minimized"
+        ? windowState.visible && windowState.minimized
+        : windowState.visible && !windowState.minimized && windowState.offscreen;
+  const backgroundViolation =
+    windowMode !== "visible" &&
+    (windowState.focused || windowState.documentFocused || ownsForeground);
+  if (!validPlacement || backgroundViolation) {
     throw new Error(
-      `Tauri performance audit violated background-window safety: ${JSON.stringify({ windowState, foreground, foregroundBaseline })}`,
+      `Tauri performance audit violated window policy: ${JSON.stringify({ windowState, foreground, foregroundBaseline })}`,
     );
   }
   return { ...windowState, foreground, foregroundBaseline, ownsForeground, processTree };

@@ -1,8 +1,12 @@
 /* global document */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyBackgroundDomInput } from "../scripts/dom-test-input.mjs";
+import {
+  applyBackgroundDomInput,
+  hoverTauriTestElement,
+} from "../scripts/dom-test-input.mjs";
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   document.body.replaceChildren();
 });
 
@@ -50,5 +54,23 @@ describe("explicit background DOM input", () => {
     button.remove();
     expect(() => applyBackgroundDomInput(button)).toThrow("detached");
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("uses native WebDriver hover in the default visible mode", async () => {
+    vi.stubEnv("RUSTYERA_TEST_BACKGROUND_DOM", "0");
+    const browser = { execute: vi.fn() };
+    const element = { moveTo: vi.fn() };
+    await hoverTauriTestElement(browser, element);
+    expect(element.moveTo).toHaveBeenCalledOnce();
+    expect(browser.execute).not.toHaveBeenCalled();
+  });
+
+  it("uses DOM hover only for an explicitly background run", async () => {
+    vi.stubEnv("RUSTYERA_TEST_BACKGROUND_DOM", "1");
+    const browser = { execute: vi.fn().mockResolvedValue({ input: "hover", trusted: false }) };
+    const element = { moveTo: vi.fn() };
+    await hoverTauriTestElement(browser, element);
+    expect(browser.execute).toHaveBeenCalledWith(expect.any(Function), element);
+    expect(element.moveTo).not.toHaveBeenCalled();
   });
 });
