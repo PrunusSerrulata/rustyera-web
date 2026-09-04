@@ -1,4 +1,4 @@
-import { flushPromises, shallowMount } from "@vue/test-utils";
+import { flushPromises, mount, shallowMount } from "@vue/test-utils";
 import { nextTick, reactive, ref, unref } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -208,6 +208,7 @@ describe("game viewport", () => {
   });
 
   it("shares one compact depth order across scene, line HTML, text zero, and island HTML", () => {
+    virtualState.items = [{ index: 0, key: "1:1", start: 0 }];
     store.presentation.scene = { revision: 1, layers: [{ depth: 3 }] } as any;
     store.presentation.lines[0].runs = [
       {
@@ -474,6 +475,58 @@ describe("game viewport", () => {
     await flushPromises();
     expect(scrollToIndex).toHaveBeenCalled();
     expect(scrollTop).toBe(200);
+    wrapper.unmount();
+  });
+
+  it("cancels bottom following when rapid equal-length NF frames replace the map", async () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    const wrapper = mountViewport();
+    const viewport = wrapper.get<HTMLElement>("main").element;
+    let scrollTop = 50;
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 50 },
+      scrollHeight: { configurable: true, value: 100 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+    scrollToIndex.mockClear();
+    callbacks.length = 0;
+
+    store.presentation.inputWait = { viewport_policy: "preserve_user_viewport" };
+    store.presentation.lines = [
+      { line_id: 2, alignment: "left", runs: [], text_background_eligible: false },
+    ];
+    store.presentation.historyRevision += 1;
+    await nextTick();
+
+    expect(scrollToIndex).toHaveBeenCalledOnce();
+    expect(virtualOptions.value.value.rangeExtractor).not.toBe(defaultRangeExtractor);
+
+    store.presentation.lines = [
+      { line_id: 3, alignment: "left", runs: [], text_background_eligible: false },
+    ];
+    store.presentation.historyRevision += 1;
+    await nextTick();
+    store.presentation.lines = [
+      { line_id: 4, alignment: "left", runs: [], text_background_eligible: false },
+    ];
+    store.presentation.historyRevision += 1;
+    await nextTick();
+
+    for (const callback of callbacks.splice(0)) callback(0);
+    await flushPromises();
+    expect(scrollToIndex).toHaveBeenCalledOnce();
+    expect(scrollTop).toBe(50);
+    expect(virtualOptions.value.value.rangeExtractor).toBe(defaultRangeExtractor);
     wrapper.unmount();
   });
 
@@ -921,6 +974,112 @@ describe("game viewport", () => {
     await nextTick();
 
     expect(virtualOptions.value.value.getItemKey(1)).toBe("1:2");
+    wrapper.unmount();
+  });
+
+  it("reuses NF row keys within one viewport epoch without crossing boundaries", async () => {
+    store.presentation.inputWait = { viewport_policy: "preserve_user_viewport" };
+    store.presentation.lines = [
+      {
+        line_id: 1,
+        alignment: "left",
+        runs: [],
+        text_background_eligible: false,
+      },
+    ];
+    const wrapper = mountViewport();
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:nf:1:1");
+
+    let runReads = 0;
+    store.presentation.lines = [
+      {
+        line_id: 2,
+        alignment: "left",
+        get runs() {
+          runReads += 1;
+          return [
+            {
+              type: "html_document",
+              document: { nodes: [{ type: "text", text: "map html" }] },
+            },
+          ];
+        },
+        text_background_eligible: false,
+      },
+    ];
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:nf:1:1");
+    expect(runReads).toBe(0);
+
+    store.presentation.historyRevision += 1;
+    store.presentation.lines = [
+      {
+        line_id: 3,
+        alignment: "left",
+        runs: [],
+        text_background_eligible: false,
+      },
+    ];
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:nf:1:1");
+
+    store.presentation.inputWait = { viewport_policy: "follow_output" };
+    store.presentation.lines = [
+      {
+        line_id: 4,
+        alignment: "left",
+        runs: [{ type: "button", runs: [{ type: "text", text: "ordinary" }] }],
+        text_background_eligible: false,
+      },
+    ];
+    await nextTick();
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:4");
+
+    store.presentation.inputWait = { viewport_policy: "preserve_user_viewport" };
+    await nextTick();
+    store.presentation.lines = [
+      {
+        line_id: 4,
+        alignment: "left",
+        runs: [],
+        text_background_eligible: false,
+      },
+    ];
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:nf:2:4");
+    wrapper.unmount();
+  });
+
+  it("keeps an NF button mounted while updating its line and text", async () => {
+    virtualState.useOptionsRange = true;
+    store.presentation.inputWait = { viewport_policy: "preserve_user_viewport" };
+    store.presentation.lines = [
+      {
+        line_id: 1,
+        alignment: "left",
+        runs: [{ type: "button", runs: [{ type: "text", text: "frame 1" }] }],
+        text_background_eligible: false,
+      },
+    ];
+    const wrapper = mount(GameViewport, {
+      global: { stubs: { SceneCompositor: false, GameTooltip: true } },
+    });
+    const row = wrapper.get(".game-line").element;
+    const button = wrapper.get(".game-button").element;
+
+    store.presentation.lines = [
+      {
+        line_id: 2,
+        alignment: "left",
+        runs: [{ type: "button", runs: [{ type: "text", text: "frame 2" }] }],
+        text_background_eligible: false,
+      },
+    ];
+    store.presentation.revision += 1;
+    store.presentation.historyRevision += 1;
+    await nextTick();
+
+    expect(wrapper.get(".game-line").element).toBe(row);
+    expect(wrapper.get(".game-button").element).toBe(button);
+    expect(wrapper.get(".game-button").text()).toBe("frame 2");
+    expect(wrapper.getComponent(DisplayLine).props("line").line_id).toBe(2);
     wrapper.unmount();
   });
 

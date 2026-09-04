@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { htmlImageLayerOffsets } from "@/core/htmlImageLayerLayout";
+import { htmlImageLayerOffsets, htmlImageLayerOffsetsForRange } from "@/core/htmlImageLayerLayout";
 import type { DisplayLine } from "@/core/types";
 
 const htmlLine = (lineId: number, nodes: any[]): DisplayLine =>
@@ -71,6 +71,25 @@ describe("Snake HTML image layer layout", () => {
       [5, -51],
     ]);
     expect(lines).toHaveLength(6);
+  });
+
+  it("resolves a visible tail from its group origin without scanning unrelated history", () => {
+    const unrelated = htmlLine(1, []);
+    Object.defineProperty(unrelated, "runs", {
+      get() {
+        throw new Error("visible image layout must not scan unrelated history");
+      },
+    });
+    const lines = [
+      unrelated,
+      htmlLine(2, [{ type: "text", text: "separator" }]),
+      zeroSpace(3),
+      positionedImage(4, "first", 0),
+      zeroSpace(5),
+      positionedImage(6, "second", -100),
+    ];
+
+    expect([...htmlImageLayerOffsetsForRange(lines, 17, 4, 5)]).toEqual([[5, -34]]);
   });
 
   it("does not move ordinary images or nonzero layout spaces", () => {

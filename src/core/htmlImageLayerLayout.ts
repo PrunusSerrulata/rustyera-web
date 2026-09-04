@@ -22,10 +22,32 @@ export function htmlImageLayerOffsets(
   lines: readonly DisplayLine[],
   lineHeightPx: number,
 ): ReadonlyMap<number, number> {
+  return htmlImageLayerOffsetsForRange(lines, lineHeightPx, 0, lines.length - 1);
+}
+
+/** Resolve only groups intersecting the rendered virtual range. Backtracking follows the current
+ * image group to its real start, so layer offsets remain identical when the range begins midway
+ * through a group without scanning unrelated history. */
+export function htmlImageLayerOffsetsForRange(
+  lines: readonly DisplayLine[],
+  lineHeightPx: number,
+  firstIndex: number,
+  lastIndex: number,
+): ReadonlyMap<number, number> {
   const offsets = new Map<number, number>();
   if (!Number.isFinite(lineHeightPx) || lineHeightPx <= 0) return offsets;
+  if (!lines.length || firstIndex > lastIndex) return offsets;
 
-  for (let start = 0; start < lines.length - 1; start += 1) {
+  const first = Math.max(0, Math.min(lines.length - 1, Math.trunc(firstIndex)));
+  const last = Math.max(first, Math.min(lines.length - 1, Math.trunc(lastIndex)));
+  for (let start = Math.max(0, first - 1); start <= last && start < lines.length - 1; start += 1) {
+    if (!isZeroSpaceLine(lines[start]) || relativeImageLineY(lines[start + 1]) == null) continue;
+    while (
+      start >= 2 &&
+      relativeImageLineY(lines[start - 1]) != null &&
+      isZeroSpaceLine(lines[start - 2])
+    )
+      start -= 2;
     const rows: ImageLayerRow[] = [];
     let cursor = start;
     while (isZeroSpaceLine(lines[cursor])) {
@@ -35,9 +57,14 @@ export function htmlImageLayerOffsets(
       cursor += 2;
     }
     if (isImageLayerGroup(rows)) {
-      rows.forEach((row, layer) => offsets.set(row.index, -(layer + 1) * lineHeightPx));
-      start = cursor - 1;
+      rows.forEach((row, layer) => {
+        if (row.index >= first && row.index <= last)
+          offsets.set(row.index, -(layer + 1) * lineHeightPx);
+      });
     }
+    // Backtracking can move start before the loop's prior cursor. Always skip the group just
+    // inspected, including invalid groups, or the next iteration can rediscover it forever.
+    start = cursor - 1;
   }
   return offsets;
 }
