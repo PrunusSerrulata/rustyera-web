@@ -1026,6 +1026,74 @@ async function stopAtomicPresentationProbe(page) {
 export async function runAction(page, action) {
   if (action.type === "cancel_project_export")
     return cancelProjectExportDuringTransfer(page, action);
+  if (action.type === "reset_frontend_performance_audit") {
+    const state = await page.evaluate(() =>
+      window.__RUSTYERA_TEST__.resetFrontendPerformanceAudit(),
+    );
+    return { query: { performance_audit: state } };
+  }
+  if (action.type === "assert_animation_performance") {
+    const minimumFrames = Number(action.minimum_frames ?? 120);
+    const timeoutMs = Number(action.timeout_ms ?? 30_000);
+    if (!Number.isSafeInteger(minimumFrames) || minimumFrames < 3)
+      throw new Error("assert_animation_performance minimum_frames must be at least 3");
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+      throw new Error("assert_animation_performance timeout_ms must be positive");
+    await page.waitForFunction(
+      (minimum) =>
+        window.__RUSTYERA_TEST__.frontendPerformanceAuditProgress().publishedPresentationFrames >=
+        minimum,
+      minimumFrames,
+      { timeout: timeoutMs },
+    );
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
+        ),
+    );
+    const audit = await page.evaluate(() => window.__RUSTYERA_TEST__.frontendPerformanceAudit());
+    return {
+      query: {
+        animation_performance: assertAnimationPerformance(audit, {
+          minimumFrames,
+          maximumFrameIntervalMs: Number(action.maximum_frame_interval_ms ?? 33),
+          maximumPaintMs: Number(action.maximum_paint_ms ?? 33),
+        }),
+      },
+    };
+  }
+  if (action.type === "measure_animation_performance") {
+    const minimumFrames = Number(action.minimum_frames ?? 30);
+    const timeoutMs = Number(action.timeout_ms ?? 30_000);
+    if (!Number.isSafeInteger(minimumFrames) || minimumFrames < 3)
+      throw new Error("measure_animation_performance minimum_frames must be at least 3");
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+      throw new Error("measure_animation_performance timeout_ms must be positive");
+    await page.waitForFunction(
+      (minimum) =>
+        window.__RUSTYERA_TEST__.frontendPerformanceAuditProgress().publishedPresentationFrames >=
+        minimum,
+      minimumFrames,
+      { timeout: timeoutMs },
+    );
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
+        ),
+    );
+    const audit = await page.evaluate(() => window.__RUSTYERA_TEST__.frontendPerformanceAudit());
+    return { query: { animation_performance: measureAnimationPerformance(audit) } };
+  }
+  if (action.type === "wait_runtime_observation") {
+    const timeoutMs = Number(action.timeout_ms ?? 30_000);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+      throw new Error("wait_runtime_observation timeout_ms must be positive");
+    return {
+      query: { runtime_observation: await waitForRuntimeObservation(page, timeoutMs, true) },
+    };
+  }
   if (action.type === "wait_stable_observation") {
     const timeoutMs = Number(action.timeout_ms ?? 30_000);
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
@@ -1440,29 +1508,39 @@ export async function runAction(page, action) {
   if (action.type === "reveal_text") {
     const expected = String(action.text ?? "");
     if (!expected) throw new Error("reveal_text requires text");
-    const revealed = await page.evaluate(async (text) => {
-      const viewport = document.querySelector(".game-viewport");
-      if (!(viewport instanceof globalThis.HTMLElement)) return false;
-      const settle = () =>
-        new Promise((resolve) =>
-          window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
-        );
-      const step = Math.max(1, Math.floor(viewport.clientHeight / 2));
-      viewport.scrollTop = 0;
-      for (let position = 0; position <= viewport.scrollHeight + step; position += step) {
-        await settle();
-        const target = [...document.querySelectorAll(".game-line")].find((line) =>
-          line.textContent?.includes(text),
-        );
-        if (target instanceof globalThis.HTMLElement) {
-          target.scrollIntoView({ block: "center" });
+    const revealed = await page.evaluate(
+      async ({ text, fromEnd }) => {
+        const viewport = document.querySelector(".game-viewport");
+        if (!(viewport instanceof globalThis.HTMLElement)) return false;
+        const settle = () =>
+          new Promise((resolve) =>
+            window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
+          );
+        const step = Math.max(1, Math.floor(viewport.clientHeight / 2));
+        const findTarget = () => {
+          const lines = [...document.querySelectorAll(".game-line")];
+          if (fromEnd) lines.reverse();
+          return lines.find((line) => line.textContent?.includes(text));
+        };
+        viewport.scrollTop = fromEnd ? viewport.scrollHeight : 0;
+        for (
+          let position = viewport.scrollTop;
+          fromEnd ? position >= -step : position <= viewport.scrollHeight + step;
+          position += fromEnd ? -step : step
+        ) {
           await settle();
-          return true;
+          const target = findTarget();
+          if (target instanceof globalThis.HTMLElement) {
+            target.scrollIntoView({ block: "center" });
+            await settle();
+            return true;
+          }
+          viewport.scrollTop = position + (fromEnd ? -step : step);
         }
-        viewport.scrollTop = position + step;
-      }
-      return false;
-    }, expected);
+        return false;
+      },
+      { text: expected, fromEnd: action.from_end === true },
+    );
     if (!revealed) throw new Error(`reveal_text could not find ${JSON.stringify(expected)}`);
     return { query: { revealed_text: expected } };
   }
@@ -1621,6 +1699,112 @@ export async function runAction(page, action) {
     return { state };
   } else throw new Error(`unknown action type ${action.type}`);
   return { semanticInput: action.semantic_input };
+}
+
+export function assertAnimationPerformance(
+  audit,
+  { minimumFrames, maximumFrameIntervalMs, maximumPaintMs },
+) {
+  if (!Number.isFinite(maximumFrameIntervalMs) || maximumFrameIntervalMs <= 0)
+    throw new Error("animation maximum frame interval must be positive");
+  if (!Number.isFinite(maximumPaintMs) || maximumPaintMs <= 0)
+    throw new Error("animation maximum paint latency must be positive");
+  if (audit.timingSamplesDropped !== 0)
+    throw new Error(`animation telemetry dropped ${audit.timingSamplesDropped} timing samples`);
+  const publishes = audit.timings.filter(
+    (sample) => sample.phase === "presentation" && sample.operation === "publish",
+  );
+  if (publishes.length < minimumFrames)
+    throw new Error(`animation published ${publishes.length} frames, expected ${minimumFrames}`);
+  const intervals = publishes.slice(1).map((sample, index) => {
+    return sample.startedAtMs - publishes[index].startedAtMs;
+  });
+  const maximumIntervalMs = Math.max(...intervals);
+  if (
+    intervals.some(
+      (interval) =>
+        !Number.isFinite(interval) || interval <= 0 || interval > maximumFrameIntervalMs,
+    )
+  )
+    throw new Error(
+      `animation frame interval ${maximumIntervalMs} ms exceeded ${maximumFrameIntervalMs} ms`,
+    );
+
+  const revisions = publishes.map((sample) => BigInt(sample.detail?.presentationRevision));
+  const revisionSteps = revisions.slice(1).map((revision, index) => revision - revisions[index]);
+  const expectedRevisionStep = revisionSteps[0];
+  if (expectedRevisionStep <= 0n || revisionSteps.some((step) => step !== expectedRevisionStep))
+    throw new Error(
+      `animation presentation revisions skipped a frame: ${revisions.map(String).join(",")}`,
+    );
+
+  const mutatedRevisions = new Set(
+    audit.timings
+      .filter((sample) => sample.phase === "dom_mutation")
+      .map((sample) => String(sample.detail?.presentationRevision)),
+  );
+  const missingDomRevisions = revisions.filter(
+    (revision) => !mutatedRevisions.has(String(revision)),
+  );
+  if (missingDomRevisions.length)
+    throw new Error(
+      `animation frames did not reach the DOM: ${missingDomRevisions.map(String).join(",")}`,
+    );
+
+  const paints = audit.timings.filter(
+    (sample) => sample.phase === "next_paint" && sample.operation === "presentation",
+  );
+  if (!paints.length) throw new Error("animation produced no paint checkpoints");
+  const timedOutPaint = paints.find((sample) => sample.detail?.timedOut === true);
+  if (timedOutPaint) throw new Error("animation paint checkpoint timed out");
+  const maximumObservedPaintMs = Math.max(0, ...paints.map((sample) => sample.elapsedMs));
+  if (maximumObservedPaintMs > maximumPaintMs)
+    throw new Error(
+      `animation paint latency ${maximumObservedPaintMs} ms exceeded ${maximumPaintMs} ms`,
+    );
+  return {
+    frames: publishes.length,
+    maximumIntervalMs,
+    revisionStep: String(expectedRevisionStep),
+    domSynchronizedFrames: publishes.length,
+    paintCheckpoints: paints.length,
+    maximumPaintMs: maximumObservedPaintMs,
+  };
+}
+
+export function measureAnimationPerformance(audit) {
+  if (audit.timingSamplesDropped !== 0)
+    throw new Error(`animation telemetry dropped ${audit.timingSamplesDropped} timing samples`);
+  const publishes = audit.timings.filter(
+    (sample) => sample.phase === "presentation" && sample.operation === "publish",
+  );
+  const intervals = publishes
+    .slice(1)
+    .map((sample, index) => sample.startedAtMs - publishes[index].startedAtMs);
+  const revisions = publishes.map((sample) => BigInt(sample.detail?.presentationRevision));
+  const revisionSteps = revisions.slice(1).map((revision, index) => revision - revisions[index]);
+  const mutatedRevisions = new Set(
+    audit.timings
+      .filter((sample) => sample.phase === "dom_mutation")
+      .map((sample) => String(sample.detail?.presentationRevision)),
+  );
+  const paints = audit.timings.filter(
+    (sample) => sample.phase === "next_paint" && sample.operation === "presentation",
+  );
+  return {
+    frames: publishes.length,
+    maximumIntervalMs: intervals.length ? Math.max(...intervals) : null,
+    revisionStep: revisionSteps.length ? String(revisionSteps[0]) : null,
+    revisionStepConstant:
+      revisionSteps.length > 0 &&
+      revisionSteps[0] > 0n &&
+      revisionSteps.every((step) => step === revisionSteps[0]),
+    domSynchronizedFrames: revisions.filter((revision) => mutatedRevisions.has(String(revision)))
+      .length,
+    paintCheckpoints: paints.length,
+    timedOutPaintCheckpoints: paints.filter((sample) => sample.detail?.timedOut === true).length,
+    maximumPaintMs: paints.length ? Math.max(...paints.map((sample) => sample.elapsedMs)) : null,
+  };
 }
 
 function hex(bytes) {

@@ -2,6 +2,7 @@
   "schema_version": 1,
   "project": "../../../../games/erarorona",
   "mode": "fixed",
+  "summary_observations": true,
   "compiled_cache": false,
   "start": {
     "type": "traditional_save",

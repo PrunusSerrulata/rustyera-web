@@ -41,8 +41,10 @@ import {
 } from "@/platform/browserProjectSourceIndex";
 import { dispatchBrowserStorage } from "@/platform/browserProjectStorage";
 import {
+  indexBrowserStorageResources,
   maximumResourceReadBytes,
   type BrowserStorageResource,
+  type BrowserStorageResourceIndex,
 } from "@/platform/browserResourceStorage";
 import { isPackagedProjectFontPath, type ProjectFontSource } from "@/platform/projectFonts";
 import { scanBrowserProjectFilesOffThread } from "@/platform/browserProjectScanPool";
@@ -158,6 +160,10 @@ export class BrowserProject {
   private compatibilityValue?: CompatibilityIdentity;
   private resolvedConfigurationDigest?: Uint8Array | null;
   private dataRootValue?: FileSystemDirectoryHandle;
+  private resourceStorageCache?: {
+    manifest: BrowserManifest | undefined;
+    index: BrowserStorageResourceIndex;
+  };
 
   constructor(
     readonly root: FileSystemDirectoryHandle,
@@ -1321,7 +1327,9 @@ export class BrowserProject {
     }
   }
 
-  private storageResources(): BrowserStorageResource[] {
+  private storageResources(): BrowserStorageResourceIndex {
+    if (this.resourceStorageCache && this.resourceStorageCache.manifest === this.manifestValue)
+      return this.resourceStorageCache.index;
     const canonical = new Set<string>();
     const resources: BrowserStorageResource[] = [];
     for (const file of this.manifestValue?.files ?? []) {
@@ -1368,7 +1376,9 @@ export class BrowserProject {
         },
       });
     }
-    return resources;
+    const index = indexBrowserStorageResources(resources);
+    this.resourceStorageCache = { manifest: this.manifestValue, index };
+    return index;
   }
 
   private async enumerateFiles(progress?: (visitedEntries: number) => void) {

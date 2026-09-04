@@ -4,6 +4,39 @@ export interface IsolatedProject {
   close(): Promise<void>;
 }
 
+export function assertAtomicPresentationTransition(
+  samples: Array<{ revision: unknown; historyRevision: unknown; canInteract: boolean }>,
+  completedPresentation: { revision: unknown; historyRevision: unknown },
+): {
+  startRevision: string;
+  endRevision: string;
+  startHistoryRevision: string;
+  endHistoryRevision: string;
+  paintedRevisions: string[];
+  paintedHistoryRevisions: string[];
+  samples: Array<{ revision: unknown; historyRevision: unknown; canInteract: boolean }>;
+};
+
+export function measureAnimationPerformance(audit: {
+  timingSamplesDropped: number;
+  timings: Array<{
+    phase: string;
+    operation: string;
+    startedAtMs: number;
+    elapsedMs: number;
+    detail?: Record<string, unknown>;
+  }>;
+}): {
+  frames: number;
+  maximumIntervalMs: number | null;
+  revisionStep: string | null;
+  revisionStepConstant: boolean;
+  domSynchronizedFrames: number;
+  paintCheckpoints: number;
+  timedOutPaintCheckpoints: number;
+  maximumPaintMs: number | null;
+};
+
 export function runAction(
   page: Pick<import("@playwright/test").Page, "evaluate">,
   action: { type: "assert_interop"; expect: unknown; evidence_path?: string },

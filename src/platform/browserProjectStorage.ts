@@ -23,6 +23,7 @@ import { decodeProtocolBytes, storageDirectoryName } from "@/platform/browserPro
 import {
   operateBrowserResourceStorage,
   type BrowserStorageResource,
+  type BrowserStorageResourceIndex,
 } from "@/platform/browserResourceStorage";
 
 export async function dispatchBrowserStorage(
@@ -32,7 +33,7 @@ export async function dispatchBrowserStorage(
   operation: any,
   dataRoot: FileSystemDirectoryHandle = projectRoot,
   allowRootReadFallback = true,
-  resources: readonly BrowserStorageResource[] = [],
+  resources: readonly BrowserStorageResource[] | BrowserStorageResourceIndex = [],
   dataPathIdentity: "literal" | "nfc_lower" = "literal",
   profile: StoragePatternProfile = "emuera.em",
 ): Promise<any> {

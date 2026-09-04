@@ -1,3 +1,4 @@
+/* global window */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";

@@ -1,4 +1,4 @@
-/* global document, navigator, getComputedStyle, HTMLInputElement */
+/* global document, navigator, getComputedStyle, HTMLInputElement, MouseEvent, PointerEvent */
 
 // Explicit background coverage: real DOM handlers and host transport, without
 // claiming trusted hardware input or bypassing the production interaction policy.

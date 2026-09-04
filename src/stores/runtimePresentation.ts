@@ -6,7 +6,11 @@ import {
   emptyPresentation,
   type PresentationState,
 } from "@/core/presentation";
-import { PERFORMANCE_AUDIT_ENABLED, recordPerformanceTiming } from "@/testing/performanceAudit";
+import {
+  PERFORMANCE_AUDIT_ENABLED,
+  recordPerformanceTiming,
+  recordPublishedPresentationRevision,
+} from "@/testing/performanceAudit";
 
 export class RuntimePresentationProjection {
   readonly presentation = reactive(emptyPresentation());
@@ -55,6 +59,10 @@ export class RuntimePresentationProjection {
     if (stagedRevision !== expectedRevision) {
       throw new Error(`立即展示 revision 不匹配：期望 ${expectedRevision}，当前 ${stagedRevision}`);
     }
+    return this.publishForObservationBarrier();
+  }
+
+  publishForObservationBarrier(): boolean {
     if (!this.stagedPresentation) return false;
     const continueInputTransition = this.stagedForInputTransition;
     const published = this.publish();
@@ -89,7 +97,12 @@ export class RuntimePresentationProjection {
     }
     Object.assign(this.presentation, staged);
     this.discard();
-    if (PERFORMANCE_AUDIT_ENABLED) recordPerformanceTiming("presentation", "publish", startedAt);
+    if (PERFORMANCE_AUDIT_ENABLED) {
+      recordPublishedPresentationRevision(this.presentation.revision);
+      recordPerformanceTiming("presentation", "publish", startedAt, {
+        presentationRevision: String(this.presentation.revision),
+      });
+    }
     return true;
   }
 
@@ -110,8 +123,10 @@ export class RuntimePresentationProjection {
     }
     this.discard();
     Object.assign(this.presentation, next);
-    if (PERFORMANCE_AUDIT_ENABLED)
+    if (PERFORMANCE_AUDIT_ENABLED) {
+      recordPublishedPresentationRevision(this.presentation.revision);
       recordPerformanceTiming("presentation", "snapshot_publish", startedAt);
+    }
     return true;
   }
 
@@ -154,8 +169,10 @@ export class RuntimePresentationProjection {
     if (target === this.stagedPresentation) this.prepareStagedLines(operations);
     applyDelta(target, delta);
     if (target !== this.stagedPresentation) {
-      if (PERFORMANCE_AUDIT_ENABLED)
+      if (PERFORMANCE_AUDIT_ENABLED) {
+        recordPublishedPresentationRevision(this.presentation.revision);
         recordPerformanceTiming("presentation", "delta_publish", startedAt);
+      }
       return true;
     }
     if (disablesRedraw || target.redraw?.enabled === false) this.stagedCanFlushWhenIdle = false;

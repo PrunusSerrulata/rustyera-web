@@ -42,6 +42,7 @@ import {
 } from "./snake-service-capture-client.mjs";
 import {
   capturePerformanceWindowSafety,
+  instrumentedPerformanceWindowMode,
   observeForegroundApplication,
   performanceAuditOptions,
   resolvePerformanceRootPid,
@@ -158,6 +159,13 @@ const specProfiles = {
     release: true,
     timeoutMs: 900_000,
   },
+  "snake-bad-apple.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_BAD_APPLE",
+    copyProject: true,
+    performanceAudit: true,
+    release: true,
+    timeoutMs: 300_000,
+  },
   "project-smoke.spec.mjs": { environmentFlag: "VITE_RUSTYERA_TAURI_PROJECT_SMOKE" },
   "erafl-save-load-shapes.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_ERAFL_SAVE_LOAD_SHAPES",
@@ -233,6 +241,8 @@ const specProfiles = {
   },
 };
 const specProfile = specName ? specProfiles[specName] : undefined;
+const instrumentPerformance = perfAudit.enabled || specProfile?.performanceAudit === true;
+const performanceWindowMode = instrumentedPerformanceWindowMode(perfAudit, instrumentPerformance);
 const release = releaseRequested || specProfile?.release === true;
 const configuredState = stateIndex >= 0 ? arguments_[stateIndex + 1] : specProfile?.defaultState;
 const configuredStateType =
@@ -330,15 +340,15 @@ if (["snake-service-lifecycle.spec.mjs", "snake-sql.spec.mjs"].includes(specName
 const environment = {
   ...process.env,
   RUSTYERA_TEST_BACKGROUND_DOM: backgroundDom ? "1" : "0",
-  RUSTYERA_TAURI_PERF_AUDIT: perfAudit.enabled ? "1" : "0",
-  RUSTYERA_TAURI_PERF_WINDOW_MODE: perfAudit.windowMode ?? "",
+  RUSTYERA_TAURI_PERF_AUDIT: instrumentPerformance ? "1" : "0",
+  RUSTYERA_TAURI_PERF_WINDOW_MODE: performanceWindowMode ?? "",
   // WebdriverIO's bundled Undici dispatcher is incompatible with Node 26 when
   // it creates the local Tauri WebDriver session. Select Node's native fetch
   // before importing the service so the choice is cross-platform and stable.
   WDIO_USE_NATIVE_FETCH: "1",
   VITE_RUSTYERA_TEST: "1",
   VITE_RUSTYERA_TAURI_TEST: "1",
-  VITE_RUSTYERA_PERF_AUDIT: perfAudit.enabled ? "1" : "0",
+  VITE_RUSTYERA_PERF_AUDIT: instrumentPerformance ? "1" : "0",
   VITE_RUSTYERA_TEST_PROJECT: project,
   RUSTYERA_LIFECYCLE_REPLACEMENT_PROJECT: replacementProject ?? "",
   RUSTYERA_SQL_REPLACEMENT_PROJECT:
@@ -395,9 +405,9 @@ const buildArguments = [
   ...(release ? [] : ["--debug"]),
   "--no-bundle",
   "--features",
-  perfAudit.enabled ? "webdriver,performance-audit" : "webdriver",
+  instrumentPerformance ? "webdriver,performance-audit" : "webdriver",
   "--config",
-  perfAudit.enabled
+  instrumentPerformance
     ? "src-tauri/tauri.performance.conf.json"
     : "src-tauri/tauri.webdriver.conf.json",
   ...(nativeProvider?.cargoArguments ?? []),
@@ -482,6 +492,7 @@ let browser;
 let monitor;
 let runError;
 let finalizationError;
+let mochaFailure;
 const foregroundBaseline = perfAudit.background ? await observeForegroundApplication() : undefined;
 if (perfAudit.background)
   console.log(
@@ -598,6 +609,14 @@ try {
       if (failures === 0) resolve();
       else reject(new Error(`${failures} Tauri end-to-end test(s) failed`));
     });
+    runner.once("fail", (test, error) => {
+      mochaFailure = {
+        test: test.fullTitle(),
+        name: error?.name ?? "Error",
+        message: error?.message ?? String(error),
+        stack: error?.stack ?? null,
+      };
+    });
     runner.once("error", reject);
   });
   try {
@@ -660,6 +679,12 @@ try {
     snapshotLog.end(resolve);
   });
 }
+if (mochaFailure)
+  await writeFile(
+    `${snapshotLogPath}.failure.json`,
+    `${JSON.stringify({ stage: activeStage, ...mochaFailure }, null, 2)}\n`,
+    { flag: "wx" },
+  );
 if (runError ?? finalizationError) throw runError ?? finalizationError;
 
 async function prewarmTuiCache(sourceProject, runDirectory) {

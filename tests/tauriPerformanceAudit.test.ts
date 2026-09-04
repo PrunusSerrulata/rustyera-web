@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   classifyWindowCalibration,
+  instrumentedPerformanceWindowMode,
   performanceAuditOptions,
   performanceWindowArguments,
   performanceWindowMode,
@@ -38,6 +39,18 @@ describe("Tauri performance audit runner policy", () => {
       ).toThrow();
     }
     expect(() => performanceAuditOptions(valid, "snake-profile.spec.mjs")).toThrow("single");
+  });
+
+  it("gives profile-enabled instrumentation a valid native window mode", () => {
+    const ordinary = { enabled: false, background: false, windowMode: undefined };
+    expect(instrumentedPerformanceWindowMode(ordinary, false)).toBeUndefined();
+    expect(instrumentedPerformanceWindowMode(ordinary, true)).toBe("visible");
+    expect(
+      instrumentedPerformanceWindowMode(
+        { enabled: true, background: true, windowMode: "offscreen" },
+        true,
+      ),
+    ).toBe("offscreen");
   });
 
   it("enables hidden-window safeguards only when explicitly requested", () => {

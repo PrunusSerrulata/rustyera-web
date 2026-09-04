@@ -11,9 +11,7 @@ export const DEFAULT_PERFORMANCE_WINDOW_MODE = "visible";
 export const PERFORMANCE_WINDOW_MODES = new Set(["visible", "minimized", "offscreen"]);
 
 export function performanceWindowMode(arguments_) {
-  const indexes = arguments_.flatMap((value, index) =>
-    value === "--window-mode" ? [index] : [],
-  );
+  const indexes = arguments_.flatMap((value, index) => (value === "--window-mode" ? [index] : []));
   if (indexes.length > 1) throw new Error("--window-mode may be specified only once");
   if (indexes.length === 0) return DEFAULT_PERFORMANCE_WINDOW_MODE;
   const mode = arguments_[indexes[0] + 1];
@@ -29,6 +27,11 @@ export function performanceWindowArguments(mode) {
   return [...(mode === "visible" ? [] : ["--background-dom"]), "--window-mode", mode];
 }
 
+export function instrumentedPerformanceWindowMode(options, instrumentPerformance) {
+  if (!instrumentPerformance) return undefined;
+  return options.windowMode ?? DEFAULT_PERFORMANCE_WINDOW_MODE;
+}
+
 export function performanceAuditOptions(arguments_, specName, paths = {}) {
   const enabled = arguments_.includes("--perf-audit");
   const backgroundDom = arguments_.includes("--background-dom");
@@ -38,11 +41,9 @@ export function performanceAuditOptions(arguments_, specName, paths = {}) {
     if (hasWindowMode) throw new Error("--window-mode requires --perf-audit");
     return { enabled: false, background: false, windowMode: undefined };
   }
-  for (const flag of ["--perf-audit", "--release"])
-    requireOccurrences(arguments_, flag, 1);
+  for (const flag of ["--perf-audit", "--release"]) requireOccurrences(arguments_, flag, 1);
   if (backgroundDom) requireOccurrences(arguments_, "--background-dom", 1);
-  for (const option of ["--project", "--spec"])
-    requireSingleOptionValue(arguments_, option);
+  for (const option of ["--project", "--spec"]) requireSingleOptionValue(arguments_, option);
   for (const optionalFlag of ["--reuse-build", "--require-reuse-build"])
     if (arguments_.includes(optionalFlag)) requireOccurrences(arguments_, optionalFlag, 1);
   for (const rejected of [
@@ -81,7 +82,8 @@ export function performanceAuditOptions(arguments_, specName, paths = {}) {
 export async function validatePerformanceAuditProject(sourceProject, copiedProject) {
   const source = await realpath(sourceProject);
   const copy = copiedProject == null ? undefined : await realpath(copiedProject);
-  if (copy && copy === source) throw new Error("performance audit project copy resolves to its source");
+  if (copy && copy === source)
+    throw new Error("performance audit project copy resolves to its source");
   for (const project of [source, copy].filter(Boolean)) {
     const configuration = decodeProjectText(
       await readFile(`${project}/reraconfig.toml`),
@@ -101,7 +103,9 @@ export async function performanceProjectDigest(root) {
   await inventory(project, "", paths);
   const hasCsv = await hasDirectChildDirectory(project, "csv");
   const hasErb = await hasDirectChildDirectory(project, "erb");
-  paths.sort((left, right) => Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")));
+  paths.sort((left, right) =>
+    Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")),
+  );
   for (const relative of paths) {
     const category = classifyProjectInput(relative, hasCsv, hasErb);
     if (category == null) continue;
@@ -159,7 +163,21 @@ function classifyProjectInput(relative, hasCsv, hasErb) {
       : "resource";
   if (first === "resources") {
     if (extension === "csv") return "resource_manifest";
-    return ["bmp", "gif", "jpeg", "jpg", "png", "webp", "aac", "flac", "m4a", "mp3", "ogg", "opus", "wav"].includes(extension)
+    return [
+      "bmp",
+      "gif",
+      "jpeg",
+      "jpg",
+      "png",
+      "webp",
+      "aac",
+      "flac",
+      "m4a",
+      "mp3",
+      "ogg",
+      "opus",
+      "wav",
+    ].includes(extension)
       ? "resource"
       : null;
   }
@@ -173,8 +191,7 @@ function classifyProjectInput(relative, hasCsv, hasErb) {
   if (extension === "erb" && (!hasErb || first === "erb")) return "erb";
   if (extension === "erh" && (!hasErb || first === "erb")) return "erh";
   if (extension === "erd" && (!hasErb || first === "erb")) return "erd";
-  if (extension === "als" && (!(hasCsv || hasErb) || ["csv", "erb"].includes(first)))
-    return "als";
+  if (extension === "als" && (!(hasCsv || hasErb) || ["csv", "erb"].includes(first))) return "als";
   if (extension === "config" && (!hasCsv || !lower.includes("/") || first === "csv"))
     return "configuration";
   return null;
@@ -265,8 +282,7 @@ export async function capturePerformanceWindowSafety(
       visibilityState: document.visibilityState,
     };
   }, windowMode);
-  const foreground =
-    windowMode === "visible" ? null : await observeForegroundApplication();
+  const foreground = windowMode === "visible" ? null : await observeForegroundApplication();
   const processTree = await capturePerformanceProcessTree(rootPid);
   const ownsForeground = processTree.some((process) => process.pid === foreground?.pid);
   const validPlacement =
@@ -339,7 +355,8 @@ export async function capturePerformanceProcessTree(binary, platform = process.p
 }
 
 export async function resolvePerformanceRootPid(binary, platform = process.platform) {
-  if (platform === "win32") throw new Error("performance PID resolution is not implemented on Windows");
+  if (platform === "win32")
+    throw new Error("performance PID resolution is not implemented on Windows");
   const resolvedBinary = await realpath(binary);
   const { stdout } = await promisify(execFile)("/bin/ps", ["-axo", "pid=,command="], {
     timeout: 3_000,

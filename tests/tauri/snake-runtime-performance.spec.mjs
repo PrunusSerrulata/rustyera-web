@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { access, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
 
 import { clickTauriTestElement } from "../../scripts/dom-test-input.mjs";
 import {

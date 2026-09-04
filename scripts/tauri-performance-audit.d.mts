@@ -6,12 +6,12 @@ export interface PerformanceAuditOptions {
 
 export const DEFAULT_PERFORMANCE_WINDOW_MODE: "visible";
 export const PERFORMANCE_WINDOW_MODES: ReadonlySet<"visible" | "minimized" | "offscreen">;
-export function performanceWindowMode(
-  arguments_: string[],
-): "visible" | "minimized" | "offscreen";
-export function performanceWindowArguments(
-  mode: "visible" | "minimized" | "offscreen",
-): string[];
+export function performanceWindowMode(arguments_: string[]): "visible" | "minimized" | "offscreen";
+export function performanceWindowArguments(mode: "visible" | "minimized" | "offscreen"): string[];
+export function instrumentedPerformanceWindowMode(
+  options: PerformanceAuditOptions,
+  instrumentPerformance: boolean,
+): "visible" | "minimized" | "offscreen" | undefined;
 
 export function performanceAuditOptions(
   arguments_: string[],
@@ -40,4 +40,7 @@ export function validatePerformanceAuditProject(
 ): Promise<{ source: string; copy: string | undefined }>;
 export function performanceProjectDigest(root: string): Promise<string>;
 
-export function resolvePerformanceRootPid(binary: string, platform?: NodeJS.Platform): Promise<number>;
+export function resolvePerformanceRootPid(
+  binary: string,
+  platform?: NodeJS.Platform,
+): Promise<number>;

@@ -40,6 +40,9 @@ export interface WebTestControl {
   calibratePerformanceFrames(frameCount?: number): Promise<Record<string, unknown>>;
   performanceAudit(): Promise<Record<string, unknown>>;
   resetPerformanceAudit(): Promise<{ frontendEpoch: number; nativeEpoch: number }>;
+  frontendPerformanceAudit(): Record<string, unknown>;
+  frontendPerformanceAuditProgress(): Record<string, number>;
+  resetFrontendPerformanceAudit(): { frontendEpoch: number };
   performanceCheckpoint(watches: string[]): Promise<Record<string, unknown>>;
 }
 
@@ -64,6 +67,15 @@ export function stableObservationSignature(snapshot: Record<string, unknown>): s
   // Servicing the background pump does not change an otherwise ready input boundary.
   // This affects only action settling; the complete-snapshot watchdog keeps this field.
   delete observed.cooperativeBackgroundWorkRevision;
+  if (observed.audioProvider && typeof observed.audioProvider === "object")
+    observed.audioProvider = Object.fromEntries(
+      Object.entries(observed.audioProvider).map(([channel, state]) => [
+        channel,
+        state && typeof state === "object"
+          ? { ...(state as Record<string, unknown>), positionMs: 0 }
+          : state,
+      ]),
+    );
   return JSON.stringify(observed);
 }
 
@@ -165,6 +177,18 @@ export function installWebTestControl(pinia: Pinia): void {
       store.reloadProject(scope === "all" ? { type: "all" } : { type: scope, path: path ?? "" }),
     exportDiagnosis: () => store.exportDiagnosis(),
     calibratePerformanceFrames,
+    frontendPerformanceAudit() {
+      if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
+      return serialize(performanceAuditSnapshot());
+    },
+    frontendPerformanceAuditProgress() {
+      if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
+      return performanceAuditProgress();
+    },
+    resetFrontendPerformanceAudit() {
+      if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
+      return { frontendEpoch: resetPerformanceAudit() };
+    },
     async resetPerformanceAudit() {
       if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
       const frontendEpoch = resetPerformanceAudit();
@@ -273,8 +297,7 @@ export function installWebTestControl(pinia: Pinia): void {
     async performanceCheckpoint(watches) {
       if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
       const wait = store.presentation.inputWait as
-        | { kind?: string; wait_id?: unknown; generation?: unknown }
-        | undefined;
+        { kind?: string; wait_id?: unknown; generation?: unknown } | undefined;
       const variables = await store.inspectTypedWatches(watches);
       const protocol = store.testRuntimeEvidence() as { records?: unknown[] };
       return serialize({
@@ -645,10 +668,7 @@ export function capturedCoreSetupMessages(
   const lifecycleSubmissions = runtime
     .slice(manifest + 1, start)
     .filter((record) => record.direction === "send" && record.message?.type != null);
-  if (
-    lifecycleSubmissions.length !== 1 ||
-    lifecycleSubmissions[0].message?.type !== "project_load"
-  )
+  if (lifecycleSubmissions.length !== 1 || lifecycleSubmissions[0].message?.type !== "project_load")
     throw new Error(
       "Core companion cannot place messages submitted after project_manifest and before start; expected only project_load",
     );

@@ -304,6 +304,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let deviceEventSequence = 0;
   let deviceGeneration = 0;
   let devicePumpTimeAdvancePending = false;
+  let devicePumpInputCaptureActive = false;
+  let deviceTextInputActive = false;
+  let deviceTextObservationTail: Promise<void> = Promise.resolve();
   let presentedTimedViewportWait: { waitId: string; earliestAdvanceNs: number } | undefined;
   let lastTimedViewportAdvanceNs: number | undefined;
   const testAudioPlayback = new Map<string, { starts: number; active: number }>();
@@ -960,12 +963,13 @@ export const useRuntimeStore = defineStore("runtime", () => {
         continue;
       }
       if (event.channel === "runtime" && event.message.type === "service_request") {
+        const request = (event.message as RuntimeMessage).value;
+        if (request.kind === "input_state" && request.operation === "device_pump") {
+          const published = presentationProjection.publishForObservationBarrier();
+          batchMediaDirty = published || batchMediaDirty;
+        }
         // Service decoding must not block later cancellation or epoch changes in this batch.
-        void handleService(
-          (event.message as RuntimeMessage).value,
-          event.correlationId,
-          event.epoch ?? runtimeEpoch.value,
-        );
+        void handleService(request, event.correlationId, event.epoch ?? runtimeEpoch.value);
         index += 1;
         continue;
       }
@@ -984,6 +988,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (presentationProjection.shouldPublish(batch.state))
       batchMediaDirty = presentationProjection.publish() || batchMediaDirty;
     if (batchMediaDirty) await synchronizeMedia();
+    if (presentation.inputWait != null) {
+      devicePumpInputCaptureActive = false;
+      if (deviceTextInputActive) {
+        deviceTextInputActive = false;
+        prompt.value = "";
+        await observeDeviceTextBox();
+      }
+    }
     if (debugRequests.grantRefreshNeeded) {
       debugRequests.grantRefreshNeeded = false;
       await requestDebugGrant();
@@ -1888,14 +1900,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
       resetTimedViewportRecovery();
     }
     const advancingDevicePump = devicePumpTimeAdvancePending;
-    if (
-      (wait?.deadline_ns == null && !advancingDevicePump) ||
-      pendingGameInput.value != null ||
-      pendingInputUndo.value != null
-    )
+    if (wait?.deadline_ns == null && !advancingDevicePump) return;
+    if (!advancingDevicePump && (pendingGameInput.value != null || pendingInputUndo.value != null))
       return;
+    if (deviceTextInputActive) await observeDeviceTextBox();
     const now = sampleMonotonicTime();
-    if (preservesTimedViewport) {
+    if (preservesTimedViewport && !advancingDevicePump) {
       const waitId = String(wait.wait_id);
       if (presentedTimedViewportWait?.waitId !== waitId) {
         // A short NF wait can already be overdue by the time its output batch has crossed WASM,
@@ -3395,10 +3405,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function projectViewport(
     measurement = currentGameViewportMeasurement(),
     layoutIdentity = viewportLayoutIdentity,
+    allowDuringPresentationBarrier = false,
   ): Promise<void> {
     viewportLayoutIdentity = layoutIdentity;
     const environmentIdentity = viewportEnvironmentIdentity();
-    if (projectionObservationBarriers.size > 0 && measurement != null) {
+    if (
+      !allowDuringPresentationBarrier &&
+      projectionObservationBarriers.size > 0 &&
+      measurement != null
+    ) {
       deferredViewportProjection = { measurement: { ...measurement }, layoutIdentity };
       return;
     }
@@ -3458,6 +3473,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     deviceGeneration += 1;
     deviceEventSequence = 0;
     devicePumpTimeAdvancePending = false;
+    devicePumpInputCaptureActive = false;
+    deviceTextInputActive = false;
+    deviceTextObservationTail = Promise.resolve();
     deviceSubmissionFailure = undefined;
     deviceSynchronizationPending = true;
     if (!clearPhysicalState) return;
@@ -3566,6 +3584,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     // a timing approximation.
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
     await awaitDeviceSubmissions();
+    await deviceTextObservationTail;
     if (generation !== deviceGeneration || !sameServiceInteger(epoch, runtimeEpoch.value))
       throw new RuntimeServiceError("stale_projection", "device pump epoch changed");
     if (BigInt(afterEventSequence) > BigInt(deviceEventSequence))
@@ -3577,6 +3596,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     // core rather than exposed in the device-pump ABI, so keep sampling frontend time until core
     // leaves waiting_external. AWAIT 0 may receive one harmless sample before its phase update.
     devicePumpTimeAdvancePending = true;
+    devicePumpInputCaptureActive = true;
     return deviceEventSequence;
   }
 
@@ -3805,7 +3825,35 @@ export const useRuntimeStore = defineStore("runtime", () => {
     ) {
       event.preventDefault();
       void submitIntent({ type: "any_key", value: event.key || "\n" }, false);
+    } else if (
+      !event.defaultPrevented &&
+      !event.repeat &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      devicePumpInputCaptureActive &&
+      !canInteract.value
+    ) {
+      event.preventDefault();
+      // Native Emuera keeps its text box observable while AWAIT pumps devices. Mirror that
+      // state even though the Vue prompt is disabled, so GETTEXTBOX can end media sequences.
+      signalDeviceTextInput(event.key.length === 1 ? event.key : " ");
     }
+  }
+
+  function signalDeviceTextInput(text: string): void {
+    prompt.value += text;
+    deviceTextInputActive = true;
+  }
+
+  function observeDeviceTextBox(): Promise<void> {
+    deviceTextObservationTail = deviceTextObservationTail
+      // DevicePump is serviced behind a presentation barrier. A text-only observation must not
+      // wait for geometry projection, otherwise AWAIT can advance forever without GETTEXTBOX
+      // seeing the input that is meant to stop it.
+      .then(() => projectViewport(undefined, viewportLayoutIdentity, true))
+      .catch((error) => log("warning", `设备文本状态提交失败：${String(error)}`, true, "none"));
+    return deviceTextObservationTail;
   }
 
   function isModifierKey(key: string): boolean {
@@ -3849,6 +3897,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   function onMouseDown(event: MouseEvent): void {
     const code = mouseCode(event.button);
     if (code == null) return;
+    if (devicePumpInputCaptureActive && !canInteract.value) signalDeviceTextInput(" ");
     void observePhysicalDeviceState(
       "mouse",
       code,

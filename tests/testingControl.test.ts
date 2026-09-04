@@ -760,6 +760,17 @@ describe("Web test observation boundaries", () => {
     expect(stableObservationSignature({ ...state, cooperativeBackgroundWorkRevision: 9 })).toBe(
       signature,
     );
+    expect(
+      stableObservationSignature({
+        ...state,
+        audioProvider: { bgm: { state: "playing", positionMs: 1234 } },
+      }),
+    ).toBe(
+      stableObservationSignature({
+        ...state,
+        audioProvider: { bgm: { state: "playing", positionMs: 5678 } },
+      }),
+    );
     for (const change of [
       { wait: { wait_id: "9" } },
       { output: ["changed"] },

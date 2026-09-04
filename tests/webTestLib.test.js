@@ -8,6 +8,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   assertAtomicPresentationTransition,
+  assertAnimationPerformance,
+  measureAnimationPerformance,
   assertSampleExpectations,
   browserProjectProgressErrors,
   packagedProjectProgressErrors,
@@ -87,6 +89,101 @@ describe("web game test scenario", () => {
         expected,
       ),
     ).toThrow("maximum_sample_duration_ms");
+  });
+
+  it("requires every animation frame to publish and synchronize within the script cadence", () => {
+    const revisions = [10, 12, 14, 16];
+    const publishes = revisions.map((revision, index) => ({
+      phase: "presentation",
+      operation: "publish",
+      startedAtMs: index * 28,
+      elapsedMs: 1,
+      detail: { presentationRevision: String(revision) },
+    }));
+    const mutations = revisions.map((revision, index) => ({
+      phase: "dom_mutation",
+      operation: "observer_callback",
+      startedAtMs: index * 28 + 1,
+      elapsedMs: 0,
+      detail: { presentationRevision: String(revision) },
+    }));
+    const paint = {
+      phase: "next_paint",
+      operation: "presentation",
+      startedAtMs: 0,
+      elapsedMs: 20,
+      detail: { timedOut: false },
+    };
+    const audit = {
+      timingSamplesDropped: 0,
+      timings: [...publishes, ...mutations, paint],
+    };
+    const limits = {
+      minimumFrames: 4,
+      maximumFrameIntervalMs: 33,
+      maximumPaintMs: 33,
+    };
+
+    expect(assertAnimationPerformance(audit, limits)).toMatchObject({
+      frames: 4,
+      maximumIntervalMs: 28,
+      revisionStep: "2",
+      domSynchronizedFrames: 4,
+    });
+    expect(measureAnimationPerformance(audit)).toMatchObject({
+      frames: 4,
+      maximumIntervalMs: 28,
+      revisionStep: "2",
+      revisionStepConstant: true,
+      domSynchronizedFrames: 4,
+    });
+    expect(() =>
+      assertAnimationPerformance(
+        {
+          ...audit,
+          timings: [
+            publishes[0],
+            { ...publishes[1], startedAtMs: 34 },
+            { ...publishes[2], startedAtMs: 62 },
+            { ...publishes[3], startedAtMs: 90 },
+            ...mutations,
+            paint,
+          ],
+        },
+        limits,
+      ),
+    ).toThrow("frame interval");
+    expect(() =>
+      assertAnimationPerformance(
+        {
+          ...audit,
+          timings: [
+            publishes[0],
+            publishes[1],
+            { ...publishes[2], detail: { presentationRevision: "15" } },
+            publishes[3],
+            ...mutations,
+            paint,
+          ],
+        },
+        limits,
+      ),
+    ).toThrow("skipped a frame");
+    expect(() =>
+      assertAnimationPerformance(
+        { ...audit, timings: [...publishes, ...mutations.slice(0, -1), paint] },
+        limits,
+      ),
+    ).toThrow("did not reach the DOM");
+    expect(() =>
+      assertAnimationPerformance(
+        {
+          ...audit,
+          timings: [...publishes, ...mutations, { ...paint, detail: { timedOut: true } }],
+        },
+        limits,
+      ),
+    ).toThrow("paint checkpoint timed out");
   });
 
   it("finishes export cancellation when background cache generation resumes", async () => {
@@ -528,28 +625,61 @@ describe("web game test scenario", () => {
 
   it("accepts only the starting and completed presentation revisions across painted frames", () => {
     const samples = [
-      { revision: "10", waitId: "4", outputTail: ["command"] },
-      { revision: "10", waitId: "4", outputTail: ["command"] },
-      { revision: "14", waitId: "5", outputTail: ["complete"] },
+      {
+        revision: "10",
+        historyRevision: "10",
+        waitId: "4",
+        canInteract: true,
+        outputTail: ["command"],
+      },
+      {
+        revision: "10",
+        historyRevision: "10",
+        waitId: null,
+        canInteract: false,
+        outputTail: ["command"],
+      },
+      {
+        revision: "14",
+        historyRevision: "14",
+        waitId: "5",
+        canInteract: true,
+        outputTail: ["complete"],
+      },
     ];
+    const completed = { revision: "14", historyRevision: "14" };
 
-    expect(assertAtomicPresentationTransition(samples, "14")).toMatchObject({
+    expect(assertAtomicPresentationTransition(samples, completed)).toMatchObject({
       startRevision: "10",
       endRevision: "14",
       paintedRevisions: ["10", "14"],
     });
     expect(() =>
       assertAtomicPresentationTransition(
-        [samples[0], { revision: "12", waitId: null, outputTail: ["incomplete"] }, samples[2]],
-        "14",
+        [
+          samples[0],
+          samples[1],
+          {
+            revision: "12",
+            historyRevision: "12",
+            waitId: null,
+            canInteract: false,
+            outputTail: ["incomplete"],
+          },
+          samples[2],
+        ],
+        completed,
       ),
-    ).toThrow("painted intermediate revisions");
-    expect(() => assertAtomicPresentationTransition(samples.slice(0, 2), "14")).toThrow(
+    ).toThrow("painted intermediate history revisions");
+    expect(() => assertAtomicPresentationTransition(samples.slice(0, 2), completed)).toThrow(
       "did not paint completed revision",
     );
-    expect(() => assertAtomicPresentationTransition(samples.slice(0, 2), "10")).toThrow(
-      "did not advance",
-    );
+    expect(() =>
+      assertAtomicPresentationTransition(samples.slice(0, 2), {
+        revision: "10",
+        historyRevision: "10",
+      }),
+    ).toThrow("did not advance");
   });
 
   it.each(["\n", "\r\n"])("injects the save flow using the fixture's %j newline", (newline) => {

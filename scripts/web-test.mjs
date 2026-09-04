@@ -124,6 +124,14 @@ async function execute(args) {
       await writeFile(path.join(artifacts, "failure-runtime.json"), JSON.stringify(runtime)).catch(
         () => {},
       );
+    const performanceAudit = await page
+      .evaluate(() => window.__RUSTYERA_TEST__?.frontendPerformanceAudit?.())
+      .catch(() => undefined);
+    if (performanceAudit !== undefined)
+      await writeFile(
+        path.join(artifacts, "failure-performance-audit.json"),
+        JSON.stringify(performanceAudit),
+      ).catch(() => {});
     await page
       .screenshot({ path: path.join(artifacts, "failure.png"), fullPage: true })
       .catch(() => {});

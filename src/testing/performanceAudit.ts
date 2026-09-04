@@ -78,6 +78,8 @@ let mutationObserver: MutationObserver | undefined;
 let longTaskObserver: PerformanceObserver | undefined;
 let paintMeasurementPending = false;
 let calibrationFramesObserved = 0;
+let publishedPresentationRevision: string | null = null;
+let publishedPresentationFrames = 0;
 
 export function performanceAuditEnabled(): boolean {
   return PERFORMANCE_AUDIT_ENABLED;
@@ -114,6 +116,12 @@ export function recordPerformanceElapsed(
   });
 }
 
+export function recordPublishedPresentationRevision(revision: unknown): void {
+  if (!performanceAuditEnabled()) return;
+  publishedPresentationRevision = String(revision);
+  publishedPresentationFrames += 1;
+}
+
 function pushTiming(sample: {
   phase: PerformanceAuditPhase;
   operation: string;
@@ -132,10 +140,14 @@ function pushTiming(sample: {
   });
 }
 
-export function scheduleNextPaintMeasurement(startedAtMs: number | undefined, timeoutMs = 1_000): void {
+export function scheduleNextPaintMeasurement(
+  startedAtMs: number | undefined,
+  timeoutMs = 1_000,
+): void {
   if (startedAtMs == null || !performanceAuditEnabled() || paintMeasurementPending) return;
   paintMeasurementPending = true;
   const measurementEpoch = epoch;
+  const presentationRevision = publishedPresentationRevision;
   let settled = false;
   const timeout = window.setTimeout(() => finish(true), timeoutMs);
   requestAnimationFrame(() => requestAnimationFrame(() => finish(false)));
@@ -148,6 +160,7 @@ export function scheduleNextPaintMeasurement(startedAtMs: number | undefined, ti
     recordPerformanceTiming("next_paint", "presentation", startedAtMs, () => ({
       timedOut,
       epoch: measurementEpoch,
+      presentationRevision,
     }));
   }
 }
@@ -163,6 +176,7 @@ export function installPerformanceAuditObservers(): void {
     );
     recordPerformanceTiming("dom_mutation", "observer_callback", startedAtMs, () => ({
       records: records.length,
+      presentationRevision: publishedPresentationRevision,
     }));
   });
   mutationObserver.observe(document.documentElement, {
@@ -191,12 +205,15 @@ export function resetPerformanceAudit(): number {
   mutationCallbacks = 0;
   mutatedNodes = 0;
   calibrationFramesObserved = 0;
+  publishedPresentationRevision = null;
+  publishedPresentationFrames = 0;
   return epoch;
 }
 export function performanceAuditProgress(): Record<string, number> {
   return {
     epoch,
     calibrationFramesObserved,
+    publishedPresentationFrames,
     timingSamples: timings?.length ?? 0,
     timingSamplesDropped: timings?.dropped ?? 0,
     mutationCallbacks,
@@ -225,7 +242,10 @@ export function performanceAuditSnapshot(): Record<string, unknown> {
   };
 }
 
-export async function calibratePerformanceFrames(frameCount = 100, timeoutMs = 30_000): Promise<Record<string, unknown>> {
+export async function calibratePerformanceFrames(
+  frameCount = 100,
+  timeoutMs = 30_000,
+): Promise<Record<string, unknown>> {
   if (!Number.isSafeInteger(frameCount) || frameCount < 2 || frameCount > 1_000)
     throw new Error("performance frame count must be an integer between 2 and 1000");
   const deadline = performance.now() + timeoutMs;
@@ -263,7 +283,10 @@ export async function calibratePerformanceFrames(frameCount = 100, timeoutMs = 3
 async function nextFrameBefore(deadline: number): Promise<number | undefined> {
   return new Promise((resolve) => {
     let settled = false;
-    const timeout = window.setTimeout(() => finish(undefined), Math.max(0, deadline - performance.now()));
+    const timeout = window.setTimeout(
+      () => finish(undefined),
+      Math.max(0, deadline - performance.now()),
+    );
     requestAnimationFrame((timestamp) => finish(timestamp));
     function finish(value: number | undefined): void {
       if (settled) return;

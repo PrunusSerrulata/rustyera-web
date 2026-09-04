@@ -71,6 +71,8 @@ let preserveNfViewport = false;
 let nfUserScrolled = false;
 let nfViewportEpoch = 0;
 let nfInitialFollowPending = false;
+let multilineAnimationVisible = false;
+let releaseMultilineAnimationRange: (() => void) | undefined;
 const keyedLines = new Map<
   number,
   { id: string; key: string; nfViewportEpoch?: number; mediaLayout?: string }
@@ -84,6 +86,7 @@ const geometryAbort = new AbortController();
 watch(
   () => store.runtimeEpoch,
   (runtimeEpoch) => {
+    resetMultilineAnimationViewport();
     const epoch = String(runtimeEpoch);
     if (epoch !== keyedRuntimeEpoch) {
       keyedLines.clear();
@@ -100,6 +103,7 @@ watch(
   () => store.presentation.inputWait,
   async (wait) => {
     if (wait == null) return;
+    resetMultilineAnimationViewport();
     const preserve =
       wait.viewport_policy === "preserve_user_viewport" || wait.viewport_policy === 1;
     if (preserve) {
@@ -254,6 +258,24 @@ const items = computed(() =>
     return current.every(valid) ? current : current.filter(valid);
   })(),
 );
+watch(
+  () => store.presentation.revision,
+  async () => {
+    if (store.presentation.inputWait != null || multilineAnimationVisible) return;
+    const index = multilineTextFrameIndex(store.presentation.lines);
+    if (index < 0) return;
+    multilineAnimationVisible = true;
+    bottomFollowRevision += 1;
+    releaseMultilineAnimationRange = acquireGeometryRange(index);
+    await nextTick();
+    if (store.presentation.inputWait != null) return;
+    virtualizer.value.scrollToIndex(index, { align: "start" });
+    await nextAnimationFrame();
+    if (store.presentation.inputWait != null) return;
+    virtualizer.value.scrollToIndex(index, { align: "start" });
+  },
+  { flush: "post" },
+);
 const sceneDepthRanks = computed(() =>
   compactSceneDepthRanks([
     ...store.presentation.scene.layers.map((layer) => layer.depth),
@@ -357,9 +379,11 @@ watch(
     // offset even if the runtime reports each replacement as a history change.
     if (preserveNfViewport) nfUserScrolled = !isAtBottom();
     const historyChanged = historyRevision !== previousHistoryRevision;
-    const shouldFollow = preserveNfViewport
-      ? !nfUserScrolled && nfInitialFollowPending
-      : historyChanged || followingBottom || isAtBottom();
+    const shouldFollow = multilineAnimationVisible
+      ? false
+      : preserveNfViewport
+        ? !nfUserScrolled && nfInitialFollowPending
+        : historyChanged || followingBottom || isAtBottom();
     if (preserveNfViewport) nfInitialFollowPending = false;
     bottomFollowRevision += 1;
     followAfterRender = shouldFollow;
@@ -472,6 +496,40 @@ function goBottom(): void {
 
 function nextAnimationFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+function hasMultilineTextFrame(line: PresentationLine): boolean {
+  let newlineCount = 0;
+  const visitHtml = (node: any): boolean => {
+    if (node.type === "text") return countNewlines(String(node.text ?? ""));
+    if (node.type !== "element") return false;
+    if (node.kind === "break" && ++newlineCount >= 8) return true;
+    return (node.children ?? []).some(visitHtml);
+  };
+  const countNewlines = (text: string): boolean => {
+    for (const character of text) if (character === "\n" && ++newlineCount >= 8) return true;
+    return false;
+  };
+  const visitRun = (run: DisplayRun): boolean => {
+    if (run.type === "text" || run.type === "text_layout") return countNewlines(run.text);
+    if (run.type === "button") return run.runs.some(visitRun);
+    if (run.type === "column_cell") return run.content.some(visitRun);
+    if (run.type === "html_document") return (run.document?.nodes ?? []).some(visitHtml);
+    return false;
+  };
+  return line.runs.some(visitRun);
+}
+
+function resetMultilineAnimationViewport(): void {
+  multilineAnimationVisible = false;
+  releaseMultilineAnimationRange?.();
+  releaseMultilineAnimationRange = undefined;
+}
+
+function multilineTextFrameIndex(lines: PresentationLine[]): number {
+  for (let index = lines.length - 1; index >= 0; index -= 1)
+    if (hasMultilineTextFrame(lines[index])) return index;
+  return -1;
 }
 
 function lineMinimumHeight(line: any): string | undefined {
@@ -703,7 +761,10 @@ watch(viewportLayoutIdentity, () => scheduleViewportSynchronization());
           class="game-line"
           :class="[
             `align-${store.presentation.lines[item.index].alignment}`,
-            { 'html-image-layer-line': imageLayerOffsets.has(item.index) },
+            {
+              'html-image-layer-line': imageLayerOffsets.has(item.index),
+              'multiline-text-frame': hasMultilineTextFrame(store.presentation.lines[item.index]),
+            },
           ]"
           :data-index="item.index"
           :data-line-id="String(store.presentation.lines[item.index].line_id)"
