@@ -55,6 +55,14 @@ describe("runtime store settings-export", () => {
     });
     const store = useRuntimeStore();
 
+    await store.projectViewport({
+      width: 900,
+      height: 600,
+      lineColumns: 90,
+      chromeWidth: 20,
+      chromeHeight: 90,
+    });
+
     await expect(store.enableDebug()).resolves.toBeUndefined();
     await vi.advanceTimersByTimeAsync(16);
 
@@ -83,6 +91,14 @@ describe("runtime store settings-export", () => {
     });
     const store = useRuntimeStore();
     store.projectLoading = true;
+
+    await store.projectViewport({
+      width: 900,
+      height: 600,
+      lineColumns: 90,
+      chromeWidth: 20,
+      chromeHeight: 90,
+    });
 
     const loading = store.enableDebug();
     await vi.advanceTimersByTimeAsync(16);
@@ -149,6 +165,13 @@ describe("runtime store settings-export", () => {
       events: [runtimeEvent("client_preferences_applied", { configuration }, 20)],
     });
     const store = useRuntimeStore();
+    await store.projectViewport({
+      width: 900,
+      height: 600,
+      lineColumns: 90,
+      chromeWidth: 20,
+      chromeHeight: 90,
+    });
     await store.enableDebug();
     await vi.advanceTimersByTimeAsync(16);
     store.projectOpen = true;

@@ -203,6 +203,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let viewportProjectionFlushAfterBatch: number | undefined;
   let deferredViewportProjection:
     { measurement: GameViewportMeasurement; layoutIdentity: string } | undefined;
+  let clientConfigurationAwaitingStableViewport = false;
   const viewportMeasurement = runtimeViewport.measurement;
   const {
     systemFonts,
@@ -1450,7 +1451,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       try {
         await bridge.applyProjectConfiguration(
           configurationEntries.value,
-          runtimeViewport.chrome(currentGameViewportMeasurement()),
+          runtimeViewport.chrome(),
         );
       } catch (error) {
         log("warning", `客户端项目配置应用失败：${String(error)}`);
@@ -3368,12 +3369,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function applyEffectiveClientConfiguration(): Promise<void> {
-    if (!projectConfiguration.value) return;
+    if (!projectConfiguration.value) {
+      clientConfigurationAwaitingStableViewport = false;
+      return;
+    }
+    if (bridge.kind === "tauri" && !runtimeViewport.measurement.value) {
+      clientConfigurationAwaitingStableViewport = true;
+      return;
+    }
+    clientConfigurationAwaitingStableViewport = false;
     try {
-      await bridge.applyProjectConfiguration(
-        configurationEntries.value,
-        runtimeViewport.chrome(currentGameViewportMeasurement()),
-      );
+      await bridge.applyProjectConfiguration(configurationEntries.value, runtimeViewport.chrome());
     } catch (error) {
       log("warning", `客户端项目配置应用失败：${String(error)}`);
     }
@@ -3406,6 +3412,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     );
     if (measurement) {
       viewportLayoutIdentityAtProjection = layoutIdentity;
+      if (clientConfigurationAwaitingStableViewport && presentation.inputWait != null)
+        await applyEffectiveClientConfiguration();
     }
   }
 
