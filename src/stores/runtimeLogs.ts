@@ -13,6 +13,7 @@ export class RuntimeLogState {
   private notificationId = 0;
   private retainedBytes = 0;
   private notificationBytes = 0;
+  private readonly repetitiveDiagnosticKeys = new Set<string>();
 
   constructor(
     private readonly maximumEntries: number,
@@ -34,10 +35,23 @@ export class RuntimeLogState {
     notificationPolicy: LogNotificationPolicy | readonly LogNotificationPolicy[] = "all",
   ): void {
     const retainedStart = Math.max(0, entries.length - this.maximumEntries);
-    const retained = entries.slice(retainedStart).map((entry) => ({
-      ...entry,
-      message: truncateUtf16(entry.message, this.maximumEntryBytes),
-    }));
+    const retained: LogEntry[] = [];
+    const retainedPolicies: LogNotificationPolicy[] = [];
+    for (let index = retainedStart; index < entries.length; index += 1) {
+      const entry = entries[index]!;
+      const diagnosticKey = repetitiveDiagnosticKey(entry);
+      if (diagnosticKey && this.repetitiveDiagnosticKeys.has(diagnosticKey)) continue;
+      if (diagnosticKey) this.repetitiveDiagnosticKeys.add(diagnosticKey);
+      retained.push({
+        ...entry,
+        message: truncateUtf16(entry.message, this.maximumEntryBytes),
+      });
+      retainedPolicies.push(
+        typeof notificationPolicy === "string"
+          ? notificationPolicy
+          : (notificationPolicy[index] ?? "all"),
+      );
+    }
     const overflow = Math.max(0, this.entries.length + retained.length - this.maximumEntries);
     this.removeOldest(overflow);
     for (const entry of retained) {
@@ -57,10 +71,7 @@ export class RuntimeLogState {
       index -= 1
     ) {
       const entry = retained[index];
-      const policy =
-        typeof notificationPolicy === "string"
-          ? notificationPolicy
-          : (notificationPolicy[retainedStart + index] ?? "all");
+      const policy = retainedPolicies[index] ?? "all";
       if (policy === "none") continue;
       if (entry.level !== "error" && !(entry.level === "warning" && policy === "all")) continue;
       pending.push({ level: entry.level, message: entry.message });
@@ -93,6 +104,7 @@ export class RuntimeLogState {
     this.notifications.splice(0);
     this.retainedBytes = 0;
     this.notificationBytes = 0;
+    this.repetitiveDiagnosticKeys.clear();
   }
 
   private removeOldest(count: number): void {
@@ -106,6 +118,16 @@ export class RuntimeLogState {
     for (const notification of this.notifications.splice(0, count))
       this.notificationBytes -= stringBytes(notification.message);
   }
+}
+
+function repetitiveDiagnosticKey(entry: LogEntry): string | undefined {
+  if (
+    entry.level === "debug" &&
+    entry.message ===
+      "command rejected [StaleRequest]: projection observation does not match the canonical presentation"
+  )
+    return `${entry.level}:${entry.message}`;
+  return undefined;
 }
 
 function stringBytes(value: string): number {
