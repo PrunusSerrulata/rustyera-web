@@ -6,7 +6,7 @@
   "profile": "emuera.skia.snake",
   "captureRequired": true,
   "seed": 123456,
-  "clock": "2026-01-01T00:00:00Z",
+  "clock": "2026-01-01T00:00:00.000Z",
   "coverage": {
     "loading": {},
     "steady-runtime": {},

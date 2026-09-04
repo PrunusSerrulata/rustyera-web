@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -113,8 +114,15 @@ describe("Tauri performance audit runner policy", () => {
   });
 
   it("rejects duplicate values, injected state, and incomplete options", () => {
-    expect(() => performanceAuditOptions([...valid, "--project", "/other"], "snake-runtime-performance.spec.mjs")).toThrow("exactly");
-    expect(() => performanceAuditOptions([...valid, "--state", "/save"], "snake-runtime-performance.spec.mjs")).toThrow("forbidden");
+    expect(() =>
+      performanceAuditOptions(
+        [...valid, "--project", "/other"],
+        "snake-runtime-performance.spec.mjs",
+      ),
+    ).toThrow("exactly");
+    expect(() =>
+      performanceAuditOptions([...valid, "--state", "/save"], "snake-runtime-performance.spec.mjs"),
+    ).toThrow("forbidden");
     expect(() =>
       performanceAuditOptions([...valid, "--window-mode"], "snake-runtime-performance.spec.mjs"),
     ).toThrow("value");
@@ -143,17 +151,12 @@ describe("Tauri performance audit runner policy", () => {
 
   it("refuses the honest capture-required trace template", async () => {
     await expect(
-      readPerformanceTrace(
-        new URL("fixtures/snake-runtime-performance-trace.v1.json", import.meta.url),
-      ),
+      readPerformanceTrace(resolve("tests/fixtures/snake-runtime-performance-trace.v1.json")),
     ).rejects.toThrow("requires autonomous capture");
   });
 
   it("allows one prepared build and requires the identical artifact thereafter", () => {
-    const runner = readFileSync(
-      new URL("../scripts/tauri-performance-runner.mjs", import.meta.url),
-      "utf8",
-    );
+    const runner = readFileSync(resolve("scripts/tauri-performance-runner.mjs"), "utf8");
     expect(runner).toContain('buildPrepared ? "--require-reuse-build" : "--reuse-build"');
     expect(runner).toContain("buildPrepared = true");
     expect(runner).toContain("for (let index = 0; index < 5; index += 1)");
@@ -161,38 +164,25 @@ describe("Tauri performance audit runner policy", () => {
   });
 
   it("keeps capture self-contained and foreground checks bound to the exact process tree", () => {
-    const capture = readFileSync(
-      new URL("../scripts/tauri-performance-capture.mjs", import.meta.url),
-      "utf8",
-    );
-    const audit = readFileSync(
-      new URL("../scripts/tauri-performance-audit.mjs", import.meta.url),
-      "utf8",
-    );
+    const capture = readFileSync(resolve("scripts/tauri-performance-capture.mjs"), "utf8");
+    const audit = readFileSync(resolve("scripts/tauri-performance-audit.mjs"), "utf8");
     expect(capture).not.toContain('"--reuse-build"');
     expect(audit).toContain("processTree.some((process) => process.pid === foreground?.pid)");
     expect(audit).not.toContain('foreground?.bundleIdentifier === "org.rustyera.web"');
   });
 
   it("uses one epoch and JSONL sample schema for loading and runtime", () => {
-    const repository = new URL("..", import.meta.url);
-    const packageJson = JSON.parse(readFileSync(new URL("package.json", repository), "utf8"));
-    const telemetry = readFileSync(
-      new URL("src/testing/performanceAudit.ts", repository),
-      "utf8",
-    );
+    const packageJson = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+    const telemetry = readFileSync(resolve("src/testing/performanceAudit.ts"), "utf8");
     const startupProjection = readFileSync(
-      new URL("src/stores/runtimeStartupTelemetry.ts", repository),
+      resolve("src/stores/runtimeStartupTelemetry.ts"),
       "utf8",
     );
-    const spec = readFileSync(
-      new URL("tests/tauri/snake-runtime-performance.spec.mjs", repository),
-      "utf8",
-    );
+    const spec = readFileSync(resolve("tests/tauri/snake-runtime-performance.spec.mjs"), "utf8");
     expect(packageJson.scripts["benchmark:startup"]).toBe(
       packageJson.scripts["audit:tauri-performance"],
     );
-    expect(existsSync(new URL("scripts/startup-benchmark.mjs", repository))).toBe(false);
+    expect(existsSync(resolve("scripts/startup-benchmark.mjs"))).toBe(false);
     expect(telemetry).toContain('| "loading"');
     expect(startupProjection).toContain('recordPerformanceElapsed("loading"');
     expect(spec).toContain('type: "tauri-performance-sample"');
