@@ -2,6 +2,12 @@
 
 ## Browser matrix boundary
 
+Drive browser scenarios through the repository CLI and its Playwright, native WebDriver,
+WebdriverIO, and CDP integrations. Computer Use, coordinate-based input, and other authorized
+screen/keyboard control are forbidden unless a required system-owned surface has no usable
+automation interface; follow the exception and reporting boundary in the parent skill. An
+automation startup or configuration failure is not such an exception.
+
 `npm run test:game` owns deterministic scenario actions, canonical observations, trace capture, and
 Emuera comparison in Chromium. A browser/WASM acceptance also runs installed native Firefox on
 every supported host and native Safari only on macOS through the real Vue UI, OPFS project import,

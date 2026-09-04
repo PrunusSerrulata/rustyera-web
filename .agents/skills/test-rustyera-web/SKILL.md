@@ -89,6 +89,17 @@ subagents must not perform those mutations.
 
 ## Choose the real target
 
+Use repository runners and machine-readable automation first: Playwright for Chromium UI, native
+WebDriver for installed browsers, WebdriverIO for Tauri, and CDP or supported platform automation
+for diagnostics and system handoffs. Do not use Computer Use, coordinate clicks, or authorized
+screen/keyboard control unless a required system surface or action exposes no usable automation
+interface and the concrete capability gap has been recorded. Driver setup difficulty, startup
+failure, timeout, or convenience does not qualify. When no automation can perform one necessary
+step, limit the authorized interaction to that step, then return to the runner for assertions,
+state capture, and the rest of the flow. Report the reason, exact scope, and surrounding automated
+evidence. This boundary does not prohibit the sandbox-execution approval explicitly required below
+for browser drivers, local servers, builds, or the Tauri test binary.
+
 - A browser/WASM claim requires the production Vue UI and real WASM worker in Chromium through
   `npm run test:game` and installed native Firefox through `npm run test:browser-compat`. On macOS,
   it additionally requires installed native Safari. When the host OS is not macOS, do not launch

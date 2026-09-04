@@ -56,7 +56,11 @@ elsewhere. Do not copy or modify the game during a native read-only test.
 Use WebdriverIO `click`, `setValue`, `keys`, accessible selectors, and DOM reads for the behavior
 under test. The test-only control may open no dialogs, submit no debugger commands, and mutate no
 Pinia state; use it only to configure lifecycle state or observe a serializable snapshot after a
-visible action.
+visible action. Do not replace a missing or failing WebdriverIO action with Computer Use,
+coordinate input, or authorized screen/keyboard control. The only exception is one required
+system-owned step for which no usable automation interface exists; constrain that interaction to
+the missing step, record the capability gap, and return immediately to WebdriverIO for evidence and
+assertions as required by the parent skill.
 
 These are not valid substitutes for a Tauri pass:
 
