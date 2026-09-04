@@ -167,11 +167,14 @@ interface CanvasSpriteFrame {
   canvas_revision?: unknown;
   resource_id?: string;
   source_rectangle?: readonly unknown[];
+  offset?: readonly unknown[];
 }
 
 interface CanvasSprite {
   name: string;
   revision: unknown;
+  size?: readonly unknown[];
+  position?: readonly unknown[];
   canvas_id?: unknown;
   canvas_revision?: unknown;
   canvas_rectangle?: WireRectangle;
@@ -392,7 +395,7 @@ async function replayCommands(
               context,
               source.image,
               source.rectangle,
-              rectangle(command.destination),
+              projectedSpriteDestination(source, rectangle(command.destination)),
               { colorMatrix: command.color_matrix },
               control.budget,
               depth,
@@ -486,7 +489,7 @@ async function spriteSource(
   decodedImages: ImageCache,
   control: CanvasReplayRenderControl,
   depth: number,
-): Promise<{ image: CanvasDrawable; rectangle: Rectangle } | undefined> {
+): Promise<SpriteSource | undefined> {
   const resourceRevision = serviceInteger(revision, "canvas sprite revision");
   const sprite = resolveSpriteReplay(resources.sprites, name, resourceRevision);
   if (!sprite)
@@ -510,6 +513,8 @@ async function spriteSource(
       rectangle: sprite.canvas_rectangle
         ? rectangle(sprite.canvas_rectangle)
         : { x: 0, y: 0, width: image.width, height: image.height },
+      spriteSize: sprite.size,
+      spritePosition: sprite.position,
     };
   }
   const frame = sprite?.frames?.[0];
@@ -530,7 +535,13 @@ async function spriteSource(
       frame.canvas_revision,
     );
     if (!image) return undefined;
-    return { image, rectangle: tupleRectangle(frame.source_rectangle, image) };
+    return {
+      image,
+      rectangle: tupleRectangle(frame.source_rectangle, image),
+      spriteSize: sprite.size,
+      spritePosition: sprite.position,
+      frameOffset: frame.offset,
+    };
   }
   const resourceId = frame?.resource_id ?? name;
   try {
@@ -543,12 +554,53 @@ async function spriteSource(
       control,
     );
     assertActive(control);
-    return { image, rectangle: tupleRectangle(frame?.source_rectangle, image) };
+    return {
+      image,
+      rectangle: tupleRectangle(frame?.source_rectangle, image),
+      spriteSize: sprite.size,
+      spritePosition: sprite.position,
+      frameOffset: frame?.offset,
+    };
   } catch (error) {
     if (!(error instanceof RuntimeServiceError && error.category === "stale_projection"))
       console.warn(`Unable to load canvas sprite resource: ${resourceId}`, error);
     throw error;
   }
+}
+
+interface SpriteSource {
+  image: CanvasDrawable;
+  rectangle: Rectangle;
+  spriteSize?: readonly unknown[];
+  spritePosition?: readonly unknown[];
+  frameOffset?: readonly unknown[];
+}
+
+function projectedSpriteDestination(source: SpriteSource, destination: Rectangle): Rectangle {
+  const baseWidth = Number(source.spriteSize?.[0]);
+  const baseHeight = Number(source.spriteSize?.[1]);
+  const offsetX = Number(source.spritePosition?.[0] ?? 0) + Number(source.frameOffset?.[0] ?? 0);
+  const offsetY = Number(source.spritePosition?.[1] ?? 0) + Number(source.frameOffset?.[1] ?? 0);
+  // Core normalizes a static resource-CSV position into frame.offset and keeps
+  // runtime SPRITEMOVE/SPRITESETPOS state in sprite.position. Snake only changes
+  // the destination geometry when their effective position is nonzero; retaining
+  // the original rectangle at zero preserves ordinary sprite scaling.
+  if (offsetX === 0 && offsetY === 0) return destination;
+  if (
+    !Number.isFinite(baseWidth) ||
+    !Number.isFinite(baseHeight) ||
+    baseWidth <= 0 ||
+    baseHeight <= 0 ||
+    !Number.isFinite(offsetX) ||
+    !Number.isFinite(offsetY)
+  )
+    return destination;
+  return {
+    x: destination.x + (offsetX * destination.width) / baseWidth,
+    y: destination.y + (offsetY * destination.height) / baseHeight,
+    width: (source.rectangle.width * destination.width) / baseWidth,
+    height: (source.rectangle.height * destination.height) / baseHeight,
+  };
 }
 
 function decodedImage(

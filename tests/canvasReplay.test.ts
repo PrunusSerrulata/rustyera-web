@@ -500,6 +500,65 @@ describe("canvas resource replay", () => {
     expect(contexts).toHaveLength(1);
   });
 
+  it("applies Snake sprite frame offsets when replaying GDRAWSPRITE", async () => {
+    store.presentation.resources.sprites = [
+      {
+        name: "30_FACEPARTS_01",
+        revision: 9,
+        size: [77, 51],
+        position: [0, 0],
+        frames: [
+          {
+            resource_id: "resources/eiki-parts.webp",
+            source_rectangle: [470, 55, 77, 51],
+            offset: [99, 76],
+          },
+        ],
+      },
+    ];
+    mount(CanvasReplay, {
+      props: {
+        replay: {
+          canvas_id: 320,
+          revision: 2,
+          size: { width: 270, height: 270 },
+          commands: [
+            {
+              type: "draw_sprite",
+              name: "30_FACEPARTS_01",
+              resource_revision: 9,
+              destination: { x: 0, y: 0, width: 77, height: 51 },
+            },
+            {
+              type: "draw_sprite",
+              name: "30_FACEPARTS_01",
+              resource_revision: 9,
+              destination: { x: 4, y: 5, width: 154, height: 102 },
+            },
+          ],
+        },
+      },
+    });
+    await settleReplay();
+
+    expect(
+      contexts.some((context) =>
+        context.drawImage.mock.calls.some(
+          (call: any[]) =>
+            call[0] instanceof Image && call.slice(1).join(",") === "470,55,77,51,99,76,77,51",
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      contexts.some((context) =>
+        context.drawImage.mock.calls.some(
+          (call: any[]) =>
+            call[0] instanceof Image && call.slice(1).join(",") === "470,55,77,51,202,157,154,102",
+        ),
+      ),
+    ).toBe(true);
+  });
+
   it("recursively composites GDRAWG source canvases", async () => {
     store.presentation.resources.canvases = [
       {
