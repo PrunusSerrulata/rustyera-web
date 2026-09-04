@@ -15,8 +15,8 @@
     },
     {
       "path": "src/platform/macos_input.rs",
-      "bytes": 23291,
-      "sha256": "8e9889563ca9d196fc512361a52ab252a436bbb91d261273702fda9bd4b9bb78"
+      "bytes": 17256,
+      "sha256": "2d0518738d196d39c0d7327161edfbef9d4057e8d9a49016829582ffe05838f0"
     },
     {
       "path": "src/server/handlers/window.rs",

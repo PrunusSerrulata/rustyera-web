@@ -6,12 +6,10 @@ session's actual WKWebView and NSWindow, so tests can observe trusted pointer,
 keyboard and window-focus events. It never posts global input or invokes a
 RustyEra test-global to submit input.
 
-Pointer commands synchronize the actual system cursor with the verified window
-point before delivering the window event. This prevents later native hit testing
-from observing an old cursor position after layout changes. The mapping uses
-logical screen points, including displays above or left of the primary display;
-off-screen positions and CoreGraphics failures are rejected. These tests require
-an available desktop: do not run them while someone uses the mouse or keyboard.
+Pointer commands deliver window-local native events at the verified WebView
+point without moving the system cursor. The application must still own focus
+while native input is delivered, but pointer automation does not take over the
+user's mouse.
 
 `original-inventory.json` binds the immutable upstream source to registry checksum
 `30c5bffe978c41b06ad44a5f4b5b543405918cf316b98756c678a6431061f2e9`.
@@ -55,5 +53,5 @@ generates the click, so the upstream extra synthetic click is suppressed.
 At most two independent `about:blank` focus probes may exist. Only those probe
 windows can be closed through this provider; the main application window is
 protected. Focus switching validates the handle and focuses the actual window
-before updating the session. Cursor synchronization does not generate an event;
-there is no global event-posting or permission fallback.
+before updating the session. There is no cursor warp, global event-posting, or
+permission fallback.
