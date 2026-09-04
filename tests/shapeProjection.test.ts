@@ -110,14 +110,16 @@ describe("shape presentation projection", () => {
     expect(projectSpaceShape(width, Number.POSITIVE_INFINITY)).toBeUndefined();
   });
 
-  it("projects spaces and clamps negative widths to zero", () => {
+  it("projects spaces with the reference renderer's signed cursor advance", () => {
     expect(projectSpaceShape({ unit: "font_height_hundredths", value: 100 }, 16)).toEqual({
       width: 16,
       height: 16,
+      advance: 16,
     });
     expect(projectSpaceShape({ unit: "pixels", value: -4 }, 16)).toEqual({
       width: 0,
       height: 16,
+      advance: -4,
     });
     expect(
       projectSpaceShape({ unit: "unknown", value: 1 } as unknown as PresentationLength, 16),

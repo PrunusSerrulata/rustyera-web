@@ -561,6 +561,28 @@ describe("frontend host and image-line policy", () => {
     expect(wrapper.get(".html-shape-space").attributes("style")).toContain("height: 12px");
   });
 
+  it("keeps a negative space as a signed inline advance for portrait overlays", () => {
+    const wrapper = mount(HtmlNode, {
+      props: {
+        node: {
+          type: "element",
+          kind: "shape",
+          children: [],
+          semantic: {
+            type: "shape",
+            kind: "space",
+            parameters: [{ unit: "pixels", value: -180 }],
+          },
+        },
+      },
+    });
+
+    const style = wrapper.get(".html-shape-space").attributes("style");
+    expect(style).toContain("width: 0px");
+    expect(style).toContain("height: 12px");
+    expect(style).toContain("margin-left: -180px");
+  });
+
   it("projects Era HTML rectangles with normal and focused colors", () => {
     const wrapper = mount(HtmlNode, {
       props: {

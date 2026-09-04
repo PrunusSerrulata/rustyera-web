@@ -714,7 +714,13 @@ function validateSlots(document: CanonicalHtmlDocument, fontSize: number): void 
               "invalid_request",
               "HTML shape has no valid renderer slot",
             );
-          if (projected.width > 32768 || projected.height > 32768)
+          if (
+            projected.width > 32768 ||
+            projected.height > 32768 ||
+            ("advance" in projected &&
+              typeof projected.advance === "number" &&
+              Math.abs(projected.advance) > 32768)
+          )
             throw new RuntimeServiceError("resource_limit", "HTML shape projection is too large");
         }
         if (semantic.type === "division") {

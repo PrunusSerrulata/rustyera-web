@@ -92,7 +92,14 @@ const spaceShapeStyle = computed(() => {
   const semantic = props.node.semantic;
   if (semantic?.type !== "shape" || semantic.kind?.toLowerCase() !== "space") return null;
   const shape = projectSpaceShape(semantic.parameters?.[0], store.gameTextStyle.fontSizePx);
-  return shape == null ? null : pixelStyle(shape);
+  if (shape == null) return null;
+  return {
+    ...pixelStyle(shape),
+    // CSS rejects negative widths, while Snake Emuera keeps them as signed cursor
+    // advances. A zero-width inline box with a negative leading margin has the
+    // same effect on the following image without inventing a painted rectangle.
+    marginLeft: shape.advance < 0 ? `${shape.advance}px` : undefined,
+  };
 });
 const rectangleShapeStyle = computed(() => {
   const semantic = props.node.semantic;

@@ -5,6 +5,11 @@ export interface ShapeBox {
   height: number;
 }
 
+export interface SpaceShapeProjection extends ShapeBox {
+  /** Signed inline cursor movement used by the reference renderer. */
+  advance: number;
+}
+
 export interface RectangleShapeProjection {
   slot: ShapeBox;
   visual: ShapeBox & { left: number; top: number };
@@ -36,11 +41,15 @@ export function projectPresentationLength(
 export function projectSpaceShape(
   width: PresentationLength | undefined,
   fontSizePx: number,
-): ShapeBox | undefined {
+): SpaceShapeProjection | undefined {
   if (!Number.isFinite(fontSizePx) || fontSizePx <= 0) return undefined;
   const projectedWidth = projectPresentationLength(width, fontSizePx);
   if (projectedWidth == null) return undefined;
-  return { width: Math.max(0, projectedWidth), height: fontSizePx };
+  return {
+    width: Math.max(0, projectedWidth),
+    height: fontSizePx,
+    advance: projectedWidth,
+  };
 }
 
 export function projectRectangleShape(
