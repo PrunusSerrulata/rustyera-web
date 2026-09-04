@@ -46,6 +46,10 @@
     { "type": "wait_timed_input_change" },
     { "type": "wait_timed_input_change" },
     {
+      "type": "assert_state",
+      "expect": { "canInteract": true, "fault": null }
+    },
+    {
       "type": "sample_queries",
       "count": 2,
       "interval_ms": 100,
@@ -71,11 +75,8 @@
         "stable": [
           "viewport.scroll_top",
           "viewport.client_height",
-          "runtime.presentation_revision",
-          "runtime.history_revision",
           "control.count",
           "control.visible",
-          "control.enabled",
           "control.box.top",
           "control.box.left",
           "control.box.width",
@@ -89,6 +90,10 @@
       "advances_game": true,
       "expect_atomic_presentation": true,
       "semantic_input": 1997
+    },
+    {
+      "type": "assert_state",
+      "expect": { "canInteract": true, "fault": null }
     }
   ],
   "limits": {

@@ -11,6 +11,7 @@ import {
   startCompleteSnapshotMonitor,
 } from "../scripts/tauri-test-support.mjs";
 import {
+  assertAtomicPresentationTransition,
   installRemoteFileSystem,
   isolatedProject,
   projectRuntimeStorageRoot,
@@ -21,6 +22,34 @@ import { finalizeBrowserGameRun } from "../scripts/web-test-lifecycle.mjs";
 afterEach(() => vi.useRealTimers());
 
 describe("browser game runner progress policy", () => {
+  it("starts atomic presentation checks at the authoritative interaction lock", () => {
+    const result = assertAtomicPresentationTransition(
+      [
+        { revision: "10", historyRevision: "1", canInteract: true },
+        { revision: "11", historyRevision: "2", canInteract: true },
+        { revision: "11", historyRevision: "2", canInteract: false },
+        { revision: "12", historyRevision: "2", canInteract: false },
+        { revision: "20", historyRevision: "5", canInteract: true },
+      ],
+      { revision: "20", historyRevision: "5" },
+    );
+
+    expect(result.startRevision).toBe("11");
+    expect(result.paintedRevisions).toEqual(["11", "12", "20"]);
+    expect(result.paintedHistoryRevisions).toEqual(["2", "5"]);
+    expect(() =>
+      assertAtomicPresentationTransition(
+        [
+          { revision: "11", historyRevision: "2", canInteract: true },
+          { revision: "11", historyRevision: "2", canInteract: false },
+          { revision: "12", historyRevision: "3", canInteract: false },
+          { revision: "20", historyRevision: "5", canInteract: true },
+        ],
+        { revision: "20", historyRevision: "5" },
+      ),
+    ).toThrow("painted intermediate history revisions");
+  });
+
   it("hands Snake-profile caches through their profile-scoped runtime storage", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "rustyera-snake-cache-handoff-test-"));
     const source = path.join(root, "source");
@@ -552,6 +581,17 @@ describe("browser game runner progress policy", () => {
     );
     expect(runner).toContain("action.settle_ms");
     expect(fullProjectExport).toContain('"observe": false');
+  });
+
+  it("samples animation state without cloning the complete runtime evidence ledger", () => {
+    const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const sampleQueries = runner.slice(
+      runner.indexOf("async function sampleQueries"),
+      runner.indexOf("export function assertSampleExpectations"),
+    );
+
+    expect(sampleQueries).toContain("window.__RUSTYERA_TEST__.snapshotSummary()");
+    expect(sampleQueries).not.toContain("window.__RUSTYERA_TEST__.snapshot()");
   });
 
   it("runs touch secondary actions through a real Chromium gesture scenario", () => {

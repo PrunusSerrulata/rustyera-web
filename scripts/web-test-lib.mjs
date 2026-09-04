@@ -927,30 +927,49 @@ export function resolveLocator(page, locator = {}) {
   return locator.nth == null ? resolved : resolved.nth(Number(locator.nth));
 }
 
-export function assertAtomicPresentationTransition(samples, completedRevision) {
+export function assertAtomicPresentationTransition(samples, completedPresentation) {
   if (!Array.isArray(samples) || samples.length < 2)
     throw new Error("atomic presentation probe did not capture a painted transition");
-  const startRevision = String(samples[0].revision);
-  const endRevision = String(completedRevision);
+  const lockedIndex = samples.findIndex((sample) => sample.canInteract === false);
+  if (lockedIndex <= 0)
+    throw new Error("atomic presentation probe did not capture the input transition boundary");
+  // Animated waits may publish complete frames while the browser is dispatching the click.
+  // Atomicity begins only when Runtime authoritatively closes the clicked wait and the store
+  // locks interaction; frames painted before that boundary are unrelated to the submission.
+  const endRevision = String(completedPresentation.revision);
+  const endHistoryRevision = String(completedPresentation.historyRevision);
+  const completedIndex = samples.findIndex(
+    (sample, index) =>
+      index >= lockedIndex &&
+      String(sample.revision) === endRevision &&
+      String(sample.historyRevision) === endHistoryRevision,
+  );
+  if (completedIndex < lockedIndex)
+    throw new Error(`atomic presentation probe did not paint completed revision ${endRevision}`);
+  const transitionSamples = samples.slice(lockedIndex - 1, completedIndex + 1);
+  const startRevision = String(transitionSamples[0].revision);
+  const startHistoryRevision = String(transitionSamples[0].historyRevision);
   if (startRevision === endRevision)
     throw new Error(`atomic presentation transition did not advance from ${startRevision}`);
-  const intermediate = samples.filter((sample) => {
-    const revision = String(sample.revision);
-    return revision !== startRevision && revision !== endRevision;
+  const intermediate = transitionSamples.filter((sample) => {
+    const revision = String(sample.historyRevision);
+    return revision !== startHistoryRevision && revision !== endHistoryRevision;
   });
   if (intermediate.length > 0) {
     throw new Error(
-      `presentation transition painted intermediate revisions: ${JSON.stringify({ startRevision, endRevision, intermediate })}`,
+      `presentation transition painted intermediate history revisions: ${JSON.stringify({ startHistoryRevision, endHistoryRevision, intermediate })}`,
     );
-  }
-  if (!samples.some((sample) => String(sample.revision) === endRevision)) {
-    throw new Error(`atomic presentation probe did not paint completed revision ${endRevision}`);
   }
   return {
     startRevision,
     endRevision,
-    paintedRevisions: [...new Set(samples.map((sample) => String(sample.revision)))],
-    samples,
+    startHistoryRevision,
+    endHistoryRevision,
+    paintedRevisions: [...new Set(transitionSamples.map((sample) => String(sample.revision)))],
+    paintedHistoryRevisions: [
+      ...new Set(transitionSamples.map((sample) => String(sample.historyRevision))),
+    ],
+    samples: transitionSamples,
   };
 }
 
@@ -961,9 +980,10 @@ async function startAtomicPresentationProbe(page) {
     let frame;
     let stopped = false;
     const capture = () => {
-      const snapshot = window.__RUSTYERA_TEST__.snapshot();
+      const snapshot = window.__RUSTYERA_TEST__.snapshotSummary();
       const sample = {
         revision: String(snapshot.presentationRevision),
+        historyRevision: String(snapshot.historyRevision),
         waitId: snapshot.wait?.wait_id == null ? null : String(snapshot.wait.wait_id),
         canInteract: snapshot.canInteract,
         outputCount: snapshot.output.length,
@@ -1506,7 +1526,7 @@ export async function runAction(page, action) {
       ? await page.evaluate(() => window.__RUSTYERA_TEST__.snapshotSummary().wait?.wait_id)
       : undefined;
     let transitionSamples;
-    let completedRevision;
+    let completedPresentation;
     if (action.expect_atomic_presentation === true) {
       if (!runtimeInput)
         throw new Error("expect_atomic_presentation requires a runtime input button");
@@ -1521,9 +1541,13 @@ export async function runAction(page, action) {
           return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
         }, beforeWaitId);
       if (action.expect_atomic_presentation === true)
-        completedRevision = await page.evaluate(async () => {
+        completedPresentation = await page.evaluate(async () => {
           await window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true);
-          return String(window.__RUSTYERA_TEST__.snapshot().presentationRevision);
+          const snapshot = window.__RUSTYERA_TEST__.snapshotSummary();
+          return {
+            revision: String(snapshot.presentationRevision),
+            historyRevision: String(snapshot.historyRevision),
+          };
         });
     } finally {
       if (action.expect_atomic_presentation === true)
@@ -1535,7 +1559,7 @@ export async function runAction(page, action) {
         query: {
           presentation_transition: assertAtomicPresentationTransition(
             transitionSamples,
-            completedRevision,
+            completedPresentation,
           ),
         },
         semanticInput: action.semantic_input,
@@ -1658,7 +1682,7 @@ async function sampleQueries(page, action) {
   const samples = [];
   for (let index = 0; index < count; index += 1) {
     const sampledAtMs = performance.now();
-    const runtime = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    const runtime = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshotSummary());
     if (runtime.fault && !action.allow_fault)
       throw new Error(`runtime fault while sampling queries: ${JSON.stringify(runtime.fault)}`);
     const sample = {
