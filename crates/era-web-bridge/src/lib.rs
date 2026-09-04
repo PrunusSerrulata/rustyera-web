@@ -6,24 +6,26 @@
 
 use era_debug_protocol::{DEBUG_PROTOCOL_VERSION, DebugMessage, DebugScope};
 use era_protocol::{
-    Channel, SessionEpoch, SessionId, VersionRange, WireLimits, decode_envelope, encode_envelope,
+    Channel, SessionEpoch, SessionId, WireLimits, decode_envelope, encode_envelope,
 };
 use era_runtime::{
     ProjectProgressReporter, RuntimeDriveBudget, RuntimeDriveState, RuntimeOptions, RuntimeSession,
 };
 use era_runtime_protocol::{
-    AUDIO_OBSERVATION_OPERATION, ClientCapabilities, ClientHello, ConfigurationClientProfile,
-    ExternalResource, FileCategory, FilePayload, InputModality, ProjectCompatibilityResolved,
-    ProjectIdentity, ProjectLoadRequest, ProjectManifest, RUNTIME_PROTOCOL_VERSION,
-    ResolveProjectCompatibility, RuntimeFeature, RuntimeLimits, RuntimeMessage, SQL_OPERATION,
-    SequenceAcknowledgement, ServerHello, ServiceCapability, ServiceKind, ServiceRequest,
-    ServiceResponse, StorageCapabilities, StorageRequest, StorageResponse, SubmittedFile,
+    ConfigurationClientProfile, ExternalResource, FileCategory, FilePayload,
+    ProjectCompatibilityResolved, ProjectIdentity, ProjectLoadRequest, ProjectManifest,
+    ResolveProjectCompatibility, RuntimeLimits, RuntimeMessage, SequenceAcknowledgement,
+    ServerHello, ServiceRequest, ServiceResponse, StorageRequest, StorageResponse, SubmittedFile,
 };
 use erabasic_vm::VmConfig;
 use serde::{Deserialize, Serialize};
 
+mod client_hello;
 mod project_file_identity;
-pub use project_file_identity::{ProjectFileIdentitySummary, inspect_project_file_identity};
+use client_hello::client_hello;
+pub use project_file_identity::{
+    ProjectFileIdentitySummary, inspect_project_file_identity, project_identity,
+};
 
 const DEFAULT_ENVELOPE_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
@@ -936,158 +938,6 @@ impl From<RuntimeDriveState> for WebDriveState {
             RuntimeDriveState::Stopped => Self::Stopped,
             RuntimeDriveState::Faulted => Self::Faulted,
         }
-    }
-}
-
-/// Calculate the exact project identity used by the runtime cache contract.
-///
-/// # Errors
-///
-/// Returns an error if a submitted file is missing its 32-byte content hash.
-pub fn project_identity(manifest: &ProjectManifest) -> Result<ProjectIdentity, String> {
-    let mut files = manifest
-        .files
-        .iter()
-        .map(|file| {
-            (
-                file.relative_path.to_lowercase(),
-                file.relative_path.as_str(),
-                file,
-            )
-        })
-        .collect::<Vec<_>>();
-    files.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)));
-    let mut hasher = blake3::Hasher::new_derive_key("rustyera.project-source-identity.v1");
-    for (_, _, file) in files {
-        let digest = file
-            .content_hash
-            .as_ref()
-            .ok_or_else(|| format!("project file {} has no content hash", file.relative_path))?;
-        if digest.as_slice().len() != 32 {
-            return Err(format!(
-                "project file {} has an invalid content hash",
-                file.relative_path
-            ));
-        }
-        let path = file.relative_path.as_bytes();
-        hasher.update(&(path.len() as u64).to_le_bytes());
-        hasher.update(path);
-        hasher.update(&[file.category as u8]);
-        hasher.update(digest.as_slice());
-    }
-    Ok(ProjectIdentity {
-        project_revision: manifest.project_revision,
-        source_digest: era_protocol::ProtocolBytes::new(hasher.finalize().as_bytes().to_vec()),
-        compatibility: manifest.compatibility.clone(),
-        configuration_digest: era_runtime::compatibility_configuration_digest(manifest),
-    })
-}
-
-fn client_hello(options: WebSessionOptions, limits: RuntimeLimits) -> ClientHello {
-    let v1 = VersionRange::exact(era_protocol::ProtocolVersion::new(1, 0));
-    let mut services = [
-        (ServiceKind::Entropy, "random_seed"),
-        (ServiceKind::Clock, "local_date_time"),
-        (ServiceKind::InputState, "get_key_state"),
-        (
-            ServiceKind::InputState,
-            era_runtime_protocol::DEVICE_PUMP_OPERATION,
-        ),
-        (ServiceKind::InputState, "pointer_state"),
-        (ServiceKind::Image, "image_metadata"),
-        (ServiceKind::Image, "image_pixel"),
-        (ServiceKind::Canvas, "decode_canvas_image"),
-        (ServiceKind::Canvas, "sample_canvas_pixel"),
-        (ServiceKind::PresentationQuery, "get_display_line"),
-        (ServiceKind::PresentationQuery, "html_get_printed_str"),
-        (ServiceKind::PresentationQuery, "serialize_physical_history"),
-        (
-            ServiceKind::PresentationQuery,
-            era_runtime_protocol::GET_LINE_GEOMETRY_OPERATION,
-        ),
-        (ServiceKind::FontMetrics, "gget_text_size"),
-        (ServiceKind::Sql, SQL_OPERATION),
-    ]
-    .into_iter()
-    .map(|(kind, operation)| ServiceCapability {
-        kind,
-        operation: operation.into(),
-        versions: v1,
-    })
-    .chain(
-        ["html_string_len", "html_substring", "html_string_lines"]
-            .into_iter()
-            .map(|operation| ServiceCapability {
-                kind: ServiceKind::PresentationQuery,
-                operation: operation.into(),
-                versions: VersionRange::exact(era_protocol::ProtocolVersion::new(2, 0)),
-            }),
-    )
-    .collect::<Vec<_>>();
-    if options.audio_available {
-        services.push(audio_observation_capability());
-    }
-    ClientHello {
-        runtime_versions: VersionRange::exact(RUNTIME_PROTOCOL_VERSION),
-        client_name: options.client_name,
-        features: vec![
-            RuntimeFeature::ProjectReload,
-            RuntimeFeature::TraditionalSave,
-            RuntimeFeature::VmSnapshot,
-            RuntimeFeature::TimedInput,
-            RuntimeFeature::RichText,
-            RuntimeFeature::Html,
-            RuntimeFeature::Graphics,
-            RuntimeFeature::Audio,
-            RuntimeFeature::MouseInput,
-            RuntimeFeature::ExternalServices,
-            RuntimeFeature::StateResynchronization,
-            RuntimeFeature::Storage,
-            RuntimeFeature::InputUndo,
-            RuntimeFeature::ProjectAnalysis,
-            RuntimeFeature::KeyMacros,
-        ],
-        requested_limits: limits,
-        capabilities: ClientCapabilities {
-            environment: [
-                era_runtime_protocol::INPUT_TIMED_VIEWPORT_CAPABILITY,
-                era_runtime_protocol::INPUT_DEVICE_LATCH_CAPABILITY,
-                era_runtime_protocol::INPUT_DEVICE_PUMP_CAPABILITY,
-            ]
-            .into_iter()
-            .map(|name| era_runtime_protocol::EnvironmentCapability {
-                name: name.into(),
-                versions: VersionRange::exact(era_runtime_protocol::INPUT_ENVIRONMENT_VERSION),
-            })
-            .collect(),
-            input_modalities: vec![InputModality::Keyboard, InputModality::Mouse],
-            rich_text: true,
-            html: true,
-            graphics: true,
-            audio: options.audio_available,
-            video: false,
-            font_metrics: true,
-            column_cells: true,
-            separators: true,
-            available_fonts: options.available_fonts,
-            services,
-            storage: StorageCapabilities {
-                revisions: true,
-                atomic_replace: true,
-                missing_precondition: true,
-                delete: true,
-            },
-        },
-        preferred_locales: options.preferred_locales,
-        configuration_profile: Some(options.configuration_profile),
-    }
-}
-
-fn audio_observation_capability() -> ServiceCapability {
-    ServiceCapability {
-        kind: ServiceKind::Audio,
-        operation: AUDIO_OBSERVATION_OPERATION.into(),
-        versions: VersionRange::exact(era_protocol::ProtocolVersion::new(1, 0)),
     }
 }
 

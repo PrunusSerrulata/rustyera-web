@@ -11,7 +11,7 @@ export default tseslint.config(
   ...vue.configs["flat/recommended"],
   prettier,
   {
-    files: ["src/**/*.{ts,vue}", "tests/**/*.ts"],
+    files: ["src/**/*.{ts,vue}", "tests/**/*.{js,ts}"],
     languageOptions: {
       globals: globals.browser,
     },
@@ -28,7 +28,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["tests/**/*.ts"],
+    files: ["tests/**/*.{js,ts}"],
     languageOptions: {
       globals: { ...globals.browser, ...globals.node },
     },

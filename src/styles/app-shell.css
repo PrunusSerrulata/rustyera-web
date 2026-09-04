@@ -1,0 +1,882 @@
+:root {
+  color-scheme: dark;
+  font-family: system-ui, sans-serif;
+  color: #e8e9ed;
+  background: #101114;
+  font-synthesis: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+button {
+  border: 1px solid #424650;
+  border-radius: 5px;
+  background: #252830;
+  padding: 0.42rem 0.75rem;
+  cursor: pointer;
+}
+button:hover:not(:disabled) {
+  background: #30343e;
+  border-color: #646a78;
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+button.primary {
+  background: #3c66df;
+  border-color: #5279eb;
+}
+button.danger {
+  background: #8b3038;
+  border-color: #b14953;
+}
+button.large {
+  font-size: 1.05rem;
+  padding: 0.7rem 1.25rem;
+}
+input,
+select {
+  border: 1px solid #424650;
+  border-radius: 5px;
+  background: #191b20;
+  padding: 0.45rem 0.55rem;
+}
+
+.app-shell {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 1fr auto;
+  width: 100%;
+  height: 100%;
+  font-family: system-ui, sans-serif;
+  font-size: 16px;
+}
+.menu-row {
+  position: relative;
+  min-height: 0;
+}
+.menu-overlay .menu-row {
+  height: 0;
+  z-index: 30;
+}
+.menu-overlay .menu-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translateY(calc(-100% + 4px));
+  transition: transform 120ms ease-out;
+}
+.menu-overlay .menu-bar:focus-within,
+.menu-overlay.menu-overlay-open .menu-bar {
+  transform: translateY(0);
+}
+.menu-overlay .project-load-progress {
+  top: 8px;
+}
+.menu-touch-toggle {
+  position: absolute;
+  top: 4px;
+  left: 7px;
+  z-index: 29;
+  border-top: 0;
+  border-radius: 0 0 5px 5px;
+  padding: 0.18rem 0.5rem;
+  background: #202329f5;
+  color: #cbd1dd;
+  line-height: 1;
+  transition: top 120ms ease-out;
+}
+.menu-touch-toggle::before {
+  position: absolute;
+  inset: -4px -12px -20px;
+  content: "";
+}
+.menu-overlay.menu-overlay-open .menu-touch-toggle::before {
+  top: 0;
+}
+.menu-overlay.menu-overlay-open .menu-touch-toggle {
+  top: 34px;
+}
+.menu-touch-toggle-icon {
+  display: block;
+  width: 1rem;
+  height: 0.875rem;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+.menu-touch-toggle-icon.direction-down {
+  transform: rotate(180deg);
+}
+@media (hover: hover) {
+  .menu-overlay .menu-row:hover .menu-bar {
+    transform: translateY(0);
+  }
+  .menu-overlay .menu-row:hover .menu-touch-toggle {
+    top: 34px;
+  }
+}
+.project-load-progress {
+  position: absolute;
+  top: 42px;
+  left: 50%;
+  z-index: 25;
+  display: grid;
+  width: min(560px, calc(100% - 32px));
+  gap: 0.45rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid #4b5568;
+  border-radius: 7px;
+  background: #171a20ed;
+  box-shadow: 0 10px 30px #0008;
+  color: #e8e9ed;
+  transform: translateX(-50%);
+}
+.project-load-progress progress {
+  width: 100%;
+  height: 0.55rem;
+  accent-color: #5279eb;
+}
+.project-load-progress span {
+  overflow: hidden;
+  font-size: 0.88rem;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.full-project-export {
+  min-width: min(28rem, 75vw);
+}
+
+.full-project-export progress,
+.fault-diagnosis-progress progress {
+  width: 100%;
+}
+
+.fault-diagnosis-progress {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0.75rem 0;
+}
+
+.fault-diagnosis-progress progress {
+  accent-color: #5279eb;
+}
+
+.fault-diagnosis-progress span,
+.fault-diagnosis-result {
+  color: #dbe6ff;
+}
+
+.menu-bar {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 2px 7px;
+  border-bottom: 1px solid #2f323a;
+  background: #1b1d22;
+  user-select: none;
+  z-index: 30;
+}
+.menu {
+  position: relative;
+}
+.menu > button {
+  border-color: transparent;
+  background: transparent;
+  padding: 0.3rem 0.65rem;
+}
+.menu-popup {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  min-width: 220px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 44px);
+  max-height: calc(100dvh - 44px - env(safe-area-inset-bottom, 0px));
+  padding: 5px;
+  border: 1px solid #424650;
+  border-radius: 6px;
+  background: #202329;
+  box-shadow: 0 10px 30px #0009;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  z-index: 100;
+}
+.menu-popup button {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  white-space: nowrap;
+}
+.menu-popup hr {
+  border: 0;
+  border-top: 1px solid #393d46;
+  margin: 4px;
+}
+.menu-spacer,
+.spacer {
+  flex: 1;
+}
+.runtime-status {
+  max-width: 40vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #aeb3bf;
+  font-size: 0.85rem;
+}
+.host-badge {
+  margin-left: 0.7rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 10px;
+  background: #30343e;
+  color: #cbd1dd;
+  font-size: 0.75rem;
+}
+.corner-notifications {
+  position: fixed;
+  top: 42px;
+  right: 10px;
+  display: grid;
+  max-width: min(32rem, calc(100vw - 20px));
+  max-height: calc(100vh - 52px);
+  overflow: hidden;
+  z-index: 900;
+}
+.log-notification {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid #b98524;
+  border-radius: 5px;
+  background: #29251b;
+  color: #f5e7c6;
+}
+.log-notification.error {
+  border-color: #b84c55;
+  background: #2c1d20;
+  color: #f5d6d9;
+}
+.log-notification-countdown {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 3px;
+  background: #e6a936;
+  transform-origin: left;
+  animation-name: log-notification-countdown;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+.log-notification.error .log-notification-countdown {
+  background: #e05b66;
+}
+.log-notification-content {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 0.75rem 0.85rem;
+}
+.log-notification-content strong {
+  color: #ffc857;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+}
+.log-notification.error .log-notification-content strong {
+  color: #ff8d96;
+}
+.log-notification-content span {
+  overflow-wrap: anywhere;
+}
+.log-notification > button {
+  align-self: start;
+  margin: 0.35rem;
+  padding: 0.1rem 0.38rem;
+  border: 0;
+  background: transparent;
+  color: #d8c9a7;
+  font-size: 1.2rem;
+  line-height: 1;
+}
+.log-notification > button:hover {
+  background: #ffffff10;
+  color: #fff;
+}
+@keyframes log-notification-countdown {
+  to {
+    transform: scaleX(0);
+  }
+}
+
+.about-details {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.55rem 1.25rem;
+  min-width: 0;
+  margin: 0.5rem 0 1rem;
+}
+.about-details dt {
+  color: #aeb3bf;
+}
+.about-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.about-details a {
+  color: #7dd3fc;
+}
+.license-scope {
+  display: block;
+  margin-top: 0.2rem;
+  color: #aeb3bf;
+  font-size: 0.88rem;
+}
+.about-separator {
+  border: 0;
+  border-top: 1px solid #4b5563;
+  margin: 0 0 1rem;
+}
+.about-game-title {
+  margin: 0 0 0.5rem;
+}
+.game-details {
+  margin-top: 0;
+}
+
+.welcome {
+  grid-row: 2 / 4;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 0.7rem;
+  text-align: center;
+  background: radial-gradient(circle at center, #1e2330, #101114 60%);
+}
+.welcome h1 {
+  margin: 0;
+  font-size: 3rem;
+  letter-spacing: 0.04em;
+}
+.welcome p {
+  margin: 0;
+  color: #b2b7c2;
+}
+.welcome .hint {
+  max-width: 540px;
+  margin-top: 1rem;
+  font-size: 0.85rem;
+}
+.welcome .hint + .hint {
+  margin-top: 0;
+}
+
+.game-viewport {
+  position: relative;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+  overscroll-behavior: contain;
+  background: var(--game-background);
+  font-family: var(--game-font);
+  font-size: var(--game-size);
+  text-align: left;
+  contain: strict;
+  overflow-anchor: none;
+}
+.game-area {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  background: var(--game-background);
+}
+.interaction-assist-slot {
+  min-width: 0;
+}
+.interaction-assist-slot.interaction-assist-hidden {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.interaction-assist-panel {
+  --interaction-assist-action-height: calc(1rem + 0.84rem + 2px);
+  --interaction-assist-actions-border-width: 1px;
+  --interaction-assist-actions-padding-block: 6px;
+  --interaction-assist-row-gap: 6px;
+
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  background: transparent;
+}
+.interaction-assist-panel.expanded {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 24;
+}
+.interaction-assist-header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 7px;
+  background: transparent;
+  box-shadow: none;
+  color: #cbd1dd;
+  font-size: 0.78rem;
+}
+.interaction-assist-toggle {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  margin-bottom: -1px;
+  border-bottom: 0;
+  border-radius: 5px 5px 0 0;
+  padding: 0.18rem 0.5rem;
+  background: #202329f5;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.interaction-assist-toggle-icon {
+  display: block;
+  width: 1rem;
+  height: 0.875rem;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+.interaction-assist-toggle-icon.direction-down {
+  transform: rotate(180deg);
+}
+.interaction-assist-actions {
+  min-width: 0;
+  min-height: calc(
+    var(--interaction-assist-action-height) + var(--interaction-assist-actions-padding-block) +
+      var(--interaction-assist-actions-padding-block) +
+      var(--interaction-assist-actions-border-width)
+  );
+  border-top: var(--interaction-assist-actions-border-width) solid #3a3f4b;
+  padding: var(--interaction-assist-actions-padding-block) 7px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: #202329f5;
+  box-shadow: none;
+  scrollbar-width: thin;
+}
+.interaction-assist-actions.expanded {
+  display: grid;
+  align-content: start;
+  gap: var(--interaction-assist-row-gap);
+  overflow: auto;
+}
+.interaction-assist-row {
+  display: flex;
+  width: max-content;
+  min-height: var(--interaction-assist-action-height);
+  min-width: 100%;
+  gap: 6px;
+}
+.interaction-assist-action {
+  width: 10rem;
+  min-width: 10rem;
+  max-width: 10rem;
+  padding: 0.42rem 0.65rem;
+  text-align: left;
+}
+.interaction-assist-action > span {
+  display: block;
+  overflow: hidden;
+  font-size: 1rem;
+  line-height: 1rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.setting-radio-control {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.85rem;
+}
+.setting-radio-control label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+.setting-radio-control input {
+  margin: 0;
+}
+.game-tooltip {
+  position: fixed;
+  z-index: 1100;
+  max-width: min(42rem, calc(100vw - 16px));
+  border: 1px solid #0008;
+  border-radius: 3px;
+  padding: 3px 5px;
+  box-shadow: 0 2px 8px #0008;
+  line-height: 1.2;
+  pointer-events: none;
+}
+[data-era-tooltip] {
+  pointer-events: auto;
+}
+.virtual-history {
+  position: relative;
+  width: 100%;
+  margin: 0;
+}
+.game-line {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: max-content;
+  min-width: 100%;
+  min-height: var(--game-line-height);
+  margin: 0;
+  padding: 0;
+  line-height: var(--game-line-height);
+  white-space: pre;
+  overflow-wrap: normal;
+  /* Interactive descendants opt back in, so later transparent virtual rows do not
+     steal pointer hits from positioned images extending out of an earlier row. */
+  pointer-events: none;
+}
+.game-line .html-node:is(p) {
+  margin: 0;
+}
+.game-line:has(.media-image, .canvas-replay),
+.game-line .html-node:is(p):has(.media-image, .canvas-replay) {
+  min-height: var(--game-line-height);
+  margin: 0;
+  padding: 0;
+  line-height: var(--game-line-height);
+}
+.game-line:has(.media-positioned) {
+  /* ypos visuals intentionally draw outside their one-row layout slot. */
+  overflow: visible;
+}
+.align-center {
+  text-align: center;
+}
+.align-right {
+  text-align: right;
+}
+.game-button,
+.html-node:is(button) {
+  --game-interaction-hover-background: #ffffff18;
+  --game-interaction-border-radius: 5px;
+
+  display: inline;
+  border: 0;
+  border-radius: var(--game-interaction-border-radius);
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  appearance: none;
+  text-decoration: none;
+  pointer-events: auto;
+}
+:is(.game-button, .html-node:is(button)):hover:not(:disabled) {
+  --game-interaction-foreground: var(--game-focus);
+
+  background: var(--game-interaction-hover-background);
+  color: var(--game-interaction-foreground);
+}
+:is(.game-button, .html-node:is(button)):hover:not(:disabled) .html-font {
+  --game-interaction-foreground: var(--game-button-foreground);
+}
+:is(.game-button, .html-node:is(button)):hover:not(:disabled)
+  :is(.shape-rect-visual, .html-shape-rect-visual) {
+  --game-shape-foreground: var(--game-button-shape-foreground);
+}
+:is(.shape-rect, .html-shape-rect) {
+  display: inline-block;
+  position: relative;
+  vertical-align: top;
+}
+:is(.shape-rect-visual, .html-shape-rect-visual) {
+  position: absolute;
+  display: block;
+  pointer-events: none;
+}
+.game-viewport.mouse-disabled
+  :is(.game-button, .html-node:is(button), [data-era-tooltip], .scene-layer-interactive) {
+  pointer-events: none;
+}
+.game-viewport.mouse-disabled .scene-layer-interactive * {
+  pointer-events: none;
+}
+:is(.game-button, .html-node:is(button)):has(.media-positioned):hover:not(:disabled) {
+  background: transparent;
+}
+:is(.game-button, .html-node:is(button)):has(.media-positioned):hover:not(:disabled)
+  .media-positioned
+  > .media-visual,
+:is(.game-button, .html-node:is(button)):has(.media-positioned):not(:disabled)
+  .media-positioned
+  > .media-visual.media-hovered {
+  border-radius: var(--game-interaction-border-radius);
+  background: var(--game-interaction-hover-background);
+}
+.column-group {
+  display: inline-grid;
+  max-width: 100%;
+  vertical-align: top;
+}
+.column-cell {
+  display: inline-block;
+  width: 100%;
+  min-width: 0;
+}
+.separator {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  line-height: inherit;
+  white-space: nowrap;
+}
+.space {
+  display: inline-block;
+  vertical-align: top;
+}
+.html-shape-space {
+  display: inline-block;
+  vertical-align: top;
+}
+.html-ascii-space {
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: top;
+}
+.display-line {
+  display: contents;
+}
+.html-box-cell {
+  display: inline-block;
+  position: relative;
+  overflow: visible;
+  vertical-align: top;
+}
+.html-box-cell[data-continuation]::after {
+  position: absolute;
+  left: 1ch;
+  content: attr(data-continuation);
+}
+.html-box-row {
+  display: inline-block;
+  position: relative;
+  vertical-align: top;
+}
+.html-box-fill {
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: top;
+}
+.html-trailing-box-edge {
+  position: absolute;
+  right: 0;
+}
+.html-division {
+  display: inline-block;
+  position: relative;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  vertical-align: top;
+}
+.html-division-visual {
+  position: absolute;
+  display: block;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.html-node.html-node-positioned {
+  display: inline-block;
+  position: relative;
+  width: 0;
+  vertical-align: top;
+}
+.html-node.html-node-positioned.html-positioned-media > br {
+  display: none;
+}
+.html-node.html-node-positioned:not(.html-positioned-media):has(> br:last-child) {
+  /* A trailing HTML break reserves a row in Emuera. Browsers otherwise collapse
+     the empty line after the final <br>, including its font descent, shortening
+     image documents by one row. */
+  padding-bottom: 1.25em;
+}
+.media-image,
+.canvas-replay-stack,
+.canvas-replay {
+  display: inline-block;
+  position: relative;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  vertical-align: top;
+  image-rendering: auto;
+  pointer-events: auto;
+}
+.canvas-replay-stack {
+  overflow: hidden;
+}
+.canvas-replay-surface {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  pointer-events: none;
+}
+.column-width-probe {
+  position: absolute;
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
+}
+.media-positioned {
+  overflow: visible;
+}
+.media-positioned > .media-visual {
+  position: absolute;
+  left: 0;
+  display: block;
+}
+.game-line.html-image-layer-line .media-positioned > .media-visual {
+  /* Keep the canonical placeholder rows in history while painting each layer
+     at the reference image origin. Individual translate composes with flips
+     and the existing bottom-anchor transform. */
+  translate: 0 var(--game-media-line-offset);
+}
+.media-positioned > .media-visual.media-bottom-anchored {
+  /* Emuera's ypos=-height idiom anchors an escaped image to the preceding
+     console-row boundary; the browser's configured inline slot and final line
+     descent have already advanced past that boundary. */
+  transform: translateY(var(--media-row-offset));
+}
+.media-sprite {
+  overflow: hidden;
+}
+.media-sprite > img {
+  position: absolute;
+  max-width: none;
+  transform-origin: left top;
+  image-rendering: auto;
+}
+.media-canvas-handoff > .media-canvas-handoff-image {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  max-width: none;
+  visibility: hidden;
+  opacity: 0;
+  image-rendering: auto;
+}
+.media-canvas-handoff > .media-canvas-handoff-image-visible {
+  visibility: visible;
+  opacity: 1;
+}
+.media-image-fallback {
+  color: #ff858e;
+}
+.scene-compositor {
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  min-height: 100%;
+}
+.scene-layer-stack {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+.scene-layer {
+  position: absolute;
+  display: block;
+  overflow: visible;
+  pointer-events: none;
+}
+.scene-layer-interactive {
+  cursor: pointer;
+  pointer-events: auto;
+}
+.scene-layer-visual {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.scene-layer:not(.scene-layer-interactive) :is(.media-image, .canvas-replay-stack) {
+  pointer-events: none;
+}
+.scene-color-filter,
+.media-color-filter,
+.scene-hit-map {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.html-island {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.html-island button {
+  pointer-events: auto;
+}
+.prompt-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px;
+  border-top: 1px solid #2f323a;
+  background: #1b1d22;
+}
+.prompt-bar input {
+  flex: 1;
+  min-width: 0;
+}
+.countdown {
+  min-width: 3.2em;
+  color: #f0c46b;
+  text-align: right;
+}

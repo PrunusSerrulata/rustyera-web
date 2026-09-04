@@ -82,7 +82,7 @@ export function installWebTestControl(pinia: Pinia): void {
       output: store.presentation.lines.map(observedLineText),
       htmlIsland: store.presentation.htmlIsland,
       audio: Object.fromEntries(
-        store.presentation.audio.map((channel) => [
+        store.presentation.audio.map((channel: (typeof store.presentation.audio)[number]) => [
           channel.channel.type === "sound"
             ? `sound:${String(channel.channel.channel)}`
             : channel.channel.type,

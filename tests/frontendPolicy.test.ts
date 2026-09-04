@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { mount } from "@vue/test-utils";
@@ -29,6 +29,7 @@ vi.mock("@/stores/runtime", () => ({
 import HtmlNode from "@/components/HtmlNode.vue";
 import RunRenderer from "@/components/RunRenderer.vue";
 import { RuntimePointerObservation } from "@/platform/pointerObservation";
+import { readFileSync } from "./styleTestSupport";
 
 describe("frontend host and image-line policy", () => {
   it("keeps a button's accessible name intact across per-character layout runs", () => {

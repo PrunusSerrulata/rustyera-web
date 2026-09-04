@@ -18,6 +18,32 @@ import {
 } from "../scripts/web-test-lib.mjs";
 import { finalizeBrowserGameRun } from "../scripts/web-test-lifecycle.mjs";
 
+function readScriptSources(...names: string[]) {
+  return names.map((name) => readFileSync(resolve("scripts", name), "utf8")).join("\n");
+}
+
+function browserCompatibilitySource() {
+  return readScriptSources(
+    "browser-compat-test.mjs",
+    "browser-compat-options.mjs",
+    "browser-compat-run.mjs",
+    "browser-compat-interactive.mjs",
+    "browser-compat-support.mjs",
+    "browser-compat-ui.mjs",
+    "browser-compat-smoke.mjs",
+    "browser-compat-monitor.mjs",
+  );
+}
+
+function webTestLibrarySource() {
+  return readScriptSources(
+    "web-test-lib.mjs",
+    "web-test-browser.mjs",
+    "web-test-project.mjs",
+    "web-test-query.mjs",
+  );
+}
+
 afterEach(() => vi.useRealTimers());
 
 describe("browser game runner progress policy", () => {
@@ -152,7 +178,7 @@ describe("browser game runner progress policy", () => {
 
   it("uses the shared five-second complete snapshot monitor", () => {
     const runner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
-    const library = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const library = webTestLibrarySource();
     const snapshots = readFileSync(resolve("scripts/tauri-test-support.mjs"), "utf8");
 
     expect(runner).toContain(
@@ -215,7 +241,7 @@ describe("browser game runner progress policy", () => {
   });
 
   it("forces native-browser startup measurements to use empty OPFS and cold telemetry", () => {
-    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+    const runner = browserCompatibilitySource();
 
     expect(runner).toContain('compatibilityStage = "clearing OPFS for cold startup"');
     expect(runner).toContain("await root.removeEntry(name, { recursive: true })");
@@ -228,8 +254,8 @@ describe("browser game runner progress policy", () => {
   });
 
   it("uses non-blocking Firefox navigation and bounds complete snapshots", () => {
-    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
-    const library = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const runner = browserCompatibilitySource();
+    const library = webTestLibrarySource();
     const snapshots = readFileSync(resolve("scripts/tauri-test-support.mjs"), "utf8");
 
     expect(library).not.toContain("webSocketUrl: true");
@@ -241,7 +267,7 @@ describe("browser game runner progress policy", () => {
     expect(runner).not.toContain("browser.isBidi !== true");
     const navigation = runner.indexOf("await browser.url(targetUrl)");
     const readiness = runner.indexOf("await waitForWebDriverDocument(browser, targetUrl");
-    const monitor = runner.indexOf("snapshotMonitor = startCompleteSnapshotMonitor");
+    const monitor = runner.indexOf("snapshotMonitor = startCompatibilitySnapshotMonitor");
     const firstAsyncScript = runner.indexOf("await browser.executeAsync");
     expect(navigation).toBeGreaterThan(-1);
     expect(readiness).toBeGreaterThan(navigation);
@@ -264,16 +290,16 @@ describe("browser game runner progress policy", () => {
   });
 
   it("treats an output-marker compatibility probe as startup-only", () => {
-    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+    const runner = browserCompatibilitySource();
 
     expect(runner).toContain("Boolean(expectedOutput) ||");
     expect(runner.indexOf("Boolean(expectedOutput) ||")).toBeLessThan(
-      runner.indexOf('compatibilityStage = "checking automatic interaction assistance"'),
+      runner.indexOf('setStage("checking automatic interaction assistance")'),
     );
   });
 
   it("checks global preferences through the real UI before native-browser project load", () => {
-    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+    const runner = browserCompatibilitySource();
 
     expect(runner).toContain('compatibilityStage = "restoring Safari automation window"');
     expect(runner).toContain(".maximizeWindow()");
@@ -293,7 +319,7 @@ describe("browser game runner progress policy", () => {
   });
 
   it("bounds native file-menu retries below the snapshot stall interval", () => {
-    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+    const runner = browserCompatibilitySource();
 
     expect(runner).toContain("async function clickFileMenuAction(activeBrowser, label)");
     expect(runner).toContain("attempt <= 2");
@@ -309,7 +335,7 @@ describe("browser game runner progress policy", () => {
   });
 
   it("materializes portable browser files without joining large base64 payloads", () => {
-    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+    const runner = browserCompatibilitySource();
 
     expect(runner).toContain("chunks.push(Uint8Array.from(raw");
     expect(runner).toContain("new File(chunks");
@@ -323,10 +349,10 @@ describe("browser game runner progress policy", () => {
   });
 
   it("drives native Firefox and Safari through a real packaged-project picker", () => {
-    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
-    const library = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const runner = browserCompatibilitySource();
+    const library = webTestLibrarySource();
 
-    expect(runner).toContain('process.argv.indexOf("--project-file")');
+    expect(runner).toContain('argv.indexOf("--project-file")');
     expect(runner).toContain('element.accept.includes(".reraproj")');
     expect(runner).toContain('input[type="file"][accept*=".reraproj"]');
     expect(runner).toContain("packagedProjectProgressErrors(projectProgress, !startupOnly)");
@@ -344,16 +370,16 @@ describe("browser game runner progress policy", () => {
   });
 
   it("provides a native-browser game-log input smoke flow", () => {
-    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+    const runner = browserCompatibilitySource();
 
-    expect(runner).toContain('process.argv.includes("--log-input-smoke")');
+    expect(runner).toContain('argv.includes("--log-input-smoke")');
     expect(runner).toContain("await runLogInputSmoke(browser, browserName)");
     expect(runner).toContain("state.wait?.stop_message_skip === true");
     expect(runner).toContain('String(line).includes("暗之公会")');
   });
 
   it("keeps the compiled-cache input smoke independent of game-specific opening text", () => {
-    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+    const runner = browserCompatibilitySource();
     const cacheSmoke = runner.slice(
       runner.indexOf("async function runCacheInputSmoke"),
       runner.indexOf("async function runLogInputSmoke"),
@@ -385,15 +411,15 @@ describe("browser game runner progress policy", () => {
     expect(readFileSync(resolve("scripts/web-test.mjs"), "utf8")).toContain(
       '"import.meta.env.VITE_RUSTYERA_TEST_TRUST_METADATA"',
     );
-    const library = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const library = webTestLibrarySource();
     expect(library).toContain("stat.mtimeNs / 1_000_000n");
     expect(library).not.toContain("lastModified: stat.mtimeMs");
   });
 
   it("provides a native-browser font hot-apply flow", () => {
-    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+    const runner = browserCompatibilitySource();
 
-    expect(runner).toContain('process.argv.includes("--settings-hot-apply")');
+    expect(runner).toContain('argv.includes("--settings-hot-apply")');
     expect(runner).toContain('gameFont.setValue("monospace")');
     expect(runner).toContain('settingsDialog.$("#setting-FontSize").setValue("19")');
     expect(runner).toContain('style.fontFamily === "monospace"');
@@ -419,7 +445,7 @@ describe("browser game runner progress policy", () => {
 
   it("loads a real packaged project through Chromium and checks responsive overlays", () => {
     const runner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
-    const runnerLibrary = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const runnerLibrary = webTestLibrarySource();
     const scenario = readFileSync(
       resolve("tools/runtime-tester/scenarios/packaged-project-responsive.json"),
       "utf8",
@@ -532,7 +558,7 @@ describe("browser game runner progress policy", () => {
   });
 
   it("uses the requested mouse button for visible UI click actions", () => {
-    const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const runner = webTestLibrarySource();
     const fullProjectExport = readFileSync(
       resolve("tools/runtime-tester/scenarios/full-project-export.json"),
       "utf8",
@@ -546,7 +572,7 @@ describe("browser game runner progress policy", () => {
   });
 
   it("runs touch secondary actions through a real Chromium gesture scenario", () => {
-    const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const runner = webTestLibrarySource();
     const scenarioRunner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
     const scenario = readFileSync(
       resolve("tools/runtime-tester/scenarios/touch-secondary-action.json"),
@@ -722,7 +748,7 @@ describe("browser game runner progress policy", () => {
   });
 
   it("can assert computed game-font styles after applying settings", () => {
-    const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const runner = webTestLibrarySource();
     const scenario = readFileSync(
       resolve("tools/runtime-tester/scenarios/settings-hot-apply.json"),
       "utf8",
@@ -736,7 +762,7 @@ describe("browser game runner progress policy", () => {
   });
 
   it("measures real map and dialogue glyph coordinates for text-layout regressions", () => {
-    const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const runner = webTestLibrarySource();
     const mapScenario = readFileSync(
       resolve("tools/runtime-tester/scenarios/eratw-dynamic-map.json"),
       "utf8",

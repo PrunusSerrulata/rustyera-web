@@ -1,92 +1,65 @@
 import { RuntimeEvidence, createTypedWatchReader } from "@/testing/runtimeEvidence";
 import { defineStore } from "pinia";
-import { computed, nextTick, ref } from "vue";
-import { blake3 } from "@noble/hashes/blake3.js";
+import { computed, ref } from "vue";
+import type { PresentationState } from "@/core/presentation";
+import { createRuntimeStoreActions1 } from "@/stores/runtimeStoreActions1";
+import { createRuntimeStoreActions2 } from "@/stores/runtimeStoreActions2";
+import { createRuntimeStoreActions3 } from "@/stores/runtimeStoreActions3";
+import { createRuntimeStoreActions4 } from "@/stores/runtimeStoreActions4";
+import { createRuntimeStoreActions5 } from "@/stores/runtimeStoreActions5";
+import { createRuntimeStoreActions6 } from "@/stores/runtimeStoreActions6";
+import { createRuntimeStoreProjection } from "@/stores/runtimeStoreProjection";
+
+type RuntimeStoreActions = ReturnType<typeof createRuntimeStoreActions1> &
+  ReturnType<typeof createRuntimeStoreActions2> &
+  ReturnType<typeof createRuntimeStoreActions3> &
+  ReturnType<typeof createRuntimeStoreActions4> &
+  ReturnType<typeof createRuntimeStoreActions5> &
+  ReturnType<typeof createRuntimeStoreActions6>;
 
 import { AudioEngine } from "@/core/audio";
-import { parseAudioEffect } from "@/core/audio/model";
-import { resourceUrlRegistry } from "@/core/resources";
-import { diagnosisProjectName, diagnosisProjectTitle } from "@/core/diagnosis";
-import {
-  debugStopToken,
-  debugVariableKey,
-  formatDebugValue,
-  isStaleDebugGrantError,
-  sameDebugGrant,
-  selectedDebugFiber,
-  sourceLineStepCommand,
-} from "@/core/debug";
-import { preferredRuntimeLocales, resolveGameTextStyle } from "@/core/gameText";
-import { suppressedMirroredLogNotificationIndexes } from "@/core/log";
+import { debugStopToken, selectedDebugFiber } from "@/core/debug";
+import { resolveGameTextStyle } from "@/core/gameText";
 import { menuVisibilityMode } from "@/core/menuVisibility";
-import { isMessageContinuationWait, messageWaitIntent } from "@/core/messageSkip";
 import {
-  concatenateChunks,
   diagnosisProgressPercentage,
-  formatDiagnostic,
-  formatDiagnosisLogs,
   formatDiagnosisProgress,
   formatProjectProgress,
-  inputReplayFileName,
-  isRecoverableStaleDebugLog,
-  projectGameInformation,
-  safeNumber,
-  snapshotFileName,
 } from "@/core/runtimeSupport";
 import { formatRuntimeFault } from "@/core/runtimeFault";
-import { hasEnabledButton, presentationInteractionEnabled } from "@/core/presentation";
 import {
   defaultPreferences,
   defaultProjectPreferences,
-  type InteractionToken,
-  type LiveMemoryCounters,
   type Preferences,
   type ProjectPreferences,
-  type ProjectConfigurationChange,
   type ProjectGameInformation,
-  type ProjectFontLoadResult,
   type ProjectProgress,
-  type ProjectReloadScope,
   type PumpBatch,
   type RuntimeMessage,
-  type SessionOptions,
 } from "@/core/types";
 import { platformBridge } from "@/platform";
-import {
-  currentGameViewport,
-  currentGameViewportMeasurement,
-  type GameViewportMeasurement,
-} from "@/platform/viewportMeasurement";
+import { currentGameViewport, type GameViewportMeasurement } from "@/platform/viewportMeasurement";
 import { RuntimePointerObservation } from "@/platform/pointerObservation";
-import { projectLineGeometry } from "@/platform/lineGeometry";
 import { RuntimeCanvasPixelSampler } from "@/components/canvasPixelSampler";
 import { HtmlMeasurementProvider } from "@/platform/htmlMeasurement";
-import {
-  RuntimeServiceError,
-  isHtmlQueryService,
-  sameServiceInteger,
-  serviceInteger,
-  type ProjectionQueryContext,
-  type ServiceInteger,
-} from "@/core/runtimeServiceProtocol";
-import { RuntimeServiceRequests, type RuntimeServiceLease } from "@/stores/runtimeServiceRequests";
-import { yieldToPaint } from "@/platform/mainThread";
+import { type ServiceInteger } from "@/core/runtimeServiceProtocol";
+import { RuntimeServiceRequests } from "@/stores/runtimeServiceRequests";
 import { RuntimePumpCoordinator } from "@/stores/runtimePump";
 import { RuntimePresentationProjection } from "@/stores/runtimePresentation";
 import { RuntimeConfigurationState } from "@/stores/runtimeConfiguration";
 import { RuntimeCompiledCacheExportState } from "@/stores/runtimeCompiledCache";
 import { RuntimeExportTransferState } from "@/stores/runtimeExportTransfer";
-import { normalizeProjectProgress, RuntimeProjectLoadState } from "@/stores/runtimeProjectLoad";
+import { RuntimeProjectLoadState } from "@/stores/runtimeProjectLoad";
 import { RuntimeProjectReloadState } from "@/stores/runtimeProjectReload";
 import { RuntimeProjectFileExportState } from "@/stores/runtimeProjectFileExport";
-import { classifyRuntimeRejection, isNonNotifiedInputWarning } from "@/stores/runtimeRejections";
+import { isNonNotifiedInputWarning } from "@/stores/runtimeRejections";
 import { RuntimeLogState } from "@/stores/runtimeLogs";
 import { RuntimeInputState } from "@/stores/runtimeInput";
 import { RuntimeImportState } from "@/stores/runtimeImport";
 import { RuntimeDebugRequestState } from "@/stores/runtimeDebugRequests";
 import { RuntimeDebugState } from "@/stores/runtimeDebugState";
 import { RuntimeDiagnosisState } from "@/stores/runtimeDiagnosis";
-import { handleRuntimeService, RuntimeImagePixelCache } from "@/stores/runtimeServices";
+import { RuntimeImagePixelCache } from "@/stores/runtimeServices";
 import { SqlProvider } from "@/platform/sqlProvider";
 import { RuntimeProjectSettingsState } from "@/stores/runtimeProjectSettings";
 import { RuntimeClientPreferencesState } from "@/stores/runtimeClientPreferences";
@@ -96,36 +69,21 @@ import { RuntimeTestEnvironment } from "@/stores/runtimeTestEnvironment";
 import { RuntimeTraditionalSaveState } from "@/stores/runtimeTraditionalSaves";
 import { RuntimeViewportState } from "@/stores/runtimeViewport";
 import { useSystemFontAccess } from "@/stores/systemFontAccess";
-import { transportValue } from "@/stores/runtimeTransport";
-import { resolveCanvasReplay } from "@/core/replayResources";
-
 import {
-  sessionFontFallback,
-  diagnosisStateExportRequest,
   diagnosisProgressStage,
-  isFullProjectExport,
-  DEBUG_VARIABLE_PAGE_LIMIT,
-  DEBUG_VARIABLE_MAX_PAGES,
-  TIME_ADVANCE_INTERVAL_NS,
   MAXIMUM_LOG_ENTRIES,
   MAXIMUM_LOG_ENTRY_BYTES,
   MAXIMUM_LOG_TOTAL_BYTES,
   STATE_EXPORT_CHUNK_BYTES,
   TAURI_STATE_EXPORT_CHUNK_BYTES,
-  PROJECT_STARTING_STATUS,
-  GAME_RUNNING_STATUS,
 } from "@/stores/runtimeState";
 import type {
   LogEntry,
   LogNotificationPolicy,
-  RuntimeInputIntent,
   ExportState,
   DiagnosisStateExportKind,
-  FullProjectExportState,
   FullManifestImportTransaction,
-  FullProjectRequestSubmission,
   RuntimeStartKind,
-  RuntimeTestConfiguration,
 } from "@/stores/runtimeState";
 
 const FULL_PROJECT_MANIFEST_CHUNK_BYTES = 4 * 1024 * 1024;
@@ -606,3319 +564,364 @@ export const useRuntimeStore = defineStore("runtime", () => {
       return `单步暂停：${source.relative_path}:${Number(source.line) + 1}（F10 继续）`;
     return canInteract.value ? "输入内容；Enter 提交" : "等待 Runtime…";
   });
-
-  function resetTransientStatuses(): void {
-    runtimeStatus.reset();
-    runtimeProjectSettings.resetStatus();
-  }
-
-  function initialize(): Promise<void> {
-    if (initialized) return Promise.resolve();
-    if (initialization) return initialization;
-    const generation = lifecycleGeneration;
-    const operation = performInitialize(generation);
-    initialization = operation;
-    const clear = () => {
-      if (initialization === operation) initialization = undefined;
-    };
-    void operation.then(clear, clear);
-    return operation;
-  }
-
-  async function performInitialize(generation: number): Promise<void> {
-    // Host end-to-end tests must not inherit a developer's persisted font/image
-    // preferences. Those values change Emuera geometry and made identical test
-    // binaries report different image positions on different machines.
-    if (import.meta.env.VITE_RUSTYERA_TEST === "1") {
-      let loadedPreferences: Preferences = {
-        ...defaultPreferences(),
-        trustProjectFileMetadata:
-          bridge.kind === "browser" && import.meta.env.VITE_RUSTYERA_TEST_TRUST_METADATA === "1",
-      };
-      if (loadedPreferences.trustProjectFileMetadata) {
-        loadedPreferences = await bridge.savePreferences(loadedPreferences);
-      }
-      if (generation !== lifecycleGeneration) return;
-      preferences.value = loadedPreferences;
-    } else {
-      const loadedPreferences = await bridge.loadPreferences();
-      if (generation !== lifecycleGeneration) return;
-      preferences.value = loadedPreferences;
-    }
-    audio.setPreferences(preferences.value);
-    document.addEventListener("keydown", onKeyDown, true);
-    document.addEventListener("keyup", onKeyUp, true);
-    document.addEventListener("mousedown", onMouseDown, true);
-    document.addEventListener("mouseup", onMouseUp, true);
-    pointerObservation.start();
-    document.addEventListener("visibilitychange", onClientStateBoundary);
-    window.addEventListener("focus", onClientStateBoundary);
-    window.addEventListener("blur", onClientStateBoundary);
-    window.addEventListener("resize", onResize);
-    initialized = true;
-    if (bridge.prewarmRuntimeOnInitialize) {
-      void ensureSession().catch((error) =>
-        log("warning", `Runtime 后台初始化失败，将在打开项目时重试：${String(error)}`),
-      );
-    }
-  }
-
-  function teardown(): void {
-    lifecycleGeneration += 1;
-    pointerObservation.stop();
-    resetViewportProjectionBarriers();
-    serviceRequests.reset();
-    sqlProvider.reset();
-    canvasPixels.clear();
-    htmlMeasurements.clear();
-    initialization = undefined;
-    clearSessionTimers();
-    runtimePump.setTransitioning(true);
-    runtimePump.setReady(false);
-    retireFrontendOwners(true);
-    audio.close();
-    bridge.setProjectProgressListener(undefined);
-    void bridge
-      .dispose()
-      .catch((error) => log("warning", `释放 Runtime host 资源失败：${String(error)}`));
-    if (initialized) {
-      initialized = false;
-      document.removeEventListener("keydown", onKeyDown, true);
-      document.removeEventListener("keyup", onKeyUp, true);
-      document.removeEventListener("mousedown", onMouseDown, true);
-      document.removeEventListener("mouseup", onMouseUp, true);
-      document.removeEventListener("visibilitychange", onClientStateBoundary);
-      window.removeEventListener("focus", onClientStateBoundary);
-      window.removeEventListener("blur", onClientStateBoundary);
-      window.removeEventListener("resize", onResize);
-    }
-    resetDeviceInputState(true);
-  }
-
-  function onResize(): void {
-    void projectViewport();
-  }
-
-  function configureTestRun(configuration: RuntimeTestConfiguration): void {
-    if (import.meta.env.VITE_RUSTYERA_TEST !== "1")
-      throw new Error("测试运行配置只能在 VITE_RUSTYERA_TEST 中使用");
-    const { start } = configuration;
-    let normalizedSeed = start.seed;
-    if (start.type === "new_game") {
-      if (typeof normalizedSeed === "string") {
-        if (!/^\d+$/.test(normalizedSeed)) throw new Error("new_game 测试必须提供十进制 u64 seed");
-        normalizedSeed = BigInt(normalizedSeed);
-      }
-      if (
-        (typeof normalizedSeed === "number" &&
-          (!Number.isSafeInteger(normalizedSeed) || normalizedSeed < 0)) ||
-        (typeof normalizedSeed === "bigint" &&
-          (normalizedSeed < 0n || normalizedSeed > 0xffff_ffff_ffff_ffffn)) ||
-        normalizedSeed == null
-      )
-        throw new Error("new_game 测试必须提供十进制 u64 seed");
-    } else if (!start.bytes?.length) {
-      throw new Error(`${start.type} 测试必须提供状态文件`);
-    }
-    pendingStart =
-      start.type === "new_game"
-        ? { type: "new_game", seed: normalizedSeed as number | bigint }
-        : { type: start.type, bytes: new Uint8Array(start.bytes!) };
-    testEnvironment.configure(configuration.clock, start.seed, configuration.monotonicStartNs);
-  }
-
-  async function ensureSession(): Promise<void> {
-    if (runtimePump.ready) return;
-    if (sessionPreparation) return sessionPreparation;
-    const attempt = (async () => {
-      if (bridge.kind === "tauri") await requestSystemFonts();
-      runtimeSessionObservationGeneration += 1;
-      const options = sessionOptions();
-      const batch = await bridge.createSession(options);
-      sessionAudioAvailable = options.audioAvailable;
-      runtimePump.setReady(true);
-      try {
-        await handleBatch(batch);
-      } catch (error) {
-        runtimePump.setReady(false);
-        throw error;
-      }
-      schedulePump(0);
-    })();
-    sessionPreparation = attempt;
-    try {
-      await attempt;
-    } finally {
-      if (sessionPreparation === attempt) sessionPreparation = undefined;
-    }
-  }
-
-  function openPreferencesFromUser(): void {
-    preferencesOpen.value = true;
-    void requestSystemFonts();
-  }
-
-  function openProjectSettingsFromUser(): void {
-    projectSettingsOpen.value = true;
-    void requestSystemFonts();
-  }
-
-  function openPreferencesFromRuntime(): void {
-    projectSettingsOpen.value = true;
-    if (bridge.kind === "tauri") void requestSystemFonts();
-  }
-
-  function sessionOptions(): SessionOptions {
-    return {
-      clientName: bridge.kind === "tauri" ? "rustyera-vue-tauri" : "rustyera-vue-wasm",
-      // This fixed session capability is sampled when the runtime session is created. Browser
-      // fonts granted later remain UI choices until the next session negotiates CHKFONT again.
-      // Project fonts are a CSS/settings capability. CHKFONT remains the fixed system-font
-      // capability sampled when the runtime session is created.
-      availableFonts: [...(systemFonts.value.length > 0 ? systemFonts.value : sessionFontFallback)],
-      preferredLocales: [...preferredRuntimeLocales(navigator.languages)],
-      audioAvailable: audio.providerAvailable(),
-      debugScopeMask: 1023,
-      maximumEnvelopeBytes: 512 * 1024 * 1024,
-      configurationProfile: bridge.kind,
-    };
-  }
-
-  function refreshProjectFontFamilies(projectFonts?: ProjectFontLoadResult): void {
-    projectFonts ??= { fonts: [], errors: [] };
-    projectFontFamilies.value = projectFonts.fonts;
-    for (const error of projectFonts.errors) log("warning", `无法加载项目字体：${error}`);
-  }
-
-  async function openProject(): Promise<void> {
-    await selectProject("directory");
-  }
-
-  async function openProjectFile(): Promise<void> {
-    await selectProject("file");
-  }
-
-  async function selectProject(selection: "directory" | "file"): Promise<void> {
-    if (!canOpenProject.value) return;
-    pendingProjectSelection = selection;
-    if (projectOpen.value) {
-      openProjectConfirmationOpen.value = true;
-      return;
-    }
-    await loadProject(false, selection);
-  }
-
-  function cancelOpenProject(): void {
-    openProjectConfirmationOpen.value = false;
-  }
-
-  async function confirmOpenProject(): Promise<void> {
-    if (!openProjectConfirmationOpen.value || !canOpenProject.value) return;
-    openProjectConfirmationOpen.value = false;
-    await loadProject(true, pendingProjectSelection);
-  }
-
-  async function loadProject(
-    replaceCurrent: boolean,
-    selection: "directory" | "file",
-  ): Promise<void> {
-    projectSelecting.value = true;
-    projectLoad.acceptProgress();
-    unlockAudioFromUserGesture();
-    let currentSessionReplaced = false;
-    let selectionSubmitted = false;
-    let runtimeProjectSubmissionLocked = false;
-    try {
-      const prepareAfterSelection = async () => {
-        const replaceForAudioCapability =
-          runtimePump.ready && audio.providerAvailable() && !sessionAudioAvailable;
-        if (replaceCurrent || replaceForAudioCapability) {
-          currentSessionReplaced = true;
-          await recreateSessionForProjectSelection();
-        } else {
-          const waitingForRuntime = !runtimePump.ready;
-          if (waitingForRuntime) beginProjectLoad("正在初始化 Runtime…");
-          try {
-            await ensureSession();
-          } finally {
-            if (waitingForRuntime) {
-              finishProjectLoad();
-              projectLoad.acceptProgress();
-            }
-          }
-          if (audio.providerAvailable() && !sessionAudioAvailable) {
-            currentSessionReplaced = true;
-            await recreateSessionForProjectSelection();
-          }
-        }
-        runtimePump.setTransitioning(true);
-        runtimeProjectSubmissionLocked = true;
-        runtimePump.clearTimer();
-        await runtimePump.waitUntilIdle();
-        baseStatus.value = "正在读取项目…";
-      };
-      const onSubmitted = (submittedAtMs: number) => {
-        selectionSubmitted = true;
-        startupTelemetryState.begin(submittedAtMs, selection, bridge.kind);
-      };
-      const metrics = await (selection === "file"
-        ? bridge.openProjectFile(onSubmitted, prepareAfterSelection)
-        : bridge.openProject(onSubmitted, prepareAfterSelection));
-      if (!metrics) {
-        finishProjectLoad();
-        baseStatus.value = "已取消打开项目";
-        return;
-      }
-      refreshProjectPreferences();
-      runtimeConfiguration.refreshWritable();
-      await runtimeConfiguration.persistGenerated();
-      refreshProjectFontFamilies(metrics.projectFonts);
-      projectOpen.value = true;
-      projectSource.value = selection;
-      if (!startupTelemetry.value)
-        startupTelemetryState.begin(metrics.submittedAtMs, selection, bridge.kind);
-      startupTelemetryState.applyBridgeMetrics(metrics, bridge.kind);
-      log(
-        "info",
-        `项目读取：快速扫描 ${metrics.quickScanMs.toFixed(0)} ms，缓存读取 ${metrics.cacheReadMs.toFixed(0)} ms，源码读取 ${metrics.sourceReadMs.toFixed(0)} ms，提交 ${metrics.submitMs.toFixed(0)} ms${metrics.cacheImported ? "（已导入项目文件）" : "（冷编译）"}`,
-      );
-      continueProjectBuildProgress(metrics.cacheImported);
-      schedulePump(0);
-    } catch (error) {
-      if (runtimeProjectSubmissionLocked) {
-        try {
-          await recreateSessionForProjectSelection();
-        } catch (resetError) {
-          log("warning", `清理失败的项目提交时重建 Runtime 失败：${String(resetError)}`);
-        }
-      }
-      if (selectionSubmitted) startupTelemetryState.fail(error);
-      if (currentSessionReplaced) projectOpen.value = false;
-      finishProjectLoad();
-      baseStatus.value = String(error);
-      log("error", baseStatus.value);
-    } finally {
-      projectSelecting.value = false;
-      if (runtimeProjectSubmissionLocked) {
-        runtimePump.setTransitioning(false);
-        schedulePump(0);
-      }
-    }
-  }
-
-  async function recreateSessionForProjectSelection(): Promise<void> {
-    runtimePump.setTransitioning(true);
-    try {
-      if (fullManifestImport) await cleanupFullManifestImport(true);
-      baseStatus.value = "正在创建新的 Runtime session…";
-      unlockAudioFromUserGesture();
-      await replaceRuntimeSession();
-    } catch (error) {
-      runtimePump.setTransitioning(false);
-      throw error;
-    }
-  }
-
-  function unlockAudioFromUserGesture(): void {
-    // Safari may keep AudioContext.resume() pending until it recognizes a trusted activation.
-    // Start the request inside the user gesture, but do not make project I/O depend on audio.
-    void audio.unlock().catch((error) => log("warning", `音频解锁失败：${String(error)}`));
-  }
-
-  function clearSessionTimers(): void {
-    runtimePump.clearTimer();
-    compiledCacheExport.clearTimer();
-  }
-
-  function schedulePump(delay = 16): void {
-    runtimePump.schedule(delay);
-  }
+  const runtimeStoreActions = {} as RuntimeStoreActions;
 
   function requestNextChunk(): Promise<void> {
-    return exportTransfer.requestChunk();
+    return runtimeStoreActions.requestNextChunk();
   }
-
   async function handleBatch(batch: PumpBatch): Promise<void> {
-    const batchSequence = ++runtimeBatchSequence;
-    const batchLifecycleGeneration = lifecycleGeneration;
-    const batchSessionGeneration = runtimeSessionObservationGeneration;
-    startupTelemetryState.recordWasmMemory(batch.memoryBytes);
-    batchMediaDirty = false;
-    const suppressedLogNotificationIndexes = suppressedMirroredLogNotificationIndexes(batch.events);
-    for (let index = 0; index < batch.events.length;) {
-      if (batchLifecycleGeneration !== lifecycleGeneration) return;
-      const event = batch.events[index];
-      testEvidence.receive(event, batchSessionGeneration);
-      if (event.epoch != null && !observeRuntimeEpoch(event.epoch)) {
-        index += 1;
-        continue;
-      }
-      if (event.channel === "runtime" && event.message.type === "service_request") {
-        // Service decoding must not block later cancellation or epoch changes in this batch.
-        void handleService(
-          (event.message as RuntimeMessage).value,
-          event.correlationId,
-          event.epoch ?? runtimeEpoch.value,
-        );
-        index += 1;
-        continue;
-      }
-      if (event.channel === "runtime") {
-        const pending = handleRuntime(
-          event.message as RuntimeMessage,
-          event.correlationId,
-          suppressedLogNotificationIndexes.has(index),
-          event.dataBytes,
-        );
-        if (pending) await pending;
-      } else await handleDebug(event.message as any, event.correlationId);
-      index += 1;
-    }
-    if (batchLifecycleGeneration !== lifecycleGeneration) return;
-    if (presentationProjection.shouldPublish(batch.state))
-      batchMediaDirty = presentationProjection.publish() || batchMediaDirty;
-    if (batchMediaDirty) await synchronizeMedia();
-    if (debugRequests.grantRefreshNeeded) {
-      debugRequests.grantRefreshNeeded = false;
-      await requestDebugGrant();
-    } else if (debugRequests.pauseWanted) {
-      await requestPendingDebugPause();
-    }
-    await awaitDeviceSubmissions();
-    await settlePendingGameInput();
-    await flushDeferredViewportProjection(batchSequence);
-    // Device-pump AWAIT has completed once core resumes VM instructions. State may change back to
-    // running immediately after the acknowledgement while a positive delay is still pending, so
-    // phase changes alone cannot delimit this clock-sampling window.
-    if (batch.vmInstructions > 0) devicePumpTimeAdvancePending = false;
-    // Submit at most one manifest chunk after processing the previous pump's responses.
-    // Awaiting the entire upload here would prevent Runtime from draining its inbound queue.
-    await advanceFullManifestImport();
+    return runtimeStoreActions.handleBatch(batch);
   }
-
-  function handleRuntime(
-    message: RuntimeMessage,
-    correlationId?: number | bigint,
-    suppressNotification = false,
-    dataBytes?: Uint8Array,
-  ): void | Promise<void> {
-    const value = message.value;
-    switch (message.type) {
-      case "state_changed":
-        handleRuntimeStateChanged(value);
-        return;
-      case "presentation_snapshot":
-        batchMediaDirty = presentationProjection.projectSnapshot(value) || batchMediaDirty;
-        return;
-      case "presentation_delta":
-        return handlePresentationDelta(value);
-      case "wait_changed":
-        handleRuntimeWaitChanged(value);
-        return;
-      case "input_undo_state_changed":
-        applyInputUndo(value);
-        return;
-      case "log":
-        if (!isRecoverableStaleDebugLog(value.message))
-          log(value.level ?? "info", value.message, true, suppressNotification ? "none" : "all");
-        return;
-      default:
-        return handleRuntimeAsync(message, correlationId, dataBytes);
-    }
+  function currentPresentation(): PresentationState {
+    return runtimeStoreActions.currentPresentation();
   }
-
-  function handleRuntimeStateChanged(value: any): void {
-    pendingReturnToTitleMessageId = undefined;
-    phase.value = value.phase;
-    if (value.phase === "faulted" || value.phase === "stopped")
-      devicePumpTimeAdvancePending = false;
-    if (value.phase === "faulted" || value.phase === "stopped") {
-      gameProgressLossConfirmation.value = null;
-      runtimeImport.reset();
-    }
-    if (
-      startupTelemetry.value?.milestones.startSubmittedMs != null &&
-      startupTelemetry.value.outcome === "loading" &&
-      startupTelemetry.value.milestones.firstGamePhaseMs == null &&
-      ["running", "waiting_input", "waiting_external"].includes(value.phase)
-    ) {
-      startupTelemetry.value.milestones.firstGamePhaseMs = startupTelemetryState.elapsedMs();
-      startupTelemetry.value.outcome = "success";
-      startupTelemetryState.startMessageId = undefined;
-      // Host-side work such as font registration may finish after Runtime has already
-      // entered the game. The first game phase is the authoritative load boundary.
-      finishProjectLoad();
-      baseStatus.value = GAME_RUNNING_STATUS;
-    }
-    observeRuntimeEpoch(value.epoch ?? runtimeEpoch.value);
-    if (value.phase === "faulted" || value.phase === "stopped") {
-      const startupWasLoading = startupTelemetry.value?.outcome === "loading";
-      if (startupWasLoading) pendingStart = { type: "new_game" };
-      startupTelemetryState.fail(`Runtime entered ${value.phase} during startup`);
-      if (startupWasLoading) finishProjectLoad();
-    }
-    if (value.phase !== "debug_paused") debugStop.value = null;
-  }
-
-  function handlePresentationDelta(value: any): void | Promise<void> {
-    try {
-      batchMediaDirty = presentationProjection.projectDelta(value) || batchMediaDirty;
-    } catch (error) {
-      presentationProjection.discard();
-      log("warning", String(error));
-      return send({ type: "resynchronize", value: { after_sequence: null } }).then(() => undefined);
-    }
-  }
-
-  function handleRuntimeWaitChanged(value: any): void {
-    if (value.type === "opened" || value.type === "updated") {
-      runtimeInput.updateWait(value.value);
-      presentationProjection.openInputWait(value.value);
-    } else if (value.type === "closed") {
-      presentationProjection.closeInputWait();
-      runtimeInput.closeWait();
-    }
-  }
-
-  async function handleRuntimeAsync(
-    message: RuntimeMessage,
-    correlationId?: number | bigint,
-    dataBytes?: Uint8Array,
-  ): Promise<void> {
-    const value = message.value;
-    switch (message.type) {
-      case "server_hello":
-        coreVersion.value = `${value.implementation_version} (${import.meta.env.VITE_RUSTYERA_CORE_REVISION})`;
-        if (!runtimeConfiguration.acceptProfile(value.configuration_profile))
-          log("error", "Runtime 返回的设置宿主类别与当前客户端不一致，项目设置已停用");
-        baseStatus.value = "Runtime 已就绪";
-        break;
-      case "project_load_report": {
-        if (value.success) gameInformation.value = projectGameInformation(value.game_information);
-        if (projectReload.matches(correlationId)) {
-          await handleProjectReloadReport(value);
-          break;
-        }
-        startupTelemetryState.finishProgressStage();
-        if (startupTelemetry.value)
-          startupTelemetry.value.milestones.runtimeValidationReportedMs =
-            startupTelemetryState.elapsedMs();
-        const diagnostics = value.diagnostics ?? [];
-        const runtimeAcceptedCompiledCache = diagnostics.some(
-          (diagnostic: any) => diagnostic.code === "runtime.compiled_cache_hit",
-        );
-        if (startupTelemetry.value && runtimeAcceptedCompiledCache)
-          startupTelemetry.value.cacheHit = true;
-        runtimeManifestSparse = value.success && runtimeAcceptedCompiledCache;
-        appendLogEntries(
-          diagnostics.map((diagnostic: any) => ({
-            timestamp: new Date(),
-            level: diagnostic.level ?? "info",
-            message: formatDiagnostic(diagnostic),
-            authoritative: true,
-          })),
-          diagnostics.map((diagnostic: any) =>
-            diagnosticNotificationPolicy(diagnostic, "errors_only"),
-          ),
-        );
-        runtimeConfiguration.refreshWritable();
-        runtimeConfiguration.update(value.configuration);
-        await runtimeConfiguration.persistGenerated();
-        if (value.success) {
-          refreshProjectPreferences();
-          const startupLifecycle = lifecycleGeneration;
-          // Migration confirmation can change canonical presentation settings. Let
-          // the pump handle that reply before preferences or the initial viewport
-          // are submitted; awaiting it inside this batch handler would deadlock.
-          void runtimeConfiguration
-            .whenSettled()
-            .then(async () => {
-              if (startupLifecycle !== lifecycleGeneration) return;
-              await runtimeClientPreferences.apply();
-              if (startupLifecycle === lifecycleGeneration)
-                await continueLoadedProject(runtimeAcceptedCompiledCache);
-            })
-            .catch((error) => {
-              if (startupLifecycle !== lifecycleGeneration) return;
-              pendingStart = { type: "new_game" };
-              const message = `客户端偏好初始化失败：${String(error)}`;
-              startupTelemetryState.fail(message);
-              finishProjectLoad();
-              baseStatus.value = message;
-              log("error", message);
-            });
-        } else if (value.payload_required) {
-          showProjectLoadTransition("项目缓存未命中，正在读取项目源码…");
-          runtimeManifestSparse = false;
-          if (startupTelemetry.value) {
-            startupTelemetry.value.scenario = "cold";
-            startupTelemetry.value.cacheHit = false;
-          }
-          await bridge.submitProjectSource();
-          continueProjectBuildProgress();
-          schedulePump(0);
-        } else {
-          pendingStart = { type: "new_game" };
-          startupTelemetryState.fail("项目加载失败");
-          finishProjectLoad();
-          baseStatus.value = "项目加载失败，请查看日志";
-        }
-        break;
-      }
-      case "runtime_resynchronized":
-        pendingReturnToTitleMessageId = undefined;
-        phase.value = value.phase;
-        observeRuntimeEpoch(value.epoch ?? runtimeEpoch.value);
-        batchMediaDirty =
-          presentationProjection.projectSnapshot(value.presentation) || batchMediaDirty;
-        applyInputUndo(value.input_undo ?? null);
-        runtimeConfiguration.update(value.configuration);
-        await runtimeConfiguration.persistGenerated();
-        break;
-      case "configuration_update_prepared":
-        await runtimeConfiguration.handlePrepared(value, correlationId);
-        break;
-      case "configuration_update_committed":
-        await runtimeConfiguration.handleCommitted(value, correlationId);
-        break;
-      case "client_preferences_applied":
-        if (!(await runtimeClientPreferences.handleApplied(value, correlationId)))
-          log("warning", "忽略了非预期的客户端偏好响应");
-        break;
-      case "effect_batch":
-        await handleEffects(value.effects ?? []);
-        break;
-      case "storage_request": {
-        const response = await bridge.handleStorage(value);
-        await send({ type: "storage_response", value: response }, safeNumber(correlationId));
-        break;
-      }
-      case "service_request":
-        void handleService(value, correlationId);
-        break;
-      case "cancel_external_request":
-        if (value.kind === "service") serviceRequests.cancel(value.request_id);
-        break;
-      case "state_export_ready":
-        await exportTransfer.handleReady(value, correlationId);
-        break;
-      case "state_export_chunk":
-        await exportTransfer.handleChunk(value, dataBytes);
-        break;
-      case "state_import_accepted":
-        if (
-          [...fullManifestImports].some(
-            (pending) => pending.beginMessageId === String(correlationId),
-          )
-        ) {
-          try {
-            await acceptFullManifestImport(value, correlationId);
-          } catch (error) {
-            const pending = [...fullManifestImports].find(
-              (candidate) => candidate.beginMessageId === String(correlationId),
-            );
-            const active = pending?.activeExport;
-            await cleanupFullManifestImport(true, pending);
-            const message = `完整项目 manifest 传输失败：${String(error)}`;
-            if (active?.kind === "diagnosis_project") await failDiagnosisExport(active, message);
-            else await finishProjectFileExport("failed", message, false);
-          }
-        } else await runtimeImport.accept(value);
-        break;
-      case "state_import_ready":
-        if (!(await finishFullManifestImport(value, correlationId)))
-          await runtimeImport.ready(value);
-        break;
-      case "fault": {
-        resetViewportProjectionBarriers();
-        serviceRequests.reset();
-        sqlProvider.reset();
-        htmlMeasurements.clear();
-        canvasPixels.clear();
-        if (fullManifestImport) await cleanupFullManifestImport(false);
-        runtimeImport.reset();
-        gameProgressLossConfirmation.value = null;
-        const startupWasLoading = startupTelemetry.value?.outcome === "loading";
-        if (startupWasLoading) pendingStart = { type: "new_game" };
-        startupTelemetryState.fail(value.message ?? "Runtime fault");
-        if (startupWasLoading) finishProjectLoad();
-        diagnosisResult.value = "";
-        fault.value = value;
-        log("error", formatRuntimeFault(value), true, "none");
-        break;
-      }
-      case "diagnostic":
-        log(
-          value.level ?? "info",
-          formatDiagnostic(value),
-          true,
-          diagnosticNotificationPolicy(value, "all"),
-        );
-        if (
-          value.code === "runtime.compiled_cache_ready" &&
-          exportState?.kind === "compiled_cache" &&
-          !exportState.descriptor
-        ) {
-          const activeExport = exportState;
-          try {
-            await requestCompiledCacheExport(activeExport);
-          } catch (error) {
-            await compiledCacheExport.fail(activeExport, error);
-          }
-        } else if (
-          value.code === "runtime.compiled_cache_failed" &&
-          exportState?.kind === "compiled_cache" &&
-          !exportState.descriptor
-        ) {
-          await compiledCacheExport.fail(
-            exportState,
-            value.message ?? "Runtime cache build failed",
-            "none",
-          );
-        }
-        break;
-      case "command_rejected": {
-        const correlation = String(correlationId);
-        runtimeViewport.reject(correlation);
-        if (pendingReturnToTitleMessageId === correlation) {
-          pendingReturnToTitleMessageId = undefined;
-          const message = `返回标题被 Runtime 拒绝：${value.message ?? "未知原因"}`;
-          baseStatus.value = message;
-          log("warning", message, true);
-          await send({ type: "resynchronize", value: { after_sequence: null } });
-          break;
-        }
-        if (retiredFullManifestCommandIds.delete(correlation)) break;
-        const manifestImport = [...fullManifestImports].find((pending) =>
-          pending.commandMessageIds.has(correlation),
-        );
-        if (manifestImport) {
-          if (!manifestImport.cancelled) {
-            const active = manifestImport.activeExport;
-            await cleanupFullManifestImport(true, manifestImport);
-            const message = `完整项目 manifest 导入被 Runtime 拒绝：${value.message ?? "未知原因"}`;
-            if (active.kind === "diagnosis_project") await failDiagnosisExport(active, message);
-            else await finishProjectFileExport("failed", message, false);
-          } else retireFullManifestImport(manifestImport);
-          break;
-        }
-        const importRejected = runtimeImport.reject(correlationId);
-        const {
-          activeExport,
-          compiledCachePreparing,
-          fullProjectPreparing,
-          earlyFullProjectPreparation,
-          staleProjection,
-          rejectedInput,
-          willRetryInput,
-          suppressInputWarningNotification,
-        } = classifyRuntimeRejection(
-          value,
-          correlation,
-          exportState,
-          pendingProjectionMessages,
-          pendingGameInput.value,
-        );
-        const configurationRejected = runtimeConfiguration.reject(
-          correlationId,
-          value.message ?? "Runtime 拒绝了命令",
-        );
-        const undoRejected = pendingInputUndo.value?.messageId === correlation;
-        const startupRejected =
-          startupTelemetry.value?.outcome === "loading" &&
-          correlation === startupTelemetryState.startMessageId;
-        if (startupRejected) {
-          const message = String(value.message ?? "Runtime rejected startup");
-          startupTelemetryState.fail(message);
-          finishProjectLoad();
-          baseStatus.value = `项目启动失败：${message}`;
-        }
-        const reloadRejected = projectReload.matches(correlationId);
-        if (reloadRejected) {
-          const message = String(value.message ?? "Runtime 拒绝了热重载");
-          await projectReload.finalize(false);
-          finishProjectLoad();
-          baseStatus.value = `重新加载项目失败：${message}`;
-          log("error", baseStatus.value, true);
-        }
-        const exportRejected = exportState?.requestMessageId === correlation;
-        const claimedByKnownOperation =
-          importRejected ||
-          configurationRejected ||
-          undoRejected ||
-          startupRejected ||
-          reloadRejected ||
-          staleProjection ||
-          rejectedInput != null ||
-          compiledCachePreparing ||
-          fullProjectPreparing ||
-          earlyFullProjectPreparation ||
-          exportRejected;
-        if (
-          !claimedByKnownOperation &&
-          runtimeClientPreferences.reject(
-            correlationId,
-            String(value.message ?? "Runtime 拒绝了客户端偏好"),
-          )
-        )
-          break;
-        if (rejectedInput && !willRetryInput) {
-          runtimeInput.rejectInput(rejectedInput, willRetryInput);
-        }
-        runtimeInput.rejectUndo(correlation);
-        if (
-          suppressInputWarningNotification ||
-          (!staleProjection &&
-            !willRetryInput &&
-            !compiledCachePreparing &&
-            !fullProjectPreparing &&
-            !earlyFullProjectPreparation &&
-            !reloadRejected)
-        )
-          log(
-            "warning",
-            formatDiagnostic(value),
-            true,
-            suppressInputWarningNotification ? "none" : "all",
-          );
-        if (fullProjectPreparing && isFullProjectExport(activeExport)) {
-          scheduleFullProjectExportRetry(activeExport);
-        }
-        if (
-          exportState?.requestMessageId === String(correlationId) &&
-          !fullProjectPreparing &&
-          !String(value.message ?? "").includes("compiled project cache preparation started") &&
-          !String(value.message ?? "").includes("compiled project cache is still being prepared")
-        ) {
-          const message = `状态导出被 Runtime 拒绝：${value.message ?? "未知原因"}`;
-          if (exportState.kind.startsWith("diagnosis_"))
-            await failDiagnosisExport(exportState, message);
-          else {
-            const projectFileFailed = exportState.kind === "project_file";
-            const compiledCacheFailed = exportState.kind === "compiled_cache";
-            if (projectFileFailed) {
-              await finishProjectFileExport("failed", message);
-            } else if (compiledCacheFailed) {
-              await compiledCacheExport.fail(exportState, message, "none");
-            } else {
-              exportState = undefined;
-            }
-            if (!projectFileFailed && !compiledCacheFailed) baseStatus.value = message;
-            if (diagnosisExporting.value) void startDiagnosisStateExport("diagnosis_replay");
-          }
-        }
-        break;
-      }
-      case "exit_requested":
-        if (value.reason === "restart") await restart();
-        else await shutdown();
-        break;
-      case "shutdown_ready":
-        if (bridge.kind === "browser") requestBrowserTabClose();
-        else await bridge.close();
-        break;
-    }
-  }
-
-  async function handleProjectReloadReport(value: any): Promise<void> {
-    if (!projectReload.pending) return;
-    const diagnostics = value.diagnostics ?? [];
-    appendLogEntries(
-      diagnostics.map((diagnostic: any) => ({
-        timestamp: new Date(),
-        level: diagnostic.level ?? "info",
-        message: formatDiagnostic(diagnostic),
-        authoritative: true,
-      })),
-      diagnostics.map((diagnostic: any) => diagnosticNotificationPolicy(diagnostic, "errors_only")),
-    );
-    const committedFonts = await projectReload.finalize(Boolean(value.success));
-    if (!value.success) {
-      finishProjectLoad();
-      baseStatus.value = "重新加载项目失败，请查看日志";
-      log("error", baseStatus.value, true);
-      return;
-    }
-    refreshProjectFontFamilies(committedFonts);
-    advanceProjectResourceGeneration();
-    runtimeConfiguration.refreshWritable();
-    runtimeConfiguration.update(value.configuration);
-    await runtimeConfiguration.persistGenerated();
-    if (projectConfiguration.value) {
-      try {
-        await bridge.applyProjectConfiguration(
-          configurationEntries.value,
-          runtimeViewport.chrome(currentGameViewportMeasurement()),
-        );
-      } catch (error) {
-        log("warning", `客户端项目配置应用失败：${String(error)}`);
-      }
-    }
-    await settleProjectViewport();
-    runtimeManifestSparse = false;
-    finishProjectLoad();
-    baseStatus.value = GAME_RUNNING_STATUS;
-    if (!runtimeManifestSparse) scheduleCompiledCacheExport(1000);
-  }
-
-  async function synchronizeMedia(): Promise<void> {
-    document.title = presentation.title || "RustyEra";
-    try {
-      await audio.synchronize(presentation.audio);
-    } catch (error) {
-      log("warning", `音频播放失败：${String(error)}`);
-    }
-  }
-
-  function currentPresentation() {
-    return presentationProjection.current();
-  }
-
-  async function handleEffects(effects: any[]): Promise<void> {
-    const outcomes = [];
-    for (const effect of effects) {
-      try {
-        const kind = effect.kind;
-        if (kind.type === "audio") await audio.applyEffect(parseAudioEffect(kind.value));
-        else if (kind.type === "open_configuration") openPreferencesFromRuntime();
-        else if (kind.type === "start_animation") {
-          await new Promise(requestAnimationFrame);
-        } else if (kind.type === "present_now") {
-          batchMediaDirty =
-            presentationProjection.publishForPresentNow(kind.value?.presentation_revision) ||
-            batchMediaDirty;
-          if (batchMediaDirty) {
-            await synchronizeMedia();
-            batchMediaDirty = false;
-          }
-          // Acknowledge only after the requested recoverable revision has crossed a paint boundary.
-          await new Promise(requestAnimationFrame);
-        } else {
-          throw new Error(`前端未启用 effect：${kind.type}`);
-        }
-        outcomes.push({ effect_id: effect.effect_id, status: "completed", message: null });
-      } catch (error) {
-        outcomes.push({ effect_id: effect.effect_id, status: "failed", message: String(error) });
-      }
-    }
-    await send({ type: "effect_acknowledgement", value: { outcomes } });
-  }
-
-  function observeRuntimeEpoch(epoch: ServiceInteger): boolean {
-    serviceInteger(epoch, "runtime epoch");
-    if (BigInt(epoch) < BigInt(runtimeEpoch.value)) return false;
-    if (!sameServiceInteger(epoch, runtimeEpoch.value)) {
-      resetViewportProjectionBarriers();
-      pointerObservation.clear();
-      htmlMeasurements.clear();
-      resetDeviceInputState(false);
-    }
-    runtimeEpoch.value = epoch;
-    serviceRequests.enterEpoch(epoch);
-    return true;
-  }
-
-  function viewportEnvironmentIdentity(): string {
-    return JSON.stringify([
-      effectivePreferences.value.fontFamilyOverride,
-      effectivePreferences.value.fontSizeOverridePx,
-      effectivePreferences.value.imageScale,
-      replaceFullWidthSpaces.value,
-    ]);
-  }
-
   function resetViewportProjectionBarriers(): void {
-    viewportProjectionBarrierGeneration += 1;
-    projectionObservationBarriers.clear();
-    deferredViewportProjection = undefined;
-    viewportProjectionFlushAfterBatch = undefined;
+    return runtimeStoreActions.resetViewportProjectionBarriers();
   }
-
-  function viewportStyleIdentity(
-    layoutIdentity = projectionObservationBarriers.size
-      ? viewportLayoutIdentityAtProjection
-      : viewportLayoutIdentity,
-  ): string {
-    return JSON.stringify([viewportEnvironmentIdentity(), layoutIdentity]);
-  }
-
-  function projectionMatches(expected: ProjectionQueryContext): boolean {
-    const viewport = currentGameViewport();
-    return (
-      sameServiceInteger(currentPresentation().revision, expected.presentationRevision) &&
-      runtimeViewport.matches(
-        expected,
-        presentation.revision,
-        viewport ? { width: viewport.clientWidth, height: viewport.clientHeight } : undefined,
-        viewportStyleIdentity(),
-      )
-    );
-  }
-
-  function projectionEnvironment(
-    expected: ProjectionQueryContext,
-    presentationRevision: ServiceInteger = presentation.revision,
-  ): { width: number; height: number } | undefined {
-    if (!sameServiceInteger(currentPresentation().revision, expected.presentationRevision))
-      return undefined;
-    return runtimeViewport.environment(
-      expected,
-      presentationRevision,
-      viewportEnvironmentIdentity(),
-    );
-  }
-
-  function projectionEnvironmentMatches(expected: ProjectionQueryContext): boolean {
-    return projectionEnvironment(expected) != null;
-  }
-
-  async function handleService(
-    request: any,
-    correlationId?: ServiceInteger,
-    epoch = runtimeEpoch.value,
-  ): Promise<void> {
-    const lifecycle = lifecycleGeneration;
-    const resources = projectResourceGeneration.value;
-    const serviceBatchSequence = runtimeBatchSequence;
-    const projectionBarrierGeneration = viewportProjectionBarrierGeneration;
-    const projectionObservationBarrier =
-      isHtmlQueryService(request) ||
-      (request.kind === "canvas" && request.operation === "sample_canvas_pixel")
-        ? Symbol("projection observation")
-        : null;
-    const active = () =>
-      lifecycle === lifecycleGeneration &&
-      sameServiceInteger(epoch, runtimeEpoch.value) &&
-      resources === projectResourceGeneration.value;
-    if (!active()) return;
-    if (projectionObservationBarrier)
-      projectionObservationBarriers.add(projectionObservationBarrier);
-    serviceRequests.enterEpoch(epoch);
-    try {
-      const lease = serviceRequests.begin(request.request_id, epoch);
-      let preparedProjectionContext: ProjectionQueryContext | undefined;
-      const prepareProjection = async (
-        expected: ProjectionQueryContext,
-        lease: RuntimeServiceLease,
-        layoutSensitive = true,
-      ) => {
-        lease.assertActive();
-        if (!sameServiceInteger(currentPresentation().revision, expected.presentationRevision))
-          throw new RuntimeServiceError(
-            "stale_projection",
-            "canonical presentation revision changed",
-          );
-        batchMediaDirty =
-          presentationProjection.publishForPresentNow(expected.presentationRevision) ||
-          batchMediaDirty;
-        await nextTick();
-        lease.assertActive();
-        await yieldToPaint();
-        lease.assertActive();
-        await nextTick();
-        lease.assertActive();
-        const matchesExpected = layoutSensitive
-          ? projectionMatches(expected)
-          : projectionEnvironmentMatches(expected);
-        if (!active() || !matchesExpected) {
-          const viewport = currentGameViewport();
-          const mismatch = runtimeViewport.describeEnvironmentMismatch(
-            expected,
-            presentation.revision,
-            viewport ? currentGameViewportMeasurement() : undefined,
-            viewportEnvironmentIdentity(),
-          );
-          throw new RuntimeServiceError(
-            "stale_projection",
-            `viewport observation does not match the query: ${mismatch}`,
-          );
-        }
-        preparedProjectionContext = expected;
-        return { ...presentation, resources: presentation.resources };
-      };
-      await handleRuntimeService(request, correlationId, {
-        bridge,
-        currentPresentation,
-        heldKeys,
-        pumpDevices,
-        clock: () => testEnvironment.clock,
-        nextEntropy: () => testEnvironment.nextEntropy(),
-        send: (message, correlation) =>
-          active() && lease.active() ? send(message, correlation) : Promise.resolve(undefined),
-        resourceGeneration: resources,
-        imagePixels,
-        audio,
-        sql: sqlProvider,
-        lease,
-        html: {
-          measurement: htmlMeasurements,
-          async prepare(expected, lease) {
-            lease.assertActive();
-            // HTML probes render in their own hidden host. Bind canonical resources and the
-            // confirmed environment without painting an unfinished REDRAW 0 game frame.
-            const projected = currentPresentation();
-            const viewport = currentGameViewport();
-            if (!viewport || !viewport.isConnected)
-              throw new RuntimeServiceError(
-                "stale_projection",
-                "HTML measurement requires the confirmed mounted viewport",
-              );
-            const viewportSize = projectionEnvironment(expected, projected.revision);
-            if (!viewportSize)
-              throw new RuntimeServiceError(
-                "stale_projection",
-                "HTML measurement requires the confirmed historical environment",
-              );
-            const preferences = {
-              fontFamilyOverride: effectivePreferences.value.fontFamilyOverride,
-              fontSizeOverridePx: effectivePreferences.value.fontSizeOverridePx,
-              imageScale: effectivePreferences.value.imageScale,
-            };
-            const preferenceIdentity = JSON.stringify(preferences);
-            const spaces = replaceFullWidthSpaces.value;
-            const assertCurrent = () => {
-              lease.assertActive();
-              if (
-                !active() ||
-                currentGameViewport() !== viewport ||
-                !projectionEnvironment(expected, currentPresentation().revision) ||
-                replaceFullWidthSpaces.value !== spaces ||
-                JSON.stringify({
-                  fontFamilyOverride: effectivePreferences.value.fontFamilyOverride,
-                  fontSizeOverridePx: effectivePreferences.value.fontSizeOverridePx,
-                  imageScale: effectivePreferences.value.imageScale,
-                }) !== preferenceIdentity
-              )
-                throw new RuntimeServiceError(
-                  "stale_projection",
-                  "HTML projection, resources or preferences changed",
-                );
-            };
-            assertCurrent();
-            return {
-              binding: {
-                viewport,
-                viewportSize,
-                context: { ...expected },
-                resources: projected.resources,
-                resourceGeneration: resources,
-                preferences,
-                replaceFullWidthSpaces: spaces,
-                resourceBridge: bridge,
-              },
-              guard: { signal: lease.signal, assertCurrent },
-            };
-          },
-        },
-        projection: {
-          prepare: prepareProjection,
-          prepareEnvironment: (expected, lease) => prepareProjection(expected, lease, false),
-          matches: (expected) => active() && projectionMatches(expected),
-          matchesEnvironment: (expected) => active() && projectionEnvironmentMatches(expected),
-          pointer: () => {
-            if (preparedProjectionContext)
-              testEvidence.pointerSample({
-                requestId: request.request_id,
-                epoch,
-                sessionGeneration: runtimeSessionObservationGeneration,
-                context: preparedProjectionContext,
-              });
-            return pointerObservation.sample(epoch);
-          },
-          lineGeometry: (query, serviceLease) => projectLineGeometry(query, serviceLease.signal),
-          canvas: (query, projected, lease) =>
-            canvasPixels.sample(query, projected.resources, resources, lease, () => {
-              const current = resolveCanvasReplay(
-                currentPresentation().resources.canvases,
-                query.canvasId,
-                query.canvasRevision,
-              );
-              return active() && projectionMatches(query.context) && current != null;
-            }),
-        },
-      });
-    } catch (error) {
-      // Malformed IDs cannot be correlated safely; resource saturation can return an explicit error.
-      if (!active()) return;
-      if (error instanceof RuntimeServiceError && error.category === "resource_limit") {
-        try {
-          await send(
-            {
-              type: "service_response",
-              value: {
-                request_id: request.request_id,
-                result: {
-                  type: "error",
-                  error: { code: "frontend.resource_limit", message: error.message },
-                },
-              },
-            },
-            correlationId,
-          );
-        } catch (failure) {
-          if (active())
-            log("warning", `前端服务失败 ${request.kind}/${request.operation}: ${String(failure)}`);
-        }
-      } else log("warning", `前端服务失败 ${request.kind}/${request.operation}: ${String(error)}`);
-    } finally {
-      if (
-        projectionObservationBarrier &&
-        projectionBarrierGeneration === viewportProjectionBarrierGeneration
-      ) {
-        projectionObservationBarriers.delete(projectionObservationBarrier);
-        if (projectionObservationBarriers.size === 0 && deferredViewportProjection)
-          viewportProjectionFlushAfterBatch = Math.max(
-            viewportProjectionFlushAfterBatch ?? 0,
-            serviceBatchSequence + 1,
-          );
-      }
-    }
-  }
-
-  async function submitText(): Promise<void> {
-    const wait = currentPresentation().inputWait;
-    if (!wait || !canInteract.value) return;
-    let intent: RuntimeInputIntent;
-    switch (wait.kind) {
-      case "enter_key":
-        intent = { type: "enter" };
-        break;
-      case "any_key":
-        intent = { type: "any_key", value: prompt.value || "\n" };
-        break;
-      case "void":
-        intent = { type: "continue" };
-        break;
-      case "primitive_mouse_key": {
-        const values = prompt.value.split(",").map((part) => Number.parseInt(part.trim(), 10) || 0);
-        intent = {
-          type: "primitive",
-          value: {
-            input_type: values[0] ?? 0,
-            result_1: values[1] ?? 0,
-            result_2: values[2] ?? 0,
-            result_3: values[3] ?? 0,
-            result_4: values[4] ?? 0,
-            selection_token: null,
-          },
-        };
-        break;
-      }
-      default:
-        intent = { type: "commit_text", value: prompt.value };
-    }
-    await submitIntent(intent, false);
-    prompt.value = "";
-  }
-
-  async function activate(token: InteractionToken): Promise<void> {
-    if (!canInteract.value || !hasEnabledButton(currentPresentation(), token)) return;
-    await submitIntent({ type: "activate", value: token }, false);
-  }
-
-  function interactionEnabled(interaction: any): boolean {
-    return presentationInteractionEnabled(currentPresentation(), interaction);
-  }
-
-  async function skip(): Promise<void> {
-    if (!runtimeReady.value || gameInteractionsBlocked.value || diagnosisExporting.value) return;
-    // Native message-skip input is submitted and pumped as one atomic host operation. Let the
-    // matching physical release reach the runtime first; otherwise a game that observes MOUSEB
-    // while processing the continuation can wait for an edge that the blocked host cannot accept.
-    if (heldMouseButtons.has(2)) {
-      await waitForPhysicalMouseRelease(2);
-      await awaitDeviceSubmissions();
-    }
-    await runtimeInput.requestMessageSkip();
-  }
-
-  function waitForPhysicalMouseRelease(code: number): Promise<void> {
-    if (!heldMouseButtons.has(code)) return Promise.resolve();
-    return new Promise((resolve) => {
-      const cleanup = () => {
-        document.removeEventListener("mouseup", onMouseUpRelease, true);
-        document.removeEventListener("visibilitychange", onClientBoundaryRelease);
-        window.removeEventListener("blur", onClientBoundaryRelease);
-      };
-      const finish = () => {
-        cleanup();
-        resolve();
-      };
-      const onMouseUpRelease = (event: MouseEvent) => {
-        if (mouseCode(event.button) === code) finish();
-      };
-      const onClientBoundaryRelease = () => {
-        if (!document.hasFocus() || document.visibilityState !== "visible") finish();
-      };
-      document.addEventListener("mouseup", onMouseUpRelease, true);
-      document.addEventListener("visibilitychange", onClientBoundaryRelease);
-      window.addEventListener("blur", onClientBoundaryRelease);
-      if (!heldMouseButtons.has(code)) finish();
-    });
-  }
-
-  async function continueFromViewport(): Promise<void> {
-    const wait = currentPresentation().inputWait;
-    if (canInteract.value && isMessageContinuationWait(wait))
-      await submitIntent(messageWaitIntent(wait), false);
-  }
-
-  async function submitIntent(intent: RuntimeInputIntent, messageSkip: boolean): Promise<void> {
-    if (diagnosisExporting.value) return;
-    const submitted = await runtimeInput.submit(intent, messageSkip);
-    if (submitted && singleStepEnabled.value && !debugStopToken(debugStop.value))
-      await pauseDebug();
-  }
-
-  async function settlePendingGameInput(): Promise<void> {
-    if (diagnosisExporting.value) return;
-    await runtimeInput.settle();
-  }
-
   async function advanceTimedWait(): Promise<void> {
-    if (diagnosisExporting.value) return;
-    const wait = currentPresentation().inputWait;
-    const advancingDevicePump = devicePumpTimeAdvancePending;
-    if (
-      (wait?.deadline_ns == null && !advancingDevicePump) ||
-      pendingGameInput.value != null ||
-      pendingInputUndo.value != null
-    )
-      return;
-    const now = sampleMonotonicTime();
-    if (!testEnvironment.shouldAdvanceTime(now, TIME_ADVANCE_INTERVAL_NS)) return;
-    await send({ type: "advance_time", value: { monotonic_time_ns: now } });
+    return runtimeStoreActions.advanceTimedWait();
   }
-
-  function sampleMonotonicTime(): number {
-    return testEnvironment.sampleMonotonic();
-  }
-
-  async function undo(): Promise<void> {
-    const token = inputUndo.value?.token;
-    if (diagnosisExporting.value || !token || pendingGameInput.value || pendingInputUndo.value)
-      return;
-    await runtimeInput.undo(token);
-  }
-
   async function restart(): Promise<void> {
-    await restartSession({ type: "new_game" }, "重新开始");
+    return runtimeStoreActions.restart();
   }
-
-  async function restartSession(
-    start: PendingRuntimeStart,
-    action: "重新开始" | "恢复快照",
-  ): Promise<void> {
-    if (
-      !projectOpen.value ||
-      projectLoading.value ||
-      runtimePump.transitioning ||
-      diagnosisExporting.value
-    )
-      return;
-    startupTelemetry.value = undefined;
-    startupTelemetryState.begin(performance.now(), projectSource.value, bridge.kind);
-    beginProjectLoad("正在创建新的 Runtime session…");
-    runtimePump.setTransitioning(true);
-    pendingStart = start;
-    try {
-      await replaceRuntimeSession();
-      const metrics = await bridge.restartProject();
-      runtimeConfiguration.refreshWritable();
-      await runtimeConfiguration.persistGenerated();
-      refreshProjectFontFamilies(metrics.projectFonts);
-      if (!startupTelemetry.value)
-        startupTelemetryState.begin(metrics.submittedAtMs, projectSource.value, bridge.kind);
-      startupTelemetryState.applyBridgeMetrics(metrics, bridge.kind);
-      const reloadLabel = action === "重新开始" ? "项目重新读取" : "恢复快照时项目重新读取";
-      log(
-        "info",
-        `${reloadLabel}：快速扫描 ${metrics.quickScanMs.toFixed(0)} ms，缓存读取 ${metrics.cacheReadMs.toFixed(0)} ms，源码读取 ${metrics.sourceReadMs.toFixed(0)} ms，提交 ${metrics.submitMs.toFixed(0)} ms${metrics.cacheImported ? "（已导入项目文件）" : "（冷编译）"}`,
-      );
-      continueProjectBuildProgress(metrics.cacheImported);
-    } catch (error) {
-      pendingStart = { type: "new_game" };
-      startupTelemetryState.fail(error);
-      finishProjectLoad();
-      const message = `${action}失败：${String(error)}`;
-      baseStatus.value = message;
-      log("error", message);
-    } finally {
-      runtimePump.setTransitioning(false);
-      schedulePump(0);
-    }
-  }
-
-  async function replaceRuntimeSession(): Promise<void> {
-    clearSessionTimers();
-    audio.cancelPendingLoads();
-    try {
-      await runtimePump.waitUntilIdle();
-      await cancelTimelineTransfers();
-      retireFrontendOwners(true, true);
-      await nextTick();
-      await yieldToPaint();
-      await bridge.prepareSessionReplacement();
-      runtimeSessionObservationGeneration += 1;
-      const options = sessionOptions();
-      const batch = await bridge.createSession(options);
-      sessionAudioAvailable = options.audioAvailable;
-      runtimePump.setReady(true);
-      await handleBatch(batch);
-    } catch (error) {
-      await bridge
-        .prepareSessionReplacement()
-        .catch((cleanupError) =>
-          log("warning", `清理失败的 Runtime session 时出错：${String(cleanupError)}`),
-        );
-      retireFrontendOwners(true, true);
-      throw error;
-    }
-  }
-
-  async function returnToTitle(): Promise<void> {
-    await transitionToTitle(true);
-  }
-
-  async function transitionToTitle(reportFailure: boolean): Promise<boolean> {
-    if (
-      !projectOpen.value ||
-      projectLoading.value ||
-      runtimePump.transitioning ||
-      diagnosisExporting.value ||
-      projectFileExporting.value
-    )
-      return false;
-    runtimePump.setTransitioning(true);
-    clearSessionTimers();
-    audio.cancelPendingLoads();
-    try {
-      await runtimePump.waitUntilIdle();
-      // The transition lock suppresses both browser and native pump scheduling. Once Runtime has
-      // accepted the command, release the old Vue/media timeline before it constructs the title VM.
-      const messageId = await send({ type: "return_to_title", value: {} });
-      pendingReturnToTitleMessageId = String(messageId);
-      await cancelTimelineTransfers();
-      retireFrontendOwners(false);
-      await nextTick();
-      await yieldToPaint();
-      return true;
-    } catch (error) {
-      pendingReturnToTitleMessageId = undefined;
-      if (reportFailure) {
-        const message = `返回标题失败：${String(error)}`;
-        baseStatus.value = message;
-        log("error", message);
-      }
-      throw error;
-    } finally {
-      runtimePump.setTransitioning(false);
-      schedulePump(0);
-    }
-  }
-
-  async function cancelTimelineTransfers(): Promise<void> {
-    if (fullManifestImport)
-      await cleanupFullManifestImport(true).catch((error) =>
-        log("warning", `清理状态导入传输失败：${String(error)}`),
-      );
-    const activeExport = exportState;
-    if (activeExport?.kind === "compiled_cache") {
-      await compiledCacheExport
-        .cancel()
-        .catch((error) => log("warning", `取消项目缓存导出失败：${String(error)}`));
-    } else if (activeExport) {
-      exportState = undefined;
-      activeExport.buffer = undefined;
-      activeExport.chunks.length = 0;
-      if (activeExport.kind === "project_file" || activeExport.kind === "diagnosis_project")
-        await bridge
-          .cancelProjectFileExport()
-          .catch((error) => log("warning", `清理全量项目导出临时文件失败：${String(error)}`));
-      else if (activeExport.kind === "download" || activeExport.kind === "input_replay_download")
-        await bridge
-          .cancelStateExport()
-          .catch((error) => log("warning", `清理状态导出临时文件失败：${String(error)}`));
-    }
-    runtimeImport.reset();
-  }
-
-  function requestRestart(): void {
-    requestGameProgressLossAction("restart");
-  }
-
-  function requestReturnToTitle(): void {
-    requestGameProgressLossAction("title");
-  }
-
-  function requestGameProgressLossAction(action: "restart" | "title"): void {
-    if (!runtimeReady.value || gameInteractionsBlocked.value) return;
-    gameProgressLossConfirmation.value = action;
-  }
-
-  function cancelGameProgressLossAction(): void {
-    gameProgressLossConfirmation.value = null;
-  }
-
-  async function confirmGameProgressLossAction(): Promise<void> {
-    const action = gameProgressLossConfirmation.value;
-    gameProgressLossConfirmation.value = null;
-    if (!action || !runtimeReady.value || gameInteractionsBlocked.value) return;
-    if (action === "restart") await restart();
-    else await returnToTitle();
-  }
-
-  function retireFrontendOwners(fullSession: boolean, preserveProjectLoad = false): void {
-    gameProgressLossConfirmation.value = null;
-    projectReload.reset();
-    resetTransientStatuses();
-    for (const active of [exportState]) {
-      if (!active) continue;
-      active.buffer = undefined;
-      active.chunks.length = 0;
-      active.digestHasher = undefined;
-    }
-    exportState = undefined;
-    fullManifestImport = undefined;
-    fullManifestImports.clear();
-    retiredFullManifestCommandIds.clear();
-    projectFileExportState.finish();
-    resetRuntimeTimelineState(true, fullSession, fullSession);
-    runtimeDiagnosis.reset();
-    traditionalSaves.reset();
-    runtimeLogs.clear();
-    if (!fullSession) return;
-    if (!preserveProjectLoad) finishProjectLoad();
-    runtimePump.setReady(false);
-    phase.value = "negotiating";
-    resetDeviceInputState(false);
-    runtimeEpoch.value = 0;
-    testEnvironment.resetTimeAdvance();
-    runtimeConfiguration.reset();
-    runtimeClientPreferences.reset();
-    projectPreferences.value = defaultProjectPreferences();
-    projectPreferencesWritable.value = false;
-    gameInformation.value = null;
-    runtimeManifestSparse = false;
-  }
-
-  function resetRuntimeTimelineState(
-    advanceResources = true,
-    resetViewport = true,
-    resetSqlProvider = true,
-  ): void {
-    resetViewportProjectionBarriers();
-    serviceRequests.reset();
-    if (resetSqlProvider) sqlProvider.reset();
-    pointerObservation.clear();
-    canvasPixels.clear();
-    htmlMeasurements.clear();
-    presentationProjection.reset();
-    if (advanceResources) advanceProjectResourceGeneration(false);
-    testAudioPlayback.clear();
-    inputUndo.value = null;
-    fault.value = null;
-    debugRequests.reset();
-    runtimeDebug.resetSession();
-    prompt.value = "";
-    runtimeInput.reset();
-    // Returning to title keeps the same physical host environment in core. Full session
-    // replacement must discard it; new geometry observations invalidate it immediately.
-    if (resetViewport) {
-      viewportLayoutIdentity = "";
-      viewportLayoutIdentityAtProjection = "";
-      runtimeViewport.reset();
-    }
-    runtimeImport.reset();
-  }
-
-  function advanceProjectResourceGeneration(resetSqlProvider = true): void {
-    resetViewportProjectionBarriers();
-    serviceRequests.reset();
-    if (resetSqlProvider) sqlProvider.reset();
-    pointerObservation.clear();
-    canvasPixels.clear();
-    htmlMeasurements.clear();
-    projectResourceGeneration.value += 1;
-    audio.resetResources(projectResourceGeneration.value);
-    resourceUrlRegistry.releaseBeforeGeneration(projectResourceGeneration.value);
-    imagePixels.clear();
-  }
-
-  async function openProjectReloadDialog(mode: "folder" | "script"): Promise<void> {
-    await projectReload.openDialog(mode, runtimeReady.value && !gameInteractionsBlocked.value);
-  }
-
-  function closeProjectReloadDialog(): void {
-    projectReload.closeDialog();
-  }
-
-  async function confirmProjectReload(target: string): Promise<void> {
-    const scope = projectReload.selectedScope(target);
-    if (scope) await reloadProject(scope);
-  }
-
-  async function reloadProject(scope: ProjectReloadScope = { type: "all" }): Promise<void> {
-    if (projectLoading.value || runtimePump.transitioning || diagnosisExporting.value) return;
-    beginProjectLoad("正在重新加载项目…");
-    runtimePump.setTransitioning(true);
-    audio.cancelPendingLoads();
-    try {
-      await runtimePump.waitUntilIdle();
-      await compiledCacheExport.cancel();
-      const submission = await bridge.reloadProject(scope);
-      projectReload.begin(submission.messageId);
-      continueProjectBuildProgress();
-    } catch (error) {
-      await projectReload.failSubmission();
-      finishProjectLoad();
-      const message = `重新加载项目失败：${String(error)}`;
-      baseStatus.value = message;
-      log("error", message);
-    } finally {
-      runtimePump.setTransitioning(false);
-      schedulePump(0);
-    }
-  }
-
-  function dismissFault(): void {
-    fault.value = null;
-    diagnosisResult.value = "";
-  }
-
-  async function recoverFromFault(action: "title" | "reload"): Promise<void> {
-    if (faultActionBusy.value || diagnosisExporting.value) return;
-    faultActionBusy.value = true;
-    fault.value = null;
-    diagnosisResult.value = "";
-    baseStatus.value = action === "title" ? "正在返回主菜单…" : "正在重启并重新编译…";
-    try {
-      if (action === "title") {
-        // The recovery dialog owns failure reporting; avoid first emitting a normal action error
-        // notification and then replacing it with a second fatal recovery dialog.
-        if (!(await transitionToTitle(false)))
-          throw new Error("当前 Runtime 状态不能执行返回标题恢复");
-        baseStatus.value = GAME_RUNNING_STATUS;
-      } else await reloadProject();
-    } catch (error) {
-      const message = `错误恢复失败：${String(error)}`;
-      fault.value = { code: "frontend.recovery_failed", message };
-      baseStatus.value = message;
-      log("error", message, false, "none");
-    } finally {
-      faultActionBusy.value = false;
-    }
-  }
-
-  async function exportDiagnosis(): Promise<void> {
-    if (!canExportDiagnosis.value) return;
-    const projectName = diagnosisProjectName(
-      diagnosisProjectTitle(
-        gameInformation.value?.title,
-        presentation.title === "RustyEra" ? undefined : presentation.title,
-        bridge.projectName(),
-      ),
-    );
-    const exportedAt = testEnvironment.clock ?? new Date();
-    runtimeDiagnosis.begin(projectName, formatDiagnosisLogs(logs), exportedAt);
-    if (!exportState) await startDiagnosisStateExport("diagnosis_replay");
-  }
-
   async function startDiagnosisStateExport(kind: DiagnosisStateExportKind): Promise<void> {
-    if (!runtimeDiagnosis.active || !diagnosisExporting.value) return;
-    runtimeDiagnosis.setProgress(kind === "diagnosis_replay" ? "input_replay" : "vm_snapshot");
-    const activeExport: ExportState = {
-      name: runtimeDiagnosis.active.name,
-      kind,
-      chunks: [],
-      received: 0,
-    };
-    exportState = activeExport;
-    try {
-      const messageId = await send({
-        type: "state_export_request",
-        value: diagnosisStateExportRequest[kind],
-      });
-      if (exportState === activeExport) activeExport.requestMessageId = String(messageId);
-    } catch (error) {
-      if (exportState === activeExport)
-        await failDiagnosisExport(activeExport, `诊断信息导出失败：${String(error)}`);
-    }
+    return runtimeStoreActions.startDiagnosisStateExport(kind);
   }
-
-  async function exportSnapshot(purpose: "normal" | "debug" = "normal"): Promise<void> {
-    await startDownloadStateExport(
-      snapshotFileName(),
-      "download",
-      { kind: "vm_snapshot", snapshot_purpose: purpose },
-      "VM 快照",
-    );
-  }
-
-  async function exportInputReplay(): Promise<void> {
-    await startDownloadStateExport(
-      inputReplayFileName(testEnvironment.clock ?? new Date()),
-      "input_replay_download",
-      { kind: "input_replay", snapshot_purpose: "normal" },
-      "操作序列",
-    );
-  }
-
-  async function startDownloadStateExport(
-    name: string,
-    kind: "download" | "input_replay_download",
-    request: { kind: "vm_snapshot" | "input_replay"; snapshot_purpose: "normal" | "debug" },
-    label: string,
-  ): Promise<void> {
-    if (diagnosisExporting.value) return;
-    if (exportState) {
-      baseStatus.value = "另一项状态导出仍在进行，请稍后重试";
-      return;
-    }
-    const activeExport: ExportState = {
-      name,
-      kind,
-      runtimeKind: request.kind,
-      chunks: [],
-      received: 0,
-    };
-    exportState = activeExport;
-    try {
-      const messageId = await send({ type: "state_export_request", value: request });
-      if (exportState === activeExport) activeExport.requestMessageId = String(messageId);
-    } catch (error) {
-      if (exportState === activeExport) exportState = undefined;
-      const message = `${label}导出失败：${String(error)}`;
-      baseStatus.value = message;
-      log("error", message);
-    }
-  }
-
-  async function exportTraditionalSaveForTest(): Promise<void> {
-    if (import.meta.env.VITE_RUSTYERA_TEST !== "1")
-      throw new Error("传统存档测试导出只能在 VITE_RUSTYERA_TEST 中使用");
-    if (exportState) throw new Error("另一项状态导出仍在进行");
-    exportState = {
-      name: "save00.sav",
-      kind: "download",
-      runtimeKind: "traditional_save",
-      chunks: [],
-      received: 0,
-    };
-    const messageId = await send({
-      type: "state_export_request",
-      value: { kind: "traditional_save", snapshot_purpose: "normal" },
-    });
-    if (exportState?.kind === "download") exportState.requestMessageId = String(messageId);
-  }
-
-  function testTransferState(): Record<string, unknown> {
-    return {
-      export: exportState
-        ? {
-            name: exportState.name,
-            received: exportState.received,
-            descriptor: exportState.descriptor,
-          }
-        : null,
-      fullManifest: fullManifestImport
-        ? {
-            submittedBytes: fullManifestImport.submittedBytes,
-            totalBytes: fullManifestImport.totalBytes,
-            commitStarted: fullManifestImport.commitStarted,
-            cancelled: fullManifestImport.cancelled,
-          }
-        : null,
-      ...runtimeImport.testState(),
-    };
-  }
-
   function recordTestAudioPlayback(event: "started" | "ended", resourceId: string): void {
-    const current = testAudioPlayback.get(resourceId) ?? { starts: 0, active: 0 };
-    if (event === "started") {
-      current.starts += 1;
-      current.active += 1;
-    } else {
-      current.active = Math.max(0, current.active - 1);
-    }
-    testAudioPlayback.set(resourceId, current);
+    return runtimeStoreActions.recordTestAudioPlayback(event, resourceId);
   }
-
-  function testAudioPlaybackState(): Record<string, { starts: number; active: number }> {
-    return Object.fromEntries(
-      [...testAudioPlayback.entries()].sort(([left], [right]) => left.localeCompare(right)),
-    );
-  }
-
-  function testAudioProviderState() {
-    return audio.providerSnapshot();
-  }
-
-  async function openTraditionalSaveDialog(mode: "export" | "import"): Promise<void> {
-    await traditionalSaves.open(mode, canManageTraditionalSaves.value);
-  }
-
-  function closeTraditionalSaveDialog(): void {
-    traditionalSaves.close();
-  }
-
-  async function pickTraditionalSaveImport(): Promise<void> {
-    await traditionalSaves.pickImport();
-  }
-
-  async function confirmTraditionalSaveTransfer(slot: number): Promise<void> {
-    await traditionalSaves.confirm(slot);
-  }
-
-  function cancelTraditionalSaveOverwrite(): void {
-    traditionalSaves.cancelOverwrite();
-  }
-
-  async function confirmTraditionalSaveOverwrite(): Promise<void> {
-    await traditionalSaves.confirmOverwrite();
-  }
-
-  function scheduleCompiledCacheExport(delayMs = 0): void {
-    if (!bridge.automaticCompiledCacheExport) return;
-    compiledCacheExport.schedule(delayMs);
-  }
-
   async function refreshCompiledCacheAfterConfigurationUpdate(): Promise<void> {
-    if (exportState?.kind === "compiled_cache") await compiledCacheExport.cancel();
-    // A cache hit leaves Runtime with an intentionally sparse project manifest. It cannot rebuild
-    // bytecode after a configuration edit; the host has already invalidated that cache, so the
-    // next project load will materialize source and produce a replacement safely.
-    if (runtimeManifestSparse) return;
-    scheduleCompiledCacheExport();
+    return runtimeStoreActions.refreshCompiledCacheAfterConfigurationUpdate();
   }
-
-  async function exportProjectFile(): Promise<void> {
-    if (
-      !runtimeReady.value ||
-      gameInteractionsBlocked.value ||
-      !bridge.fullProjectExportSupported()
-    )
-      return;
-    if (exportState && exportState.kind !== "compiled_cache") return;
-    const title = diagnosisProjectName(
-      presentation.title.trim() || bridge.projectName() || "RustyEra项目",
-    );
-    const name = `${title}.reraproj`;
-    if (!(await bridge.beginProjectFileExport(name))) {
-      baseStatus.value = "已取消导出全量项目文件";
-      return;
-    }
-    if (exportState?.kind === "compiled_cache") {
-      projectFileExportState.resumeCacheWhenFinished();
-      try {
-        await compiledCacheExport.cancel();
-      } catch (error) {
-        await bridge.cancelProjectFileExport();
-        throw error;
-      }
-    }
-    projectFileExportState.begin();
-    const activeExport: FullProjectExportState = {
-      name,
-      kind: "project_file",
-      chunks: [],
-      received: 0,
-    };
-    exportState = activeExport;
-    baseStatus.value = "正在读取全量项目文件…";
-    try {
-      await stageFullManifestImport(activeExport, "project_file");
-    } catch (error) {
-      if (exportState !== activeExport) return;
-      await finishProjectFileExport("failed");
-      throw error;
-    }
-  }
-
-  async function requestFullProjectExport(activeExport: FullProjectExportState): Promise<void> {
-    const submission: FullProjectRequestSubmission = { earlyPreparationRejections: [] };
-    activeExport.requestMessageId = undefined;
-    activeExport.requestSubmission = submission;
-    activeExport.runtimeRequestMayBeActive = true;
-    let messageId: number | bigint;
-    try {
-      messageId = await send({
-        type: "state_export_request",
-        value: { kind: "full_project_file", snapshot_purpose: "normal" },
-      });
-    } catch (error) {
-      settleFullProjectRequestSubmission(activeExport, submission);
-      throw error;
-    }
-    if (exportState !== activeExport) {
-      if (activeExport.requestSubmission === submission) activeExport.requestSubmission = undefined;
-      return;
-    }
-    const preparationRejected = settleFullProjectRequestSubmission(
-      activeExport,
-      submission,
-      messageId,
-    );
-    if (preparationRejected) scheduleFullProjectExportRetry(activeExport);
-  }
-
-  async function stageFullManifestImport(
-    activeExport: FullProjectExportState,
-    purpose: "project_file" | "diagnosis_project",
-  ): Promise<void> {
-    const descriptor = await bridge.stageFullProjectManifest();
-    if (!projectFileExporting.value && purpose === "project_file") {
-      await bridge.releaseFullProjectManifest();
-      return;
-    }
-    if (exportState !== activeExport) {
-      await bridge.releaseFullProjectManifest();
-      return;
-    }
-    if (!descriptor) {
-      await requestFullProjectExport(activeExport);
-      return;
-    }
-    if (descriptor.totalBytes > 1024 * 1024 * 1024) {
-      await bridge.releaseFullProjectManifest();
-      throw new Error("full project manifest exceeds the 1 GiB transfer limit");
-    }
-    const pending: NonNullable<typeof fullManifestImport> = {
-      activeExport,
-      totalBytes: descriptor.totalBytes,
-      submittedBytes: 0,
-      hasher: blake3.create(),
-      purpose,
-      commandMessageIds: new Set<string>(),
-      cancelled: false,
-      cancelSent: false,
-      commitStarted: false,
-      runtimeSubmission: Promise.resolve(),
-    };
-    fullManifestImport = pending;
-    fullManifestImports.add(pending);
-    const messageId = await submitFullManifestCommand(pending, {
-      type: "state_import_begin",
-      value: {
-        kind: "full_project_manifest",
-        total_bytes: descriptor.totalBytes,
-        digest: null,
-        artifact_id: null,
-      },
-    });
-    pending.beginMessageId = String(messageId);
-  }
-
-  async function acceptFullManifestImport(
-    value: any,
-    correlationId?: number | bigint,
-  ): Promise<boolean> {
-    const pending = [...fullManifestImports].find(
-      (candidate) => candidate.beginMessageId === String(correlationId),
-    );
-    if (!pending) return false;
-    if (pending.transferId != null) {
-      log("warning", "Runtime 返回了重复的完整项目 manifest transfer", true);
-      await send({ type: "state_transfer_cancel", value: { transfer_id: value.transfer_id } });
-      return true;
-    }
-    pending.transferId = Number(value.transfer_id);
-    if (pending.cancelled) {
-      await requestFullManifestTransferCancel(pending);
-      return true;
-    }
-    return true;
-  }
-
-  async function advanceFullManifestImport(): Promise<void> {
-    const pending = fullManifestImport;
-    if (!pending || pending.cancelled || pending.transferId == null || pending.commitStarted)
-      return;
-    try {
-      await submitNextFullManifestChunk(pending);
-    } catch (error) {
-      if (pending.cancelled) return;
-      await cleanupFullManifestImport(true, pending);
-      const message = `完整项目 manifest 传输失败：${String(error)}`;
-      if (pending.activeExport.kind === "diagnosis_project")
-        await failDiagnosisExport(pending.activeExport, message);
-      else await finishProjectFileExport("failed", message);
-    }
-  }
-
-  async function submitNextFullManifestChunk(
-    pending: FullManifestImportTransaction,
-  ): Promise<void> {
-    const offset = pending.submittedBytes;
-    if (offset < pending.totalBytes) {
-      const expected = Math.min(FULL_PROJECT_MANIFEST_CHUNK_BYTES, pending.totalBytes - offset);
-      const data = await bridge.readFullProjectManifestChunk(offset, expected);
-      if (pending.cancelled) return;
-      if (data.byteLength !== expected) throw new Error("完整项目 manifest 临时文件读取不完整");
-      pending.hasher.update(data);
-      await submitFullManifestCommand(pending, {
-        type: "state_import_chunk",
-        value: {
-          transfer_id: pending.transferId,
-          offset,
-          data,
-        },
-      });
-      if (pending.cancelled) return;
-      pending.submittedBytes += expected;
-      if (pending.purpose === "project_file")
-        projectFileExportState.setProgress({
-          stage: "submitting",
-          completed: pending.submittedBytes,
-          total: pending.totalBytes,
-        });
-      return;
-    }
-    pending.commitStarted = true;
-    const messageId = await submitFullManifestCommand(pending, {
-      type: "state_import_commit",
-      value: { transfer_id: pending.transferId, digest: pending.hasher.digest() },
-    });
-    pending.commitMessageId = String(messageId);
-    await releaseFullManifestHost(pending);
-  }
-
-  async function finishFullManifestImport(
-    value: any,
-    correlationId?: number | bigint,
-  ): Promise<boolean> {
-    const pending = [...fullManifestImports].find(
-      (candidate) => candidate.commitMessageId === String(correlationId),
-    );
-    if (!pending) return false;
-    if (
-      pending.transferId !== Number(value.transfer_id) ||
-      value.kind !== "full_project_manifest" ||
-      pending.commitMessageId !== String(correlationId)
-    ) {
-      if (!pending.cancelled) log("warning", "Runtime 返回了不匹配的完整项目 manifest Ready", true);
-      return true;
-    }
-    retireFullManifestImport(pending);
-    if (pending.cancelled || exportState !== pending.activeExport) return true;
-    await requestFullProjectExport(pending.activeExport);
-    return true;
-  }
-
-  async function submitFullManifestCommand(
-    pending: FullManifestImportTransaction,
-    message: RuntimeMessage,
-  ): Promise<number | bigint> {
-    const submission = pending.runtimeSubmission.then(() => send(message));
-    pending.runtimeSubmission = submission.then(
-      () => undefined,
-      () => undefined,
-    );
-    const messageId = await submission;
-    pending.commandMessageIds.add(String(messageId));
-    return messageId;
-  }
-
-  function releaseFullManifestHost(pending: FullManifestImportTransaction): Promise<void> {
-    pending.hostRelease ??= Promise.resolve(bridge.releaseFullProjectManifest()).catch(
-      () => undefined,
-    );
-    return pending.hostRelease;
-  }
-
-  async function requestFullManifestTransferCancel(
-    pending: FullManifestImportTransaction,
-  ): Promise<void> {
-    if (pending.transferId == null || pending.cancelSent) return;
-    pending.cancelSent = true;
-    const transferId = pending.transferId;
-    const cancellation = pending.runtimeSubmission.then(async () => {
-      const messageId = await send({
-        type: "state_transfer_cancel",
-        value: { transfer_id: transferId },
-      });
-      const correlation = String(messageId);
-      pending.commandMessageIds.add(correlation);
-      if (!fullManifestImports.has(pending)) rememberRetiredFullManifestCommandId(correlation);
-    });
-    pending.runtimeSubmission = cancellation.then(
-      () => undefined,
-      () => undefined,
-    );
-    await cancellation.catch(() => undefined);
-    if (pending.cancelled && !pending.commitStarted) retireFullManifestImport(pending);
-  }
-
-  function retireFullManifestImport(pending: FullManifestImportTransaction): void {
-    fullManifestImports.delete(pending);
-    if (fullManifestImport === pending) fullManifestImport = undefined;
-    for (const messageId of pending.commandMessageIds)
-      rememberRetiredFullManifestCommandId(messageId);
-  }
-
-  function rememberRetiredFullManifestCommandId(messageId: string): void {
-    retiredFullManifestCommandIds.add(messageId);
-    while (retiredFullManifestCommandIds.size > 64) {
-      const oldest = retiredFullManifestCommandIds.values().next().value;
-      if (oldest == null) break;
-      retiredFullManifestCommandIds.delete(oldest);
-    }
-  }
-
-  async function cleanupFullManifestImport(
-    cancelRuntime: boolean,
-    pending = fullManifestImport,
-  ): Promise<void> {
-    if (!pending) return;
-    pending.cancelled = true;
-    if (fullManifestImport === pending) fullManifestImport = undefined;
-    await Promise.all([
-      releaseFullManifestHost(pending),
-      cancelRuntime ? requestFullManifestTransferCancel(pending) : Promise.resolve(),
-    ]);
-  }
-
-  function settleFullProjectRequestSubmission(
-    activeExport: FullProjectExportState,
-    submission: FullProjectRequestSubmission,
-    messageId?: number | bigint,
-  ): boolean {
-    if (activeExport.requestSubmission !== submission) return false;
-    activeExport.requestSubmission = undefined;
-    const correlation = messageId == null ? undefined : String(messageId);
-    if (correlation != null) activeExport.requestMessageId = correlation;
-    let preparationRejected = false;
-    for (const rejection of submission.earlyPreparationRejections) {
-      if (correlation != null && rejection.correlation === correlation) preparationRejected = true;
-      else log("warning", formatDiagnostic(rejection.value), true);
-    }
-    return preparationRejected;
-  }
-
-  function scheduleFullProjectExportRetry(activeExport: FullProjectExportState): void {
-    activeExport.requestMessageId = undefined;
-    projectFileExportState.scheduleRetry(() => {
-      if (exportState !== activeExport || exportState.descriptor) return;
-      void requestFullProjectExport(activeExport).catch((error) => {
-        void failFullProjectExportRequest(activeExport, error);
-      });
-    });
-  }
-
-  async function failFullProjectExportRequest(
-    activeExport: FullProjectExportState,
-    error: unknown,
-  ): Promise<void> {
-    if (exportState !== activeExport) return;
-    if (activeExport.kind === "diagnosis_project") {
-      await failDiagnosisExport(activeExport, `诊断信息导出失败：${String(error)}`);
-      return;
-    }
-    const message = `全量项目文件导出失败：${String(error)}`;
-    await finishProjectFileExport("failed", message);
-    log("error", message);
-  }
-
   async function requestCompiledCacheExport(activeExport: ExportState): Promise<void> {
-    const messageId = await send({
-      type: "state_export_request",
-      value: { kind: "compiled_project_cache", snapshot_purpose: "normal" },
-    });
-    if (exportState === activeExport) activeExport.requestMessageId = String(messageId);
+    return runtimeStoreActions.requestCompiledCacheExport(activeExport);
   }
-
-  async function cancelProjectFileExport(): Promise<void> {
-    if (!projectFileExporting.value || exportState?.kind !== "project_file") return;
-    await finishProjectFileExport("cancelled", "已取消导出全量项目文件", true);
-  }
-
   async function finishProjectFileExport(
     outcome: "success" | "cancelled" | "failed",
     message?: string,
     cancelRuntime = outcome !== "success",
   ): Promise<void> {
-    const pendingManifest = fullManifestImport;
-    if (pendingManifest) pendingManifest.cancelled = true;
-    exportState = undefined;
-    // Stop host reads/writes before waiting for queued Runtime commands. Otherwise cancellation
-    // can leave the producer allocating data while Runtime is busy draining the transfer.
-    if (outcome !== "success") {
-      try {
-        await bridge.cancelProjectFileExport();
-      } catch (error) {
-        log("warning", `清理全量项目导出临时文件失败：${String(error)}`);
-      }
-    }
-    if (pendingManifest) await cleanupFullManifestImport(cancelRuntime, pendingManifest);
-    if (outcome !== "success") {
-      try {
-        if (cancelRuntime)
-          await send({ type: "state_export_cancel", value: { kind: "full_project_file" } });
-      } catch (error) {
-        log("warning", `取消 Runtime 全量项目导出失败：${String(error)}`);
-      }
-    }
-    const resumeCache = projectFileExportState.finish();
-    if (message) baseStatus.value = message;
-    if (resumeCache) scheduleCompiledCacheExport();
-    if (diagnosisExporting.value && !exportState)
-      await startDiagnosisStateExport("diagnosis_replay");
+    return runtimeStoreActions.finishProjectFileExport(outcome, message, cancelRuntime);
   }
-
   async function finishExportTransfer(completed = exportState): Promise<void> {
-    if (!completed) return;
-    await completed.hostWrite;
-    if (exportState !== completed) return;
-    if (completed.hostWriteFailure) throw completed.hostWriteFailure.error;
-    const result =
-      completed.kind === "compiled_cache" ||
-      completed.kind === "project_file" ||
-      completed.kind === "download" ||
-      completed.kind === "input_replay_download"
-        ? new Uint8Array()
-        : (completed.buffer ?? concatenateChunks(completed.chunks, completed.received));
-    completed.buffer = undefined;
-    completed.chunks.length = 0;
-    try {
-      if (completed.kind === "download" || completed.kind === "input_replay_download") {
-        baseStatus.value = `已导出 ${completed.name}`;
-        exportState = undefined;
-        if (diagnosisExporting.value) await startDiagnosisStateExport("diagnosis_replay");
-      } else if (completed.kind === "project_file") {
-        await finishProjectFileExport("success", `已导出 ${completed.name}`);
-      } else if (completed.kind === "compiled_cache") {
-        compiledCacheExport.finish(completed, "success");
-        if (diagnosisExporting.value) await startDiagnosisStateExport("diagnosis_replay");
-      } else if (completed.kind === "diagnosis_replay") {
-        if (!runtimeDiagnosis.active) throw new Error("诊断导出状态缺失");
-        runtimeDiagnosis.active.inputReplay = result;
-        exportState = undefined;
-        await startDiagnosisStateExport("diagnosis_snapshot");
-      } else if (completed.kind === "diagnosis_snapshot") {
-        if (!runtimeDiagnosis.active) throw new Error("诊断导出状态缺失");
-        runtimeDiagnosis.active.snapshot = result;
-        const activeExport: FullProjectExportState = {
-          name: runtimeDiagnosis.active.name,
-          kind: "diagnosis_project",
-          chunks: [],
-          received: 0,
-        };
-        exportState = activeExport;
-        await stageFullManifestImport(activeExport, "diagnosis_project");
-      } else {
-        if (!runtimeDiagnosis.active?.snapshot || !runtimeDiagnosis.active.inputReplay)
-          throw new Error("诊断归档输入缺失");
-        runtimeDiagnosis.setProgress("archive");
-        const saved = await bridge.saveDiagnosis(
-          runtimeDiagnosis.active.name,
-          {
-            projectName: runtimeDiagnosis.active.projectName,
-            snapshot: runtimeDiagnosis.active.snapshot,
-            inputReplay: runtimeDiagnosis.active.inputReplay,
-            logs: runtimeDiagnosis.active.logs,
-            projectFile: result,
-            exportedAt: runtimeDiagnosis.active.exportedAt,
-          },
-          ({ completed, total }) => runtimeDiagnosis.setProgress("archive", completed, total),
-        );
-        finishDiagnosis(
-          true,
-          saved ? `诊断信息已导出：${runtimeDiagnosis.active.name}` : "已取消导出诊断信息",
-        );
-      }
-    } catch (error) {
-      if (completed.kind.startsWith("diagnosis_")) {
-        const activeDiagnosis =
-          exportState?.kind.startsWith("diagnosis_") === true ? exportState : completed;
-        await failDiagnosisExport(activeDiagnosis, `诊断信息导出失败：${String(error)}`);
-      } else {
-        if (completed.kind === "project_file") {
-          await finishProjectFileExport("failed");
-        } else if (completed.kind === "compiled_cache") {
-          await compiledCacheExport.fail(completed, error);
-          return;
-        } else {
-          if (completed.kind === "download" || completed.kind === "input_replay_download")
-            await bridge.cancelStateExport().catch(() => undefined);
-          exportState = undefined;
-        }
-        const message = `状态导出失败：${String(error)}`;
-        baseStatus.value = message;
-        log("error", message);
-      }
-    }
+    return runtimeStoreActions.finishExportTransfer(completed);
   }
-
-  function finishDiagnosis(success: boolean, message: string): void {
-    exportState = undefined;
-    runtimeDiagnosis.finish(message);
-    baseStatus.value = message;
-    log(success ? "info" : "error", message, false, "none");
-  }
-
   async function failDiagnosisExport(activeExport: ExportState, message: string): Promise<void> {
-    if (exportState !== activeExport || !activeExport.kind.startsWith("diagnosis_")) return;
-    const pendingManifest = fullManifestImport;
-    exportState = undefined;
-    runtimeDiagnosis.active = undefined;
-    if (pendingManifest) await cleanupFullManifestImport(true, pendingManifest);
-    if (activeExport.kind === "diagnosis_replay" || activeExport.kind === "diagnosis_snapshot") {
-      try {
-        if (activeExport.descriptor?.transfer_id != null) {
-          await send({
-            type: "state_transfer_cancel",
-            value: { transfer_id: activeExport.descriptor.transfer_id },
-          });
-        } else if (activeExport.requestMessageId) {
-          await send({
-            type: "state_export_cancel",
-            value: {
-              kind: activeExport.kind === "diagnosis_replay" ? "input_replay" : "vm_snapshot",
-            },
-          });
-        }
-      } catch (error) {
-        log("warning", `取消 Runtime 诊断状态导出失败：${String(error)}`);
-      }
-    } else if (isFullProjectExport(activeExport) && activeExport.kind === "diagnosis_project") {
-      if (
-        activeExport.requestMessageId ||
-        activeExport.runtimeRequestMayBeActive ||
-        activeExport.descriptor
-      ) {
-        try {
-          await send({ type: "state_export_cancel", value: { kind: "full_project_file" } });
-        } catch (error) {
-          log("warning", `取消 Runtime 诊断项目导出失败：${String(error)}`);
-        }
-      }
-      try {
-        await bridge.cancelProjectFileExport();
-      } catch (error) {
-        log("warning", `清理诊断项目导出状态失败：${String(error)}`);
-      }
-    }
-    finishDiagnosis(false, message);
+    return runtimeStoreActions.failDiagnosisExport(activeExport, message);
   }
-
-  async function restoreSnapshot(): Promise<void> {
-    if (diagnosisExporting.value) return;
-    const bytes = await runtimeImport.pickSnapshot();
-    if (!bytes) return;
-    if (bridge.snapshotRestoreMode === "fresh_session") {
-      await restartSession({ type: "vm_snapshot", bytes }, "恢复快照");
-    } else {
-      await runtimeImport.begin("vm_snapshot", bytes);
-    }
-  }
-
-  async function restoreState(
-    kind: Exclude<RuntimeStartKind, "new_game">,
-    bytes: Uint8Array,
-  ): Promise<void> {
-    await runtimeImport.begin(kind, bytes);
-  }
-
-  async function enableDebug(): Promise<void> {
-    if (diagnosisExporting.value) return;
-    await ensureSession();
-    if (!debugEnabled.value) {
-      await requestDebugGrant();
-    } else {
-      if (debugGrant.value)
-        await submitObservedDebug({
-          type: "revoke",
-          value: { grant_id: debugGrant.value.token.grant_id, reason: "disabled by user" },
-        });
-      debugRequests.pausePending = false;
-      debugRequests.pauseWanted = false;
-      debugRequests.surfacePauseActive = false;
-      debugRequests.surfaceResumePending = false;
-      debugRequests.reset();
-      runtimeDebug.revokeGrant();
-    }
-  }
-
-  async function handleDebug(message: any, correlationId?: number | bigint): Promise<void> {
-    if (
-      message.type === "error" &&
-      debugRequests.deferReply(correlationId, () => handleDebug(message, correlationId))
-    )
-      return;
-    if (message.type === "grant") {
-      debugRequests.pausePending = false;
-      debugRequests.grantRefreshNeeded = false;
-      runtimeDebug.acceptGrant(message.value);
-    } else if (message.type === "revoke") {
-      debugRequests.pausePending = false;
-      debugRequests.pauseWanted = false;
-      debugRequests.surfacePauseActive = false;
-      debugRequests.surfaceResumePending = false;
-      runtimeDebug.revokeGrant();
-    } else if (message.type === "stopped") {
-      debugRequests.pausePending = false;
-      debugRequests.pauseWanted = false;
-      runtimeDebug.acceptStop(message.value);
-      debugRequests.take(correlationId);
-      // The stop token is authoritative only after this event. Start refreshing here so
-      // dialog visibility cannot race a Vue watcher against the pause response. Pagination
-      // must continue asynchronously because its later pages arrive in future pump batches.
-      void refreshOpenDebugSurfaces().catch((error) => log("warning", String(error)));
-      if (debugRequests.surfaceResumePending && !singleStepEnabled.value) {
-        debugRequests.surfaceResumePending = false;
-        void continueDebug().catch((error) => log("warning", String(error)));
-      }
-      if (singleStepEnabled.value && message.value?.reason?.type === "host_wait")
-        void continueDebug(true).catch((error) => log("warning", String(error)));
-    } else if (message.type === "response") {
-      const request = debugRequests.take(correlationId);
-      const response = message.value;
-      if (!request)
-        debugRequests.deferReply(correlationId, async () => {
-          debugRequests.take(correlationId)?.resolve?.(response);
-        });
-      // Apply presentation in receive order; only completion waits for registration.
-      // Replaying the response after a newer stopped event would restore an old stop.
-      const fiber = runtimeDebug.applyResponse(response);
-      if (response.type === "fiber_page") {
-        if (stackOpen.value && fiber)
-          await debugCommand({
-            type: "read_call_stack",
-            stop: debugStopToken(debugStop.value),
-            fiber_id: fiber.fiber_id,
-          });
-      }
-      request?.resolve?.(response);
-    } else if (message.type === "error") {
-      const request = debugRequests.take(correlationId);
-      if (request?.commandType === "pause") debugRequests.pausePending = false;
-      if (debugEnabled.value && isStaleDebugGrantError(message.value)) {
-        const currentToken = debugGrant.value?.token;
-        if (!currentToken || !request || sameDebugGrant(request.grant, currentToken)) {
-          runtimeDebug.clearGrant();
-          debugRequests.grantRefreshNeeded = true;
-        }
-      } else {
-        if (request?.commandType === "pause") {
-          debugRequests.pauseWanted = false;
-          debugRequests.surfacePauseActive = false;
-          debugRequests.surfaceResumePending = false;
-        }
-        log("warning", message.value.message);
-      }
-      request?.reject?.(new Error(message.value.message ?? "debug request failed"));
-    }
-  }
-
-  async function submitObservedDebug(message: any): Promise<number | bigint> {
-    const epoch = runtimeEpoch.value;
-    const sessionGeneration = runtimeSessionObservationGeneration;
-    const messageId = await bridge.submitDebug(message);
-    testEvidence.sent("debug", message, messageId, epoch, undefined, sessionGeneration);
-    return messageId;
-  }
-
-  async function requestDebugGrant(): Promise<void> {
-    await submitObservedDebug(
-      transportValue({
-        type: "hello",
-        value: {
-          versions: { minimum: { major: 4, minor: 0 }, maximum: { major: 4, minor: 0 } },
-          requested_scopes: [
-            "variables_read",
-            "variables_write",
-            "game_fields_read",
-            "game_fields_write",
-            "execution_read",
-            "execution_control",
-            "console_evaluate",
-            "console_execute",
-            "breakpoints_manage",
-            "script_output",
-          ],
-        },
-      }),
-    );
-    schedulePump(0);
-  }
-
-  async function debugCommand(command: any): Promise<void> {
-    if (!debugGrant.value || diagnosisExporting.value) return;
-    const grant = debugGrant.value.token;
-    await debugRequests.submit(
-      () =>
-        submitObservedDebug(
-          transportValue({
-            type: "request",
-            value: { grant, command },
-          }),
-        ),
-      (messageId) => debugRequests.register(messageId, grant, command?.type),
-    );
-  }
-
-  async function debugRequest(command: any, timeoutMs = 10_000): Promise<any> {
-    if (!debugGrant.value) throw new Error("debug grant 尚未就绪");
-    const grant = debugGrant.value.token;
-    return debugRequests.submit(
-      () =>
-        submitObservedDebug(
-          transportValue({
-            type: "request",
-            value: { grant, command },
-          }),
-        ),
-      (messageId) => {
-        const response = debugRequests.wait(messageId, grant, command?.type, timeoutMs);
-        schedulePump(0);
-        return response;
-      },
-    );
-  }
-
-  async function inspectTypedWatches(watches: string[]): Promise<Record<string, unknown>> {
-    if (import.meta.env.VITE_RUSTYERA_TEST !== "1")
-      throw new Error("typed observation requires test mode");
-    const epoch = runtimeEpoch.value;
-    const lifecycle = lifecycleGeneration;
-    if (!debugEnabled.value) {
-      await enableDebug();
-      await waitUntil(() => debugGrant.value != null, 10_000, "typed debug grant");
-    }
-    const alreadyStopped = debugStopToken(debugStop.value) != null;
-    if (!alreadyStopped) {
-      await pauseDebug();
-      await waitUntil(() => debugStopToken(debugStop.value) != null, 10_000, "typed debug stop");
-    }
-    const stop = { ...debugStopToken(debugStop.value) };
-    const current = () =>
-      lifecycle === lifecycleGeneration &&
-      sameServiceInteger(epoch, runtimeEpoch.value) &&
-      ["session_epoch", "pause_epoch", "program_generation", "runtime_revision"].every((field) =>
-        sameServiceInteger(stop[field], debugStopToken(debugStop.value)?.[field]),
-      );
-    try {
-      return await readTestTypedWatches(
-        watches,
-        stop,
-        debugRequest,
-        () => {
-          if (!current()) throw new Error("typed watch stop or session changed");
-        },
-        lifecycle,
-      );
-    } finally {
-      // Never resume a replacement session or somebody else's newer stop.
-      if (!alreadyStopped && current()) await continueDebug();
-    }
-  }
-
-  async function inspectWatches(watches: string[]): Promise<Record<string, unknown>> {
-    if (!debugEnabled.value) {
-      await enableDebug();
-      await waitUntil(() => debugGrant.value != null, 10_000, "debug grant");
-    }
-    const alreadyStopped = debugStopToken(debugStop.value) != null;
-    if (!alreadyStopped) {
-      await pauseDebug();
-      await waitUntil(() => debugStopToken(debugStop.value) != null, 10_000, "debug stop");
-    }
-    const stop = debugStopToken(debugStop.value);
-    const page = await debugRequest({ type: "list_variables", stop, cursor: null, limit: 256 });
-    const variables = page.value?.variables ?? [];
-    const result: Record<string, unknown> = {};
-    for (const watch of watches) {
-      const [name, indexText] = watch.split(":", 2);
-      const variable = variables.find((candidate: any) => candidate.name === name);
-      if (!variable) {
-        result[watch] = { error: "not_found" };
-        continue;
-      }
-      const indices = indexText
-        ? indexText.split(",").map((value) => Number(value))
-        : (variable.dimensions ?? []).map(() => 0);
-      const response = await debugRequest({
-        type: "read_variable",
-        stop,
-        value: {
-          symbol_key: variable.symbol_key,
-          storage: variable.storage,
-          fiber_id: null,
-          frame_id: null,
-          generation: stop.program_generation,
-          character: null,
-          indices,
-        },
-      });
-      result[watch] = formatDebugValue(response.value?.value);
-    }
-    if (!alreadyStopped) await continueDebug();
-    return result;
-  }
-
-  async function pauseDebug(): Promise<void> {
-    debugRequests.pauseWanted = true;
-    await requestPendingDebugPause();
-  }
-
-  async function requestPendingDebugPause(): Promise<void> {
-    if (
-      !debugRequests.pauseWanted ||
-      !debugGrant.value ||
-      debugStopToken(debugStop.value) ||
-      debugRequests.pausePending ||
-      !["running", "waiting_input", "waiting_external", "faulted"].includes(phase.value)
-    )
-      return;
-    debugRequests.pausePending = true;
-    try {
-      await debugCommand({ type: "pause" });
-    } catch (error) {
-      debugRequests.pausePending = false;
-      throw error;
-    }
-  }
-
-  async function openDebugDialog(kind: "console" | "variables" | "stack"): Promise<void> {
-    if (diagnosisExporting.value) return;
-    if (kind === "console") debugConsoleOpen.value = true;
-    else if (kind === "variables") {
-      variablesOpen.value = true;
-      runtimeDebug.clearVariables();
-    } else {
-      stackOpen.value = true;
-      runtimeDebug.clearStack();
-    }
-    if (debugStopToken(debugStop.value)) await refreshOpenDebugSurfaces();
-    else {
-      debugRequests.surfacePauseActive = true;
-      debugRequests.surfaceResumePending = false;
-      await pauseDebug();
-    }
-  }
-
-  async function closeDebugDialog(kind: "console" | "variables" | "stack"): Promise<void> {
-    if (kind === "console") debugConsoleOpen.value = false;
-    else if (kind === "variables") variablesOpen.value = false;
-    else stackOpen.value = false;
-    if (debugConsoleOpen.value || variablesOpen.value || stackOpen.value) return;
-    if (!debugRequests.surfacePauseActive) return;
-    debugRequests.surfacePauseActive = false;
-    if (singleStepEnabled.value) return;
-    if (debugStopToken(debugStop.value)) await continueDebug();
-    else debugRequests.surfaceResumePending = true;
-  }
-
-  async function refreshOpenDebugSurfaces(): Promise<void> {
-    const stop = debugStopToken(debugStop.value);
-    if (!stop) return;
-    const commands = [debugCommand({ type: "list_fibers", stop, cursor: null, limit: 256 })];
-    if (variablesOpen.value) commands.push(refreshDebugVariables(stop));
-    await Promise.all(commands);
-  }
-
-  async function refreshDebugVariables(stop: any): Promise<void> {
-    const refreshId = debugRequests.nextVariableRefresh();
-    debugVariablesLoading.value = true;
-    const variables: any[] = [];
-    const seen = new Set<string>();
-    let cursor: number | bigint | null = null;
-    let pages = 0;
-    try {
-      do {
-        const response = await debugRequest({
-          type: "list_variables",
-          stop,
-          cursor,
-          limit: DEBUG_VARIABLE_PAGE_LIMIT,
-        });
-        pages += 1;
-        for (const variable of response.value?.variables ?? []) {
-          const key = debugVariableKey(variable);
-          if (seen.has(key)) continue;
-          seen.add(key);
-          variables.push(variable);
-        }
-        cursor = response.value?.next_cursor ?? null;
-      } while (
-        cursor != null &&
-        pages < DEBUG_VARIABLE_MAX_PAGES &&
-        debugRequests.isCurrentVariableRefresh(refreshId)
-      );
-      if (debugRequests.isCurrentVariableRefresh(refreshId)) debugVariables.value = variables;
-    } finally {
-      if (debugRequests.isCurrentVariableRefresh(refreshId)) debugVariablesLoading.value = false;
-    }
-  }
-
-  async function stepDebug(): Promise<void> {
-    if (!singleStepEnabled.value || diagnosisExporting.value) return;
-    const command = sourceLineStepCommand(debugStop.value);
-    if (!command) return;
-    const previousStop = debugStop.value;
-    debugRequests.pauseWanted = false;
-    debugStop.value = null;
-    try {
-      await debugRequest(command);
-    } catch (error) {
-      debugStop.value = previousStop;
-      throw error;
-    }
-  }
-
-  async function continueDebug(preserveSingleStep = false): Promise<void> {
-    if (diagnosisExporting.value) return;
-    const stop = debugStopToken(debugStop.value);
-    if (!stop) return;
-    if (!preserveSingleStep) singleStepEnabled.value = false;
-    const previousStop = debugStop.value;
-    debugRequests.pauseWanted = false;
-    debugRequests.surfacePauseActive = false;
-    debugRequests.surfaceResumePending = false;
-    debugStop.value = null;
-    try {
-      await debugRequest({ type: "continue", stop });
-    } catch (error) {
-      debugStop.value = previousStop;
-      throw error;
-    }
-  }
-
-  async function toggleSingleStep(): Promise<void> {
-    if (!debugEnabled.value || diagnosisExporting.value) return;
-    singleStepEnabled.value = !singleStepEnabled.value;
-    if (singleStepEnabled.value) {
-      if (!debugStopToken(debugStop.value)) await pauseDebug();
-    } else if (debugStopToken(debugStop.value)) {
-      await continueDebug(true);
-    }
-  }
-
-  async function saveProjectSettings(
-    changes: ProjectConfigurationChange[] = [],
-    restartAfterApply = false,
-  ): Promise<void> {
-    await runtimeProjectSettings.save(changes, restartAfterApply);
-  }
-
-  async function continueLoadedProject(runtimeAcceptedCompiledCache: boolean): Promise<void> {
-    if (runtimeAcceptedCompiledCache) {
-      showProjectLoadTransition("项目缓存命中，正在准备脚本热重载…");
-      await bridge.prepareProjectReloadBaseline();
-    }
-    await settleProjectViewport();
-    startupTelemetryState.completeFrontendReadiness();
-    if (["running", "waiting_input", "waiting_external"].includes(phase.value)) {
-      const telemetry = startupTelemetry.value;
-      if (telemetry?.outcome === "loading") {
-        telemetry.milestones.firstGamePhaseMs ??= startupTelemetryState.elapsedMs();
-        telemetry.outcome = "success";
-      }
-      finishProjectLoad();
-      baseStatus.value = GAME_RUNNING_STATUS;
-      if (!runtimeManifestSparse) scheduleCompiledCacheExport(1000);
-      return;
-    }
-    baseStatus.value = PROJECT_STARTING_STATUS;
-    finishProjectLoad();
-    const start = pendingStart;
-    pendingStart = { type: "new_game" };
-    if (start.type === "new_game") {
-      await send({
-        type: "start",
-        value: { mode: { type: "new_game", seed: start.seed ?? null } },
-      });
-    } else {
-      await restoreState(start.type, start.bytes);
-    }
-    if (!runtimeManifestSparse) scheduleCompiledCacheExport(1000);
-  }
-
-  function refreshProjectPreferences(): void {
-    projectPreferences.value = bridge.currentProjectPreferences() ?? defaultProjectPreferences();
-    projectPreferencesWritable.value = bridge.projectPreferencesWritable();
-  }
-
   async function applyEffectiveClientConfiguration(): Promise<void> {
-    if (!projectConfiguration.value) return;
-    try {
-      await bridge.applyProjectConfiguration(
-        configurationEntries.value,
-        runtimeViewport.chrome(currentGameViewportMeasurement()),
-      );
-    } catch (error) {
-      log("warning", `客户端项目配置应用失败：${String(error)}`);
-    }
+    return runtimeStoreActions.applyEffectiveClientConfiguration();
   }
-
-  async function saveClientPreferences(
-    scope: "global" | "project",
-    value: ProjectPreferences,
-  ): Promise<void> {
-    await runtimeClientPreferences.save(scope, value);
-  }
-
-  async function projectViewport(
-    measurement = currentGameViewportMeasurement(),
-    layoutIdentity = viewportLayoutIdentity,
-  ): Promise<void> {
-    viewportLayoutIdentity = layoutIdentity;
-    const environmentIdentity = viewportEnvironmentIdentity();
-    if (projectionObservationBarriers.size > 0 && measurement != null) {
-      deferredViewportProjection = { measurement: { ...measurement }, layoutIdentity };
-      return;
-    }
-    await runtimeViewport.observe(
-      measurement,
-      runtimePump.ready,
-      presentation.revision,
-      prompt.value,
-      viewportStyleIdentity(layoutIdentity),
-      environmentIdentity,
-    );
-    if (measurement) {
-      viewportLayoutIdentityAtProjection = layoutIdentity;
-    }
-  }
-
-  async function flushDeferredViewportProjection(batchSequence: number): Promise<void> {
-    if (
-      !deferredViewportProjection ||
-      projectionObservationBarriers.size > 0 ||
-      viewportProjectionFlushAfterBatch == null ||
-      batchSequence < viewportProjectionFlushAfterBatch
-    )
-      return;
-    const deferred = deferredViewportProjection;
-    deferredViewportProjection = undefined;
-    viewportProjectionFlushAfterBatch = undefined;
-    try {
-      await projectViewport(deferred.measurement, deferred.layoutIdentity);
-    } catch (error) {
-      log("warning", `延后提交视口投影失败：${String(error)}`);
-    }
-  }
-
-  async function settleProjectViewport(): Promise<void> {
-    await runtimeViewport.settle(projectViewport);
-  }
-
-  async function sendClientState(): Promise<void> {
-    if (!runtimePump.ready || diagnosisExporting.value) return;
-    await send({
-      type: "client_state_changed",
-      value: {
-        focused: document.hasFocus(),
-        visible: document.visibilityState === "visible",
-        audio_available: audio.providerAvailable(),
-        reduce_motion: matchMedia("(prefers-reduced-motion: reduce)").matches,
-        high_contrast: matchMedia("(prefers-contrast: more)").matches,
-        screen_reader: false,
-      },
-    });
-  }
-
-  function resetDeviceInputState(clearPhysicalState: boolean): void {
-    deviceGeneration += 1;
-    deviceEventSequence = 0;
-    devicePumpTimeAdvancePending = false;
-    deviceSubmissionFailure = undefined;
-    deviceSynchronizationPending = true;
-    if (!clearPhysicalState) return;
-    heldKeys.clear();
-    heldMouseButtons.clear();
-    heldMousePositions.clear();
-    keyToggleStates.clear();
-  }
-
-  function queueDeviceState(
-    device: "keyboard" | "mouse",
-    code: number,
-    pressed: boolean,
-    toggle: boolean,
-    repeat: boolean,
-    x = 0,
-    y = 0,
-  ): Promise<void> {
-    if (!runtimePump.ready || !Number.isInteger(code) || code < 0 || code > 255)
-      return Promise.resolve();
-    const generation = deviceGeneration;
-    const eventSequence = ++deviceEventSequence;
-    const message: RuntimeMessage = {
-      type: "device_state_changed",
-      value: {
-        event_sequence: eventSequence,
-        toggle,
-        repeat,
-        device,
-        code,
-        pressed,
-        x: Math.max(-2147483648, Math.min(2147483647, Math.trunc(x))),
-        y: Math.max(-2147483648, Math.min(2147483647, Math.trunc(y))),
-        monotonic_time_ns: testEnvironment.sampleMonotonic(),
-      },
-    };
-    const submission = deviceSubmissionTail.then(async () => {
-      if (generation !== deviceGeneration || !runtimePump.ready) return;
-      if (deviceSubmissionFailure?.generation === generation) throw deviceSubmissionFailure.error;
-      await send(message);
-    });
-    deviceSubmissionTail = submission.catch((error) => {
-      if (generation !== deviceGeneration) return;
-      if (!deviceSubmissionFailure) {
-        deviceSubmissionFailure = { generation, error };
-        log("warning", `设备状态提交失败：${String(error)}`, true, "none");
-      }
-    });
-    return deviceSubmissionTail;
-  }
-
-  function synchronizeHeldDeviceState(): Promise<void> {
-    if (!deviceSynchronizationPending || !runtimePump.ready || BigInt(runtimeEpoch.value) === 0n)
-      return deviceSubmissionTail;
-    deviceSynchronizationPending = false;
-    for (const code of [...heldKeys].sort((left, right) => left - right))
-      void queueDeviceState("keyboard", code, true, keyToggleStates.get(code) ?? false, false);
-    for (const code of [...heldMouseButtons].sort((left, right) => left - right)) {
-      const [x, y] = heldMousePositions.get(code) ?? [0, 0];
-      void queueDeviceState("mouse", code, true, false, false, x, y);
-    }
-    return deviceSubmissionTail;
-  }
-
-  async function awaitDeviceSubmissions(): Promise<void> {
-    await synchronizeHeldDeviceState();
-    await deviceSubmissionTail;
-    if (deviceSubmissionFailure?.generation === deviceGeneration)
-      throw deviceSubmissionFailure.error;
-  }
-
-  function observePhysicalDeviceState(
-    device: "keyboard" | "mouse",
-    code: number,
-    pressed: boolean,
-    toggle: boolean,
-    repeat: boolean,
-    x = 0,
-    y = 0,
-  ): Promise<void> {
-    if (!Number.isInteger(code) || code < 0 || code > 255) return Promise.resolve();
-    // Synchronize the state before this edge. Events observed while no session
-    // was ready remain represented by the held sets and are replayed first.
-    void synchronizeHeldDeviceState();
-    if (device === "keyboard") {
-      keyToggleStates.set(code, toggle);
-      if (pressed) heldKeys.add(code);
-      else heldKeys.delete(code);
-    } else if (pressed) {
-      heldMouseButtons.add(code);
-      heldMousePositions.set(code, [x, y]);
-    } else {
-      heldMouseButtons.delete(code);
-      heldMousePositions.delete(code);
-    }
-    return queueDeviceState(device, code, pressed, toggle, repeat, x, y);
-  }
-
-  async function pumpDevices(
-    epoch: ServiceInteger,
-    afterEventSequence: ServiceInteger,
-  ): Promise<ServiceInteger> {
-    const generation = deviceGeneration;
-    // A zero-delay task yields to keyboard, mouse, blur and visibility callbacks
-    // already queued for this browser/WebView pump. It is an event boundary, not
-    // a timing approximation.
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-    await awaitDeviceSubmissions();
-    if (generation !== deviceGeneration || !sameServiceInteger(epoch, runtimeEpoch.value))
-      throw new RuntimeServiceError("stale_projection", "device pump epoch changed");
-    if (BigInt(afterEventSequence) > BigInt(deviceEventSequence))
-      throw new RuntimeServiceError(
-        "invalid_request",
-        "device pump watermark exceeds submitted events",
-      );
-    // A positive snake AWAIT starts only after this acknowledgement. Its duration is retained by
-    // core rather than exposed in the device-pump ABI, so keep sampling frontend time until core
-    // leaves waiting_external. AWAIT 0 may receive one harmless sample before its phase update.
-    devicePumpTimeAdvancePending = true;
-    return deviceEventSequence;
-  }
-
   async function signalMessageSkip(): Promise<void> {
-    if (heldMouseButtons.has(2)) return;
-    // Touch and accessibility secondary actions have no MouseEvent. Submit a
-    // balanced compatibility pair so they do not leave a fabricated held button.
-    void synchronizeHeldDeviceState();
-    void queueDeviceState("mouse", 2, true, false, false);
-    void queueDeviceState("mouse", 2, false, false, false);
-    await awaitDeviceSubmissions();
+    return runtimeStoreActions.signalMessageSkip();
   }
-
-  function onClientStateBoundary(): void {
-    if (!document.hasFocus() || document.visibilityState !== "visible") {
-      for (const code of [...heldKeys])
-        void observePhysicalDeviceState(
-          "keyboard",
-          code,
-          false,
-          keyToggleStates.get(code) ?? false,
-          false,
-        );
-      for (const code of [...heldMouseButtons]) {
-        const [x, y] = heldMousePositions.get(code) ?? [0, 0];
-        void observePhysicalDeviceState("mouse", code, false, false, false, x, y);
-      }
-    }
-    void sendClientState();
-  }
-
-  async function shutdown(): Promise<void> {
-    if (diagnosisExporting.value) return;
-    if (fullManifestImport) await cleanupFullManifestImport(true);
-    if (bridge.kind === "browser") {
-      requestBrowserTabClose();
-      return;
-    }
-    if (!runtimePump.ready) return bridge.close();
-    await send({ type: "shutdown_request", value: { graceful: true } });
-  }
-
   async function send(
     message: RuntimeMessage,
     correlationId?: ServiceInteger,
   ): Promise<number | bigint> {
-    if (message.type === "input" || message.type === "client_state_changed")
-      await awaitDeviceSubmissions();
-    const observedEpoch = runtimeEpoch.value;
-    const observedSessionGeneration = runtimeSessionObservationGeneration;
-    const telemetry = startupTelemetry.value;
-    const startupStart =
-      message.type === "start" &&
-      telemetry?.outcome === "loading" &&
-      telemetry.milestones.startSubmittedMs == null;
-    if (startupStart) telemetry.milestones.startSubmittedMs = startupTelemetryState.elapsedMs();
-    const transported = transportValue(message);
-    const observedMessage = testEvidence.prepareMessage(transported);
-    if (
-      bridge.kind === "tauri" &&
-      message.type === "input" &&
-      message.value?.message_skip === true &&
-      bridge.submitRuntimeAndPump
-    ) {
-      const batch = await runtimePump.submitAndHandle(() =>
-        bridge.submitRuntimeAndPump!(transported, correlationId),
-      );
-      if (batch) {
-        testEvidence.sent(
-          "runtime",
-          observedMessage,
-          batch.submittedMessageId,
-          observedEpoch,
-          correlationId,
-          observedSessionGeneration,
-        );
-        return batch.submittedMessageId;
-      }
-    }
-    const submission = bridge.submitRuntime(transported, correlationId);
-    // WorkerClient posts both requests to one Worker port, so queue the drive immediately:
-    // FIFO delivery still guarantees that the runtime accepts this command before pumping it.
-    // Native IPC does not expose that ordering guarantee and keeps the acknowledgement barrier.
-    if (bridge.kind === "browser") schedulePump(0);
-    const messageId = await submission;
-    testEvidence.sent(
-      "runtime",
-      observedMessage,
-      messageId,
-      observedEpoch,
-      correlationId,
-      observedSessionGeneration,
-    );
-    if (startupStart) startupTelemetryState.startMessageId = String(messageId);
-    if (bridge.kind !== "browser") schedulePump(0);
-    return messageId;
+    return runtimeStoreActions.send(message, correlationId);
   }
-
-  function applyInputUndo(value: any): void {
-    runtimeInput.applyUndo(value);
-    inputUndo.value = value;
-  }
-
-  async function waitUntil(
-    predicate: () => boolean,
-    timeoutMs: number,
-    description: string,
-  ): Promise<void> {
-    const deadline = performance.now() + timeoutMs;
-    while (!predicate()) {
-      if (performance.now() >= deadline) throw new Error(`等待 ${description} 超时`);
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 16));
-    }
-  }
-
   function log(
     level: LogEntry["level"],
     message: string,
     authoritative = false,
     notificationPolicy: LogNotificationPolicy = "all",
   ): void {
-    runtimeLogs.record(level, message, authoritative, notificationPolicy);
+    return runtimeStoreActions.log(level, message, authoritative, notificationPolicy);
   }
-
-  function appendLogEntries(
-    entries: LogEntry[],
-    notificationPolicy: LogNotificationPolicy | readonly LogNotificationPolicy[] = "all",
-  ): void {
-    runtimeLogs.append(entries, notificationPolicy);
-  }
-
-  function dismissLogNotification(id: number): void {
-    runtimeLogs.dismiss(id);
-  }
-
-  function beginProjectLoad(message: string): void {
-    projectLoad.begin();
-    baseStatus.value = message;
-  }
-
-  function continueProjectBuildProgress(cacheImported = false): void {
-    if (!projectLoad.continueBuild()) return;
-    baseStatus.value = cacheImported
-      ? "项目缓存命中，正在加载缓存…"
-      : "项目文件读取完成，正在准备编译与校验…";
-  }
-
-  function showProjectLoadTransition(message: string): void {
-    projectLoad.transition();
-    baseStatus.value = message;
-  }
-
   function finishProjectLoad(): void {
-    projectLoad.finish();
+    return runtimeStoreActions.finishProjectLoad();
   }
-
   function handleProjectProgress(value: ProjectProgress): void {
-    const progress = normalizeProjectProgress(value);
-    if (!progress) return;
-    if (diagnosisExporting.value && exportState?.kind === "diagnosis_project") {
-      runtimeDiagnosis.setProgress(
-        progress.stage === "scanning"
-          ? "project_scanning"
-          : progress.stage === "packaging"
-            ? "project_packaging"
-            : "project_preparing",
-        progress.completed,
-        progress.total,
-      );
-      return;
-    }
-    if (projectFileExporting.value) {
-      projectFileExportState.setProgress(progress);
-      baseStatus.value = formatProjectProgress(progress);
-      return;
-    }
-    if (!projectLoad.record(progress)) return;
-    startupTelemetryState.recordProgress(progress);
-    baseStatus.value = formatProjectProgress(progress);
+    return runtimeStoreActions.handleProjectProgress(value);
   }
 
-  function requestBrowserTabClose(): void {
-    window.close();
-    window.setTimeout(() => {
-      if (window.closed) return;
-      const message = "浏览器阻止了关闭当前标签页，请手动关闭此标签页。";
-      baseStatus.value = message;
-      log("warning", message);
-    }, 0);
-  }
-
-  function onKeyDown(event: KeyboardEvent): void {
-    const code = keyboardDeviceCode(event);
-    if (code != null)
-      void observePhysicalDeviceState(
-        "keyboard",
-        code,
-        true,
-        keyboardToggle(event, code),
-        event.repeat,
-      );
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
-      event.preventDefault();
-      void undo();
-    } else if ((event.ctrlKey || event.metaKey) && event.key === ",") {
-      event.preventDefault();
-      openPreferencesFromUser();
-    } else if (
-      event.key === "F10" &&
-      debugEnabled.value &&
-      singleStepEnabled.value &&
-      !diagnosisExporting.value
-    ) {
-      event.preventDefault();
-      void stepDebug();
-    } else if (
-      !event.defaultPrevented &&
-      !event.repeat &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      !event.altKey &&
-      !event.shiftKey &&
-      !isModifierKey(event.key) &&
-      canInteract.value &&
-      currentPresentation().inputWait?.kind === "any_key"
-    ) {
-      event.preventDefault();
-      void submitIntent({ type: "any_key", value: event.key || "\n" }, false);
-    }
-  }
-
-  function isModifierKey(key: string): boolean {
-    return ["Alt", "AltGraph", "Control", "Meta", "Shift"].includes(key);
-  }
-
-  function onKeyUp(event: KeyboardEvent): void {
-    const code = keyboardDeviceCode(event);
-    if (code != null)
-      void observePhysicalDeviceState("keyboard", code, false, keyboardToggle(event, code), false);
-  }
-
-  function keyboardDeviceCode(event: KeyboardEvent): number | undefined {
-    const physical = event.code;
-    const letter = /^Key([A-Z])$/.exec(physical)?.[1];
-    if (letter) return letter.charCodeAt(0);
-    const digit = /^Digit([0-9])$/.exec(physical)?.[1];
-    if (digit) return digit.charCodeAt(0);
-    const numpad = /^Numpad([0-9])$/.exec(physical)?.[1];
-    if (numpad) return 96 + Number(numpad);
-    const functionKey = /^F([1-9]|1[0-9]|2[0-4])$/.exec(physical)?.[1];
-    if (functionKey) return 111 + Number(functionKey);
-    const standardized = KEYBOARD_DEVICE_CODES[physical];
-    if (standardized != null) return standardized;
-    return Number.isInteger(event.keyCode) && event.keyCode > 0 && event.keyCode <= 255
-      ? event.keyCode
-      : undefined;
-  }
-
-  function keyboardToggle(event: KeyboardEvent, code: number): boolean {
-    if (code === 20) return event.getModifierState("CapsLock");
-    if (code === 144) return event.getModifierState("NumLock");
-    if (code === 145) return event.getModifierState("ScrollLock");
-    return false;
-  }
-
-  function mouseCode(button: number): number | undefined {
-    return button === 0 ? 1 : button === 2 ? 2 : button === 1 ? 4 : undefined;
-  }
-
-  function onMouseDown(event: MouseEvent): void {
-    const code = mouseCode(event.button);
-    if (code == null) return;
-    void observePhysicalDeviceState(
-      "mouse",
-      code,
-      true,
-      false,
-      false,
-      event.clientX,
-      event.clientY,
-    );
-  }
-
-  function onMouseUp(event: MouseEvent): void {
-    const code = mouseCode(event.button);
-    if (code == null) return;
-    void observePhysicalDeviceState(
-      "mouse",
-      code,
-      false,
-      false,
-      false,
-      event.clientX,
-      event.clientY,
-    );
-  }
-
-  function liveMemoryCounters(): LiveMemoryCounters {
-    return {
-      ...bridge.runtimeMemoryCounters(),
-      blobUrls: resourceUrlRegistry.memoryCounters(),
-      audioBuffers: audio.memoryCounters(),
-      imagePixelSurfaces: imagePixels.memoryCounters(),
-    };
-  }
-
-  return {
-    bridgeKind: bridge.kind,
-    directProjectDirectoryAccess: bridge.directProjectDirectoryAccess === true,
-    memoryConstrained: bridge.memoryConstrained === true,
-    presentation,
-    preferences,
-    projectPreferences,
+  const runtimeStoreActionContext = {
+    audio,
+    baseStatus,
+    get batchMediaDirty() {
+      return batchMediaDirty;
+    },
+    set batchMediaDirty(value) {
+      batchMediaDirty = value;
+    },
+    bridge,
+    canExportDiagnosis,
+    canInteract,
+    canManageTraditionalSaves,
+    canOpenProject,
+    canvasPixels,
+    compiledCacheExport,
     configurationEntries,
+    coreVersion,
+    debugConsoleOpen,
+    debugEnabled,
+    debugGrant,
+    debugRequests,
+    debugStop,
+    debugVariables,
+    debugVariablesLoading,
+    get deferredViewportProjection() {
+      return deferredViewportProjection;
+    },
+    set deferredViewportProjection(value) {
+      deferredViewportProjection = value;
+    },
+    get deviceEventSequence() {
+      return deviceEventSequence;
+    },
+    set deviceEventSequence(value) {
+      deviceEventSequence = value;
+    },
+    get deviceGeneration() {
+      return deviceGeneration;
+    },
+    set deviceGeneration(value) {
+      deviceGeneration = value;
+    },
+    get devicePumpTimeAdvancePending() {
+      return devicePumpTimeAdvancePending;
+    },
+    set devicePumpTimeAdvancePending(value) {
+      devicePumpTimeAdvancePending = value;
+    },
+    get deviceSubmissionFailure() {
+      return deviceSubmissionFailure;
+    },
+    set deviceSubmissionFailure(value) {
+      deviceSubmissionFailure = value;
+    },
+    get deviceSubmissionTail() {
+      return deviceSubmissionTail;
+    },
+    set deviceSubmissionTail(value) {
+      deviceSubmissionTail = value;
+    },
+    get deviceSynchronizationPending() {
+      return deviceSynchronizationPending;
+    },
+    set deviceSynchronizationPending(value) {
+      deviceSynchronizationPending = value;
+    },
+    diagnosisExporting,
+    diagnosisResult,
+    diagnosticNotificationPolicy,
+    effectivePreferences,
+    get exportState() {
+      return exportState;
+    },
+    set exportState(value) {
+      exportState = value;
+    },
+    exportTransfer,
+    fault,
+    faultActionBusy,
+    FULL_PROJECT_MANIFEST_CHUNK_BYTES,
+    get fullManifestImport() {
+      return fullManifestImport;
+    },
+    set fullManifestImport(value) {
+      fullManifestImport = value;
+    },
+    fullManifestImports,
+    gameInformation,
+    gameInteractionsBlocked,
+    gameProgressLossConfirmation,
+    heldKeys,
+    heldMouseButtons,
+    heldMousePositions,
+    htmlMeasurements,
+    imagePixels,
+    get initialization() {
+      return initialization;
+    },
+    set initialization(value) {
+      initialization = value;
+    },
+    get initialized() {
+      return initialized;
+    },
+    set initialized(value) {
+      initialized = value;
+    },
+    inputUndo,
+    KEYBOARD_DEVICE_CODES,
+    keyToggleStates,
+    get lifecycleGeneration() {
+      return lifecycleGeneration;
+    },
+    set lifecycleGeneration(value) {
+      lifecycleGeneration = value;
+    },
+    logs,
+    openProjectConfirmationOpen,
+    pendingGameInput,
+    pendingInputUndo,
+    pendingProjectionMessages,
+    get pendingProjectSelection() {
+      return pendingProjectSelection;
+    },
+    set pendingProjectSelection(value) {
+      pendingProjectSelection = value;
+    },
+    get pendingReturnToTitleMessageId() {
+      return pendingReturnToTitleMessageId;
+    },
+    set pendingReturnToTitleMessageId(value) {
+      pendingReturnToTitleMessageId = value;
+    },
+    get pendingStart() {
+      return pendingStart;
+    },
+    set pendingStart(value) {
+      pendingStart = value;
+    },
+    phase,
+    pointerObservation,
+    preferences,
+    preferencesOpen,
+    presentation,
+    presentationProjection,
+    projectConfiguration,
+    projectFileExporting,
+    projectFileExportState,
+    projectFontFamilies,
+    projectionObservationBarriers,
+    projectLoad,
+    projectLoading,
+    projectOpen,
+    projectPreferences,
+    projectPreferencesWritable,
+    projectReload,
+    projectResourceGeneration,
+    projectSelecting,
+    projectSettingsOpen,
     projectSource,
+    prompt,
+    readTestTypedWatches,
+    replaceFullWidthSpaces,
+    requestSystemFonts,
+    retiredFullManifestCommandIds,
+    get runtimeBatchSequence() {
+      return runtimeBatchSequence;
+    },
+    set runtimeBatchSequence(value) {
+      runtimeBatchSequence = value;
+    },
+    runtimeClientPreferences,
+    runtimeConfiguration,
+    runtimeDebug,
+    runtimeDiagnosis,
+    runtimeEpoch,
+    runtimeImport,
+    runtimeInput,
+    runtimeLogs,
+    get runtimeManifestSparse() {
+      return runtimeManifestSparse;
+    },
+    set runtimeManifestSparse(value) {
+      runtimeManifestSparse = value;
+    },
+    runtimeProjectSettings,
+    runtimePump,
+    runtimeReady,
+    get runtimeSessionObservationGeneration() {
+      return runtimeSessionObservationGeneration;
+    },
+    set runtimeSessionObservationGeneration(value) {
+      runtimeSessionObservationGeneration = value;
+    },
+    runtimeStatus,
+    runtimeViewport,
+    serviceRequests,
+    get sessionAudioAvailable() {
+      return sessionAudioAvailable;
+    },
+    set sessionAudioAvailable(value) {
+      sessionAudioAvailable = value;
+    },
+    get sessionPreparation() {
+      return sessionPreparation;
+    },
+    set sessionPreparation(value) {
+      sessionPreparation = value;
+    },
+    singleStepEnabled,
+    sqlProvider,
+    stackOpen,
+    startupTelemetry,
+    startupTelemetryState,
+    systemFonts,
+    testAudioPlayback,
+    testEnvironment,
+    testEvidence,
+    traditionalSaves,
+    variablesOpen,
+    get viewportLayoutIdentity() {
+      return viewportLayoutIdentity;
+    },
+    set viewportLayoutIdentity(value) {
+      viewportLayoutIdentity = value;
+    },
+    get viewportLayoutIdentityAtProjection() {
+      return viewportLayoutIdentityAtProjection;
+    },
+    set viewportLayoutIdentityAtProjection(value) {
+      viewportLayoutIdentityAtProjection = value;
+    },
+    get viewportProjectionBarrierGeneration() {
+      return viewportProjectionBarrierGeneration;
+    },
+    set viewportProjectionBarrierGeneration(value) {
+      viewportProjectionBarrierGeneration = value;
+    },
+    get viewportProjectionFlushAfterBatch() {
+      return viewportProjectionFlushAfterBatch;
+    },
+    set viewportProjectionFlushAfterBatch(value) {
+      viewportProjectionFlushAfterBatch = value;
+    },
+  };
+  Object.assign(runtimeStoreActions, {
+    ...createRuntimeStoreActions1(runtimeStoreActionContext),
+    ...createRuntimeStoreActions2(runtimeStoreActionContext),
+    ...createRuntimeStoreActions3(runtimeStoreActionContext),
+    ...createRuntimeStoreActions4(runtimeStoreActionContext),
+    ...createRuntimeStoreActions5(runtimeStoreActionContext),
+    ...createRuntimeStoreActions6(runtimeStoreActionContext),
+  });
+  const runtimeStoreViewContext = {
     configurationReadOnly,
     configurationSessionOnly,
     configurationRestartPending,
     viewportMeasurement,
     menuMode,
     useMouse,
-    replaceFullWidthSpaces,
     scrollHeight,
-    effectivePreferences,
     gameTextStyle,
     gameLineHeightPx,
-    systemFonts,
     availableFontFamilies,
     fontAccessStatus,
     fontAccessError,
-    phase,
-    runtimeEpoch,
-    projectResourceGeneration,
     status,
-    projectOpen,
-    gameInformation,
-    coreVersion,
-    projectLoading,
-    startupTelemetry,
     projectLoadProgressLabel,
     projectLoadProgressValue,
-    openProjectConfirmationOpen,
-    gameProgressLossConfirmation,
     projectReloadDialogMode,
     projectReloadTargetOptions,
     projectReloadDialogBusy,
     projectReloadDialogError,
-    prompt,
-    inputUndo,
-    fault,
     faultMessage,
-    faultActionBusy,
-    logs,
-    projectSettingsOpen,
-    preferencesOpen,
-    projectPreferencesWritable,
     settingsBusy,
     projectSettingsError,
     preferencesError,
     logsOpen,
-    debugConsoleOpen,
-    variablesOpen,
-    stackOpen,
-    debugEnabled,
-    singleStepEnabled,
-    debugStop,
     debugOutput,
-    debugVariables,
-    debugVariablesLoading,
     debugFibers,
     debugFrames,
     debugVariableValues,
-    diagnosisExporting,
     diagnosisProgress,
     diagnosisProgressLabel,
     diagnosisProgressValue,
-    diagnosisResult,
-    projectFileExporting,
     projectFileExportProgressLabel,
     projectFileExportProgressValue,
     logNotifications,
@@ -3928,82 +931,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
     traditionalSaveTransferBusy,
     traditionalSaveTransferError,
     traditionalSaveOverwriteSlot,
-    runtimeReady,
-    canExportDiagnosis,
     fullProjectExportSupported,
     canExportProjectFile,
-    canManageTraditionalSaves,
-    gameInteractionsBlocked,
-    canOpenProject,
     canStepDebug,
-    canInteract,
-    interactionEnabled,
     promptPlaceholder,
-    openPreferencesFromUser,
-    openProjectSettingsFromUser,
-    requestSystemFonts,
-    initialize,
-    teardown,
-    openProject,
-    openProjectFile,
-    cancelOpenProject,
-    confirmOpenProject,
-    submitText,
-    activate,
-    skip,
-    continueFromViewport,
-    undo,
-    restart,
-    returnToTitle,
-    requestRestart,
-    requestReturnToTitle,
-    cancelGameProgressLossAction,
-    confirmGameProgressLossAction,
-    openProjectReloadDialog,
-    closeProjectReloadDialog,
-    confirmProjectReload,
-    reloadProject,
-    dismissFault,
-    recoverFromFault,
-    exportDiagnosis,
-    dismissLogNotification,
-    exportSnapshot,
-    exportInputReplay,
-    exportProjectFile,
-    cancelProjectFileExport,
-    exportTraditionalSaveForTest,
-    restoreSnapshot,
-    openTraditionalSaveDialog,
-    closeTraditionalSaveDialog,
-    pickTraditionalSaveImport,
-    confirmTraditionalSaveTransfer,
-    cancelTraditionalSaveOverwrite,
-    confirmTraditionalSaveOverwrite,
-    enableDebug,
-    debugCommand,
-    inspectWatches,
-    inspectTypedWatches,
-    testRuntimeEvidence: (messageTypes?: string[]) =>
-      testEvidence.snapshot(
-        runtimeSessionObservationGeneration,
-        messageTypes ? new Set(messageTypes) : undefined,
-      ),
-    testRuntimeEvidenceSummary: () => testEvidence.summary(runtimeSessionObservationGeneration),
-    testBackgroundWorkRevision: () => runtimePump.backgroundWorkRevision,
-    openDebugDialog,
-    closeDebugDialog,
-    stepDebug,
-    toggleSingleStep,
-    continueDebug,
-    saveProjectSettings,
-    saveClientPreferences,
-    shutdown,
-    projectViewport,
-    configureTestRun,
-    restoreState,
-    testTransferState,
-    testAudioPlaybackState,
-    testAudioProviderState,
-    liveMemoryCounters,
   };
+  return createRuntimeStoreProjection(
+    Object.assign(runtimeStoreActionContext, runtimeStoreActions, runtimeStoreViewContext),
+  );
 });

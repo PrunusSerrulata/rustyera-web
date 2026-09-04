@@ -431,6 +431,16 @@ export function deferred<T>(): {
   return { promise, resolve, reject };
 }
 
+export function keyboardEvent(
+  type: "keydown" | "keyup",
+  keyCode: number,
+  init: KeyboardEventInit,
+): KeyboardEvent {
+  const event = new KeyboardEvent(type, init);
+  Object.defineProperty(event, "keyCode", { configurable: true, value: keyCode });
+  return event;
+}
+
 export async function flushMicrotasks(): Promise<void> {
   for (let index = 0; index < 4; index += 1) await Promise.resolve();
 }
