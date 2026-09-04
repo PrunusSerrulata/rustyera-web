@@ -13,7 +13,8 @@ type WasmModule = {
     submitDebug(message: unknown, correlationId?: bigint): bigint;
     loadProject(manifest: unknown): bigint;
     loadProjectBinary(manifest: Uint8Array): bigint;
-    beginProjectManifest(projectRevision: bigint, fileCount: number): void;
+    beginProjectManifest(projectRevision: bigint, fileCount: number, compatibility: unknown): void;
+    resolveProjectCompatibility(configuration: unknown): unknown;
     appendProjectManifestFile(
       relativePath: string,
       category: number,
@@ -24,6 +25,7 @@ type WasmModule = {
     finishProjectManifest(): bigint;
     cancelProjectManifest(): void;
     projectFileManifest(bytes: Uint8Array): unknown;
+    projectFileIdentity(bytes: Uint8Array): unknown;
     beginProjectFile(totalBytes: number): void;
     appendProjectFile(bytes: Uint8Array): void;
     finishProjectFile(): unknown;
@@ -70,6 +72,9 @@ self.onmessage = async (event: MessageEvent) => {
     } else {
       if (!runtime) throw new Error("WASM runtime 尚未创建");
       switch (method) {
+        case "resolveProjectCompatibility":
+          result = runtime.resolveProjectCompatibility(args[0]);
+          break;
         case "submitRuntime":
           result = runtime.submitRuntime(args[0], args[1] as bigint | undefined);
           break;
@@ -83,7 +88,7 @@ self.onmessage = async (event: MessageEvent) => {
           result = runtime.loadProjectBinary(args[0] as Uint8Array);
           break;
         case "beginProjectManifest":
-          result = runtime.beginProjectManifest(args[0] as bigint, args[1] as number);
+          result = runtime.beginProjectManifest(args[0] as bigint, args[1] as number, args[2]);
           break;
         case "appendProjectManifestFile":
           result = runtime.appendProjectManifestFile(
@@ -102,6 +107,9 @@ self.onmessage = async (event: MessageEvent) => {
           break;
         case "projectFileManifest":
           result = runtime.projectFileManifest(args[0] as Uint8Array);
+          break;
+        case "projectFileIdentity":
+          result = runtime.projectFileIdentity(args[0] as Uint8Array);
           break;
         case "loadProjectFile":
           result = await loadProjectFileInWorker(

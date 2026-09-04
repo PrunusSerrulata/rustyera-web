@@ -46,6 +46,12 @@ export async function enumerateBrowserProject(
     const category = classify(file.relativePath, topLevel);
     return category ? [{ ...file, category }] : [];
   });
+  const paths = new Set<string>();
+  for (const file of files) {
+    const identity = file.relativePath.toLowerCase();
+    if (paths.has(identity)) throw new Error(`项目路径归一化冲突：${file.relativePath}`);
+    paths.add(identity);
+  }
   return { files, topLevel };
 }
 

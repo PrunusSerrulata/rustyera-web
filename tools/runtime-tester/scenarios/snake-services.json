@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "project": "../../../../rustyera-core/tools/runtime-tester/fixture-snake-services-clients",
+  "mode": "fixed",
+  "seed": 123456,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [
+    {
+      "type": "input",
+      "value": "1"
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "role": "button",
+        "name": "SNAKE_POINTER_TARGET",
+        "exact": true
+      },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "enabled": true
+      }
+    },
+    {
+      "type": "hover",
+      "locator": {
+        "role": "button",
+        "name": "SNAKE_POINTER_TARGET",
+        "exact": true
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "SNAKE_POINTER_TARGET",
+        "exact": true
+      },
+      "advances_game": true,
+      "semantic_input": "41"
+    }
+  ],
+  "watches": ["RESULTS:72"],
+  "goal": {
+    "output_contains": [
+      "SNAKE_HTML=0/0/0/1/1/1/1",
+      "SNAKE_CANVAS=4294901760/4278190335/2/2",
+      "SNAKE_CANVAS_REPLACE=2164195328/4278255360/0/4278255360",
+      "SNAKE_SERVICES_READY"
+    ],
+    "wait_kind": "integer_value",
+    "watch_equals": {
+      "RESULTS:72": "41"
+    }
+  },
+  "limits": {
+    "max_steps": 8,
+    "timeout_seconds": 180
+  }
+}

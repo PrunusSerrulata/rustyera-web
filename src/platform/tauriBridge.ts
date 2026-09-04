@@ -1,3 +1,8 @@
+import {
+  nextServiceLifecycleProject,
+  takeServiceLifecycleDiagnosisExportPath,
+  takeServiceLifecycleStateExportPath,
+} from "@/testing/serviceLifecycle";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { invoke } from "@tauri-apps/api/core";
@@ -7,6 +12,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import type { DiagnosisArchiveInput, DiagnosisArchiveProgress } from "@/core/diagnosis";
 import { streamDiagnosisArchiveInWorker } from "@/platform/diagnosis";
+import { normalizeProjectFileIdentity } from "@/platform/projectFileManifestTransfer";
 import { ProjectFontRegistry, type ProjectFontSource } from "@/platform/projectFonts";
 import {
   decodeIpcResponse,
@@ -33,8 +39,10 @@ import type {
   SessionOptions,
   SubmittedPumpBatch,
   SystemFontQueryResult,
+  TraditionalSaveAccess,
 } from "@/core/types";
 import { defaultProjectPreferences } from "@/core/types";
+import { saveSlotName } from "@/platform/browserProjectUtilities";
 
 type HostProjectOpenMetrics = Omit<ProjectOpenMetrics, "submittedAtMs" | "projectFonts">;
 type HostProjectFontSource = { relativePath: string; contentHash: number[]; byteLength: number };
@@ -43,6 +51,28 @@ export class TauriBridge implements FrontendBridge {
   readonly kind = "tauri" as const;
   readonly snapshotRestoreMode = "fresh_session" as const;
   readonly automaticCompiledCacheExport = true;
+  readonly traditionalSaves: TraditionalSaveAccess = {
+    listSlots: () => invoke("traditional_save_list_slots"),
+    exportSlot: async (slot) => {
+      const bytes = ipcBytes(await invoke<Uint8Array>("traditional_save_read", { slot }));
+      await this.saveDownload(saveSlotName(slot), bytes);
+    },
+    pickImport: async () => {
+      const path = await open({
+        directory: false,
+        multiple: false,
+        title: "选择传统存档",
+        filters: [{ name: "Emuera 存档", extensions: ["sav"] }],
+      });
+      if (typeof path !== "string") return undefined;
+      const name = path.split(/[\\/]/).filter(Boolean).at(-1) ?? "save.sav";
+      const bytes = ipcBytes(await invoke<Uint8Array>("read_import", { path }));
+      return { name, bytes };
+    },
+    inspect: async (bytes) => invoke("traditional_save_inspect", { bytes: encodeIpcBytes(bytes) }),
+    writeSlot: (slot, bytes) =>
+      invoke("traditional_save_write", { slot, bytes: encodeIpcBytes(bytes) }),
+  };
   private processMemory: Omit<
     RuntimeHostMemoryCounters,
     "workerGeneration" | "wasmLinearMemoryBytes"
@@ -58,6 +88,9 @@ export class TauriBridge implements FrontendBridge {
   private projectFileExportPath?: string;
   private stateExportPath?: string;
   private readonly projectFontRegistry = new ProjectFontRegistry();
+  // Tauri commands are separate IPC futures. Serialize runtime submissions so
+  // the native Mutex cannot observe a later input before an earlier device edge.
+  private runtimeSubmissionTail: Promise<void> = Promise.resolve();
 
   setProjectProgressListener(listener: ((progress: ProjectProgress) => void) | undefined): void {
     this.projectProgressListener = listener;
@@ -76,8 +109,9 @@ export class TauriBridge implements FrontendBridge {
     }
   }
 
-  prepareSessionReplacement(): Promise<void> {
-    return invoke<void>("destroy_session");
+  async prepareSessionReplacement(): Promise<void> {
+    await this.runtimeSubmissionTail;
+    await invoke<void>("destroy_session");
   }
 
   runtimeMemoryCounters(): RuntimeHostMemoryCounters {
@@ -110,11 +144,13 @@ export class TauriBridge implements FrontendBridge {
     message: RuntimeMessage,
     correlationId?: number | bigint,
   ): Promise<number | bigint> {
-    return decodeIpcValue(
-      await invoke("submit_runtime", {
-        message: encodeIpcValue(message),
-        correlationId: encodeIpcValue(correlationId),
-      }),
+    return this.enqueueRuntimeSubmission(async () =>
+      decodeIpcValue(
+        await invoke("submit_runtime", {
+          message: encodeIpcValue(message),
+          correlationId: encodeIpcValue(correlationId),
+        }),
+      ),
     );
   }
 
@@ -122,18 +158,29 @@ export class TauriBridge implements FrontendBridge {
     message: RuntimeMessage,
     correlationId?: number | bigint,
   ): Promise<SubmittedPumpBatch> {
-    if (import.meta.env.VITE_RUSTYERA_TEST === "1")
-      performance.mark("rustyera:settlement-invoke-start");
-    const response = await invoke("submit_runtime_and_pump", {
-      message: encodeIpcValue(message),
-      correlationId: encodeIpcValue(correlationId),
+    return this.enqueueRuntimeSubmission(async () => {
+      if (import.meta.env.VITE_RUSTYERA_TEST === "1")
+        performance.mark("rustyera:settlement-invoke-start");
+      const response = await invoke("submit_runtime_and_pump", {
+        message: encodeIpcValue(message),
+        correlationId: encodeIpcValue(correlationId),
+      });
+      if (import.meta.env.VITE_RUSTYERA_TEST === "1")
+        performance.mark("rustyera:settlement-invoke-resolved");
+      const decoded = decodeIpcResponse<SubmittedPumpBatch>(response);
+      if (import.meta.env.VITE_RUSTYERA_TEST === "1")
+        performance.mark("rustyera:settlement-decode-finished");
+      return decoded;
     });
-    if (import.meta.env.VITE_RUSTYERA_TEST === "1")
-      performance.mark("rustyera:settlement-invoke-resolved");
-    const decoded = decodeIpcResponse<SubmittedPumpBatch>(response);
-    if (import.meta.env.VITE_RUSTYERA_TEST === "1")
-      performance.mark("rustyera:settlement-decode-finished");
-    return decoded;
+  }
+
+  private enqueueRuntimeSubmission<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.runtimeSubmissionTail.then(operation, operation);
+    this.runtimeSubmissionTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   async submitDebug(
@@ -160,7 +207,10 @@ export class TauriBridge implements FrontendBridge {
     onSubmitted?: ProjectSubmittedListener,
     prepareAfterSelection?: ProjectSelectionPreparation,
   ): Promise<ProjectOpenMetrics | undefined> {
-    const testProject = import.meta.env.VITE_RUSTYERA_TEST_PROJECT;
+    const testProject =
+      import.meta.env.VITE_RUSTYERA_TEST === "1" && import.meta.env.VITE_RUSTYERA_TEST_PROJECT
+        ? nextServiceLifecycleProject(import.meta.env.VITE_RUSTYERA_TEST_PROJECT)
+        : undefined;
     if (import.meta.env.VITE_RUSTYERA_TEST === "1" && testProject) {
       const submittedAtMs = performance.now();
       onSubmitted?.(submittedAtMs);
@@ -473,7 +523,7 @@ export class TauriBridge implements FrontendBridge {
     await this.cancelStateExport();
     const testPath =
       import.meta.env.VITE_RUSTYERA_TEST === "1"
-        ? import.meta.env.VITE_RUSTYERA_TAURI_EXPORT_PATH
+        ? (takeServiceLifecycleStateExportPath() ?? import.meta.env.VITE_RUSTYERA_TAURI_EXPORT_PATH)
         : undefined;
     const path = testPath || (await save({ defaultPath: name }));
     if (!path) return false;
@@ -502,6 +552,7 @@ export class TauriBridge implements FrontendBridge {
   async beginProjectFileExport(name: string): Promise<boolean> {
     const testPath = import.meta.env.VITE_RUSTYERA_TAURI_EXPORT_PATH;
     const path =
+      takeServiceLifecycleStateExportPath() ||
       testPath ||
       (await save({
         defaultPath: name,
@@ -558,12 +609,26 @@ export class TauriBridge implements FrontendBridge {
   ): Promise<boolean> {
     const testPath =
       import.meta.env.VITE_RUSTYERA_TEST === "1"
-        ? import.meta.env.VITE_RUSTYERA_TAURI_EXPORT_PATH
+        ? (takeServiceLifecycleDiagnosisExportPath() ??
+          import.meta.env.VITE_RUSTYERA_TAURI_EXPORT_PATH)
         : undefined;
     const path = testPath || (await save({ defaultPath: name }));
     if (!path) return false;
     let first = true;
     try {
+      const projectIdentity =
+        import.meta.env.VITE_RUSTYERA_TEST === "1"
+          ? normalizeProjectFileIdentity(
+              await invoke("inspect_project_file_identity", {
+                bytes: encodeIpcBytes(input.projectFile),
+              }),
+            )
+          : undefined;
+      // The worker takes ownership of these buffers. Retain only the bounded test evidence
+      // before transfer, and publish it only after the native archive commit succeeds.
+      const downloadEvidence = projectIdentity
+        ? { projectMagic: input.projectFile.slice(0, 8), inputReplay: input.inputReplay.slice() }
+        : undefined;
       const totalBytes = await streamDiagnosisArchiveInWorker(
         input,
         async (chunk) => {
@@ -583,6 +648,14 @@ export class TauriBridge implements FrontendBridge {
         reset: first,
         complete: true,
       });
+      if (projectIdentity)
+        (window.__RUSTYERA_TEST_DOWNLOADS__ ??= []).push({
+          name,
+          bytes: new Uint8Array(),
+          size: totalBytes,
+          ...downloadEvidence,
+          projectIdentity,
+        });
       reportProgress?.({ completed: totalBytes, total: totalBytes });
       return true;
     } catch (error) {
@@ -620,6 +693,7 @@ export class TauriBridge implements FrontendBridge {
     this.progressUnlisten = undefined;
     if (progressUnlisten) (await progressUnlisten)();
     this.projectProgressListener = undefined;
+    await this.runtimeSubmissionTail;
     await invoke("destroy_session").catch(() => undefined);
   }
 }

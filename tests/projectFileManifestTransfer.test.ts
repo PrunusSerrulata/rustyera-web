@@ -1,16 +1,48 @@
+import { referenceCompatibility } from "./compatibilityTestSupport";
 import { expect, it } from "vitest";
 
 import type { BrowserManifest } from "@/platform/browserProject";
 import {
+  normalizeProjectFileIdentity,
   normalizeProjectFileManifest,
   projectFileManifestTransfers,
   runtimeWorkerResultTransfers,
   takeProjectFileManifestOwnership,
 } from "@/platform/projectFileManifestTransfer";
 
+it("normalizes actual exported UTF-8 byte lengths and rejects incomplete identity records", () => {
+  const file = {
+    relativePath: "csv/GAMEBASE.CSV",
+    category: "csv",
+    contentHash: "a".repeat(64),
+    payloadKind: "utf8",
+    byteLength: 80n,
+  };
+  expect(normalizeProjectFileIdentity({ projectRevision: 1n, files: [file] })).toEqual({
+    projectRevision: 1,
+    files: [{ ...file, byteLength: 80 }],
+  });
+  expect(() => normalizeProjectFileIdentity({ projectRevision: 1, files: [file, file] })).toThrow(
+    "重复",
+  );
+  expect(() =>
+    normalizeProjectFileIdentity({
+      projectRevision: 1,
+      files: [{ ...file, byteLength: undefined }],
+    }),
+  ).toThrow("字节长度");
+  expect(() =>
+    normalizeProjectFileIdentity({
+      projectRevision: 1,
+      files: [{ ...file, payloadKind: "external_resource" }],
+    }),
+  ).toThrow("内容无效");
+});
+
 it("normalizes the WASM project-file projection into browser-owned resource descriptors", () => {
   const manifest = normalizeProjectFileManifest({
     project_revision: 7,
+    compatibility: referenceCompatibility(),
     files: [
       {
         relative_path: "resources/1.webp",
@@ -29,6 +61,7 @@ it("normalizes the WASM project-file projection into browser-owned resource desc
 
   expect(manifest).toEqual({
     project_revision: 7,
+    compatibility: referenceCompatibility(),
     files: [
       {
         relative_path: "resources/1.webp",
@@ -80,6 +113,7 @@ it.each([
   expect(() =>
     normalizeProjectFileManifest({
       project_revision: 1,
+      compatibility: referenceCompatibility(),
       files: [
         {
           relative_path: "resources/1.webp",
@@ -97,6 +131,7 @@ it("rejects missing file arrays and unknown project-file categories", () => {
   expect(() =>
     normalizeProjectFileManifest({
       project_revision: 1,
+      compatibility: referenceCompatibility(),
       files: [
         {
           relative_path: "resources/1.webp",
@@ -114,6 +149,7 @@ it("transfers each embedded resource buffer into one isolated manifest owner", (
   const second = Uint8Array.of(4, 5);
   const manifest: BrowserManifest = {
     project_revision: 1,
+    compatibility: referenceCompatibility(),
     files: [
       {
         relative_path: "resources/first.bin",
@@ -153,6 +189,7 @@ it("does not transfer embedded resources on project-file worker responses", () =
   const result = {
     manifest: {
       project_revision: 1,
+      compatibility: referenceCompatibility(),
       files: [
         {
           relative_path: "resources/a.bin",
@@ -166,4 +203,25 @@ it("does not transfer embedded resources on project-file worker responses", () =
 
   expect(runtimeWorkerResultTransfers("finishProjectFile", result)).toEqual([]);
   expect(runtimeWorkerResultTransfers("appendProjectFile", result)).toEqual([]);
+});
+
+it.each(["als", "erd"])("preserves %s in packaged-project Worker manifests", (category) => {
+  const manifest = normalizeProjectFileManifest({
+    project_revision: 2,
+    compatibility: referenceCompatibility(),
+    files: [
+      {
+        relative_path: `ERB/BUFF.${category}`,
+        category,
+        payload: { type: "utf8", value: "10,主名\n" },
+        content_hash: new Uint8Array(32),
+      },
+    ],
+  });
+  const owned = takeProjectFileManifestOwnership(manifest).files[0];
+  expect(owned.relative_path).toBe(`ERB/BUFF.${category}`);
+  expect(owned.category).toBe(category);
+  expect(owned.payload).toEqual({ type: "utf8", value: "10,主名\n" });
+  // structuredClone can return typed arrays from another realm in the DOM test host.
+  expect(Array.from(owned.content_hash)).toEqual(Array.from(manifest.files[0].content_hash));
 });

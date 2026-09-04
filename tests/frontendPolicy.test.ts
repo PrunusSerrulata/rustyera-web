@@ -28,8 +28,30 @@ vi.mock("@/stores/runtime", () => ({
 
 import HtmlNode from "@/components/HtmlNode.vue";
 import RunRenderer from "@/components/RunRenderer.vue";
+import { RuntimePointerObservation } from "@/platform/pointerObservation";
 
 describe("frontend host and image-line policy", () => {
+  it("keeps a button's accessible name intact across per-character layout runs", () => {
+    const label = "SNAKE_POINTER_TARGET";
+    const wrapper = mount(RunRenderer, {
+      props: {
+        run: {
+          type: "button",
+          token: { epoch: 4, id: 1 },
+          enabled: true,
+          runs: [...label].map((text) => ({ type: "text_layout", text, columns: 1, style: {} })),
+        },
+      },
+    });
+    try {
+      const button = wrapper.get("button");
+      expect(button.findAll(".text-layout")).toHaveLength(label.length);
+      expect(button.attributes("aria-label")).toBe(label);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("hotly replaces full-width spaces in ordinary and HTML text without changing source", async () => {
     const run = { type: "text", text: "A　B", style: {} };
     const node = { type: "text", text: "C　D" };
@@ -47,6 +69,80 @@ describe("frontend host and image-line policy", () => {
     expect(html.element.textContent).toBe("C  D");
     expect(run.text).toBe("A　B");
     expect(node.text).toBe("C　D");
+  });
+
+  it("registers script button values from both renderers independently of DOM labels", async () => {
+    const viewport = document.createElement("main");
+    document.body.append(viewport);
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 300 },
+      clientHeight: { configurable: true, value: 200 },
+    });
+    const bounds = vi
+      .spyOn(viewport, "getBoundingClientRect")
+      .mockReturnValue({ left: 0, top: 0 } as DOMRect);
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const originalHit = document.elementFromPoint;
+    let hit: Element | null = null;
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => hit });
+    const ordinary = mount(RunRenderer, {
+      attachTo: viewport,
+      props: {
+        run: {
+          type: "button",
+          token: { epoch: 4, id: 1 },
+          value: { type: "integer", value: 300 },
+          enabled: true,
+          runs: [{ type: "text", text: "not 300", style: {} }],
+        },
+      },
+    });
+    const html = mount(HtmlNode, {
+      attachTo: viewport,
+      props: {
+        node: {
+          type: "element",
+          kind: "button",
+          semantic: { type: "button" },
+          interaction: { epoch: 4, id: 2, string_value: "001", enabled: true },
+          children: [{ type: "text", text: "not 001" }],
+        },
+      },
+    });
+    const pointer = new RuntimePointerObservation(() => viewport);
+    pointer.start();
+    let htmlMounted = true;
+    try {
+      await nextTick();
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 10, clientY: 20 }));
+      hit = ordinary.get("button").element;
+      expect(pointer.sample(4).buttonValue).toBe("300");
+      await ordinary.setProps({ run: { ...ordinary.props("run"), enabled: false } });
+      expect(ordinary.get("button").attributes("disabled")).toBeDefined();
+      expect(pointer.sample(4).buttonValue).toBe("300");
+      hit = html.get("button").element;
+      expect(pointer.sample(4).buttonValue).toBe("001");
+      const node = html.props("node");
+      await html.setProps({
+        node: { ...node, interaction: { ...node.interaction, enabled: false } },
+      });
+      expect(html.get("button").attributes("disabled")).toBeDefined();
+      expect(pointer.sample(4).buttonValue).toBe("001");
+      html.unmount();
+      htmlMounted = false;
+      expect(pointer.sample(4).buttonValue).toBe("");
+    } finally {
+      pointer.stop();
+      ordinary.unmount();
+      if (htmlMounted) html.unmount();
+      viewport.remove();
+      focus.mockRestore();
+      bounds.mockRestore();
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: originalHit,
+      });
+    }
   });
 
   it("grants both Tauri hosts the window permissions used by the frontend", () => {
@@ -110,7 +206,9 @@ describe("frontend host and image-line policy", () => {
 
   it("stops the Tauri suite at its first failing spec", () => {
     const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
-    expect(runner).toContain('new Mocha({ reporter: "spec", timeout: 300_000, bail: true })');
+    const options = runner.match(/new Mocha\(\{([\s\S]*?)\}\)/)?.[1];
+    expect(options).toBeDefined();
+    expect(options).toMatch(/\bbail:\s*true\b/);
   });
 
   it("gives the reraconfig Tauri spec a deterministic schema-v1 project copy", () => {
@@ -150,8 +248,9 @@ describe("frontend host and image-line policy", () => {
     expect(stylesheet).toMatch(/\.media-positioned\s*\{\s*overflow:\s*visible;/);
     expect(stylesheet).toMatch(/\.virtual-history\s*\{[^}]*width:\s*100%;/s);
     expect(stylesheet).toMatch(
-      /\.game-line:has\(\.media-positioned\)\s*\{[^}]*contain:\s*layout;[^}]*overflow:\s*visible;[^}]*z-index:\s*1;/s,
+      /\.game-line:has\(\.media-positioned\)\s*\{[^}]*overflow:\s*visible;/s,
     );
+    expect(stylesheet).not.toMatch(/\.virtual-history\s*\{[^}]*z-index:/s);
     expect(stylesheet).toMatch(
       /\.media-positioned > \.media-visual\s*\{[^}]*position:\s*absolute;[^}]*left:\s*0;/s,
     );
@@ -310,6 +409,7 @@ describe("frontend host and image-line policy", () => {
     expect(borderedStyle).toContain("border-style: solid");
     expect(borderedStyle).toContain("border-width: 1px");
     expect(borderedStyle).toContain("border-color: rgb(192, 192, 192)");
+    expect(borderedStyle).toContain("z-index: -1");
 
     const margined = mount(HtmlNode, {
       props: {
@@ -342,6 +442,7 @@ describe("frontend host and image-line policy", () => {
     expect(marginedStyle).toContain("height: 76px");
     expect(marginedStyle).toContain("border-width: 1px");
     expect(marginedStyle).toContain("padding: 5px");
+    expect(marginedStyle).toContain("z-index: -1");
 
     for (const semantic of [
       {
@@ -460,6 +561,28 @@ describe("frontend host and image-line policy", () => {
     expect(wrapper.get(".html-shape-space").attributes("style")).toContain("height: 12px");
   });
 
+  it("keeps a negative space as a signed inline advance for portrait overlays", () => {
+    const wrapper = mount(HtmlNode, {
+      props: {
+        node: {
+          type: "element",
+          kind: "shape",
+          children: [],
+          semantic: {
+            type: "shape",
+            kind: "space",
+            parameters: [{ unit: "pixels", value: -180 }],
+          },
+        },
+      },
+    });
+
+    const style = wrapper.get(".html-shape-space").attributes("style");
+    expect(style).toContain("width: 0px");
+    expect(style).toContain("height: 12px");
+    expect(style).toContain("margin-left: -180px");
+  });
+
   it("projects Era HTML rectangles with normal and focused colors", () => {
     const wrapper = mount(HtmlNode, {
       props: {
@@ -528,6 +651,10 @@ describe("frontend host and image-line policy", () => {
             source: "portrait",
             height: { unit: "font_height_hundredths", value: 3000 },
             y: { unit: "font_height_hundredths", value: -3000 },
+            color_matrix: {
+              type: "fixed",
+              value: Array.from({ length: 25 }, (_, index) => (index % 6 === 0 ? 256 : 0)),
+            },
           },
         },
       },
@@ -538,6 +665,7 @@ describe("frontend host and image-line policy", () => {
       height: 18_000,
       requested_height: { unit: "font_height_hundredths", value: 3000 },
       requested_y: { unit: "font_height_hundredths", value: -3000 },
+      color_matrix: { type: "fixed" },
     });
   });
 
@@ -803,6 +931,7 @@ describe("frontend host and image-line policy", () => {
   it("keeps game output on physical lines and exposes horizontal overflow", () => {
     const stylesheet = readFileSync(resolve("src/styles.css"), "utf8");
     expect(stylesheet).toMatch(/\.game-viewport\s*\{[^}]*overflow:\s*auto;/s);
+    expect(stylesheet).not.toMatch(/\.game-viewport\s*\{[^}]*scrollbar-gutter\s*:[^;]*\bstable\b/s);
     expect(stylesheet).toMatch(/\.game-viewport\s*\{[^}]*overflow-anchor:\s*none;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*width:\s*max-content;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*min-height:\s*var\(--game-line-height\);/s);
@@ -811,8 +940,7 @@ describe("frontend host and image-line policy", () => {
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*line-height:\s*var\(--game-line-height\);/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*white-space:\s*pre;/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*overflow-wrap:\s*normal;/s);
-    expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*contain:\s*layout;/s);
-    expect(stylesheet).not.toMatch(/\.game-line\s*\{[^}]*contain:\s*layout paint;/s);
+    expect(stylesheet).not.toMatch(/\.game-line\s*\{[^}]*contain:/s);
     expect(stylesheet).toMatch(/\.game-line\s*\{[^}]*pointer-events:\s*none;/s);
     expect(stylesheet).toMatch(
       /\.game-line:has\(\.media-image, \.canvas-replay\)[^}]*padding:\s*0;/s,

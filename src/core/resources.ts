@@ -1,4 +1,6 @@
+import { serviceLifecycleResourceUrl } from "@/testing/serviceLifecycle";
 import type { FrontendBridge } from "@/core/types";
+import type { ServiceInteger } from "@/core/runtimeServiceProtocol";
 
 interface ResourceUrlEntry {
   generation: number;
@@ -28,7 +30,7 @@ export class ResourceUrlRegistry {
   acquire(
     bridge: FrontendBridge,
     resourceId: string,
-    _revision = 0,
+    _revision: ServiceInteger = 0,
     generation = 0,
   ): ResourceUrlLease {
     void _revision;
@@ -49,7 +51,12 @@ export class ResourceUrlRegistry {
       const created = entry;
       created.promise = bridge
         .readResource(resourceId)
-        .then((bytes) => {
+        .then(async (bytes) => {
+          const testUrl = await serviceLifecycleResourceUrl(resourceId, bytes, generation);
+          if (testUrl) {
+            created.bytes = bytes.byteLength;
+            return testUrl;
+          }
           const url = URL.createObjectURL(
             new Blob([bytes as BlobPart], { type: mediaType(resourceId) }),
           );
@@ -112,7 +119,7 @@ export const resourceUrlRegistry = new ResourceUrlRegistry();
 export function acquireResourceUrl(
   bridge: FrontendBridge,
   resourceId: string,
-  revision = 0,
+  revision: ServiceInteger = 0,
   generation = 0,
 ): ResourceUrlLease {
   return resourceUrlRegistry.acquire(bridge, resourceId, revision, generation);

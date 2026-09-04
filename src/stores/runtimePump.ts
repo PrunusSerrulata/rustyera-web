@@ -16,6 +16,7 @@ export class RuntimePumpCoordinator {
   readonly #transitioning = ref(false);
   #timer: number | undefined;
   #handlingBatch = false;
+  #backgroundWorkRevision = 0;
 
   constructor(
     private readonly bridge: Pick<FrontendBridge, "pump">,
@@ -32,6 +33,12 @@ export class RuntimePumpCoordinator {
 
   get transitioning(): boolean {
     return this.#transitioning.value;
+  }
+
+  /** Advances only when the runtime completes one cooperative background slice. Idle polling must
+   * not manufacture watchdog progress. */
+  get backgroundWorkRevision(): number {
+    return this.#backgroundWorkRevision;
   }
 
   setReady(ready: boolean): void {
@@ -83,6 +90,7 @@ export class RuntimePumpCoordinator {
     }
     try {
       const batch = await operation();
+      this.#observeBackgroundWork(batch);
       this.#handlingBatch = true;
       try {
         await this.callbacks.handleBatch(batch);
@@ -91,7 +99,7 @@ export class RuntimePumpCoordinator {
       }
       if (import.meta.env.VITE_RUSTYERA_TEST === "1")
         performance.mark("rustyera:settlement-batch-handled");
-      this.schedule(batch.state === "more_work" || batch.state === "output_ready" ? 0 : 16);
+      this.schedule(hasPendingWork(batch) ? 0 : 16);
       return batch;
     } catch (error) {
       this.callbacks.handleError(error);
@@ -113,6 +121,7 @@ export class RuntimePumpCoordinator {
         // present for the runtime's timer/input arbitration in the next pump.
         await this.callbacks.advanceTimedWait();
         batch = await this.bridge.pump();
+        this.#observeBackgroundWork(batch);
         this.#handlingBatch = true;
         try {
           await this.callbacks.handleBatch(batch);
@@ -120,21 +129,38 @@ export class RuntimePumpCoordinator {
           this.#handlingBatch = false;
         }
         pumps += 1;
-        // Compute-only slices have no frame for the browser to present. Continue them without a
-        // zero-delay timer (and its nested-timer clamp), but retain a hard fairness boundary.
+        // VM and cooperative slices can both leave the actor idle while work remains. Avoid an
+        // idle delay for every exported file, while retaining the same hard fairness boundary.
       } while (
-        batch.state === "more_work" &&
+        (batch.state === "more_work" ||
+          (batch.state === "idle" && batch.cooperativeBackgroundWork)) &&
         pumps < MAXIMUM_CONTIGUOUS_COMPUTE_PUMPS &&
         this.ready &&
         !this.transitioning
       );
-      this.schedule(batch.state === "more_work" || batch.state === "output_ready" ? 0 : 16);
+      this.schedule(hasPendingWork(batch) ? 0 : 16);
     } catch (error) {
       this.callbacks.handleError(error);
     } finally {
       this.#pumping.value = false;
     }
   }
+
+  #observeBackgroundWork(batch: PumpBatch): void {
+    if (batch.cooperativeBackgroundWork)
+      this.#backgroundWorkRevision = Math.min(
+        Number.MAX_SAFE_INTEGER,
+        this.#backgroundWorkRevision + 1,
+      );
+  }
+}
+
+function hasPendingWork(batch: PumpBatch): boolean {
+  return Boolean(
+    batch.cooperativeBackgroundWork ||
+    batch.state === "more_work" ||
+    batch.state === "output_ready",
+  );
 }
 
 export class RuntimePumpSubmissionError extends Error {

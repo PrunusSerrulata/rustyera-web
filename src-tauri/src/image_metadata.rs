@@ -139,10 +139,7 @@ fn webp(data: &[u8]) -> Option<ImageMetadata> {
         let length = usize::try_from(le_u32(data, offset + 4)?).ok()?;
         let payload = offset.checked_add(8)?;
         let end = payload.checked_add(length)?;
-        if end > data.len() {
-            return None;
-        }
-        if kind == b"VP8X" && length >= 10 {
+        if kind == b"VP8X" && length >= 10 && payload.checked_add(10)? <= data.len() {
             return metadata(
                 uint24_le(data, payload + 4)?.checked_add(1)?,
                 uint24_le(data, payload + 7)?.checked_add(1)?,
@@ -152,6 +149,7 @@ fn webp(data: &[u8]) -> Option<ImageMetadata> {
         }
         if kind == b"VP8 "
             && length >= 10
+            && payload.checked_add(10)? <= data.len()
             && data.get(payload + 3..payload + 6) == Some(&[0x9d, 0x01, 0x2a])
         {
             return metadata(
@@ -161,7 +159,11 @@ fn webp(data: &[u8]) -> Option<ImageMetadata> {
                 false,
             );
         }
-        if kind == b"VP8L" && length >= 5 && data.get(payload) == Some(&0x2f) {
+        if kind == b"VP8L"
+            && length >= 5
+            && payload.checked_add(5)? <= data.len()
+            && data.get(payload) == Some(&0x2f)
+        {
             let bits = le_u32(data, payload + 1)?;
             return metadata(
                 (bits & 0x3fff) + 1,
@@ -169,6 +171,9 @@ fn webp(data: &[u8]) -> Option<ImageMetadata> {
                 "webp",
                 false,
             );
+        }
+        if end > data.len() {
+            return None;
         }
         offset = end.checked_add(length & 1)?;
     }
@@ -189,6 +194,20 @@ mod tests {
         let decoded = decode(&png).unwrap();
         assert_eq!((decoded.width, decoded.height), (320, 180));
         assert_eq!(decoded.format, "png");
+        assert!(!decoded.animated);
+    }
+
+    #[test]
+    fn reads_lossless_webp_dimensions_from_a_bounded_prefix() {
+        let bits = (640_u32 - 1) | ((480_u32 - 1) << 14);
+        let mut webp = b"RIFF\0\0\0\0WEBPVP8L".to_vec();
+        webp.extend_from_slice(&(2_u32 * 1024 * 1024).to_le_bytes());
+        webp.push(0x2f);
+        webp.extend_from_slice(&bits.to_le_bytes());
+
+        let decoded = decode(&webp).unwrap();
+        assert_eq!((decoded.width, decoded.height), (640, 480));
+        assert_eq!(decoded.format, "webp");
         assert!(!decoded.animated);
     }
 }

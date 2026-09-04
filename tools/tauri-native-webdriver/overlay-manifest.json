@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "upstreamPackage": "tauri-plugin-wdio-webdriver",
+  "upstreamVersion": "1.2.0",
+  "files": [
+    {
+      "path": "src/platform/mod.rs",
+      "bytes": 2932,
+      "sha256": "951503fc8c6f87fc731f3bcb3c93093cf37e97f60976bdb87053d93ec449bf0f"
+    },
+    {
+      "path": "src/platform/macos.rs",
+      "bytes": 31406,
+      "sha256": "91ff9aca22c5b2eb2cab6c817054c6f8a9aa8e4300318dfd14b61bb282a0f280"
+    },
+    {
+      "path": "src/platform/macos_input.rs",
+      "bytes": 23291,
+      "sha256": "8e9889563ca9d196fc512361a52ab252a436bbb91d261273702fda9bd4b9bb78"
+    },
+    {
+      "path": "src/server/handlers/window.rs",
+      "bytes": 10830,
+      "sha256": "602fc29464a7f3735eb7ae2351e4d0e17027e96cd87ee4bd9fd53de93c54e646"
+    },
+    {
+      "path": "src/platform/executor.rs",
+      "bytes": 77267,
+      "sha256": "75f0043e1ede2962019b35d786697c24013be5cf01398e388ce45912a9cb8fd9"
+    }
+  ]
+}

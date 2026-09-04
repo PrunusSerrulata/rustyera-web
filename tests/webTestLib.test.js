@@ -1,29 +1,477 @@
-import { access, mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { TextEncoder } from "node:util";
+import { runInNewContext } from "node:vm";
 import { blake3 } from "@noble/hashes/blake3.js";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   assertAtomicPresentationTransition,
   browserProjectProgressErrors,
+  packagedProjectProgressErrors,
+  compactTraceEvent,
   compareObservations,
+  goalStatus,
   injectInGameSaveFlow,
   injectInteractionAssistFlow,
   isolatedProject,
+  installRemoteFileSystem,
   loadScenario,
   nativeFirefoxCapabilities,
+  focusNativeBrowser,
   publishCrossHostArtifacts,
   resolveLocator,
   runtimeProgressDiagnostic,
   runtimeProgressSignature,
   runAction,
+  TraceWriter,
   terminalRuntimeRejection,
   waitForWebDriverDocument,
+  waitForRuntimeObservation,
+  waitForAutomaticWaitChange,
 } from "../scripts/web-test-lib.mjs";
+import { SNAKE_DATA_MARKERS } from "../scripts/snake-data-test-support.mjs";
+import { snakeAudioRelations, snakeAudioStressRelations } from "../scripts/web-test-runtime.mjs";
 
 describe("web game test scenario", () => {
+  it("finishes export cancellation when background cache generation resumes", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rustyera-export-cancel-"));
+    const evidencePath = path.join(root, "evidence.json");
+    let dialog = false;
+    let state = {
+      memory: { wasmLinearMemoryBytes: 1234 },
+      fault: null,
+      canInteract: true,
+      status: "background cache",
+      transfer: { export: { name: "compiled-project.reracache" }, fullManifest: null },
+    };
+    const run = (callback) =>
+      runInNewContext(`(${callback.toString()})()`, {
+        window: {
+          __RUSTYERA_TEST__: {
+            snapshotSummary: () => state,
+            protocolEvidence: () => ({
+              failure: null,
+              records: [{ direction: "send", message: { type: "state_transfer_cancel" } }],
+            }),
+          },
+        },
+        document: { querySelector: () => (dialog ? {} : null) },
+      });
+    const page = {
+      evaluate: async (callback) => run(callback),
+      waitForFunction: async (callback) => expect(run(callback)).toBe(true),
+      locator: () => ({
+        waitFor: async () => expect(dialog).toBe(true),
+        click: async () => {
+          dialog = true;
+          state = {
+            ...state,
+            canInteract: false,
+            transfer: {
+              export: { name: "project.reraproj" },
+              fullManifest: { submittedBytes: 8 * 1024 * 1024 },
+            },
+          };
+        },
+      }),
+      getByRole: () => ({
+        getByRole: () => ({
+          click: async () => {
+            dialog = false;
+            state = {
+              ...state,
+              canInteract: true,
+              transfer: { export: { name: "compiled-project.reracache" }, fullManifest: null },
+            };
+          },
+        }),
+      }),
+    };
+    try {
+      await runAction(page, {
+        type: "cancel_project_export",
+        selector: "export",
+        evidence_path: evidencePath,
+      });
+      const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
+      expect(evidence.status).toBe("passed");
+      expect(evidence.samples.map((sample) => sample.phase)).toEqual([
+        "before",
+        "before-cancel",
+        "cancel-submitted",
+        "finished",
+      ]);
+      expect(evidence.samples.at(-1).transfer.export.name).toBe("compiled-project.reracache");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps complete snapshots in the file event while compacting console output", () => {
+    const event = {
+      type: "browser-game-snapshot",
+      capturedAt: "2026-09-01T00:00:00Z",
+      document: [{ tag: "html" }, { tag: "body" }],
+      runtime: { phase: "waiting_input" },
+    };
+
+    expect(compactTraceEvent(event)).toEqual({
+      ...event,
+      document: { elementCount: 2 },
+    });
+    expect(event.document).toHaveLength(2);
+  });
+
+  it("streams complete snapshot elements without interleaving later trace events", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rustyera-trace-writer-"));
+    const tracePath = path.join(root, "trace.ndjson");
+    const output = vi.spyOn(globalThis.process.stdout, "write").mockReturnValue(true);
+    try {
+      const writer = new TraceWriter(tracePath);
+      const document = Array.from({ length: 130 }, (_, index) => ({
+        tag: "span",
+        attributes: { "data-index": String(index) },
+        text: `cell-${index}`,
+        value: null,
+        visible: true,
+      }));
+      writer.emit({
+        type: "browser-game-snapshot",
+        capturedAt: "2026-09-01T00:00:00Z",
+        document,
+        runtime: { phase: "waiting_input" },
+      });
+      writer.emit({ type: "result", status: "input_exhausted" });
+      await writer.close();
+
+      const events = (await readFile(tracePath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(events).toHaveLength(2);
+      expect(events[0].document).toEqual(document);
+      expect(events[1]).toEqual({ type: "result", status: "input_exhausted" });
+    } finally {
+      output.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("checks state string prefixes separately from structural expectations", async () => {
+    const page = {
+      evaluate: vi.fn(async () => ({
+        fault: { code: "vm_fault", message: "rustyera.sql/open/invalid_source:6:reason=61" },
+        output: [],
+      })),
+    };
+    const action = {
+      type: "assert_state",
+      expect: { fault: { code: "vm_fault" }, output: [] },
+      expect_prefix: { fault: { message: "rustyera.sql/open/invalid_source:" } },
+    };
+
+    await expect(runAction(page, action)).resolves.toMatchObject({ state: { output: [] } });
+    action.expect_prefix.fault.message = "rustyera.sql/open/quota_exceeded:";
+    await expect(runAction(page, action)).rejects.toThrow(
+      "assertion failed at fault.message: expected prefix",
+    );
+  });
+
+  it("checks ordinary runtime state without materializing protocol records", async () => {
+    const state = { canInteract: true, wait: { stability: "stable_input" }, fault: null };
+    const snapshot = vi.fn(() => {
+      throw new Error("full protocol ledger must not be materialized");
+    });
+    const snapshotSummary = vi.fn(() => state);
+    const page = {
+      evaluate: (callback, argument) =>
+        runInNewContext(`(${callback.toString()})(argument)`, {
+          argument,
+          window: { __RUSTYERA_TEST__: { snapshot, snapshotSummary } },
+        }),
+    };
+    await expect(runAction(page, { type: "assert_state", expect: state })).resolves.toEqual({
+      state,
+    });
+    expect(snapshot).not.toHaveBeenCalled();
+    expect(snapshotSummary).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["expect", "serviceEvidence"],
+    ["expect_prefix", "serviceEvidence"],
+    ["expect", "serviceLifecycle"],
+    ["expect_prefix", "serviceLifecycle"],
+  ])("retains full evidence for %s assertions on %s", async (assertion, field) => {
+    const state = { [field]: { records: [{ message: "observed wire payload" }] } };
+    const snapshot = vi.fn(() => state);
+    const snapshotSummary = vi.fn(() => {
+      throw new Error("an explicit evidence assertion requires full records");
+    });
+    const page = {
+      evaluate: (callback, argument) =>
+        runInNewContext(`(${callback.toString()})(argument)`, {
+          argument,
+          window: { __RUSTYERA_TEST__: { snapshot, snapshotSummary } },
+        }),
+    };
+    const expected =
+      assertion === "expect_prefix"
+        ? { [field]: { records: { 0: { message: "observed wire" } } } }
+        : state;
+    await expect(runAction(page, { type: "assert_state", [assertion]: expected })).resolves.toEqual(
+      {
+        state,
+      },
+    );
+    expect(snapshot).toHaveBeenCalledOnce();
+    expect(snapshotSummary).not.toHaveBeenCalled();
+  });
+
+  it("focuses Safari through its WebDriver automation window", async () => {
+    const calls = [];
+    const execute = vi.fn(async (...args) => calls.push(["activate", ...args]));
+    const pointer = {
+      move: (options) => {
+        calls.push(["move", options]);
+        return pointer;
+      },
+      down: (button) => {
+        calls.push(["down", button]);
+        return pointer;
+      },
+      up: (button) => {
+        calls.push(["up", button]);
+        return pointer;
+      },
+      perform: async () => calls.push(["perform"]),
+    };
+    const browser = {
+      getWindowHandle: async () => {
+        calls.push(["handle"]);
+        return "automation";
+      },
+      switchToWindow: async (handle) => calls.push(["switch", handle]),
+      action: (kind) => {
+        calls.push(["action", kind]);
+        return pointer;
+      },
+      execute: async (read) => {
+        const source = String(read);
+        if (source.includes("querySelector")) return { x: 640, y: 450 };
+        return runInNewContext(`(${read})()`, {
+          document: { visibilityState: "visible", hasFocus: () => true },
+        });
+      },
+      waitUntil: async (read, options) => {
+        calls.push(["observe", options.timeout, options.interval]);
+        expect(await read()).toBe(true);
+      },
+    };
+    await focusNativeBrowser(browser, "safari", { platform: "darwin", execute });
+    expect(calls).toEqual([
+      ["handle"],
+      ["switch", "automation"],
+      ["action", "pointer"],
+      ["move", { x: 640, y: 450, origin: "viewport" }],
+      ["down", "left"],
+      ["up", "left"],
+      ["perform"],
+      ["observe", 3_000, 50],
+    ]);
+    expect(execute).not.toHaveBeenCalled();
+    execute.mockClear();
+    await focusNativeBrowser(browser, "firefox", { platform: "linux", execute });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each(["activation", "switch", "hidden", "unfocused", "unsupported"])(
+    "rejects a failed %s foreground prerequisite without retrying input",
+    async (failure) => {
+      const execute = vi.fn(async () => {
+        if (failure === "activation") throw new Error("activation");
+      });
+      const browser = {
+        getWindowHandle: async () => "automation",
+        switchToWindow: async () => {
+          if (failure === "switch") throw new Error("switch");
+        },
+        action: () => {
+          const pointer = {
+            move: () => pointer,
+            down: () => pointer,
+            up: () => pointer,
+            perform: async () => {},
+          };
+          return pointer;
+        },
+        execute: async (read) =>
+          String(read).includes("querySelector")
+            ? { x: 640, y: 450 }
+            : runInNewContext(`(${read})()`, {
+                document: {
+                  visibilityState: failure === "hidden" ? "hidden" : "visible",
+                  hasFocus: () => failure !== "unfocused",
+                },
+              }),
+        waitUntil: async (read, options) => {
+          if (!(await read())) throw new Error(options.timeoutMsg);
+        },
+      };
+      await expect(
+        focusNativeBrowser(
+          browser,
+          failure === "unsupported" ? "unknown" : failure === "activation" ? "firefox" : "safari",
+          {
+            platform: "darwin",
+            execute,
+          },
+        ),
+      ).rejects.toThrow();
+      expect(execute.mock.calls.length).toBeLessThanOrEqual(1);
+    },
+  );
+
+  it("rejects a missing remote directory before storage traversal starts", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rustyera-remote-directory-"));
+    const remoteWindow = {};
+    try {
+      await writeFile(path.join(root, "file.txt"), "resource");
+      await installRemoteFileSystem(
+        {
+          exposeBinding: async (name, callback) => {
+            remoteWindow[name] = (request) => callback({}, request);
+          },
+          addInitScript: async (initialize) => {
+            runInNewContext(`(${initialize.toString()})()`, {
+              window: remoteWindow,
+              DOMException: globalThis.DOMException,
+            });
+          },
+        },
+        root,
+      );
+      const directory = await remoteWindow.showDirectoryPicker();
+      await expect(directory.getDirectoryHandle("data")).rejects.toMatchObject({
+        name: "NotFoundError",
+      });
+      await expect(directory.getDirectoryHandle("file.txt")).rejects.toMatchObject({
+        name: "TypeMismatchError",
+      });
+      const created = await directory.getDirectoryHandle("data", { create: true });
+      expect(created.kind).toBe("directory");
+      await expect(directory.getDirectoryHandle("data")).resolves.toMatchObject({
+        kind: "directory",
+        name: "data",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("requires all data integration stages after the visible startup input", async () => {
+    const scenario = await loadScenario("tools/runtime-tester/scenarios/snake-data.json");
+    expect(scenario.actions).toEqual([
+      { type: "input", value: "1", when: { output_contains: "SNAKE_DATA_START" } },
+    ]);
+    const observation = { output: [...SNAKE_DATA_MARKERS], wait: { kind: "integer_value" } };
+    expect(goalStatus(observation, scenario.goal).satisfied).toBe(true);
+    expect(
+      goalStatus({ ...observation, output: ["SNAKE_DATA_READY"] }, scenario.goal).satisfied,
+    ).toBe(false);
+    expect(goalStatus({ ...observation, wait: { kind: "any_key" } }, scenario.goal).satisfied).toBe(
+      false,
+    );
+  });
+
+  it("checks snake audio values as relations and requires released provider targets", () => {
+    const output = [
+      "playing=0,sound_play_duration=5000,sound_play_position=300,volume=37",
+      "omitted=5000,r0=5000,r1=301,r2=1,r3=37,r4=100",
+      "paused_is=-1,pause_pos_a=320,pause_pos_b=321",
+      "resumed_is=0,resume_pos=600",
+      "rate_omitted=1,speed=250,pitch_zero=1,pitch_nonzero=1",
+      "all_busy_overwrite_0_duration=750",
+      "paused_reused_3_duration=750",
+      "short_natural_state=-1,duration=0,position=0",
+      "corrupt_decode_continued=1",
+      "final_pitch_nonzero=1",
+      "bgm_playing=1,bgm_duration=5000",
+      "bgm_paused=0,pos_a=250,pos_b=251",
+      "bgm_rate_omitted=1,bgm_pitch_zero=1,bgm_pitch_nonzero=1,bgm_resumed=1,bgm_speed=250",
+    ];
+    const target = {
+      resourceId: null,
+      pending: false,
+      state: "stopped",
+      revision: 30,
+      rateMillionths: 1_000_000,
+      preservePitch: true,
+      failure: null,
+    };
+    const observation = {
+      output,
+      frontend: {
+        audioProvider: Object.fromEntries(
+          [...Array(10).keys()]
+            .map((index) => [`sound:${index}`, target])
+            .concat([["bgm", target]]),
+        ),
+        audioPlayback: { "sound/batch5-short.wav": { starts: 2, active: 0 } },
+        memory: { audioBuffers: { count: 0, estimatedBytes: 0 } },
+        logs: [{ message: "frontend.audio_decode_failed: corrupt" }],
+      },
+    };
+    observation.frontend.audioProvider["sound:0"] = {
+      ...target,
+      rateMillionths: 2_500_000,
+      preservePitch: false,
+    };
+
+    expect(Object.values(snakeAudioRelations(observation))).not.toContain(false);
+    observation.frontend.audioProvider["sound:3"] = { ...target, pending: true };
+    expect(snakeAudioRelations(observation)["snake_audio:provider_released"]).toBe(false);
+  });
+
+  it("checks the combined snake audio stress outcome and exact playback counts", () => {
+    const target = {
+      resourceId: null,
+      pending: false,
+      state: "stopped",
+      revision: 30,
+      failure: null,
+    };
+    const observation = {
+      output: [
+        "stress_channels=0,1,2,3,4,5,6,7,8,9",
+        "stress_overwrite_duration=750",
+        "stress_bgm=1,duration=5000",
+        "BATCH5_STRESS_DONE",
+      ],
+      frontend: {
+        audioProvider: Object.fromEntries(
+          [...Array(10).keys()]
+            .map((index) => [`sound:${index}`, target])
+            .concat([["bgm", target]]),
+        ),
+        audioPlayback: {
+          "sound/batch5-long.wav": { starts: 11, active: 0 },
+          "sound/batch5-short.wav": { starts: 1, active: 0 },
+        },
+        memory: { audioBuffers: { count: 0, estimatedBytes: 0 } },
+        logs: [{ message: "frontend.audio_decode_failed: corrupt" }],
+      },
+    };
+
+    expect(Object.values(snakeAudioStressRelations(observation))).not.toContain(false);
+    observation.frontend.audioPlayback["sound/batch5-long.wav"].active = 1;
+    expect(snakeAudioStressRelations(observation)["snake_audio_stress:playback_released"]).toBe(
+      false,
+    );
+  });
+
   it("accepts only the starting and completed presentation revisions across painted frames", () => {
     const samples = [
       { revision: "10", waitId: "4", outputTail: ["command"] },
@@ -92,8 +540,8 @@ describe("web game test scenario", () => {
     });
   });
 
-  it("uses the native Firefox application path on macOS", () => {
-    const capabilities = nativeFirefoxCapabilities("darwin");
+  it.each([true, false])("uses native Firefox on macOS with headless=%s", (headless) => {
+    const capabilities = nativeFirefoxCapabilities("darwin", { headless });
     expect(capabilities.webSocketUrl).toBeUndefined();
     expect(capabilities.pageLoadStrategy).toBe("none");
     expect(capabilities["wdio:enforceWebDriverClassic"]).toBe(true);
@@ -102,7 +550,7 @@ describe("web game test scenario", () => {
       geckoDriverVersion: "0.37.1",
     });
     expect(capabilities["moz:firefoxOptions"]).toEqual({
-      args: ["-headless"],
+      args: headless ? ["-headless"] : [],
       binary: "/Applications/Firefox.app/Contents/MacOS/firefox",
     });
   });
@@ -238,6 +686,35 @@ describe("web game test scenario", () => {
     expect(detach).toHaveBeenCalledOnce();
   });
 
+  it("uses packaged cache progress policy independently of native file upload", () => {
+    const progress = {
+      active: false,
+      completed: true,
+      cacheHit: true,
+      gaps: 4,
+      labels: [
+        "正在读取项目文件：1/1（100%）",
+        "项目缓存命中，正在准备脚本热重载…",
+        "正在准备 Runtime 资源：1/1（100%）",
+      ],
+    };
+    expect(packagedProjectProgressErrors(progress, false)).toEqual([]);
+    expect(packagedProjectProgressErrors({ ...progress, completed: false }, false)).toContain(
+      "continuous completed progress",
+    );
+    expect(packagedProjectProgressErrors({ ...progress, cacheHit: false }, false)).toContain(
+      "compiled cache hit",
+    );
+    expect(packagedProjectProgressErrors({ ...progress, labels: [] }, false)).toEqual([
+      "file read",
+      "cache handoff",
+    ]);
+    expect(packagedProjectProgressErrors(progress)).toEqual([
+      "project preferences during loading",
+      "project preferences after loading",
+    ]);
+  });
+
   it("accepts coalesced cold-start progress once runtime preparation completes", () => {
     expect(
       browserProjectProgressErrors({
@@ -270,28 +747,31 @@ describe("web game test scenario", () => {
     ).toEqual([]);
   });
 
-  it("accepts Firefox progress labels coalesced away after a successful cold startup", () => {
-    expect(
-      browserProjectProgressErrors({
-        active: false,
-        completed: false,
-        gaps: 3,
-        cacheHit: false,
-        labels: [],
-        portableImport: {
-          fallback: true,
-          focusBeforeChange: true,
-          directoryPicker: true,
-        },
-        startupTelemetry: {
-          scenario: "cold",
+  it.each([true, false])(
+    "accepts coalesced cold-start progress with synthetic focus=%s",
+    (focusBeforeChange) => {
+      expect(
+        browserProjectProgressErrors({
+          active: false,
+          completed: false,
+          gaps: 3,
           cacheHit: false,
-          outcome: "success",
-          observedStages: { importing: 11, compiling: 19, finalizing: 16 },
-        },
-      }),
-    ).toEqual([]);
-  });
+          labels: [],
+          portableImport: {
+            fallback: true,
+            focusBeforeChange,
+            directoryPicker: true,
+          },
+          startupTelemetry: {
+            scenario: "cold",
+            cacheHit: false,
+            outcome: "success",
+            observedStages: { importing: 11, compiling: 19, finalizing: 16 },
+          },
+        }),
+      ).toEqual([]);
+    },
+  );
 
   it("rejects missing progress labels when cold-start telemetry is incomplete", () => {
     expect(
@@ -651,12 +1131,17 @@ describe("web game test scenario", () => {
     await isolated.close();
   });
 
-  it("waits for a submitted runtime input to consume the current wait", async () => {
+  it("types a submitted runtime input as physical keys before consuming the wait", async () => {
     let waitId = "4";
     vi.stubGlobal("window", {
-      __RUSTYERA_TEST__: { snapshot: () => ({ fault: null, wait: { wait_id: waitId } }) },
+      __RUSTYERA_TEST__: {
+        snapshot: () => {
+          throw new Error("input must not decode unrelated protocol evidence");
+        },
+        snapshotSummary: () => ({ fault: null, wait: { wait_id: waitId } }),
+      },
     });
-    const input = { fill: vi.fn() };
+    const input = { fill: vi.fn(), pressSequentially: vi.fn() };
     const button = { click: vi.fn(() => (waitId = "5")) };
     const page = {
       evaluate: vi.fn((callback) => callback()),
@@ -668,18 +1153,92 @@ describe("web game test scenario", () => {
       semanticInput: "100",
     });
 
-    expect(input.fill).toHaveBeenCalledWith("100");
+    expect(input.fill).toHaveBeenCalledWith("");
+    expect(input.pressSequentially).toHaveBeenCalledWith("100");
     expect(button.click).toHaveBeenCalledOnce();
     expect(page.waitForFunction).toHaveBeenCalledWith(expect.any(Function), "4");
     vi.unstubAllGlobals();
   });
+
+  it("observes a timed input transition before its changing deadline state can expire", async () => {
+    const pending = { canInteract: false, wait: null };
+    const timed = { canInteract: true, wait: { deadline_ns: 5_000_000_000 } };
+    const snapshots = [pending, timed];
+    const waitForStableObservation = vi.fn(() => new Promise(() => {}));
+    vi.stubGlobal("window", {
+      __RUSTYERA_TEST__: {
+        snapshot: () => timed,
+        snapshotSummary: () => snapshots.shift() ?? timed,
+        waitForStableObservation,
+      },
+      requestAnimationFrame: (callback) => callback(),
+    });
+    const page = { evaluate: vi.fn((callback, argument) => callback(argument)) };
+
+    await expect(waitForRuntimeObservation(page, 5_000)).resolves.toBe(timed);
+    expect(waitForStableObservation).toHaveBeenCalledWith(5_000);
+    vi.unstubAllGlobals();
+  });
+
+  it("retains stable-frame observation for untimed input", async () => {
+    const current = { canInteract: true, wait: { deadline_ns: null } };
+    const stable = { ...current, output: ["stable"] };
+    const waitForStableObservation = vi.fn(async () => stable);
+    vi.stubGlobal("window", {
+      __RUSTYERA_TEST__: {
+        snapshot: () => current,
+        snapshotSummary: () => current,
+        waitForStableObservation,
+      },
+      requestAnimationFrame: vi.fn(),
+    });
+    const page = { evaluate: vi.fn((callback, argument) => callback(argument)) };
+
+    await expect(waitForRuntimeObservation(page, 5_000)).resolves.toBe(stable);
+    expect(waitForStableObservation).toHaveBeenCalledWith(5_000);
+    vi.unstubAllGlobals();
+  });
+
+  it.each([true, false])(
+    "omits unrelated wire payloads from requested summary observations (timed=%s)",
+    async (timed) => {
+      const current = {
+        canInteract: true,
+        wait: { deadline_ns: timed ? 5000000 : null },
+        output: ["ready"],
+      };
+      const waitForStableObservation = vi.fn(async () => current);
+      vi.stubGlobal("window", {
+        __RUSTYERA_TEST__: {
+          snapshot: () => {
+            throw new Error("unrelated wire payload must not be materialized");
+          },
+          snapshotSummary: () => current,
+          waitForStableObservation,
+        },
+        requestAnimationFrame: vi.fn(),
+      });
+      const page = { evaluate: vi.fn((callback, argument) => callback(argument)) };
+      try {
+        await expect(waitForRuntimeObservation(page, 5000, true)).resolves.toBe(current);
+        expect(waitForStableObservation).toHaveBeenCalledWith(5000, true);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 
   it.each([".game-viewport", ".interaction-assist-panel"])(
     "waits for a clicked runtime button in %s to consume the current wait",
     async (container) => {
       let waitId = "8";
       vi.stubGlobal("window", {
-        __RUSTYERA_TEST__: { snapshot: () => ({ fault: null, wait: { wait_id: waitId } }) },
+        __RUSTYERA_TEST__: {
+          snapshot: () => {
+            throw new Error("input must not decode unrelated protocol evidence");
+          },
+          snapshotSummary: () => ({ fault: null, wait: { wait_id: waitId } }),
+        },
       });
       const locator = {
         evaluate: vi.fn((callback) =>
@@ -758,6 +1317,46 @@ describe("web game test scenario", () => {
 
     expect(page.getByText).toHaveBeenCalledWith("hover target", { exact: true });
     expect(locator.hover).toHaveBeenCalledOnce();
+  });
+
+  it("waits for a timed input to advance without submitting an input", async () => {
+    const before = {
+      wait: {
+        wait_id: "283",
+        kind: "string_value",
+        deadline_ns: "69532300000",
+        viewport_policy: "preserve_user_viewport",
+      },
+    };
+    const after = {
+      wait: {
+        wait_id: "284",
+        kind: "string_value",
+        deadline_ns: "72532300000",
+        viewport_policy: "preserve_user_viewport",
+      },
+    };
+    const snapshots = [before, after];
+    const page = {
+      evaluate: vi.fn(async (callback) => {
+        if (String(callback).includes("waitForStableObservation")) return undefined;
+        return snapshots.shift() ?? after;
+      }),
+      waitForFunction: vi.fn(async () => undefined),
+    };
+
+    await expect(runAction(page, { type: "wait_timed_input_change" })).resolves.toEqual({
+      query: {
+        timed_input: {
+          previous_wait_id: "283",
+          next_wait_id: "284",
+          previous_kind: "string_value",
+          next_kind: "string_value",
+          viewport_policy: "preserve_user_viewport",
+        },
+      },
+    });
+    expect(page.waitForFunction).toHaveBeenCalledWith(expect.any(Function), "283");
   });
 
   it("scrolls a focused production viewport with real keyboard input", async () => {
@@ -1092,17 +1691,26 @@ describe("web game test scenario", () => {
       },
     ];
     let snapshotIndex = 0;
-    const click = vi.fn();
+    const click = vi.fn(() => {
+      snapshotIndex += 1;
+    });
+    const settle = vi.fn((_timeout, summary) => {
+      if (!summary) throw new Error("settling must not materialize the full wire ledger");
+      return snapshots[snapshotIndex];
+    });
+    vi.stubGlobal("window", {
+      __RUSTYERA_TEST__: {
+        snapshotSummary: () => snapshots[snapshotIndex],
+        snapshot: () => {
+          throw new Error("full snapshot is unnecessary for Enter advancement");
+        },
+        waitForStableObservation: settle,
+      },
+    });
     const page = {
-      evaluate: vi.fn((callback) => {
-        if (String(callback).includes("waitForStableObservation")) {
-          snapshotIndex += 1;
-          return snapshots[snapshotIndex];
-        }
-        return snapshots[snapshotIndex];
-      }),
+      evaluate: vi.fn((callback) => callback()),
       locator: vi.fn(() => ({ click })),
-      waitForFunction: vi.fn(),
+      waitForFunction: vi.fn((callback, value) => callback(value)),
     };
 
     await expect(
@@ -1113,6 +1721,29 @@ describe("web game test scenario", () => {
       }),
     ).resolves.toMatchObject({ attempts: 1 });
     expect(click).toHaveBeenCalledOnce();
+    expect(settle).toHaveBeenCalledWith(30_000, true);
+  });
+
+  it("settles automatic wait changes without requesting a complete ledger", async () => {
+    const settle = vi.fn(async (_timeout, summary) => {
+      if (!summary) throw new Error("settling must not materialize the full wire ledger");
+      return { wait: { wait_id: "2" } };
+    });
+    vi.stubGlobal("window", {
+      __RUSTYERA_TEST__: {
+        snapshotSummary: () => ({ wait: { wait_id: "2" } }),
+        snapshot: () => {
+          throw new Error("full snapshot is unnecessary for wait changes");
+        },
+        waitForStableObservation: settle,
+      },
+    });
+    const page = {
+      evaluate: vi.fn((callback) => callback()),
+      waitForFunction: vi.fn((callback, value) => expect(callback(value)).toBe(true)),
+    };
+    await waitForAutomaticWaitChange(page, "1");
+    expect(settle).toHaveBeenCalledWith(30_000, true);
   });
 
   it("continues a variable number of route prompts until a distinct portrait source appears", async () => {
@@ -1487,5 +2118,59 @@ describe("web game test scenario", () => {
         query: { canvas_pixels: { count: 1, width: 4, height: 4, nontransparent: 2 } },
       }),
     );
+  });
+});
+
+describe("snake service scenarios", () => {
+  it("uses a visible pointer click and preserves the whole initialization goal", async () => {
+    const services = await loadScenario("tools/runtime-tester/scenarios/snake-services.json");
+    expect(services.actions.at(-1)).toMatchObject({
+      type: "click",
+      semantic_input: "41",
+      advances_game: true,
+    });
+    const combined = await loadScenario("tools/runtime-tester/scenarios/snake-batch1.json");
+    expect(
+      goalStatus({ output: ["SNAKE_BATCH1_READY"], wait: { kind: "integer_value" } }, combined.goal)
+        .satisfied,
+    ).toBe(false);
+    expect(
+      goalStatus(
+        { output: [...combined.goal.output_contains], wait: { kind: "integer_value" } },
+        combined.goal,
+      ).satisfied,
+    ).toBe(true);
+  });
+});
+
+describe("snake pointer lifecycle scenario", () => {
+  it("uses real hover, resize, scroll and keyboard actions and retains five independent button observations", async () => {
+    const scenario = await loadScenario(
+      "tools/runtime-tester/scenarios/snake-service-lifecycle.json",
+    );
+    expect(scenario.actions.filter((action) => action.type === "press")).toHaveLength(5);
+    expect(scenario.actions.some((action) => action.type === "set_viewport")).toBe(true);
+    expect(
+      scenario.actions.some((action) => action.type === "scroll_key" && action.key === "PageUp"),
+    ).toBe(true);
+    expect(scenario.goal.watch_equals).toEqual({
+      "LIFE_BUTTON:0": "41",
+      "LIFE_BUTTON:1": "",
+      "LIFE_BUTTON:2": "",
+      "LIFE_BUTTON:3": "41",
+      "LIFE_BUTTON:4": "",
+    });
+    const complete = {
+      output: [...scenario.goal.output_contains],
+      wait: { kind: "integer_value" },
+      watches: { ...scenario.goal.watch_equals },
+    };
+    expect(goalStatus(complete, scenario.goal).satisfied).toBe(true);
+    expect(
+      goalStatus(
+        { ...complete, watches: { ...complete.watches, "LIFE_BUTTON:4": "41" } },
+        scenario.goal,
+      ).satisfied,
+    ).toBe(false);
   });
 });

@@ -1,7 +1,13 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, inject } from "vue";
+
+import { htmlMeasurementProjectionKey } from "@/components/htmlMeasurementProjection";
+import { htmlMeasurementSegments } from "@/core/htmlMeasurement";
+import { useSceneDepthRank } from "@/core/sceneStacking";
 
 import MediaImage from "@/components/MediaImage.vue";
+import { usePointerButton } from "@/components/usePointerButton";
+import { htmlPointerButtonValue } from "@/platform/pointerObservation";
 import {
   eraCharacterColumns,
   htmlTextSegments,
@@ -25,8 +31,20 @@ const props = defineProps<{
   trailingBoxFill?: { character: string; columns: number };
   followingTextCharacter?: string;
   positionedMediaRightColumns?: number;
+  measurementPath?: number[];
 }>();
-const store = useRuntimeStore();
+const measurement = inject(htmlMeasurementProjectionKey, undefined);
+const children = computed<any[]>(() => props.node.children ?? []);
+const store = measurement?.state ?? useRuntimeStore();
+const sceneDepthRank = useSceneDepthRank();
+const pointerButton = measurement
+  ? undefined
+  : usePointerButton(() => {
+      const interaction = props.node.interaction;
+      if (props.node.kind !== "button" || !interaction) return undefined;
+      const value = htmlPointerButtonValue(interaction);
+      return value == null ? undefined : { epoch: interaction.epoch, value };
+    });
 const tags: Record<string, string> = {
   bold: "strong",
   italic: "em",
@@ -54,18 +72,37 @@ const imagePlacement = computed(() =>
         y: 0,
         depth: 0,
         opacity: { numerator: 1, denominator: 1 },
-        revision: 0,
+        revision: htmlImageRevision(props.node.semantic.source),
         requested_width: props.node.semantic.width,
         requested_height: props.node.semantic.height,
         requested_y: props.node.semantic.y,
+        requested_x: props.node.semantic.x,
+        display: props.node.semantic.display,
+        color_matrix: props.node.semantic.color_matrix,
       }
     : null,
 );
+
+function htmlImageRevision(name: unknown): unknown {
+  const key = String(name ?? "").toUpperCase();
+  const matches = (store.presentation.resources.sprites ?? []).filter(
+    (sprite: any) => String(sprite?.name ?? "").toUpperCase() === key,
+  );
+  if (matches.length > 1) throw new Error("HTML image sprite revision is ambiguous");
+  return matches[0]?.revision ?? 0;
+}
 const spaceShapeStyle = computed(() => {
   const semantic = props.node.semantic;
   if (semantic?.type !== "shape" || semantic.kind?.toLowerCase() !== "space") return null;
   const shape = projectSpaceShape(semantic.parameters?.[0], store.gameTextStyle.fontSizePx);
-  return shape == null ? null : pixelStyle(shape);
+  if (shape == null) return null;
+  return {
+    ...pixelStyle(shape),
+    // CSS rejects negative widths, while Snake Emuera keeps them as signed cursor
+    // advances. A zero-width inline box with a negative leading margin has the
+    // same effect on the following image without inventing a painted rectangle.
+    marginLeft: shape.advance < 0 ? `${shape.advance}px` : undefined,
+  };
 });
 const rectangleShapeStyle = computed(() => {
   const semantic = props.node.semantic;
@@ -99,24 +136,31 @@ const fontStyle = computed(() => {
       store.effectivePreferences.fontFamilyOverride || !semantic.face
         ? undefined
         : `${semantic.face}, var(--game-font)`,
+    fontSize:
+      semantic.size_millipixels == null
+        ? undefined
+        : `${Number(semantic.size_millipixels) / 1000}px`,
+    verticalAlign: semantic.vertical_alignment ?? undefined,
+    textRendering: semantic.render_intent?.renderer === "skia" ? "optimizeLegibility" : undefined,
   };
 });
 const layeredDivisionStyle = computed(() => {
   const semantic = props.node.semantic;
-  if (semantic?.type !== "division" || semantic.relative !== true) return null;
+  const display = semantic?.display ?? (semantic?.relative === true ? "relative" : undefined);
+  if (semantic?.type !== "division" || display == null) return null;
   const width = projectLength(semantic.width);
   const height = projectLength(semantic.height);
-  if (width == null || height == null) return null;
+  if (width == null) return null;
   const boxModel = projectBoxModel(semantic.box_model);
   if (boxModel == null) return null;
   const [marginTop, marginRight, marginBottom, marginLeft] = boxModel.margin;
-  const depth = Number(semantic.depth);
   return {
     left: `${(projectLength(semantic.x) ?? 0) + marginLeft}px`,
     top: `${(projectLength(semantic.y) ?? 0) + marginTop}px`,
     width: `${Math.max(0, Math.abs(width) - marginLeft - marginRight)}px`,
-    height: `${Math.max(0, Math.abs(height) - marginTop - marginBottom)}px`,
-    zIndex: Number.isFinite(depth) ? depth : undefined,
+    height:
+      height == null ? undefined : `${Math.max(0, Math.abs(height) - marginTop - marginBottom)}px`,
+    zIndex: sceneDepthRank(semantic.depth),
     backgroundColor: semantic.color == null ? undefined : htmlColor(semantic.color),
     ...boxModel.style,
   };
@@ -277,13 +321,39 @@ function textSegments(value: unknown): HtmlTextSegment[] {
   );
 }
 
+const measurementSegments = computed(() =>
+  measurement && props.node.type === "text"
+    ? htmlMeasurementSegments(props.node.text, store.replaceFullWidthSpaces)
+    : [],
+);
+
+const measurementPath = computed(() => props.measurementPath?.join("."));
+
 const trailingTextChildIndex = computed(() =>
   lastRenderableTextNodeIndex(props.node.children ?? []),
 );
 </script>
 
 <template>
-  <template v-if="node.type === 'text'">
+  <span
+    v-if="measurement && node.type === 'text'"
+    :data-html-text-path="measurementPath"
+    style="display: contents"
+  >
+    <span
+      v-for="(segment, index) in measurementSegments"
+      :key="index"
+      :data-html-segment="index"
+      :class="{
+        'html-ascii-space': segment.kind === 'space',
+        'html-box-cell': segment.kind === 'box',
+      }"
+      :data-continuation="segment.continuation"
+      :style="{ width: segment.width }"
+      >{{ segment.text }}</span
+    >
+  </span>
+  <template v-else-if="node.type === 'text'">
     <template v-for="(segment, index) in textSegments(node.text)" :key="index">
       <span
         v-if="segment.kind === 'space'"
@@ -313,28 +383,50 @@ const trailingTextChildIndex = computed(() =>
       <template v-else>{{ segment.text }}</template>
     </template>
   </template>
-  <br v-else-if="node.kind === 'break'" />
+  <br
+    v-else-if="node.kind === 'break'"
+    :data-html-break-path="measurement ? measurementPath : undefined"
+  />
   <span
     v-else-if="spaceShapeStyle"
     class="html-node html-shape html-shape-space"
     :style="spaceShapeStyle"
+    :data-html-atomic-path="measurement ? measurementPath : undefined"
   />
   <span
     v-else-if="rectangleShapeStyle"
     class="html-node html-shape html-shape-rect"
     :style="rectangleShapeStyle.slot"
+    :data-html-atomic-path="measurement ? measurementPath : undefined"
   >
     <span class="html-shape-rect-visual" :style="rectangleShapeStyle.visual" />
   </span>
+  <span
+    v-else-if="measurement && imagePlacement"
+    :data-html-atomic-path="measurementPath"
+    style="display: contents"
+  >
+    <MediaImage :placement="imagePlacement" />
+  </span>
   <MediaImage v-else-if="imagePlacement" :placement="imagePlacement" />
-  <span v-else-if="layeredDivisionStyle" class="html-node html-division">
+  <span
+    v-else-if="layeredDivisionStyle"
+    class="html-node html-division"
+    :data-html-atomic-path="measurement ? measurementPath : undefined"
+  >
     <span class="html-division-visual" :style="layeredDivisionStyle">
-      <HtmlNode v-for="(child, index) in node.children ?? []" :key="index" :node="child" />
+      <HtmlNode
+        v-for="(child, index) in children"
+        :key="index"
+        :node="child"
+        :measurement-path="measurement ? [...(props.measurementPath ?? []), index] : undefined"
+      />
     </span>
   </span>
   <component
     :is="tag"
     v-else
+    :ref="pointerButton"
     :disabled="
       node.interaction && (!store.interactionEnabled(node.interaction) || !store.canInteract)
     "
@@ -347,12 +439,16 @@ const trailingTextChildIndex = computed(() =>
     }"
     :style="[fontStyle, lockedPositionStyle]"
     :data-era-tooltip="tooltipTitle"
+    :data-html-renderer="node.semantic?.render_intent?.renderer"
+    :data-html-edging="node.semantic?.render_intent?.edging"
+    :data-html-hinting="node.semantic?.render_intent?.hinting"
     @click="activate"
   >
     <HtmlNode
-      v-for="(child, index) in node.children ?? []"
+      v-for="(child, index) in children"
       :key="index"
       :node="child"
+      :measurement-path="measurement ? [...(props.measurementPath ?? []), index] : undefined"
       :align-trailing-box-edge="alignTrailingBoxEdge && index === trailingTextChildIndex"
       :trailing-box-fill="
         alignTrailingBoxEdge && index === trailingTextChildIndex ? trailingBoxFill : undefined

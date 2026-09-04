@@ -246,7 +246,8 @@ browser, report the installed browser version and UA, command and exit code, OPF
 status, and observed WASM output; on macOS, also report whether the Safari window was minimized.
 For Tauri, report the real project path,
 platform/WebView session, visible actions, and exact debugger/runtime outputs. Screenshots may
-supplement a failure but cannot prove behavior. Traditional saves can be compared with Emuera. VM
+supplement a failure but cannot prove behavior. Traditional saves can be compared with Emuera;
+standard snake saves restore only their ordinary or GLOBAL scope and preserve SFMT/SQL state. VM
 snapshots are RustyEra-only unless the scenario supplies an equivalent reference state.
 
 ## Validate changes

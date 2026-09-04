@@ -25,5 +25,46 @@ export function decodeServicePayload(payload: Uint8Array | ArrayLike<number | bi
 }
 
 export function encodeServicePayload(payload: Map<number, unknown>): Uint8Array {
-  return encoder.encode(payload);
+  const canonical = (value: unknown): unknown => {
+    if (typeof value === "number") {
+      if (!Number.isSafeInteger(value))
+        throw new Error("runtime service result is not an exact integer");
+      return value > 0xffffffff || value < -0x100000000 ? BigInt(value) : value;
+    }
+    if (typeof value === "bigint") {
+      if (value < -(1n << 63n) || value > (1n << 64n) - 1n)
+        throw new Error("runtime service integer is out of range");
+      return value >= -0x100000000n && value <= 0xffffffffn ? Number(value) : value;
+    }
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value instanceof Map)
+      return new Map([...value].map(([key, item]) => [key, canonical(item)]));
+    if (value instanceof Uint8Array) return value;
+    if (typeof value === "string" || typeof value === "boolean" || value === null) return value;
+    throw new Error("runtime service result contains an unsupported CBOR value");
+  };
+  return encoder.encode(canonical(payload));
+}
+
+/** The projection ABI is integer-only; cbor-x otherwise emits safe numbers above u32 as float64
+ * and encodes small bigint values nonminimally. Normalize without losing u64 identities. */
+export function encodeProjectionServicePayload(payload: Map<number, unknown>): Uint8Array {
+  const canonical = (value: unknown): unknown => {
+    if (typeof value === "number") {
+      if (!Number.isSafeInteger(value))
+        throw new Error("projection service result is not an exact integer");
+      return value > 0xffffffff || value < -0x100000000 ? BigInt(value) : value;
+    }
+    if (typeof value === "bigint") {
+      if (value < -(1n << 63n) || value > (1n << 64n) - 1n)
+        throw new Error("projection service integer is out of range");
+      return value >= -0x100000000n && value <= 0xffffffffn ? Number(value) : value;
+    }
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value instanceof Map)
+      return new Map([...value].map(([key, item]) => [key, canonical(item)]));
+    if (typeof value === "string" || typeof value === "boolean" || value === null) return value;
+    throw new Error("projection service result contains an unsupported CBOR value");
+  };
+  return encoder.encode(canonical(payload));
 }

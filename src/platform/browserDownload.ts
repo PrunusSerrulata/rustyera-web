@@ -3,6 +3,7 @@ export const BROWSER_FILE_SAVE_EVENT = "rustyera-browser-file-save";
 
 export interface BrowserFileSaveRequest {
   file: File;
+  mode?: "share" | "download";
   release?: () => void;
 }
 
@@ -69,5 +70,20 @@ function downloadObjectUrl(name: string, blob: Blob, release?: () => void): void
     cleanup();
     throw error;
   }
-  setTimeout(cleanup, 0);
+  if (release) {
+    // A click is not a download-completion signal. OPFS File objects still depend on
+    // their backing entry, so retain both it and the URL until explicit confirmation.
+    anchor.remove();
+    window.dispatchEvent(
+      new CustomEvent<BrowserFileSaveRequest>(BROWSER_FILE_SAVE_EVENT, {
+        detail: {
+          file: new File([blob], name, { type: blob.type }),
+          mode: "download",
+          release: once(cleanup),
+        },
+      }),
+    );
+  } else {
+    setTimeout(cleanup, 0);
+  }
 }

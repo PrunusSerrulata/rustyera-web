@@ -1,12 +1,14 @@
+import { cancelProjectExportDuringTransfer } from "./project-export-cancel.mjs";
 /* global document, window, HTMLImageElement */
 
-import { createWriteStream } from "node:fs";
+import { constants as fsConstants, createWriteStream } from "node:fs";
 import {
   copyFile,
   cp,
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   rename,
@@ -17,14 +19,71 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import assert from "node:assert/strict";
 
 import { blake3 } from "@noble/hashes/blake3.js";
+import {
+  assertProjectStorage,
+  typedValues,
+  validateExpectedValues,
+} from "./interop-assertions.mjs";
+
+/** Select the native browser's actual automation window and establish document focus. */
+export async function focusNativeBrowser(
+  browser,
+  name,
+  { platform = process.platform, execute = promisify(execFile) } = {},
+) {
+  const application = { safari: "com.apple.Safari", firefox: "org.mozilla.firefox" }[name];
+  if (!application) throw new Error("unsupported native browser foreground target");
+  if (platform === "darwin" && name !== "safari")
+    await execute(
+      "/usr/bin/osascript",
+      ["-e", `tell application id "${application}" to activate`],
+      {
+        timeout: 3_000,
+      },
+    );
+  const handle = await browser.getWindowHandle();
+  await browser.switchToWindow(handle);
+  if (name === "safari") {
+    const point = await browser.execute(() => {
+      const heading = document.querySelector(".welcome h1");
+      if (!heading || heading.getClientRects().length === 0) return null;
+      const rectangle = heading.getBoundingClientRect();
+      if (rectangle.width <= 0 || rectangle.height <= 0) return null;
+      return {
+        x: Math.round(rectangle.left + rectangle.width / 2),
+        y: Math.round(rectangle.top + rectangle.height / 2),
+      };
+    });
+    if (!point) throw new Error("Safari welcome heading is not visible for foreground focus");
+    await browser
+      .action("pointer")
+      .move({ ...point, origin: "viewport" })
+      .down("left")
+      .up("left")
+      .perform();
+  }
+  await browser.waitUntil(
+    () => browser.execute(() => document.visibilityState === "visible" && document.hasFocus()),
+    {
+      timeout: 3_000,
+      interval: 50,
+      timeoutMsg: "native browser window is not visible and focused",
+    },
+  );
+}
 
 export {
   goalStatus,
   observationFromSnapshot,
   runtimeProgressDiagnostic,
   runtimeProgressSignature,
+  snakeAudioRelations,
+  snakeAudioStressRelations,
   terminalRuntimeRejection,
 } from "./web-test-runtime.mjs";
 export {
@@ -44,9 +103,7 @@ export function browserProjectProgressErrors(progress) {
     coldStartup.outcome === "success" &&
     ["importing", "compiling", "finalizing"].every((stage) => runtimeStages[stage] > 0);
   const portableImportCompleted =
-    progress.portableImport?.fallback === true &&
-    progress.portableImport.focusBeforeChange === true &&
-    progress.portableImport.directoryPicker === true;
+    progress.portableImport?.fallback === true && progress.portableImport.directoryPicker === true;
   const copied =
     portableImportCompleted ||
     labels.some((label) => /^正在复制项目文件：\d+\/\d+（\d+%）$/.test(label));
@@ -76,6 +133,47 @@ export function browserProjectProgressErrors(progress) {
   return errors;
 }
 
+export function packagedProjectProgressErrors(progress, requirePreferences = true) {
+  const errors = [];
+  const labels = progress.labels ?? [];
+  if (!progress.cacheHit) errors.push("compiled cache hit");
+  if (!labels.some((label) => label.startsWith("正在读取项目文件："))) errors.push("file read");
+  if (!labels.some((label) => label.startsWith("项目缓存命中，正在准备脚本热重载…")))
+    errors.push("cache handoff");
+  if (
+    labels.some(
+      (label) =>
+        label.startsWith("正在准备 Runtime 资源：") &&
+        !/^正在准备 Runtime 资源：[01]\/1（(?:0|100)%）/.test(label),
+    )
+  ) {
+    errors.push("source preparation slow path");
+  }
+  if (progress.active || !progress.completed) {
+    errors.push("continuous completed progress");
+  }
+  if (requirePreferences) {
+    if (
+      !progress.projectPreferencesDuringLoad?.observedLoading ||
+      !progress.projectPreferencesDuringLoad.dialogOpened ||
+      !progress.projectPreferencesDuringLoad.projectTabEnabled ||
+      !progress.projectPreferencesDuringLoad.projectFieldEditable ||
+      !progress.projectPreferencesDuringLoad.saveSubmitted ||
+      !progress.projectPreferencesDuringLoad.saveCompleted
+    ) {
+      errors.push("project preferences during loading");
+    }
+    if (
+      !progress.projectPreferencesAfterLoad?.projectTabEnabled ||
+      !progress.projectPreferencesAfterLoad.projectFieldEditable ||
+      !progress.projectPreferencesAfterLoad.savedOverrideSelected
+    ) {
+      errors.push("project preferences after loading");
+    }
+  }
+  return errors;
+}
+
 export async function loadScenario(file, projectOverride, stateOverride) {
   const scenarioPath = path.resolve(file);
   const raw = JSON.parse(await readFile(scenarioPath, "utf8"));
@@ -84,6 +182,17 @@ export async function loadScenario(file, projectOverride, stateOverride) {
   if (!["fixed", "autonomous"].includes(raw.mode ?? "fixed"))
     throw new Error("scenario mode must be fixed or autonomous");
   if (raw.inputs && raw.actions) throw new Error("scenario cannot contain both inputs and actions");
+  if (
+    raw.expect_project_load_failure != null &&
+    (typeof raw.expect_project_load_failure !== "string" ||
+      !raw.expect_project_load_failure.trim() ||
+      raw.comparison?.reference ||
+      raw.inputs?.length ||
+      raw.actions?.length)
+  )
+    throw new Error(
+      "expect_project_load_failure requires a diagnostic code and no gameplay or reference comparison",
+    );
   const resolveFromScenario = (value) => path.resolve(path.dirname(scenarioPath), value ?? ".");
   const start = raw.start ?? { type: "new_game" };
   if (!["new_game", "traditional_save", "vm_snapshot"].includes(start.type))
@@ -116,6 +225,8 @@ export async function loadScenario(file, projectOverride, stateOverride) {
     throw new Error("scenario viewport must contain integer width/height of at least 320x240");
   if (raw.has_touch != null && typeof raw.has_touch !== "boolean")
     throw new Error("scenario has_touch must be a boolean");
+  if (raw.summary_observations != null && typeof raw.summary_observations !== "boolean")
+    throw new Error("scenario summary_observations must be a boolean");
   const actions = raw.actions
     ? raw.actions.map((item) => ({ ...item }))
     : (raw.inputs ?? []).map((item) => ({
@@ -151,11 +262,14 @@ export class TraceWriter {
   constructor(file) {
     this.path = path.resolve(file);
     this.stream = createWriteStream(this.path, { encoding: "utf8" });
+    this.pending = [];
+    this.draining = undefined;
   }
 
   emit(event) {
-    this.stream.write(`${JSON.stringify(event)}\n`);
-    const compact = structuredClone(event);
+    this.pending.push(event);
+    this.draining ??= this.drain();
+    const compact = compactTraceEvent(event);
     if (compact.type === "observation") {
       for (const key of ["rust", "reference"]) {
         if (compact[key]?.output) delete compact[key].output;
@@ -170,13 +284,68 @@ export class TraceWriter {
   }
 
   async close() {
+    await this.draining;
     await new Promise((resolve) => this.stream.end(resolve));
   }
+
+  async drain() {
+    while (this.pending.length) {
+      const event = this.pending.shift();
+      if (event.type?.endsWith("-snapshot") && Array.isArray(event.document))
+        await this.writeSnapshot(event);
+      else await this.write(`${JSON.stringify(event)}\n`);
+    }
+    this.draining = undefined;
+  }
+
+  async writeSnapshot(event) {
+    await this.write("{");
+    let fields = 0;
+    for (const [key, value] of Object.entries(event)) {
+      if (key === "document") {
+        if (fields > 0) await this.write(",");
+        await this.write(`${JSON.stringify(key)}:[`);
+        for (let index = 0; index < value.length; index += 1) {
+          if (index > 0) await this.write(",");
+          await this.write(JSON.stringify(value[index]));
+          if (index % 64 === 63) await new Promise((resolve) => setImmediate(resolve));
+        }
+        await this.write("]");
+        fields += 1;
+        continue;
+      }
+      const serialized = JSON.stringify(value);
+      if (serialized === undefined) continue;
+      if (fields > 0) await this.write(",");
+      await this.write(`${JSON.stringify(key)}:${serialized}`);
+      fields += 1;
+    }
+    await this.write("}\n");
+  }
+
+  async write(chunk) {
+    if (this.stream.write(chunk)) return;
+    await new Promise((resolve) => this.stream.once("drain", resolve));
+  }
+}
+
+export function compactTraceEvent(event) {
+  return event.type?.endsWith("-snapshot")
+    ? {
+        ...event,
+        document: { elementCount: Array.isArray(event.document) ? event.document.length : 0 },
+      }
+    : structuredClone(event);
 }
 
 export async function isolatedProject(source, options = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "rustyera-web-test-"));
   const destination = path.join(root, "project");
+  const sourceRuntimeRoot = await projectRuntimeStorageRoot(source);
+  const compiledCacheRelative = path.relative(
+    source,
+    path.join(sourceRuntimeRoot, ".rustyera", "cache", "compiled-project.reracache"),
+  );
   await cp(source, destination, {
     recursive: true,
     preserveTimestamps: true,
@@ -186,16 +355,27 @@ export async function isolatedProject(source, options = {}) {
         return false;
       if (!relative.split(path.sep).includes(".rustyera")) return true;
       if (!options.compiledCache && !options.sourceIndexInput) return false;
-      const retained = [".rustyera", path.join(".rustyera", "cache")];
-      if (options.compiledCache)
-        retained.push(path.join(".rustyera", "cache", "compiled-project.reracache"));
+      const retained = new Set([".rustyera", path.join(".rustyera", "cache")]);
+      if (options.compiledCache) {
+        let retainedPath = compiledCacheRelative;
+        for (;;) {
+          retained.add(retainedPath);
+          const parent = path.dirname(retainedPath);
+          if (parent === retainedPath || parent === ".") break;
+          retainedPath = parent;
+        }
+      }
       if (options.sourceIndexInput)
-        retained.push(path.join(".rustyera", "cache", "source-index-v1.json"));
-      return retained.includes(relative);
+        retained.add(path.join(".rustyera", "cache", "source-index-v1.json"));
+      return retained.has(relative);
     },
   });
   if (options.compiledCacheInput) {
-    const cacheDirectory = path.join(destination, ".rustyera", "cache");
+    const cacheDirectory = path.join(
+      await projectRuntimeStorageRoot(destination),
+      ".rustyera",
+      "cache",
+    );
     await mkdir(cacheDirectory, { recursive: true });
     await cp(
       path.resolve(options.compiledCacheInput),
@@ -211,7 +391,40 @@ export async function isolatedProject(source, options = {}) {
     );
     await alignProjectTimestampsWithSourceIndex(destination, options.sourceIndexInput);
   }
+  if (options.runtimeStorageInput) {
+    const runtimeRoot = await projectRuntimeStorageRoot(destination);
+    await mkdir(runtimeRoot, { recursive: true });
+    await cp(path.resolve(options.runtimeStorageInput), runtimeRoot, {
+      recursive: true,
+      preserveTimestamps: true,
+    });
+  }
   return { root, project: destination, close: () => rm(root, { recursive: true, force: true }) };
+}
+
+export async function projectRuntimeStorageRoot(project) {
+  const configuration = await readFile(path.join(project, "reraconfig.toml"), "utf8").catch(
+    (error) => {
+      if (error?.code === "ENOENT") return "";
+      throw error;
+    },
+  );
+  let section = "";
+  let profile = "emuera.em";
+  for (const sourceLine of configuration.split(/\r?\n/)) {
+    const line = sourceLine.replace(/\s+#.*$/, "").trim();
+    const header = /^\[([^\]]+)]$/.exec(line);
+    if (header) {
+      section = header[1].trim();
+      continue;
+    }
+    if (section !== "compatibility") continue;
+    const entry = /^profile\s*=\s*["']([^"']+)["']\s*$/.exec(line);
+    if (entry) profile = entry[1];
+  }
+  if (profile === "emuera.em") return project;
+  if (profile === "emuera.skia.snake") return path.join(project, ".rustyera", "profiles", profile);
+  throw new Error(`unsupported compatibility profile for test storage: ${profile}`);
 }
 
 async function alignProjectTimestampsWithSourceIndex(project, sourceIndex) {
@@ -238,6 +451,8 @@ export function crossHostArtifactPaths({
   sourceIndexInput,
   sourceIndexOutput,
   projectOutput,
+  runtimeStorageInput,
+  runtimeStorageOutput,
 }) {
   const resolvedSource = path.resolve(source);
   const resolvedIsolated = path.resolve(isolated);
@@ -246,17 +461,31 @@ export function crossHostArtifactPaths({
   const sourceIndexInputPath = sourceIndexInput ? path.resolve(sourceIndexInput) : undefined;
   const sourceIndex = sourceIndexOutput ? path.resolve(sourceIndexOutput) : undefined;
   const project = projectOutput ? path.resolve(projectOutput) : undefined;
+  const runtimeStorageInputPath = runtimeStorageInput
+    ? path.resolve(runtimeStorageInput)
+    : undefined;
+  const runtimeStorage = runtimeStorageOutput ? path.resolve(runtimeStorageOutput) : undefined;
   if (input && cache && input === cache) throw new Error("cache input and output must differ");
   if (sourceIndexInputPath && sourceIndex && sourceIndexInputPath === sourceIndex)
     throw new Error("source-index input and output must differ");
-  const outputs = [cache, sourceIndex, project].filter(Boolean);
+  if (runtimeStorageInputPath && runtimeStorageInputPath === runtimeStorage)
+    throw new Error("runtime storage input and output must differ");
+  const outputs = [cache, sourceIndex, project, runtimeStorage].filter(Boolean);
   if (new Set(outputs).size !== outputs.length)
     throw new Error("cross-host artifact outputs must differ");
   for (const target of outputs) {
     if (pathsOverlap(target, resolvedSource) || pathsOverlap(target, resolvedIsolated))
       throw new Error(`cross-host artifact target overlaps project state: ${target}`);
   }
-  return { input, cache, sourceIndexInput: sourceIndexInputPath, sourceIndex, project };
+  return {
+    input,
+    cache,
+    sourceIndexInput: sourceIndexInputPath,
+    sourceIndex,
+    project,
+    runtimeStorageInput: runtimeStorageInputPath,
+    runtimeStorage,
+  };
 }
 
 export async function publishCrossHostArtifacts({
@@ -267,6 +496,8 @@ export async function publishCrossHostArtifacts({
   sourceIndexInput,
   sourceIndexOutput,
   projectOutput,
+  runtimeStorageInput,
+  runtimeStorageOutput,
   succeeded,
   cacheSaved,
 }) {
@@ -281,8 +512,10 @@ export async function publishCrossHostArtifacts({
     sourceIndexInput,
     sourceIndexOutput,
     projectOutput,
+    runtimeStorageInput,
+    runtimeStorageOutput,
   });
-  if (!targets.cache && !targets.sourceIndex && !targets.project) return;
+  if (!targets.cache && !targets.sourceIndex && !targets.project && !targets.runtimeStorage) return;
   if (targets.cache && !cacheSaved)
     throw new Error("compiled cache output requires an observed successful cache save");
   if (targets.cache && (await pathExists(targets.cache)))
@@ -291,9 +524,15 @@ export async function publishCrossHostArtifacts({
     throw new Error(`source-index output target must not exist: ${targets.sourceIndex}`);
   if (targets.project && (await directoryNonempty(targets.project)))
     throw new Error(`project output target must be absent or empty: ${targets.project}`);
+  if (targets.runtimeStorage && (await directoryNonempty(targets.runtimeStorage)))
+    throw new Error(
+      `runtime storage output target must be absent or empty: ${targets.runtimeStorage}`,
+    );
   const targetParents = [
     ...new Set(
-      [targets.cache, targets.sourceIndex, targets.project].filter(Boolean).map(path.dirname),
+      [targets.cache, targets.sourceIndex, targets.project, targets.runtimeStorage]
+        .filter(Boolean)
+        .map(path.dirname),
     ),
   ];
   if (targetParents.length > 1)
@@ -302,7 +541,12 @@ export async function publishCrossHostArtifacts({
   const temporaryRoot = await mkdtemp(path.join(targetParents[0], ".handoff-"));
   try {
     if (targets.cache) {
-      const cache = path.join(isolated, ".rustyera", "cache", "compiled-project.reracache");
+      const cache = path.join(
+        await projectRuntimeStorageRoot(isolated),
+        ".rustyera",
+        "cache",
+        "compiled-project.reracache",
+      );
       const temporary = path.join(temporaryRoot, "compiled-project.reracache");
       await copyFile(cache, temporary);
       await mkdir(path.dirname(targets.cache), { recursive: true });
@@ -315,6 +559,13 @@ export async function publishCrossHostArtifacts({
       const temporary = path.join(temporaryRoot, "project");
       await copyProjectSources(isolated, temporary);
     }
+    if (targets.runtimeStorage) {
+      const temporary = path.join(temporaryRoot, "runtime-storage");
+      await cp(await projectRuntimeStorageRoot(isolated), temporary, {
+        recursive: true,
+        preserveTimestamps: true,
+      });
+    }
     if (targets.cache)
       await rename(path.join(temporaryRoot, "compiled-project.reracache"), targets.cache);
     if (targets.sourceIndex)
@@ -322,6 +573,10 @@ export async function publishCrossHostArtifacts({
     if (targets.project) {
       await rm(targets.project, { recursive: true, force: true });
       await rename(path.join(temporaryRoot, "project"), targets.project);
+    }
+    if (targets.runtimeStorage) {
+      await rm(targets.runtimeStorage, { recursive: true, force: true });
+      await rename(path.join(temporaryRoot, "runtime-storage"), targets.runtimeStorage);
     }
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
@@ -393,8 +648,8 @@ export function injectInteractionAssistFlow(source) {
   return source.replace(anchor, `${anchor}${interactionLoop}`);
 }
 
-export function nativeFirefoxCapabilities(platform = process.platform) {
-  const options = { args: ["-headless"] };
+export function nativeFirefoxCapabilities(platform = process.platform, { headless = true } = {}) {
+  const options = { args: headless ? ["-headless"] : [] };
   const geckoDriverVersion = "0.37.1";
   if (platform === "darwin") {
     options.binary = "/Applications/Firefox.app/Contents/MacOS/firefox";
@@ -467,6 +722,8 @@ async function deadlineRace(promise, timeoutMs, label) {
 }
 
 export async function installRemoteFileSystem(page, root) {
+  const writers = new Map();
+  let nextWriter = 0;
   const safe = (relative) => {
     const resolved = path.resolve(root, relative || ".");
     if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`))
@@ -486,10 +743,46 @@ export async function installRemoteFileSystem(page, root) {
       const stat = await lstat(target, { bigint: true });
       return {
         size: Number(stat.size),
+        kind: stat.isDirectory() ? "directory" : "file",
         lastModified: Number(stat.mtimeNs / 1_000_000n),
       };
     }
     if (request.op === "mkdir") return mkdir(target, { recursive: true }).then(() => true);
+    if (request.op === "open_writer") {
+      await mkdir(path.dirname(target), { recursive: true });
+      const id = String(++nextWriter);
+      const temporary = path.join(
+        path.dirname(target),
+        `.${path.basename(target)}.rustyera-test-${id}.tmp`,
+      );
+      const handle = await open(temporary, "w");
+      writers.set(id, { handle, target, temporary });
+      return id;
+    }
+    if (request.op === "write_chunk") {
+      const writer = writers.get(String(request.writer));
+      if (!writer) throw new Error(`unknown filesystem writer ${request.writer}`);
+      await writer.handle.write(Buffer.from(String(request.data), "base64"));
+      return true;
+    }
+    if (request.op === "close_writer") {
+      const id = String(request.writer);
+      const writer = writers.get(id);
+      if (!writer) throw new Error(`unknown filesystem writer ${request.writer}`);
+      writers.delete(id);
+      await writer.handle.close();
+      await rename(writer.temporary, writer.target);
+      return true;
+    }
+    if (request.op === "abort_writer") {
+      const id = String(request.writer);
+      const writer = writers.get(id);
+      if (!writer) return true;
+      writers.delete(id);
+      await writer.handle.close();
+      await rm(writer.temporary, { force: true });
+      return true;
+    }
     if (request.op === "write") {
       await mkdir(path.dirname(target), { recursive: true });
       await writeFile(target, new Uint8Array(request.data));
@@ -507,6 +800,14 @@ export async function installRemoteFileSystem(page, root) {
     await writeFile(target, source.replace(request.expected, request.replacement), "utf8");
   });
   await page.addInitScript(() => {
+    const FILE_WRITE_CHUNK_BYTES = 1024 * 1024;
+    const base64 = (bytes) => {
+      let binary = "";
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+      }
+      return btoa(binary);
+    };
     const callFileSystem = async (request) => {
       try {
         return await window.__rustyeraFs(request);
@@ -538,14 +839,30 @@ export async function installRemoteFileSystem(page, root) {
         return new File([bytes], this.name, { lastModified: stat.lastModified });
       }
       async createWritable() {
-        let data = new Uint8Array();
+        const writer = await callFileSystem({ op: "open_writer", path: this.relativePath });
+        let active = true;
         return {
           write: async (value) => {
-            data = value instanceof Uint8Array ? value : new Uint8Array(await value.arrayBuffer());
+            if (!active) throw new DOMException("Writer is closed", "InvalidStateError");
+            const data =
+              value instanceof Uint8Array ? value : new Uint8Array(await value.arrayBuffer());
+            for (let offset = 0; offset < data.length; offset += FILE_WRITE_CHUNK_BYTES) {
+              await callFileSystem({
+                op: "write_chunk",
+                writer,
+                data: base64(data.subarray(offset, offset + FILE_WRITE_CHUNK_BYTES)),
+              });
+            }
           },
-          close: () => callFileSystem({ op: "write", path: this.relativePath, data: [...data] }),
+          close: async () => {
+            if (!active) return;
+            active = false;
+            await callFileSystem({ op: "close_writer", path: this.relativePath, writer });
+          },
           abort: async () => {
-            data = new Uint8Array();
+            if (!active) return;
+            active = false;
+            await callFileSystem({ op: "abort_writer", path: this.relativePath, writer });
           },
         };
       }
@@ -573,6 +890,11 @@ export async function installRemoteFileSystem(page, root) {
       async getDirectoryHandle(name, options = {}) {
         const relative = this.child(name);
         if (options.create) await callFileSystem({ op: "mkdir", path: relative });
+        // Native handles reject missing directories before returning a usable handle. Returning a
+        // phantom handle turns an ordinary Data miss into a later traversal-conflict error.
+        const metadata = await callFileSystem({ op: "stat", path: relative });
+        if (metadata.kind !== "directory")
+          throw new DOMException(`Not a directory: ${relative}`, "TypeMismatchError");
         return new RemoteDirectoryHandle(name, relative);
       }
       async getFileHandle(name, options = {}) {
@@ -682,6 +1004,77 @@ async function stopAtomicPresentationProbe(page) {
 }
 
 export async function runAction(page, action) {
+  if (action.type === "cancel_project_export")
+    return cancelProjectExportDuringTransfer(page, action);
+  if (action.type === "save_download") {
+    assert.ok(typeof action.path === "string" && path.isAbsolute(action.path));
+    assert.ok(typeof action.name_suffix === "string" && action.name_suffix.length > 0);
+    assert.ok(typeof action.selector === "string" && action.selector.length > 0);
+    await lstat(action.path).then(
+      () => {
+        throw new Error("download destination already exists");
+      },
+      (error) => {
+        if (error.code !== "ENOENT") throw error;
+      },
+    );
+    // Full-project exports stream through a real Blob download, not the small test download
+    // queue. Arm the native framework event before clicking so fast exports cannot be missed.
+    // The scenario deadline and complete-state watchdog close the browser on failure;
+    // a separate default 30-second event timeout must not cut off an advancing export.
+    const [download] = await Promise.all([
+      page.waitForEvent("download", { timeout: 0 }),
+      page.locator(action.selector).click(),
+    ]);
+    const name = download.suggestedFilename();
+    assert.ok(name.endsWith(action.name_suffix), "unexpected downloaded artifact");
+    assert.equal(await download.failure(), null, "native download failed");
+    const source = await download.path();
+    assert.ok(source, "native download path missing");
+    const bytes = (await stat(source)).size;
+    assert.ok(bytes > 0, "native download is empty");
+    await mkdir(path.dirname(action.path), { recursive: true });
+    await copyFile(source, action.path, fsConstants.COPYFILE_EXCL);
+    return {
+      query: { download: { name, path: action.path, bytes } },
+    };
+  }
+  if (action.type === "assert_interop") {
+    const expected = validateExpectedValues(action.expect);
+    assert.ok(
+      typeof action.evidence_path === "string" && path.isAbsolute(action.evidence_path),
+      "assert_interop requires an absolute evidence_path",
+    );
+    const watches = Object.keys(expected);
+    const typed = await page.evaluate(
+      (names) => window.__RUSTYERA_TEST__.inspectTyped(names),
+      watches,
+    );
+    const state = await page.evaluate(() => {
+      const state = window.__RUSTYERA_TEST__.snapshotSummary();
+      return {
+        bridgeKind: state.bridgeKind,
+        buildIdentity: state.buildIdentity,
+        fault: state.fault,
+        storage: window.__RUSTYERA_TEST__.protocolEvidence(["storage_request", "storage_response"]),
+      };
+    });
+    const observation = {
+      ...state,
+      typed,
+      restorePath: "see scenario actions and correlated storage records",
+    };
+    // Retain raw protocol values even when comparison or storage validation fails.
+    await mkdir(path.dirname(action.evidence_path), { recursive: true });
+    await writeFile(action.evidence_path, JSON.stringify(observation, null, 2) + "\n", {
+      flag: "wx",
+    });
+    assert.equal(state.bridgeKind, "browser");
+    assert.equal(state.fault, null);
+    assert.deepEqual(typedValues(typed, watches), expected);
+    assertProjectStorage(state.storage);
+    return { query: { interop: observation } };
+  }
   if (action.type === "edit_project_source") {
     await page.evaluate(
       (request) =>
@@ -731,8 +1124,23 @@ export async function runAction(page, action) {
   }
   if (action.type === "wait_compiled_cache_saved") {
     await page.waitForFunction(
-      () => window.__RUSTYERA_TEST__.snapshot().status === "项目缓存已保存。",
+      () => {
+        const state = window.__RUSTYERA_TEST__.snapshot();
+        return (
+          state.status === "项目缓存已保存。" ||
+          state.logs?.some((entry) =>
+            String(entry.message).includes("runtime.compiled_cache_failed"),
+          )
+        );
+      },
+      undefined,
+      { timeout: 0 },
     );
+    const state = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    const failure = state.logs?.find((entry) =>
+      String(entry.message).includes("runtime.compiled_cache_failed"),
+    );
+    if (failure) throw new Error(`compiled cache export failed: ${String(failure.message)}`);
     return { semanticInput: action.semantic_input };
   }
   if (action.type === "assert_diagnosis_project_manifest") {
@@ -772,7 +1180,7 @@ export async function runAction(page, action) {
 
       const snapshot = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
       if (!snapshot.wait) {
-        await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+        await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true));
         continue;
       }
       if (snapshot.wait.deadline_ns != null) {
@@ -801,7 +1209,7 @@ export async function runAction(page, action) {
         const current = window.__RUSTYERA_TEST__.snapshot();
         return current.fault != null || current.wait?.wait_id !== previousWaitId;
       }, waitId);
-      await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+      await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true));
     }
   }
   if (action.type === "advance_enter_waits_until") {
@@ -816,7 +1224,7 @@ export async function runAction(page, action) {
         "advance_enter_waits_until requires until.output_tail_contains or until.locator",
       );
     for (let attempt = 0; attempt <= maximum; attempt += 1) {
-      const snapshot = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+      const snapshot = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshotSummary());
       const textReached =
         !expectedText || snapshot.output.slice(-tailLines).join("\n").includes(expectedText);
       const locatorReached =
@@ -828,7 +1236,7 @@ export async function runAction(page, action) {
           `Enter wait budget exhausted before target screen ${JSON.stringify(action.until)}`,
         );
       if (!snapshot.wait) {
-        await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+        await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true));
         continue;
       }
       if (snapshot.wait?.deadline_ns != null) {
@@ -851,10 +1259,10 @@ export async function runAction(page, action) {
         await page.locator(".game-viewport .game-button").first().click();
       else await page.locator(".prompt-bar button[type=submit]").click();
       await page.waitForFunction((previousWaitId) => {
-        const current = window.__RUSTYERA_TEST__.snapshot();
+        const current = window.__RUSTYERA_TEST__.snapshotSummary();
         return current.fault != null || current.wait?.wait_id !== previousWaitId;
       }, waitId);
-      await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+      await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true));
     }
   }
   if (action.type === "drain_void_waits") {
@@ -874,26 +1282,47 @@ export async function runAction(page, action) {
     }
     throw new Error(`void wait budget exhausted after ${maximum} attempts`);
   }
+  if (action.type === "wait_timed_input_change") {
+    const before = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    if (before.wait?.deadline_ns == null)
+      throw new Error("wait_timed_input_change requires an active timed input wait");
+    await waitForAutomaticWaitChange(page, before.wait.wait_id);
+    const after = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    return {
+      query: {
+        timed_input: {
+          previous_wait_id: before.wait.wait_id,
+          next_wait_id: after.wait?.wait_id ?? null,
+          previous_kind: before.wait.kind,
+          next_kind: after.wait?.kind ?? null,
+          viewport_policy: before.wait.viewport_policy,
+        },
+      },
+    };
+  }
   if (action.type === "input") {
     const beforeWaitId = await page.evaluate(
-      () => window.__RUSTYERA_TEST__.snapshot().wait?.wait_id,
+      () => window.__RUSTYERA_TEST__.snapshotSummary().wait?.wait_id,
     );
     const input = page.locator(".prompt-bar input");
-    await input.fill(String(action.value ?? ""));
-    await page.locator(".prompt-bar button[type=submit]").click();
+    const value = String(action.value ?? "");
+    await input.fill("");
+    if (value) await input.pressSequentially(value);
+    if (action.keyboard_submit === true) await input.press("Enter");
+    else await page.locator(".prompt-bar button[type=submit]").click();
     if (beforeWaitId != null)
       await page.waitForFunction((waitId) => {
-        const snapshot = window.__RUSTYERA_TEST__.snapshot();
+        const snapshot = window.__RUSTYERA_TEST__.snapshotSummary();
         return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
       }, beforeWaitId);
     if (action.message_skip) {
       await page.waitForFunction(() => {
-        const snapshot = window.__RUSTYERA_TEST__.snapshot();
+        const snapshot = window.__RUSTYERA_TEST__.snapshotSummary();
         return snapshot.canInteract && snapshot.wait?.kind === "enter_key";
       });
       await page.locator(".game-viewport").click({ button: "right" });
     }
-    return { semanticInput: String(action.value ?? "") };
+    return { semanticInput: value };
   }
   if (action.type === "click_until_text") {
     const maximum = Math.max(0, Number(action.maximum ?? 10));
@@ -918,7 +1347,7 @@ export async function runAction(page, action) {
           const snapshot = window.__RUSTYERA_TEST__.snapshot();
           return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
         }, beforeWaitId);
-      await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+      await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true));
     }
   }
   if (action.type === "sample_queries") return sampleQueries(page, action);
@@ -1057,7 +1486,7 @@ export async function runAction(page, action) {
       ),
     );
     const beforeWaitId = runtimeInput
-      ? await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot().wait?.wait_id)
+      ? await page.evaluate(() => window.__RUSTYERA_TEST__.snapshotSummary().wait?.wait_id)
       : undefined;
     let transitionSamples;
     let completedRevision;
@@ -1071,12 +1500,12 @@ export async function runAction(page, action) {
       else await locator.click({ button: action.button ?? "left", force: action.force === true });
       if (beforeWaitId != null)
         await page.waitForFunction((waitId) => {
-          const snapshot = window.__RUSTYERA_TEST__.snapshot();
+          const snapshot = window.__RUSTYERA_TEST__.snapshotSummary();
           return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
         }, beforeWaitId);
       if (action.expect_atomic_presentation === true)
         completedRevision = await page.evaluate(async () => {
-          await window.__RUSTYERA_TEST__.waitForStableObservation(30_000);
+          await window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true);
           return String(window.__RUSTYERA_TEST__.snapshot().presentationRevision);
         });
     } finally {
@@ -1129,10 +1558,25 @@ export async function runAction(page, action) {
       (resourceName) => window.__RUSTYERA_TEST__.mediaReplay(resourceName),
       String(action.resource_name),
     );
+    if (action.expect) assertSubset(actual, action.expect);
     return { query: { media_replay: actual }, semanticInput: action.semantic_input };
   } else if (action.type === "assert_state") {
-    const state = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    // Ordinary state checks must not clone the entire startup wire ledger. Explicit
+    // evidence assertions still receive the full records and lifecycle observations.
+    const needsEvidence = [action.expect, action.expect_prefix].some(
+      (expected) =>
+        expected != null &&
+        (Object.hasOwn(expected, "serviceEvidence") || Object.hasOwn(expected, "serviceLifecycle")),
+    );
+    const state = await page.evaluate(
+      (fullEvidence) =>
+        fullEvidence
+          ? window.__RUSTYERA_TEST__.snapshot()
+          : window.__RUSTYERA_TEST__.snapshotSummary(),
+      needsEvidence,
+    );
     assertSubset(state, action.expect ?? {});
+    assertStringPrefixes(state, action.expect_prefix ?? {});
     return { state };
   } else throw new Error(`unknown action type ${action.type}`);
   return { semanticInput: action.semantic_input };
@@ -1144,10 +1588,41 @@ function hex(bytes) {
 
 export async function waitForAutomaticWaitChange(page, waitId) {
   await page.waitForFunction((previousWaitId) => {
-    const current = window.__RUSTYERA_TEST__.snapshot();
+    const current = window.__RUSTYERA_TEST__.snapshotSummary();
     return current.fault != null || current.wait?.wait_id !== previousWaitId;
   }, waitId);
-  await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000));
+  await page.evaluate(() => window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true));
+}
+
+export async function waitForRuntimeObservation(page, timeout, summary = false) {
+  return page.evaluate(
+    async ({ timeoutMs, summary }) => {
+      let observing = true;
+      const timedInput = new Promise((resolve) => {
+        const poll = () => {
+          if (!observing) return;
+          const current = window.__RUSTYERA_TEST__.snapshotSummary();
+          if (current.canInteract && current.wait?.deadline_ns != null) {
+            resolve(summary ? current : window.__RUSTYERA_TEST__.snapshot());
+            return;
+          }
+          window.requestAnimationFrame(poll);
+        };
+        poll();
+      });
+      try {
+        return await Promise.race([
+          summary
+            ? window.__RUSTYERA_TEST__.waitForStableObservation(timeoutMs, true)
+            : window.__RUSTYERA_TEST__.waitForStableObservation(timeoutMs),
+          timedInput,
+        ]);
+      } finally {
+        observing = false;
+      }
+    },
+    { timeoutMs: timeout, summary },
+  );
 }
 
 async function sampleQueries(page, action) {
@@ -1685,6 +2160,19 @@ function assertSubset(actual, expected, prefix = "") {
       throw new Error(
         `assertion failed at ${label}: expected ${JSON.stringify(value)}, got ${JSON.stringify(actual?.[key])}`,
       );
+  }
+}
+
+function assertStringPrefixes(actual, expected, prefix = "") {
+  for (const [key, value] of Object.entries(expected)) {
+    const label = prefix ? `${prefix}.${key}` : key;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      assertStringPrefixes(actual?.[key], value, label);
+    } else if (typeof actual?.[key] !== "string" || !actual[key].startsWith(String(value))) {
+      throw new Error(
+        `assertion failed at ${label}: expected prefix ${JSON.stringify(value)}, got ${JSON.stringify(actual?.[key])}`,
+      );
+    }
   }
 }
 

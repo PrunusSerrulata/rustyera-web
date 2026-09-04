@@ -1,18 +1,75 @@
+import {
+  resolveHtmlRuntimeService,
+  type RuntimeHtmlServiceProvider,
+} from "@/stores/runtimeHtmlServices";
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import { plainLine, printedHtmlLine, type PresentationState } from "@/core/presentation";
 import { at, mapOf } from "@/core/runtimeSupport";
-import { decodeServicePayload, encodeServicePayload } from "@/core/serviceCodec";
+import { encodeProjectionServicePayload, encodeServicePayload } from "@/core/serviceCodec";
+import {
+  RuntimeServiceError,
+  isHtmlQueryService,
+  isStrictProjectionService,
+  canvasPixelQuery,
+  devicePumpQuery,
+  lineGeometryQuery,
+  projectionMap,
+  projectionQuery,
+  validateServiceRequest,
+  type CanvasPixelQuery,
+  type LineGeometryQuery,
+  type ProjectionQueryContext,
+  type RuntimeServiceRequest,
+  type ServiceInteger,
+} from "@/core/runtimeServiceProtocol";
+import type { RuntimeServiceLease } from "@/stores/runtimeServiceRequests";
+import type { PointerObservation } from "@/platform/pointerObservation";
 import type { FrontendBridge, RuntimeMessage } from "@/core/types";
+import type { SqlProvider } from "@/platform/sqlProvider";
 
-interface RuntimeServiceContext {
+export interface RuntimeProjectionServiceProvider {
+  prepare(context: ProjectionQueryContext, lease: RuntimeServiceLease): Promise<PresentationState>;
+  prepareEnvironment(
+    context: ProjectionQueryContext,
+    lease: RuntimeServiceLease,
+  ): Promise<PresentationState>;
+  matches(context: ProjectionQueryContext): boolean;
+  matchesEnvironment(context: ProjectionQueryContext): boolean;
+  pointer(): PointerObservation;
+  canvas(
+    query: CanvasPixelQuery,
+    presentation: PresentationState,
+    lease: RuntimeServiceLease,
+  ): Promise<number>;
+  lineGeometry(
+    query: LineGeometryQuery,
+    lease: RuntimeServiceLease,
+  ): Promise<{
+    top: number;
+    height: number;
+    viewportHeight: number;
+  }>;
+}
+
+export interface RuntimeAudioServiceProvider {
+  observe(query: unknown): Map<number, unknown>;
+}
+
+export interface RuntimeServiceContext {
+  lease: RuntimeServiceLease;
+  projection?: RuntimeProjectionServiceProvider;
+  html?: RuntimeHtmlServiceProvider;
   bridge: Pick<FrontendBridge, "readImageMetadata" | "readResource">;
   currentPresentation(): PresentationState;
   heldKeys: ReadonlySet<number>;
+  pumpDevices(epoch: ServiceInteger, afterEventSequence: ServiceInteger): Promise<ServiceInteger>;
   clock(): Date | undefined;
   nextEntropy(): bigint | undefined;
-  send(message: RuntimeMessage, correlationId?: number): Promise<unknown>;
+  send(message: RuntimeMessage, correlationId?: ServiceInteger): Promise<unknown>;
   resourceGeneration: number;
   imagePixels: RuntimeImagePixelCache;
+  audio?: RuntimeAudioServiceProvider;
+  sql?: SqlProvider;
 }
 
 interface DecodedPixelSurface {
@@ -196,51 +253,131 @@ function releasePixelSurface(surface: DecodedPixelSurface): void {
 }
 
 export async function handleRuntimeService(
-  request: any,
-  correlationId: number | undefined,
+  request: RuntimeServiceRequest,
+  correlationId: ServiceInteger | undefined,
   context: RuntimeServiceContext,
 ): Promise<void> {
+  let result: unknown;
   try {
-    const query = decodeServicePayload(request.payload);
+    context.lease.assertActive();
+    if (context.lease.duplicate)
+      throw new RuntimeServiceError("invalid_request", "duplicate active service request ID");
+    const query = validateServiceRequest(request);
     const presentation = context.currentPresentation();
     const response = await resolveRuntimeService(request, query, presentation, context);
-    await context.send(
-      {
-        type: "service_response",
-        value: {
-          request_id: request.request_id,
-          result: { type: "ready", payload: [...encodeServicePayload(response)] },
-        },
-      },
-      correlationId,
-    );
+    context.lease.assertActive();
+    result = {
+      type: "ready",
+      payload: [
+        ...(isStrictProjectionService(request)
+          ? encodeProjectionServicePayload(response)
+          : encodeServicePayload(response)),
+      ],
+    };
   } catch (error) {
-    await context.send(
-      {
-        type: "service_response",
-        value: {
-          request_id: request.request_id,
-          result: {
-            type: "error",
-            error: {
-              code: "frontend.unsupported_service",
-              message: `${request.kind}/${request.operation}: ${String(error)}`,
-            },
-          },
-        },
+    if (!context.lease.active()) return;
+    const failure =
+      error instanceof RuntimeServiceError
+        ? error
+        : new RuntimeServiceError("backend_failure", String(error));
+    result = {
+      type: "error",
+      error: {
+        code:
+          failure.category === "unsupported"
+            ? "frontend.unsupported_service"
+            : `frontend.${failure.category}`,
+        message: `${request.kind}/${request.operation}@${request.operation_version?.major}.${request.operation_version?.minor}: ${failure.message}`,
       },
+    };
+  }
+  try {
+    if (!context.lease.active()) return;
+    await context.send(
+      { type: "service_response", value: { request_id: request.request_id, result } },
       correlationId,
     );
+  } finally {
+    context.lease.finish();
   }
 }
 
 async function resolveRuntimeService(
-  request: any,
+  request: RuntimeServiceRequest,
   query: any,
   presentation: PresentationState,
   context: RuntimeServiceContext,
 ): Promise<Map<number, unknown>> {
+  if (isHtmlQueryService(request))
+    return resolveHtmlRuntimeService(query, context.html, context.lease);
+  if (request.kind === "sql" && request.operation === "rustyera.sql") {
+    if (!context.sql) throw new RuntimeServiceError("unsupported", "SQL provider is not installed");
+    return context.sql.handle(query, context.lease.signal);
+  }
   switch (`${request.kind}/${request.operation}`) {
+    case "audio/audio_observation": {
+      if (!context.audio)
+        throw new RuntimeServiceError("unsupported", "audio provider is not installed");
+      return context.audio.observe(query);
+    }
+    case "input_state/device_pump": {
+      const expected = devicePumpQuery(query);
+      const through = await context.pumpDevices(expected.epoch, expected.afterEventSequence);
+      return mapOf([0, expected.epoch], [1, through]);
+    }
+    case "input_state/pointer_state": {
+      const expected = projectionQuery(query);
+      const provider = projectionProvider(context);
+      // Pointer coordinates and hit testing depend on the mounted viewport and canonical
+      // presentation, but not on virtual-history row measurements that may settle later.
+      await provider.prepareEnvironment(expected, context.lease);
+      context.lease.assertActive();
+      if (!provider.matchesEnvironment(expected))
+        throw new RuntimeServiceError("stale_projection", "pointer projection changed");
+      const pointer = provider.pointer();
+      return mapOf(
+        [0, pointer.x],
+        [1, pointer.y],
+        [2, pointer.buttonValue],
+        [3, expected.presentationRevision],
+        [4, expected.environmentRevision],
+        [5, expected.projectionSpaceRevision],
+      );
+    }
+    case "canvas/sample_canvas_pixel": {
+      const pixelQuery = canvasPixelQuery(query);
+      const provider = projectionProvider(context);
+      const projected = await provider.prepare(pixelQuery.context, context.lease);
+      context.lease.assertActive();
+      const argb = await provider.canvas(pixelQuery, projected, context.lease);
+      context.lease.assertActive();
+      if (!provider.matches(pixelQuery.context))
+        throw new RuntimeServiceError("stale_projection", "canvas projection changed");
+      return mapOf(
+        [0, projectionMap(pixelQuery.context)],
+        [1, pixelQuery.canvasRevision],
+        [2, argb],
+      );
+    }
+    case "presentation_query/get_line_geometry_v1": {
+      const expected = lineGeometryQuery(query);
+      const provider = projectionProvider(context);
+      await provider.prepare(expected.context, context.lease);
+      context.lease.assertActive();
+      if (!provider.matches(expected.context))
+        throw new RuntimeServiceError("stale_projection", "line projection changed");
+      const geometry = await provider.lineGeometry(expected, context.lease);
+      context.lease.assertActive();
+      if (!provider.matches(expected.context))
+        throw new RuntimeServiceError("stale_projection", "line projection changed");
+      return mapOf(
+        [0, projectionMap(expected.context)],
+        [1, expected.lineId],
+        [2, geometry.top],
+        [3, geometry.height],
+        [4, geometry.viewportHeight],
+      );
+    }
     case "entropy/random_seed": {
       const entropy = context.nextEntropy();
       if (entropy != null) return mapOf([0, entropy]);
@@ -320,6 +457,15 @@ async function resolveRuntimeService(
       );
     }
     default:
-      throw new Error(`不支持的前端服务：${request.kind}/${request.operation}`);
+      throw new RuntimeServiceError(
+        "unsupported",
+        `不支持的前端服务：${request.kind}/${request.operation}`,
+      );
   }
+}
+
+function projectionProvider(context: RuntimeServiceContext): RuntimeProjectionServiceProvider {
+  if (!context.projection)
+    throw new RuntimeServiceError("unsupported", "projection query provider is not installed");
+  return context.projection;
 }

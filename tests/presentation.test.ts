@@ -57,6 +57,43 @@ describe("presentation projection", () => {
     expect(state.lines.map(plainLine)).toEqual(["new", "next"]);
   });
 
+  it("replaces whole-line background settings without rewriting history", () => {
+    const state = emptyPresentation();
+    applySnapshot(state, {
+      revision: 1,
+      title: "fixture",
+      history: {
+        logical_lines: [
+          {
+            line_id: 1,
+            temporary: false,
+            logical_line_start: true,
+            line_end: true,
+            alignment: "left",
+            runs: [],
+            text_background_eligible: true,
+          },
+        ],
+      },
+      settings: { text_line_background: null },
+    });
+    const line = state.lines[0];
+    applyDelta(state, {
+      base_revision: 1,
+      new_revision: 2,
+      operations: [
+        {
+          type: "set_settings",
+          settings: {
+            text_line_background: { red: 1, green: 2, blue: 3, alpha: 127 },
+          },
+        },
+      ],
+    });
+    expect(state.lines[0]).toBe(line);
+    expect(state.settings.text_line_background).toEqual({ red: 1, green: 2, blue: 3, alpha: 127 });
+  });
+
   it("batches ordered history prefix trims without changing later line operations", () => {
     const state = emptyPresentation();
     const line = (lineId: number, text: string): DisplayLine => ({
@@ -498,6 +535,63 @@ describe("presentation projection", () => {
     expect(() => applyDelta(state, { base_revision: 9, new_revision: 10, operations: [] })).toThrow(
       "revision 不连续",
     );
+  });
+
+  it("commits presentation and scene candidates only after every operation validates", () => {
+    const state = emptyPresentation();
+    const before = {
+      title: state.title,
+      revision: state.revision,
+      sequence: state.nextInteractionSequence,
+    };
+    expect(() =>
+      applyDelta(state, {
+        base_revision: 0,
+        new_revision: 1,
+        operations: [
+          { type: "set_title", title: "partial" },
+          {
+            type: "apply_scene_delta",
+            delta: {
+              base_revision: 0,
+              new_revision: 1,
+              operations: [{ type: "clear_depth", depth: "not-an-integer" }],
+            },
+          },
+        ],
+      }),
+    ).toThrow();
+    expect({
+      title: state.title,
+      revision: state.revision,
+      sequence: state.nextInteractionSequence,
+    }).toEqual(before);
+  });
+
+  it("validates audio projections atomically before committing a delta", () => {
+    const state = emptyPresentation();
+    const audio = {
+      channel: { type: "bgm" },
+      resource_id: "sound/theme.wav",
+      repeat_count: -1,
+      volume_millionths: 1_000_000,
+      state: "playing",
+      revision: 1,
+      rate_millionths: 1_000_000,
+      preserve_pitch: true,
+    };
+
+    expect(() =>
+      applyDelta(state, {
+        base_revision: 0,
+        new_revision: 1,
+        operations: [
+          { type: "set_title", title: "must not commit" },
+          { type: "set_audio", audio: [audio, { ...audio, revision: 2 }] },
+        ],
+      }),
+    ).toThrow("audio target bgm is duplicated");
+    expect(state).toMatchObject({ revision: 0, title: "RustyEra", audio: [] });
   });
 
   it("preserves positioned images when HTML_GETPRINTEDSTR serializes an HTML line", () => {

@@ -1,4 +1,6 @@
 import { blake3 } from "@noble/hashes/blake3.js";
+import { storageTraversalError, validateStorageBasename } from "@/platform/browserDataPath";
+import { storagePattern } from "@/platform/storagePattern";
 
 const RESOURCE_SUFFIXES = new Set([
   "bmp",
@@ -17,6 +19,17 @@ const RESOURCE_SUFFIXES = new Set([
 ]);
 const AUDIO_SUFFIXES = new Set(["wav", "mp3", "ogg", "opus", "aac", "m4a", "flac"]);
 const FONT_SUFFIXES = new Set(["otf", "ttc", "ttf", "woff", "woff2"]);
+const DATA_RESOURCE_SUFFIXES = new Set(["xml", "txt", "db", "sqlite"]);
+const MUTABLE_RESOURCE_ROOTS = new Set([
+  ".git",
+  ".rustyera",
+  "sav",
+  "save",
+  "saves",
+  "data",
+  "logs",
+  "log",
+]);
 
 export function classify(path: string, roots: ReadonlySet<string>): string | undefined {
   const parts = path.split("/");
@@ -24,19 +37,29 @@ export function classify(path: string, roots: ReadonlySet<string>): string | und
   const suffix = parts.at(-1)?.split(".").at(-1)?.toLowerCase() ?? "";
   const name = parts.at(-1)?.toLowerCase() ?? "";
   if (name === "reraconfig.toml" || name === "setting.json") return "configuration";
+  if (DATA_RESOURCE_SUFFIXES.has(suffix) && !MUTABLE_RESOURCE_ROOTS.has(first)) return "resource";
   if (first === "resources") {
     if (suffix === "csv") return "resource_manifest";
     return RESOURCE_SUFFIXES.has(suffix) ? "resource" : undefined;
   }
   if (first === "sound") return AUDIO_SUFFIXES.has(suffix) ? "resource" : undefined;
   if (first === "font") return FONT_SUFFIXES.has(suffix) ? "resource" : undefined;
-  if ((suffix === "erb" || suffix === "erh") && roots.has("erb") && first !== "erb") return;
+  if (["erb", "erh", "erd"].includes(suffix) && roots.has("erb") && first !== "erb") return;
+  if (
+    suffix === "als" &&
+    (roots.has("csv") || roots.has("erb")) &&
+    first !== "csv" &&
+    first !== "erb"
+  )
+    return;
   if (suffix === "csv" && roots.has("csv") && first !== "csv") return;
   if (suffix === "config" && roots.has("csv") && parts.length > 1 && first !== "csv") return;
   const categories: Record<string, string> = {
     csv: "csv",
     erb: "erb",
     erh: "erh",
+    als: "als",
+    erd: "erd",
     config: "configuration",
   };
   return categories[suffix];
@@ -121,30 +144,83 @@ export async function collectEntries(
   recursive: boolean,
   pattern: string | null,
   entries: any[],
+  normalizedIdentity = false,
+  state = { paths: new Set<string>(), pathBytes: 0, visited: 0, visitedPathBytes: 0 },
+  ancestors: FileSystemDirectoryHandle[] = [],
+  authorizedRoot = directory,
+  matches = storagePattern(pattern, normalizedIdentity ? "emuera.skia.snake" : "emuera.em"),
 ): Promise<void> {
-  for await (const [name, handle] of directory.entries()) {
-    const path = `${prefix}${name}`;
-    if (handle.kind === "directory") {
-      if (recursive) await collectEntries(handle, `${path}/`, true, pattern, entries);
-      continue;
+  try {
+    if (ancestors.length >= 256) throw new DOMException("存储目录层级超过限额", "DataError");
+    for (const ancestor of ancestors) {
+      if (
+        directory === ancestor ||
+        (directory.isSameEntry && (await directory.isSameEntry(ancestor)))
+      )
+        throw new DOMException("存储目录包含循环链接", "DataError");
     }
-    if (pattern && !wildcard(pattern, name)) continue;
-    const file = await handle.getFile();
-    entries.push({
-      relative_path: path,
-      byte_length: file.size,
-      revision: null,
-      change_token: `${file.size}:${file.lastModified}`,
-    });
+    const chain = [...ancestors, directory];
+    for await (const [name, handle] of directory.entries()) {
+      if (++state.visited > 100_000) throw new DOMException("存储枚举超过限额", "DataError");
+      const canonicalName = validateStorageBasename(name);
+      const path = `${prefix}${normalizedIdentity ? canonicalName : name}`;
+      const key = path.toLowerCase();
+      if (normalizedIdentity && state.paths.has(key))
+        throw new DOMException("存储目录包含重复规范路径", "DataError");
+      if (normalizedIdentity) state.paths.add(key);
+      const pathBytes = new TextEncoder().encode(path).length;
+      if (pathBytes > 4096) throw new DOMException("存储路径超过限额", "DataError");
+      state.visitedPathBytes += pathBytes;
+      if (normalizedIdentity && state.visitedPathBytes > 8 * 1024 * 1024)
+        throw new DOMException("存储目录扫描超过限额", "DataError");
+      if (
+        normalizedIdentity &&
+        authorizedRoot.resolve &&
+        (await authorizedRoot.resolve(handle)) === null
+      )
+        throw new DOMException("存储目录逃逸授权根目录", "NotAllowedError");
+      if (handle.kind === "directory") {
+        if (recursive)
+          await collectEntries(
+            handle,
+            `${path}/`,
+            true,
+            pattern,
+            entries,
+            normalizedIdentity,
+            state,
+            chain,
+            authorizedRoot,
+            matches,
+          );
+        continue;
+      }
+      const file = await handle.getFile();
+      if (!matches(name)) continue;
+      state.pathBytes += pathBytes;
+      if (entries.length >= 100_000 || state.pathBytes > 8 * 1024 * 1024)
+        throw new DOMException("存储枚举超过限额", "DataError");
+      entries.push({
+        relative_path: path,
+        byte_length: file.size,
+        revision: null,
+        change_token: `${file.size}:${file.lastModified}`,
+      });
+    }
+  } catch (error) {
+    throw storageTraversalError(error);
   }
+  entries.sort((left, right) =>
+    left.relative_path < right.relative_path
+      ? -1
+      : left.relative_path > right.relative_path
+        ? 1
+        : 0,
+  );
 }
 
-function wildcard(pattern: string, name: string): boolean {
-  const source = pattern
-    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    .replaceAll("\\*", ".*")
-    .replaceAll("\\?", ".");
-  return new RegExp(`^${source}$`, "i").test(name);
+export function wildcard(pattern: string, name: string): boolean {
+  return storagePattern(pattern, "emuera.em")(name);
 }
 
 export function conflict(): DOMException {
@@ -156,6 +232,8 @@ export function errorKind(error: unknown): string {
     if (error.name === "NotFoundError") return "not_found";
     if (error.name === "NotAllowedError") return "permission_denied";
     if (error.name === "InvalidModificationError") return "conflict";
+    if (error.name === "NoModificationAllowedError") return "read_only";
+    if (error.name === "DataError") return "invalid_data";
   }
   return "other";
 }

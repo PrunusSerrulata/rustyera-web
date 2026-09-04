@@ -6,6 +6,7 @@ import {
   advanceUntil,
   deferred,
   emptyBatch,
+  encodeServicePayload,
   flushMicrotasks,
   mockProjectSelection,
   runningBrowserStore,
@@ -36,6 +37,7 @@ describe("runtime store startup-save", () => {
     await store.openProject();
 
     expect(store.coreVersion).toBe(`9.8.7 (${import.meta.env.VITE_RUSTYERA_CORE_REVISION})`);
+    expect(store.testRuntimeEvidence().sessionGeneration).toBe(1);
   });
 
   it("advances deadline waits from the frontend monotonic clock without user input", async () => {
@@ -85,6 +87,82 @@ describe("runtime store startup-save", () => {
         (call) => (call as unknown as [{ type?: string }])[0]?.type === "advance_time",
       ),
     ).toHaveLength(1);
+  });
+
+  it("advances snake AWAIT time after acknowledging its device pump", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("state_changed", { phase: "waiting_external", epoch: 2 }),
+        runtimeEvent(
+          "service_request",
+          {
+            request_id: 7,
+            kind: "input_state",
+            operation: "device_pump",
+            operation_version: { major: 1, minor: 0 },
+            payload: [
+              ...encodeServicePayload(
+                new Map<number, unknown>([
+                  [0, 2],
+                  [1, 0],
+                ]),
+              ),
+            ],
+          },
+          41,
+          2,
+        ),
+      ],
+    });
+    let reportedRunning = false;
+    let reportedVmProgress = false;
+    bridge.pump.mockImplementation(async () => {
+      const advances = bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "advance_time",
+      );
+      if (advances.length === 0) return emptyBatch();
+      if (!reportedRunning) {
+        reportedRunning = true;
+        return {
+          ...emptyBatch(),
+          events: [runtimeEvent("state_changed", { phase: "running", epoch: 2 })],
+        };
+      }
+      if (advances.length < 3 || reportedVmProgress) return emptyBatch();
+      reportedVmProgress = true;
+      return { ...emptyBatch(), vmInstructions: 1 };
+    });
+    const store = useRuntimeStore();
+    store.configureTestRun({
+      start: { type: "new_game", seed: 42 },
+      monotonicStartNs: 1_000_000,
+    });
+
+    await store.enableDebug();
+    await advanceUntil(
+      () =>
+        bridge.submitRuntime.mock.calls.some(
+          ([message]: unknown[]) => (message as { type?: string }).type === "advance_time",
+        ) && reportedVmProgress,
+    );
+
+    const responses = bridge.submitRuntime.mock.calls.filter(
+      ([message]: unknown[]) => (message as { type?: string }).type === "service_response",
+    );
+    const advances = bridge.submitRuntime.mock.calls.filter(
+      ([message]: unknown[]) => (message as { type?: string }).type === "advance_time",
+    );
+    expect(responses).toHaveLength(1);
+    expect(reportedRunning).toBe(true);
+    expect(advances).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(64);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "advance_time",
+      ),
+    ).toHaveLength(3);
   });
 
   it("imports a traditional save before starting the test runtime", async () => {
@@ -260,6 +338,12 @@ describe("runtime store startup-save", () => {
       expect.objectContaining({ type: "start" }),
       expect.anything(),
     );
+    expect(store.testRuntimeEvidence().sessionGeneration).toBe(1);
+
+    await store.restart();
+
+    expect(bridge.createSession).toHaveBeenCalledTimes(2);
+    expect(store.testRuntimeEvidence().sessionGeneration).toBe(2);
   });
 
   it("recreates a constrained browser session before importing a selected VM snapshot", async () => {
@@ -402,15 +486,7 @@ describe("runtime store startup-save", () => {
   });
 
   it("confirms project replacement, clears the viewport, and blocks opening through compilation", async () => {
-    vi.stubGlobal(
-      "AudioContext",
-      class {
-        state = "running";
-        destination = {};
-        resume = vi.fn(async () => {});
-        createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn() }));
-      },
-    );
+    stubRunningAudioContext();
     bridge.openProject.mockImplementation(
       async (
         onSubmitted?: (submittedAtMs: number) => void,
@@ -641,16 +717,7 @@ describe("runtime store startup-save", () => {
   });
 
   it("does not wait for browser audio unlock before opening a project", async () => {
-    const resume = vi.fn(() => new Promise<void>(() => {}));
-    vi.stubGlobal(
-      "AudioContext",
-      class {
-        state = "suspended";
-        destination = {};
-        resume = resume;
-        createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn() }));
-      },
-    );
+    const { resume } = stubRunningAudioContext(() => new Promise<void>(() => {}));
     mockProjectSelection({
       submittedAtMs: performance.now(),
       quickScanMs: 1,
@@ -664,8 +731,28 @@ describe("runtime store startup-save", () => {
     await store.openProject();
 
     expect(resume).toHaveBeenCalledOnce();
-    expect(bridge.createSession).toHaveBeenCalledOnce();
+    expect(bridge.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({ audioAvailable: true }),
+    );
     expect(bridge.openProject).toHaveBeenCalledOnce();
+  });
+
+  it("does not advertise audio when the media provider is unavailable", async () => {
+    mockProjectSelection({
+      submittedAtMs: performance.now(),
+      quickScanMs: 1,
+      cacheReadMs: 0,
+      sourceReadMs: 1,
+      submitMs: 1,
+      cacheImported: false,
+    });
+    const store = useRuntimeStore();
+
+    await store.openProject();
+
+    expect(bridge.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({ audioAvailable: false }),
+    );
   });
 
   it("does not create a startup attempt when project selection is cancelled", async () => {
@@ -717,7 +804,7 @@ describe("runtime store startup-save", () => {
     },
   );
 
-  it("prewarms and reuses one Runtime session on constrained browser devices", async () => {
+  it("replaces an in-flight prewarmed session when audio becomes ready on selection", async () => {
     stubRunningAudioContext();
     bridge.kind = "browser";
     bridge.prewarmRuntimeOnInitialize = true;
@@ -745,7 +832,10 @@ describe("runtime store startup-save", () => {
     expect(store.projectLoadProgressLabel).toBe("正在初始化 Runtime…");
     session.resolve(emptyBatch());
     await opening;
-    expect(bridge.createSession).toHaveBeenCalledOnce();
+    expect(bridge.createSession).toHaveBeenCalledTimes(2);
+    expect(bridge.createSession.mock.calls[0]![0].audioAvailable).toBe(false);
+    expect(bridge.createSession.mock.calls[1]![0].audioAvailable).toBe(true);
+    expect(bridge.prepareSessionReplacement).toHaveBeenCalledOnce();
   });
 
   it("retries session creation when constrained-browser prewarming fails", async () => {
@@ -781,15 +871,14 @@ describe("runtime store startup-save", () => {
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
       events: [
-        runtimeEvent("service_request", {
-          request_id: 1,
-          kind: "unsupported",
-          operation: "unsupported",
-          payload: [],
+        runtimeEvent("presentation_delta", {
+          base_revision: 999,
+          new_revision: 1000,
+          operations: [],
         }),
       ],
     });
-    bridge.submitRuntime.mockRejectedValueOnce(new Error("initial batch failed"));
+    bridge.submitRuntime.mockRejectedValueOnce(new Error("initial resynchronization failed"));
     mockProjectSelection(
       {
         submittedAtMs: performance.now(),
@@ -1142,15 +1231,7 @@ describe("runtime store startup-save", () => {
 
   it("keeps Firefox and Safari directory copying visible through the build handoff", async () => {
     bridge.kind = "browser";
-    vi.stubGlobal(
-      "AudioContext",
-      class {
-        state = "running";
-        destination = {};
-        resume = vi.fn(async () => {});
-        createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn() }));
-      },
-    );
+    stubRunningAudioContext();
     let resolveOpenProject!: (metrics: {
       submittedAtMs: number;
       quickScanMs: number;

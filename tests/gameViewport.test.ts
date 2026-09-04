@@ -33,11 +33,20 @@ const store = reactive({
   presentation: {
     revision: 1,
     historyRevision: 1,
-    lines: [{ line_id: 1, alignment: "left", runs: [] as any[] }],
-    backgrounds: [],
+    lines: [
+      {
+        line_id: 1,
+        alignment: "left",
+        runs: [] as any[],
+        text_background_eligible: false,
+      },
+    ],
+    scene: { revision: 0, layers: [] as any[] },
     resources: { sprites: [], canvases: [] },
-    htmlIsland: [],
+    htmlIsland: [] as any[],
     tooltip: {},
+    settings: {},
+    inputWait: undefined as any,
   },
   continueFromViewport,
   projectViewport,
@@ -76,13 +85,36 @@ vi.mock("@tanstack/vue-virtual", () => ({
       measureElement: vi.fn(),
       measure,
       scrollToIndex,
+      measurementsCache: [],
     });
   },
 }));
 vi.mock("@/stores/runtime", () => ({ useRuntimeStore: () => store }));
+vi.mock("@/components/SceneCompositor.vue", async () => {
+  const { defineComponent, h } = await import("vue");
+  return {
+    default: defineComponent({
+      name: "SceneCompositor",
+      props: ["scene", "lineTops", "scrollTop", "viewportWidth", "viewportHeight", "depthRanks"],
+      setup(_props, { slots }) {
+        return () =>
+          h("div", { class: "scene-compositor-test-double" }, [
+            slots.default?.(),
+            slots["positioned-html"]?.(),
+          ]);
+      },
+    }),
+  };
+});
 
 import DisplayLine from "@/components/DisplayLine.vue";
 import GameViewport from "@/components/GameViewport.vue";
+
+function mountViewport() {
+  return shallowMount(GameViewport, {
+    global: { stubs: { SceneCompositor: false } },
+  });
+}
 
 describe("game viewport", () => {
   beforeEach(() => {
@@ -90,7 +122,12 @@ describe("game viewport", () => {
     store.runtimeEpoch = 1;
     store.presentation.revision = 1;
     store.presentation.historyRevision = 1;
-    store.presentation.lines = [{ line_id: 1, alignment: "left", runs: [] }];
+    store.presentation.lines = [
+      { line_id: 1, alignment: "left", runs: [], text_background_eligible: false },
+    ];
+    store.presentation.settings = {};
+    store.presentation.inputWait = undefined;
+    store.gameLineHeightPx = 13;
     store.useMouse = true;
     store.scrollHeight = 1;
     virtualState.items = [];
@@ -129,7 +166,7 @@ describe("game viewport", () => {
     });
 
     try {
-      const wrapper = shallowMount(GameViewport);
+      const wrapper = mountViewport();
       projectViewport.mockClear();
       height = 650;
       resize?.([], {} as ResizeObserver);
@@ -146,6 +183,58 @@ describe("game viewport", () => {
     }
   });
 
+  it("projects the global text background across eligible virtualized rows", async () => {
+    virtualState.items = [{ index: 0, key: "1:1", start: 0 }];
+    store.presentation.lines = [
+      {
+        line_id: 1,
+        alignment: "left",
+        runs: [],
+        text_background_eligible: true,
+      },
+    ];
+    store.presentation.settings = {
+      text_line_background: { red: 17, green: 34, blue: 51, alpha: 127 },
+    };
+    const wrapper = mountViewport();
+    await nextTick();
+    const row = wrapper.find(".virtual-history > .game-line").element as HTMLElement;
+    expect(row.style.backgroundColor).toBe("rgba(17, 34, 51, 0.498)");
+
+    store.presentation.settings = { text_line_background: null };
+    await nextTick();
+    expect(row.style.backgroundColor).toBe("");
+    wrapper.unmount();
+  });
+
+  it("shares one compact depth order across scene, line HTML, text zero, and island HTML", () => {
+    store.presentation.scene = { revision: 1, layers: [{ depth: 3 }] } as any;
+    store.presentation.lines[0].runs = [
+      {
+        type: "html_document",
+        document: { nodes: [{ semantic: { type: "division", depth: 2 }, children: [] }] },
+      },
+    ];
+    store.presentation.htmlIsland = [
+      { nodes: [{ semantic: { type: "division", depth: -5 }, children: [] }] },
+    ];
+    const wrapper = mountViewport();
+    const ranks = wrapper.getComponent({ name: "SceneCompositor" }).props("depthRanks") as Map<
+      string,
+      number
+    >;
+    expect([...ranks.entries()]).toEqual([
+      ["3", -2],
+      ["2", -1],
+      ["0", 0],
+      ["-5", 1],
+    ]);
+    wrapper.unmount();
+    store.presentation.scene = { revision: 0, layers: [] };
+    store.presentation.lines[0].runs = [];
+    store.presentation.htmlIsland = [];
+  });
+
   it("reports new line columns when font metrics change at the same viewport size", async () => {
     Object.defineProperties(HTMLElement.prototype, {
       clientWidth: { configurable: true, get: () => 800 },
@@ -160,30 +249,50 @@ describe("game viewport", () => {
 
     let wrapper: ReturnType<typeof shallowMount> | undefined;
     try {
-      wrapper = shallowMount(GameViewport);
+      wrapper = mountViewport();
       expect(projectViewport).toHaveBeenLastCalledWith(
         expect.objectContaining({ lineColumns: 100 }),
+        expect.any(String),
       );
       projectViewport.mockClear();
+      // A new presentation object can recompute an identical gameTextStyle.
+      store.gameTextStyle = { ...store.gameTextStyle };
+      await nextTick();
+      await flushPromises();
+      expect(projectViewport).not.toHaveBeenCalled();
+      expect(measure).not.toHaveBeenCalled();
       probeWidth = 100;
       store.gameTextStyle.fontSize = "13px";
       await nextTick();
       await flushPromises();
 
-      expect(projectViewport).toHaveBeenCalledWith(expect.objectContaining({ lineColumns: 80 }));
+      expect(projectViewport).toHaveBeenCalledWith(
+        expect.objectContaining({ lineColumns: 80 }),
+        expect.any(String),
+      );
       expect(measure).toHaveBeenCalledOnce();
+      projectViewport.mockClear();
+      store.gameTextStyle.fontFamily = "serif";
+      await nextTick();
+      await flushPromises();
+      expect(projectViewport).toHaveBeenCalledOnce();
+      expect(projectViewport).toHaveBeenCalledWith(
+        expect.objectContaining({ width: 800, height: 600, lineColumns: 80 }),
+        expect.any(String),
+      );
     } finally {
       wrapper?.unmount();
       HTMLElement.prototype.getBoundingClientRect = originalBounds;
       delete (HTMLElement.prototype as any).clientWidth;
       delete (HTMLElement.prototype as any).clientHeight;
       store.gameTextStyle.fontSize = "12px";
+      store.gameTextStyle.fontFamily = "sans-serif";
     }
   });
 
   it("invalidates measured rows when only the configured line height changes", async () => {
     const originalLineHeight = store.gameLineHeightPx;
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     measure.mockClear();
 
     try {
@@ -199,7 +308,7 @@ describe("game viewport", () => {
   });
 
   it("follows new history output but ignores non-history presentation changes", async () => {
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     store.presentation.revision += 1;
     await nextTick();
     await nextTick();
@@ -222,10 +331,15 @@ describe("game viewport", () => {
       return callbacks.length;
     });
     virtualState.items = [{ index: 0, key: "1:1", start: 0 }];
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     scrollToIndex.mockClear();
 
-    store.presentation.lines[0] = { line_id: 2, alignment: "left", runs: [] };
+    store.presentation.lines[0] = {
+      line_id: 2,
+      alignment: "left",
+      runs: [],
+      text_background_eligible: false,
+    };
     store.presentation.revision += 1;
     store.presentation.historyRevision += 1;
     await nextTick();
@@ -249,14 +363,17 @@ describe("game viewport", () => {
       line_id: index + 1,
       alignment: "left",
       runs: [],
+      text_background_eligible: false,
     }));
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     scrollToIndex.mockClear();
+    callbacks.length = 0;
 
     store.presentation.lines = Array.from({ length: 100 }, (_, index) => ({
       line_id: index + 101,
       alignment: "left",
       runs: [],
+      text_background_eligible: false,
     }));
     store.presentation.revision += 1;
     store.presentation.historyRevision += 1;
@@ -269,14 +386,21 @@ describe("game viewport", () => {
     expect(committedIds).not.toContain(101);
     expect(committedIds).toHaveLength(40);
     expect(scrollToIndex).toHaveBeenCalledOnce();
-    expect(callbacks).toHaveLength(1);
+    // The compositor layout projection and bottom follow own independent frames. Drain their
+    // bounded queue because releasing the terminal extractor can itself schedule one final
+    // projection frame.
+    expect(callbacks.length).toBeGreaterThan(0);
     expect(virtualOptions.value.value.rangeExtractor).not.toBe(defaultRangeExtractor);
-
-    callbacks.shift()?.(0);
-    await flushPromises();
-    expect(virtualOptions.value.value.rangeExtractor).toBe(defaultRangeExtractor);
-    callbacks.shift()?.(0);
-    await flushPromises();
+    for (
+      let frame = 0;
+      frame < 8 && virtualOptions.value.value.rangeExtractor !== defaultRangeExtractor;
+      frame += 1
+    ) {
+      const pending = callbacks.splice(0);
+      expect(pending.length).toBeGreaterThan(0);
+      for (const callback of pending) callback(frame * 16);
+      await flushPromises();
+    }
     expect(virtualOptions.value.value.rangeExtractor).toBe(defaultRangeExtractor);
     wrapper.unmount();
   });
@@ -287,7 +411,7 @@ describe("game viewport", () => {
       callbacks.push(callback);
       return callbacks.length;
     });
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const viewport = wrapper.get<HTMLElement>("main").element;
     let scrollTop = 50;
     Object.defineProperties(viewport, {
@@ -315,13 +439,56 @@ describe("game viewport", () => {
     wrapper.unmount();
   });
 
+  it("preserves an NF scroll-back chain through a closed wait and resumes following on ordinary input", async () => {
+    const wrapper = mountViewport();
+    const viewport = wrapper.get<HTMLElement>("main").element;
+    let scrollTop = 40;
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 50 },
+      scrollHeight: { configurable: true, value: 200 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+    scrollToIndex.mockClear();
+
+    store.presentation.inputWait = { viewport_policy: "preserve_user_viewport" };
+    store.presentation.historyRevision += 1;
+    await nextTick();
+    await flushPromises();
+    expect(scrollTop).toBe(40);
+    expect(scrollToIndex).not.toHaveBeenCalled();
+
+    store.presentation.inputWait = undefined;
+    store.presentation.historyRevision += 1;
+    await nextTick();
+    await flushPromises();
+    expect(scrollTop).toBe(40);
+
+    store.presentation.inputWait = { viewport_policy: "follow_output" };
+    await nextTick();
+    await flushPromises();
+    expect(scrollToIndex).toHaveBeenCalled();
+    expect(scrollTop).toBe(200);
+    wrapper.unmount();
+  });
+
   it("updates an equal-length dynamic tail without moving the viewport", async () => {
     store.presentation.lines = [
-      { line_id: 1, alignment: "left", runs: [] },
-      { line_id: 2, alignment: "left", runs: [{ type: "text", text: "frame 1" }] },
+      { line_id: 1, alignment: "left", runs: [], text_background_eligible: false },
+      {
+        line_id: 2,
+        alignment: "left",
+        runs: [{ type: "text", text: "frame 1" }],
+        text_background_eligible: true,
+      },
     ];
     virtualState.items = [{ index: 1, key: "1:2", start: 13 }];
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const viewport = wrapper.get<HTMLElement>("main").element;
     const setScrollTop = vi.fn();
     Object.defineProperties(viewport, {
@@ -340,7 +507,12 @@ describe("game viewport", () => {
 
     store.presentation.lines = [
       store.presentation.lines[0],
-      { line_id: 3, alignment: "left", runs: [{ type: "text", text: "frame 2" }] },
+      {
+        line_id: 3,
+        alignment: "left",
+        runs: [{ type: "text", text: "frame 2" }],
+        text_background_eligible: true,
+      },
     ];
     await nextTick();
 
@@ -353,11 +525,16 @@ describe("game viewport", () => {
 
   it("keeps an equal-length dynamic tail pinned when it refreshes at the bottom", async () => {
     store.presentation.lines = [
-      { line_id: 1, alignment: "left", runs: [] },
-      { line_id: 2, alignment: "left", runs: [{ type: "text", text: "frame 1" }] },
+      { line_id: 1, alignment: "left", runs: [], text_background_eligible: false },
+      {
+        line_id: 2,
+        alignment: "left",
+        runs: [{ type: "text", text: "frame 1" }],
+        text_background_eligible: true,
+      },
     ];
     virtualState.items = [{ index: 1, key: "1:2", start: 13 }];
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const viewport = wrapper.get<HTMLElement>("main").element;
     let scrollTop = 50;
     Object.defineProperties(viewport, {
@@ -378,7 +555,12 @@ describe("game viewport", () => {
 
     store.presentation.lines = [
       store.presentation.lines[0],
-      { line_id: 3, alignment: "left", runs: [{ type: "text", text: "frame 2" }] },
+      {
+        line_id: 3,
+        alignment: "left",
+        runs: [{ type: "text", text: "frame 2" }],
+        text_background_eligible: true,
+      },
     ];
     await nextTick();
     await flushPromises();
@@ -410,7 +592,7 @@ describe("game viewport", () => {
       callbacks.push(callback);
       return callbacks.length;
     });
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     store.presentation.historyRevision += 1;
     await nextTick();
     const firstExtractor = virtualOptions.value.value.rangeExtractor;
@@ -434,7 +616,7 @@ describe("game viewport", () => {
   });
 
   it("continues an Enter wait when the viewport itself is left-clicked", async () => {
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     await wrapper.get("main").trigger("click", { button: 0 });
 
     expect(continueFromViewport).toHaveBeenCalledOnce();
@@ -442,7 +624,7 @@ describe("game viewport", () => {
   });
 
   it("starts continuous Enter-wait skipping when the secondary mouse button is pressed", async () => {
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const viewport = wrapper.get("main");
     await viewport.trigger("mousedown", { button: 2 });
 
@@ -463,7 +645,7 @@ describe("game viewport", () => {
   it("maps a stationary two-finger tap to the secondary action", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const viewport = wrapper.get<HTMLElement>("main").element;
 
     dispatchTouch(viewport, "pointerdown", 1, 30, 40);
@@ -480,7 +662,7 @@ describe("game viewport", () => {
   it("maps a stationary single-finger long press to the secondary action", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const viewport = wrapper.get<HTMLElement>("main").element;
 
     dispatchTouch(viewport, "pointerdown", 1, 30, 40);
@@ -494,7 +676,7 @@ describe("game viewport", () => {
   it("captures touch gestures on the viewport while animated output replaces their target", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const viewport = wrapper.get<HTMLElement>("main").element;
     const animatedLine = document.createElement("span");
     const setPointerCapture = vi.fn();
@@ -512,7 +694,7 @@ describe("game viewport", () => {
   });
 
   it("does not capture or continue a single-finger touch that starts on a game button", () => {
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const viewport = wrapper.get<HTMLElement>("main").element;
     const button = document.createElement("button");
     const activated = vi.fn();
@@ -534,7 +716,7 @@ describe("game viewport", () => {
   it("cancels touch secondary gestures that move, time out, gain a third touch, or cancel", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const viewport = wrapper.get<HTMLElement>("main").element;
 
     dispatchTouch(viewport, "pointerdown", 1, 10, 10);
@@ -566,7 +748,7 @@ describe("game viewport", () => {
   it("suppresses only the click synthesized by a successful touch secondary action", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const viewport = wrapper.get<HTMLElement>("main").element;
     const button = document.createElement("button");
     const activated = vi.fn();
@@ -589,7 +771,7 @@ describe("game viewport", () => {
   it("lets a new touch sequence clear stale synthetic-click suppression", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const viewport = wrapper.get<HTMLElement>("main").element;
     const button = document.createElement("button");
     const activated = vi.fn();
@@ -612,7 +794,7 @@ describe("game viewport", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     store.useMouse = false;
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const viewport = wrapper.get<HTMLElement>("main").element;
 
     dispatchTouch(viewport, "pointerdown", 1, 30, 40);
@@ -628,7 +810,7 @@ describe("game viewport", () => {
   });
 
   it("applies UseMouse and ScrollHeight to viewport pointer scrolling", async () => {
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const viewport = wrapper.get<HTMLElement>("main");
     store.scrollHeight = 3;
 
@@ -647,9 +829,11 @@ describe("game viewport", () => {
   });
 
   it("keeps row keys stable across refresh snapshots to retain measured positions", async () => {
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1");
-    store.presentation.lines = [{ line_id: 1, alignment: "left", runs: [] }];
+    store.presentation.lines = [
+      { line_id: 1, alignment: "left", runs: [], text_background_eligible: false },
+    ];
     await nextTick();
     expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1");
     store.runtimeEpoch = 2;
@@ -667,8 +851,9 @@ describe("game viewport", () => {
       },
       alignment: "left",
       runs: [],
+      text_background_eligible: false,
     }));
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     lineIdReads = 0;
 
     store.presentation.revision += 1;
@@ -688,9 +873,10 @@ describe("game viewport", () => {
           runReads += 1;
           return [];
         },
+        text_background_eligible: false,
       },
     ];
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
 
     expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1");
     runReads = 0;
@@ -712,15 +898,25 @@ describe("game viewport", () => {
       },
     });
     store.presentation.lines = [
-      { line_id: 1, alignment: "left", runs: [] },
-      { line_id: 2, alignment: "left", runs: [image("frame-1")] },
+      { line_id: 1, alignment: "left", runs: [], text_background_eligible: false },
+      {
+        line_id: 2,
+        alignment: "left",
+        runs: [image("frame-1")],
+        text_background_eligible: false,
+      },
     ];
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     expect(virtualOptions.value.value.getItemKey(1)).toBe("1:2");
 
     store.presentation.lines = [
       store.presentation.lines[0],
-      { line_id: 3, alignment: "left", runs: [image("frame-2")] },
+      {
+        line_id: 3,
+        alignment: "left",
+        runs: [image("frame-2")],
+        text_background_eligible: false,
+      },
     ];
     await nextTick();
 
@@ -739,14 +935,26 @@ describe("game viewport", () => {
         height: 80_000n,
       },
     };
-    store.presentation.lines = [{ line_id: 1, alignment: "left", runs: [media] }];
-    const wrapper = shallowMount(GameViewport);
+    store.presentation.lines = [
+      { line_id: 1, alignment: "left", runs: [media], text_background_eligible: false },
+    ];
+    const wrapper = mountViewport();
     expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1");
 
-    store.presentation.lines.push({ line_id: 2, alignment: "left", runs: [] });
+    store.presentation.lines.push({
+      line_id: 2,
+      alignment: "left",
+      runs: [],
+      text_background_eligible: false,
+    });
     store.presentation.historyRevision += 1;
     await nextTick();
-    store.presentation.lines[0] = { line_id: 3, alignment: "left", runs: [media] };
+    store.presentation.lines[0] = {
+      line_id: 3,
+      alignment: "left",
+      runs: [media],
+      text_background_eligible: false,
+    };
     await nextTick();
 
     expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1");
@@ -754,10 +962,12 @@ describe("game viewport", () => {
   });
 
   it("rekeys rebuilt history rows so fixed screens discard stale dialogue measurements", async () => {
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     expect(virtualOptions.value.value.getItemKey(0)).toBe("1:1");
 
-    store.presentation.lines = [{ line_id: 2, alignment: "left", runs: [] }];
+    store.presentation.lines = [
+      { line_id: 2, alignment: "left", runs: [], text_background_eligible: false },
+    ];
     store.presentation.historyRevision += 1;
     await nextTick();
 
@@ -777,7 +987,7 @@ describe("game viewport", () => {
     virtualState.totalSize = 260;
 
     try {
-      const wrapper = shallowMount(GameViewport);
+      const wrapper = mountViewport();
       await nextTick();
       const history = wrapper.get<HTMLElement>(".virtual-history");
       expect(history.classes()).toContain("history-bottom-aligned");
@@ -799,6 +1009,7 @@ describe("game viewport", () => {
       {
         line_id: 1,
         alignment: "left",
+        text_background_eligible: false,
         runs: [
           {
             type: "html_document",
@@ -825,7 +1036,7 @@ describe("game viewport", () => {
       },
     ];
 
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     await nextTick();
     expect(wrapper.get<HTMLElement>(".game-line").attributes("style")).toContain(
       "min-height: 36px",
@@ -833,8 +1044,96 @@ describe("game viewport", () => {
     wrapper.unmount();
   });
 
+  it("projects zero-space image layers to one visual origin without removing history rows", async () => {
+    const zeroSpace = (lineId: number) => ({
+      line_id: lineId,
+      alignment: "left",
+      text_background_eligible: false,
+      runs: [
+        {
+          type: "html_document",
+          document: {
+            nodes: [
+              {
+                type: "element",
+                kind: "shape",
+                attributes: [],
+                semantic: {
+                  type: "shape",
+                  kind: "space",
+                  parameters: [{ unit: "font_height_hundredths", value: 0 }],
+                },
+                children: [],
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const image = (lineId: number, source: string, y: number) => ({
+      line_id: lineId,
+      alignment: "left",
+      text_background_eligible: false,
+      runs: [
+        {
+          type: "html_document",
+          document: {
+            nodes: [
+              {
+                type: "element",
+                kind: "paragraph",
+                attributes: [],
+                semantic: { type: "paragraph", alignment: "left" },
+                children: [
+                  {
+                    type: "element",
+                    kind: "image",
+                    attributes: [],
+                    semantic: {
+                      type: "image",
+                      source,
+                      display: "relative",
+                      y: { unit: "font_height_hundredths", value: y },
+                    },
+                    children: [],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    });
+    store.gameLineHeightPx = 17;
+    store.presentation.lines = [
+      zeroSpace(510),
+      image(511, "30_BODY_WEAR", 0),
+      zeroSpace(512),
+      image(513, "30_PANTS_WEAR_TYPE6_NORMAL", -100),
+      zeroSpace(514),
+      image(515, "30_SHADOW_LIFT", -200),
+    ] as any;
+    virtualState.items = store.presentation.lines.map((line, index) => ({
+      index,
+      key: String(line.line_id),
+      start: index * 17,
+    }));
+    virtualState.totalSize = 102;
+
+    const wrapper = mountViewport();
+    await nextTick();
+    const rows = wrapper.findAll<HTMLElement>(".virtual-history > .game-line");
+    expect(rows).toHaveLength(6);
+    expect(rows[1].classes()).toContain("html-image-layer-line");
+    expect(rows[1].element.style.getPropertyValue("--game-media-line-offset")).toBe("-17px");
+    expect(rows[3].element.style.getPropertyValue("--game-media-line-offset")).toBe("-34px");
+    expect(rows[5].element.style.getPropertyValue("--game-media-line-offset")).toBe("-51px");
+    expect(rows[0].element.style.getPropertyValue("--game-media-line-offset")).toBe("");
+    wrapper.unmount();
+  });
+
   it("uses the configured height without a synchronous DOM read for fixed console rows", () => {
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const element = document.createElement("div");
     const instance = {
       indexFromElement: () => 0,
@@ -849,7 +1148,7 @@ describe("game viewport", () => {
 
   it("accepts ResizeObserver corrections for fixed console rows", () => {
     naturalMeasureElement.mockReturnValue(14);
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const element = document.createElement("div");
     const entry = {} as ResizeObserverEntry;
     const instance = { indexFromElement: () => 0 } as any;
@@ -861,7 +1160,7 @@ describe("game viewport", () => {
 
   it("preserves an observed fixed-row size when its element ref runs again", () => {
     naturalMeasureElement.mockReturnValue(14);
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const element = document.createElement("div");
     const instance = {
       indexFromElement: () => 0,
@@ -879,11 +1178,12 @@ describe("game viewport", () => {
       {
         line_id: 1,
         alignment: "left",
+        text_background_eligible: false,
         runs: [{ type: "html_document", document: { nodes: [] } }],
       },
     ];
     naturalMeasureElement.mockReturnValue(42);
-    const wrapper = shallowMount(GameViewport);
+    const wrapper = mountViewport();
     const element = document.createElement("div");
     const instance = {
       indexFromElement: () => 0,

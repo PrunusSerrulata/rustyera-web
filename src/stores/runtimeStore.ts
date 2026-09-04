@@ -1,8 +1,10 @@
+import { RuntimeEvidence, createTypedWatchReader } from "@/testing/runtimeEvidence";
 import { defineStore } from "pinia";
 import { computed, nextTick, ref } from "vue";
 import { blake3 } from "@noble/hashes/blake3.js";
 
 import { AudioEngine } from "@/core/audio";
+import { parseAudioEffect } from "@/core/audio/model";
 import { resourceUrlRegistry } from "@/core/resources";
 import { diagnosisProjectName, diagnosisProjectTitle } from "@/core/diagnosis";
 import {
@@ -50,7 +52,24 @@ import {
   type SessionOptions,
 } from "@/core/types";
 import { platformBridge } from "@/platform";
-import { currentGameViewportMeasurement } from "@/platform/viewportMeasurement";
+import {
+  currentGameViewport,
+  currentGameViewportMeasurement,
+  type GameViewportMeasurement,
+} from "@/platform/viewportMeasurement";
+import { RuntimePointerObservation } from "@/platform/pointerObservation";
+import { projectLineGeometry } from "@/platform/lineGeometry";
+import { RuntimeCanvasPixelSampler } from "@/components/canvasPixelSampler";
+import { HtmlMeasurementProvider } from "@/platform/htmlMeasurement";
+import {
+  RuntimeServiceError,
+  isHtmlQueryService,
+  sameServiceInteger,
+  serviceInteger,
+  type ProjectionQueryContext,
+  type ServiceInteger,
+} from "@/core/runtimeServiceProtocol";
+import { RuntimeServiceRequests, type RuntimeServiceLease } from "@/stores/runtimeServiceRequests";
 import { yieldToPaint } from "@/platform/mainThread";
 import { RuntimePumpCoordinator } from "@/stores/runtimePump";
 import { RuntimePresentationProjection } from "@/stores/runtimePresentation";
@@ -68,6 +87,7 @@ import { RuntimeDebugRequestState } from "@/stores/runtimeDebugRequests";
 import { RuntimeDebugState } from "@/stores/runtimeDebugState";
 import { RuntimeDiagnosisState } from "@/stores/runtimeDiagnosis";
 import { handleRuntimeService, RuntimeImagePixelCache } from "@/stores/runtimeServices";
+import { SqlProvider } from "@/platform/sqlProvider";
 import { RuntimeProjectSettingsState } from "@/stores/runtimeProjectSettings";
 import { RuntimeClientPreferencesState } from "@/stores/runtimeClientPreferences";
 import { RuntimeStatusState } from "@/stores/runtimeStatus";
@@ -77,6 +97,7 @@ import { RuntimeTraditionalSaveState } from "@/stores/runtimeTraditionalSaves";
 import { RuntimeViewportState } from "@/stores/runtimeViewport";
 import { useSystemFontAccess } from "@/stores/systemFontAccess";
 import { transportValue } from "@/stores/runtimeTransport";
+import { resolveCanvasReplay } from "@/core/replayResources";
 
 import {
   sessionFontFallback,
@@ -108,6 +129,53 @@ import type {
 } from "@/stores/runtimeState";
 
 const FULL_PROJECT_MANIFEST_CHUNK_BYTES = 4 * 1024 * 1024;
+const KEYBOARD_DEVICE_CODES: Readonly<Record<string, number>> = {
+  Backspace: 8,
+  Tab: 9,
+  Enter: 13,
+  NumpadEnter: 13,
+  ShiftLeft: 16,
+  ShiftRight: 16,
+  ControlLeft: 17,
+  ControlRight: 17,
+  AltLeft: 18,
+  AltRight: 18,
+  Pause: 19,
+  CapsLock: 20,
+  Escape: 27,
+  Space: 32,
+  PageUp: 33,
+  PageDown: 34,
+  End: 35,
+  Home: 36,
+  ArrowLeft: 37,
+  ArrowUp: 38,
+  ArrowRight: 39,
+  ArrowDown: 40,
+  Insert: 45,
+  Delete: 46,
+  MetaLeft: 91,
+  MetaRight: 92,
+  ContextMenu: 93,
+  NumpadMultiply: 106,
+  NumpadAdd: 107,
+  NumpadSubtract: 109,
+  NumpadDecimal: 110,
+  NumpadDivide: 111,
+  NumLock: 144,
+  ScrollLock: 145,
+  Semicolon: 186,
+  Equal: 187,
+  Comma: 188,
+  Minus: 189,
+  Period: 190,
+  Slash: 191,
+  Backquote: 192,
+  BracketLeft: 219,
+  Backslash: 220,
+  BracketRight: 221,
+  Quote: 222,
+};
 
 function diagnosticNotificationPolicy(
   diagnostic: any,
@@ -126,6 +194,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const projectPreferences = ref<ProjectPreferences>(defaultProjectPreferences());
   const projectPreferencesWritable = ref(false);
   const runtimeViewport = new RuntimeViewportState(send);
+  let viewportLayoutIdentity = "";
+  let viewportLayoutIdentityAtProjection = "";
+  const projectionObservationBarriers = new Set<symbol>();
+  let viewportProjectionBarrierGeneration = 0;
+  let runtimeBatchSequence = 0;
+  let viewportProjectionFlushAfterBatch: number | undefined;
+  let deferredViewportProjection:
+    { measurement: GameViewportMeasurement; layoutIdentity: string } | undefined;
   const viewportMeasurement = runtimeViewport.measurement;
   const {
     systemFonts,
@@ -181,6 +257,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     MAXIMUM_LOG_TOTAL_BYTES,
   );
   const testEnvironment = new RuntimeTestEnvironment();
+  const testEvidence = new RuntimeEvidence(import.meta.env.VITE_RUSTYERA_TEST === "1");
+  const readTestTypedWatches = createTypedWatchReader();
   const logs = runtimeLogs.entries;
   const projectSettingsOpen = ref(false);
   const preferencesOpen = ref(false);
@@ -215,6 +293,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const traditionalSaveTransferError = traditionalSaves.error;
   const traditionalSaveOverwriteSlot = traditionalSaves.overwriteSlot;
   const heldKeys = new Set<number>();
+  const heldMouseButtons = new Set<number>();
+  const heldMousePositions = new Map<number, readonly [number, number]>();
+  const keyToggleStates = new Map<number, boolean>();
+  let deviceSubmissionTail: Promise<void> = Promise.resolve();
+  let deviceSubmissionFailure: { generation: number; error: unknown } | undefined;
+  let deviceSynchronizationPending = true;
+  let deviceEventSequence = 0;
+  let deviceGeneration = 0;
+  let devicePumpTimeAdvancePending = false;
   const testAudioPlayback = new Map<string, { starts: number; active: number }>();
   const audio = new AudioEngine(
     bridge,
@@ -223,9 +310,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
     import.meta.env.VITE_RUSTYERA_TEST === "1" ? recordTestAudioPlayback : undefined,
   );
   const imagePixels = new RuntimeImagePixelCache();
+  const serviceRequests = new RuntimeServiceRequests();
+  const sqlProvider = new SqlProvider(bridge);
+  const pointerObservation = new RuntimePointerObservation(currentGameViewport);
+  const canvasPixels = new RuntimeCanvasPixelSampler();
+  const htmlMeasurements = new HtmlMeasurementProvider();
   let initialized = false;
   let initialization: Promise<void> | undefined;
   let lifecycleGeneration = 0;
+  // Observation identity follows host session creation, not the application's teardown lifetime.
+  let runtimeSessionObservationGeneration = 0;
+  let sessionAudioAvailable = false;
   const runtimeConfiguration = new RuntimeConfigurationState({
     bridge,
     send,
@@ -308,6 +403,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     send,
     sampleMonotonic: () => testEnvironment.sampleMonotonic(),
     phase: () => phase.value,
+    signalMessageSkip,
     logWarning: (message) =>
       log("warning", message, true, isNonNotifiedInputWarning(message) ? "none" : "all"),
   });
@@ -327,6 +423,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
       runtimeImport.reset();
       startupTelemetryState.fail(error);
       finishProjectLoad();
+      resetViewportProjectionBarriers();
+      serviceRequests.reset();
+      sqlProvider.reset();
+      htmlMeasurements.clear();
+      canvasPixels.clear();
       fault.value = { code: "frontend", message: String(error) };
       log("error", String(error), false, "none");
     },
@@ -360,6 +461,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     appendElapsed: (token, seconds) => runtimeStatus.appendElapsed("settings", token, seconds),
     finishStatus: (token, message) => runtimeStatus.finish("settings", token, message),
     clearStatus: (token) => runtimeStatus.clear("settings", token),
+    logWarning: (message) => log("warning", message),
     logError: (message) => log("error", message),
   });
   let sessionPreparation: Promise<void> | undefined;
@@ -544,11 +646,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
       preferences.value = loadedPreferences;
     }
     audio.setPreferences(preferences.value);
-    document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("keyup", onKeyUp);
-    document.addEventListener("visibilitychange", sendClientState);
-    window.addEventListener("focus", sendClientState);
-    window.addEventListener("blur", sendClientState);
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("keyup", onKeyUp, true);
+    document.addEventListener("mousedown", onMouseDown, true);
+    document.addEventListener("mouseup", onMouseUp, true);
+    pointerObservation.start();
+    document.addEventListener("visibilitychange", onClientStateBoundary);
+    window.addEventListener("focus", onClientStateBoundary);
+    window.addEventListener("blur", onClientStateBoundary);
     window.addEventListener("resize", onResize);
     initialized = true;
     if (bridge.prewarmRuntimeOnInitialize) {
@@ -560,25 +665,34 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   function teardown(): void {
     lifecycleGeneration += 1;
+    pointerObservation.stop();
+    resetViewportProjectionBarriers();
+    serviceRequests.reset();
+    sqlProvider.reset();
+    canvasPixels.clear();
+    htmlMeasurements.clear();
     initialization = undefined;
     clearSessionTimers();
     runtimePump.setTransitioning(true);
     runtimePump.setReady(false);
     retireFrontendOwners(true);
+    audio.close();
     bridge.setProjectProgressListener(undefined);
     void bridge
       .dispose()
       .catch((error) => log("warning", `释放 Runtime host 资源失败：${String(error)}`));
     if (initialized) {
       initialized = false;
-      document.removeEventListener("keydown", onKeyDown);
-      document.removeEventListener("keyup", onKeyUp);
-      document.removeEventListener("visibilitychange", sendClientState);
-      window.removeEventListener("focus", sendClientState);
-      window.removeEventListener("blur", sendClientState);
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("keyup", onKeyUp, true);
+      document.removeEventListener("mousedown", onMouseDown, true);
+      document.removeEventListener("mouseup", onMouseUp, true);
+      document.removeEventListener("visibilitychange", onClientStateBoundary);
+      window.removeEventListener("focus", onClientStateBoundary);
+      window.removeEventListener("blur", onClientStateBoundary);
       window.removeEventListener("resize", onResize);
     }
-    heldKeys.clear();
+    resetDeviceInputState(true);
   }
 
   function onResize(): void {
@@ -618,7 +732,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (sessionPreparation) return sessionPreparation;
     const attempt = (async () => {
       if (bridge.kind === "tauri") await requestSystemFonts();
-      const batch = await bridge.createSession(sessionOptions());
+      runtimeSessionObservationGeneration += 1;
+      const options = sessionOptions();
+      const batch = await bridge.createSession(options);
+      sessionAudioAvailable = options.audioAvailable;
       runtimePump.setReady(true);
       try {
         await handleBatch(batch);
@@ -660,7 +777,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       // capability sampled when the runtime session is created.
       availableFonts: [...(systemFonts.value.length > 0 ? systemFonts.value : sessionFontFallback)],
       preferredLocales: [...preferredRuntimeLocales(navigator.languages)],
-      audioAvailable: true,
+      audioAvailable: audio.providerAvailable(),
       debugScopeMask: 1023,
       maximumEnvelopeBytes: 512 * 1024 * 1024,
       configurationProfile: bridge.kind,
@@ -713,7 +830,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     let runtimeProjectSubmissionLocked = false;
     try {
       const prepareAfterSelection = async () => {
-        if (replaceCurrent) {
+        const replaceForAudioCapability =
+          runtimePump.ready && audio.providerAvailable() && !sessionAudioAvailable;
+        if (replaceCurrent || replaceForAudioCapability) {
           currentSessionReplaced = true;
           await recreateSessionForProjectSelection();
         } else {
@@ -726,6 +845,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
               finishProjectLoad();
               projectLoad.acceptProgress();
             }
+          }
+          if (audio.providerAvailable() && !sessionAudioAvailable) {
+            currentSessionReplaced = true;
+            await recreateSessionForProjectSelection();
           }
         }
         runtimePump.setTransitioning(true);
@@ -816,36 +939,28 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function handleBatch(batch: PumpBatch): Promise<void> {
+    const batchSequence = ++runtimeBatchSequence;
     const batchLifecycleGeneration = lifecycleGeneration;
+    const batchSessionGeneration = runtimeSessionObservationGeneration;
     startupTelemetryState.recordWasmMemory(batch.memoryBytes);
     batchMediaDirty = false;
     const suppressedLogNotificationIndexes = suppressedMirroredLogNotificationIndexes(batch.events);
     for (let index = 0; index < batch.events.length;) {
       if (batchLifecycleGeneration !== lifecycleGeneration) return;
       const event = batch.events[index];
-      if (event.epoch != null) runtimeEpoch.value = event.epoch;
+      testEvidence.receive(event, batchSessionGeneration);
+      if (event.epoch != null && !observeRuntimeEpoch(event.epoch)) {
+        index += 1;
+        continue;
+      }
       if (event.channel === "runtime" && event.message.type === "service_request") {
-        const requests = [];
-        while (index < batch.events.length) {
-          const candidate = batch.events[index];
-          if (candidate.channel !== "runtime" || candidate.message.type !== "service_request")
-            break;
-          requests.push(candidate);
-          index += 1;
-        }
-        for (let offset = 0; offset < requests.length; offset += 8) {
-          await Promise.all(
-            requests
-              .slice(offset, offset + 8)
-              .map((request) =>
-                handleService(
-                  (request.message as RuntimeMessage).value,
-                  safeNumber(request.correlationId),
-                ),
-              ),
-          );
-          if (batchLifecycleGeneration !== lifecycleGeneration) return;
-        }
+        // Service decoding must not block later cancellation or epoch changes in this batch.
+        void handleService(
+          (event.message as RuntimeMessage).value,
+          event.correlationId,
+          event.epoch ?? runtimeEpoch.value,
+        );
+        index += 1;
         continue;
       }
       if (event.channel === "runtime") {
@@ -869,7 +984,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } else if (debugRequests.pauseWanted) {
       await requestPendingDebugPause();
     }
+    await awaitDeviceSubmissions();
     await settlePendingGameInput();
+    await flushDeferredViewportProjection(batchSequence);
+    // Device-pump AWAIT has completed once core resumes VM instructions. State may change back to
+    // running immediately after the acknowledgement while a positive delay is still pending, so
+    // phase changes alone cannot delimit this clock-sampling window.
+    if (batch.vmInstructions > 0) devicePumpTimeAdvancePending = false;
+    // Submit at most one manifest chunk after processing the previous pump's responses.
+    // Awaiting the entire upload here would prevent Runtime from draining its inbound queue.
+    await advanceFullManifestImport();
   }
 
   function handleRuntime(
@@ -906,6 +1030,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   function handleRuntimeStateChanged(value: any): void {
     pendingReturnToTitleMessageId = undefined;
     phase.value = value.phase;
+    if (value.phase === "faulted" || value.phase === "stopped")
+      devicePumpTimeAdvancePending = false;
     if (value.phase === "faulted" || value.phase === "stopped") {
       gameProgressLossConfirmation.value = null;
       runtimeImport.reset();
@@ -924,7 +1050,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       finishProjectLoad();
       baseStatus.value = GAME_RUNNING_STATUS;
     }
-    runtimeEpoch.value = value.epoch ?? runtimeEpoch.value;
+    observeRuntimeEpoch(value.epoch ?? runtimeEpoch.value);
     if (value.phase === "faulted" || value.phase === "stopped") {
       const startupWasLoading = startupTelemetry.value?.outcome === "loading";
       if (startupWasLoading) pendingStart = { type: "new_game" };
@@ -1000,10 +1126,20 @@ export const useRuntimeStore = defineStore("runtime", () => {
         await runtimeConfiguration.persistGenerated();
         if (value.success) {
           refreshProjectPreferences();
-          void runtimeClientPreferences
-            .apply()
-            .then(() => continueLoadedProject(runtimeAcceptedCompiledCache))
+          const startupLifecycle = lifecycleGeneration;
+          // Migration confirmation can change canonical presentation settings. Let
+          // the pump handle that reply before preferences or the initial viewport
+          // are submitted; awaiting it inside this batch handler would deadlock.
+          void runtimeConfiguration
+            .whenSettled()
+            .then(async () => {
+              if (startupLifecycle !== lifecycleGeneration) return;
+              await runtimeClientPreferences.apply();
+              if (startupLifecycle === lifecycleGeneration)
+                await continueLoadedProject(runtimeAcceptedCompiledCache);
+            })
             .catch((error) => {
+              if (startupLifecycle !== lifecycleGeneration) return;
               pendingStart = { type: "new_game" };
               const message = `客户端偏好初始化失败：${String(error)}`;
               startupTelemetryState.fail(message);
@@ -1032,7 +1168,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       case "runtime_resynchronized":
         pendingReturnToTitleMessageId = undefined;
         phase.value = value.phase;
-        runtimeEpoch.value = value.epoch ?? runtimeEpoch.value;
+        observeRuntimeEpoch(value.epoch ?? runtimeEpoch.value);
         batchMediaDirty =
           presentationProjection.projectSnapshot(value.presentation) || batchMediaDirty;
         applyInputUndo(value.input_undo ?? null);
@@ -1058,7 +1194,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       }
       case "service_request":
-        await handleService(value, safeNumber(correlationId));
+        void handleService(value, correlationId);
+        break;
+      case "cancel_external_request":
+        if (value.kind === "service") serviceRequests.cancel(value.request_id);
         break;
       case "state_export_ready":
         await exportTransfer.handleReady(value, correlationId);
@@ -1091,6 +1230,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
           await runtimeImport.ready(value);
         break;
       case "fault": {
+        resetViewportProjectionBarriers();
+        serviceRequests.reset();
+        sqlProvider.reset();
+        htmlMeasurements.clear();
+        canvasPixels.clear();
         if (fullManifestImport) await cleanupFullManifestImport(false);
         runtimeImport.reset();
         gameProgressLossConfirmation.value = null;
@@ -1135,6 +1279,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         break;
       case "command_rejected": {
         const correlation = String(correlationId);
+        runtimeViewport.reject(correlation);
         if (pendingReturnToTitleMessageId === correlation) {
           pendingReturnToTitleMessageId = undefined;
           const message = `返回标题被 Runtime 拒绝：${value.message ?? "未知原因"}`;
@@ -1157,31 +1302,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           } else retireFullManifestImport(manifestImport);
           break;
         }
-        runtimeImport.reject(correlationId);
-        if (
-          runtimeClientPreferences.reject(
-            correlationId,
-            String(value.message ?? "Runtime 拒绝了客户端偏好"),
-          )
-        )
-          break;
-        if (
-          startupTelemetry.value?.outcome === "loading" &&
-          String(correlationId) === startupTelemetryState.startMessageId
-        ) {
-          const message = String(value.message ?? "Runtime rejected startup");
-          startupTelemetryState.fail(message);
-          finishProjectLoad();
-          baseStatus.value = `项目启动失败：${message}`;
-        }
-        const reloadRejected = projectReload.matches(correlationId);
-        if (reloadRejected) {
-          const message = String(value.message ?? "Runtime 拒绝了热重载");
-          await projectReload.finalize(false);
-          finishProjectLoad();
-          baseStatus.value = `重新加载项目失败：${message}`;
-          log("error", baseStatus.value, true);
-        }
+        const importRejected = runtimeImport.reject(correlationId);
         const {
           activeExport,
           compiledCachePreparing,
@@ -1198,6 +1319,49 @@ export const useRuntimeStore = defineStore("runtime", () => {
           pendingProjectionMessages,
           pendingGameInput.value,
         );
+        const configurationRejected = runtimeConfiguration.reject(
+          correlationId,
+          value.message ?? "Runtime 拒绝了命令",
+        );
+        const undoRejected = pendingInputUndo.value?.messageId === correlation;
+        const startupRejected =
+          startupTelemetry.value?.outcome === "loading" &&
+          correlation === startupTelemetryState.startMessageId;
+        if (startupRejected) {
+          const message = String(value.message ?? "Runtime rejected startup");
+          startupTelemetryState.fail(message);
+          finishProjectLoad();
+          baseStatus.value = `项目启动失败：${message}`;
+        }
+        const reloadRejected = projectReload.matches(correlationId);
+        if (reloadRejected) {
+          const message = String(value.message ?? "Runtime 拒绝了热重载");
+          await projectReload.finalize(false);
+          finishProjectLoad();
+          baseStatus.value = `重新加载项目失败：${message}`;
+          log("error", baseStatus.value, true);
+        }
+        const exportRejected = exportState?.requestMessageId === correlation;
+        const claimedByKnownOperation =
+          importRejected ||
+          configurationRejected ||
+          undoRejected ||
+          startupRejected ||
+          reloadRejected ||
+          staleProjection ||
+          rejectedInput != null ||
+          compiledCachePreparing ||
+          fullProjectPreparing ||
+          earlyFullProjectPreparation ||
+          exportRejected;
+        if (
+          !claimedByKnownOperation &&
+          runtimeClientPreferences.reject(
+            correlationId,
+            String(value.message ?? "Runtime 拒绝了客户端偏好"),
+          )
+        )
+          break;
         if (rejectedInput && !willRetryInput) {
           runtimeInput.rejectInput(rejectedInput, willRetryInput);
         }
@@ -1217,7 +1381,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
             true,
             suppressInputWarningNotification ? "none" : "all",
           );
-        runtimeConfiguration.reject(correlationId, value.message ?? "Runtime 拒绝了命令");
         if (fullProjectPreparing && isFullProjectExport(activeExport)) {
           scheduleFullProjectExportRetry(activeExport);
         }
@@ -1316,7 +1479,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     for (const effect of effects) {
       try {
         const kind = effect.kind;
-        if (kind.type === "audio") await audio.applyEffect(kind.value);
+        if (kind.type === "audio") await audio.applyEffect(parseAudioEffect(kind.value));
         else if (kind.type === "open_configuration") openPreferencesFromRuntime();
         else if (kind.type === "start_animation") {
           await new Promise(requestAnimationFrame);
@@ -1341,17 +1504,275 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await send({ type: "effect_acknowledgement", value: { outcomes } });
   }
 
-  async function handleService(request: any, correlationId?: number): Promise<void> {
-    await handleRuntimeService(request, correlationId, {
-      bridge,
-      currentPresentation,
-      heldKeys,
-      clock: () => testEnvironment.clock,
-      nextEntropy: () => testEnvironment.nextEntropy(),
-      send,
-      resourceGeneration: projectResourceGeneration.value,
-      imagePixels,
-    });
+  function observeRuntimeEpoch(epoch: ServiceInteger): boolean {
+    serviceInteger(epoch, "runtime epoch");
+    if (BigInt(epoch) < BigInt(runtimeEpoch.value)) return false;
+    if (!sameServiceInteger(epoch, runtimeEpoch.value)) {
+      resetViewportProjectionBarriers();
+      pointerObservation.clear();
+      htmlMeasurements.clear();
+      resetDeviceInputState(false);
+    }
+    runtimeEpoch.value = epoch;
+    serviceRequests.enterEpoch(epoch);
+    return true;
+  }
+
+  function viewportEnvironmentIdentity(): string {
+    return JSON.stringify([
+      effectivePreferences.value.fontFamilyOverride,
+      effectivePreferences.value.fontSizeOverridePx,
+      effectivePreferences.value.imageScale,
+      replaceFullWidthSpaces.value,
+    ]);
+  }
+
+  function resetViewportProjectionBarriers(): void {
+    viewportProjectionBarrierGeneration += 1;
+    projectionObservationBarriers.clear();
+    deferredViewportProjection = undefined;
+    viewportProjectionFlushAfterBatch = undefined;
+  }
+
+  function viewportStyleIdentity(
+    layoutIdentity = projectionObservationBarriers.size
+      ? viewportLayoutIdentityAtProjection
+      : viewportLayoutIdentity,
+  ): string {
+    return JSON.stringify([viewportEnvironmentIdentity(), layoutIdentity]);
+  }
+
+  function projectionMatches(expected: ProjectionQueryContext): boolean {
+    const viewport = currentGameViewport();
+    return (
+      sameServiceInteger(currentPresentation().revision, expected.presentationRevision) &&
+      runtimeViewport.matches(
+        expected,
+        presentation.revision,
+        viewport ? { width: viewport.clientWidth, height: viewport.clientHeight } : undefined,
+        viewportStyleIdentity(),
+      )
+    );
+  }
+
+  function projectionEnvironment(
+    expected: ProjectionQueryContext,
+    presentationRevision: ServiceInteger = presentation.revision,
+  ): { width: number; height: number } | undefined {
+    if (!sameServiceInteger(currentPresentation().revision, expected.presentationRevision))
+      return undefined;
+    return runtimeViewport.environment(
+      expected,
+      presentationRevision,
+      viewportEnvironmentIdentity(),
+    );
+  }
+
+  function projectionEnvironmentMatches(expected: ProjectionQueryContext): boolean {
+    return projectionEnvironment(expected) != null;
+  }
+
+  async function handleService(
+    request: any,
+    correlationId?: ServiceInteger,
+    epoch = runtimeEpoch.value,
+  ): Promise<void> {
+    const lifecycle = lifecycleGeneration;
+    const resources = projectResourceGeneration.value;
+    const serviceBatchSequence = runtimeBatchSequence;
+    const projectionBarrierGeneration = viewportProjectionBarrierGeneration;
+    const projectionObservationBarrier =
+      isHtmlQueryService(request) ||
+      (request.kind === "canvas" && request.operation === "sample_canvas_pixel")
+        ? Symbol("projection observation")
+        : null;
+    const active = () =>
+      lifecycle === lifecycleGeneration &&
+      sameServiceInteger(epoch, runtimeEpoch.value) &&
+      resources === projectResourceGeneration.value;
+    if (!active()) return;
+    if (projectionObservationBarrier)
+      projectionObservationBarriers.add(projectionObservationBarrier);
+    serviceRequests.enterEpoch(epoch);
+    try {
+      const lease = serviceRequests.begin(request.request_id, epoch);
+      let preparedProjectionContext: ProjectionQueryContext | undefined;
+      const prepareProjection = async (
+        expected: ProjectionQueryContext,
+        lease: RuntimeServiceLease,
+        layoutSensitive = true,
+      ) => {
+        lease.assertActive();
+        if (!sameServiceInteger(currentPresentation().revision, expected.presentationRevision))
+          throw new RuntimeServiceError(
+            "stale_projection",
+            "canonical presentation revision changed",
+          );
+        batchMediaDirty =
+          presentationProjection.publishForPresentNow(expected.presentationRevision) ||
+          batchMediaDirty;
+        await nextTick();
+        lease.assertActive();
+        await yieldToPaint();
+        lease.assertActive();
+        await nextTick();
+        lease.assertActive();
+        const matchesExpected = layoutSensitive
+          ? projectionMatches(expected)
+          : projectionEnvironmentMatches(expected);
+        if (!active() || !matchesExpected) {
+          const viewport = currentGameViewport();
+          const mismatch = runtimeViewport.describeEnvironmentMismatch(
+            expected,
+            presentation.revision,
+            viewport ? currentGameViewportMeasurement() : undefined,
+            viewportEnvironmentIdentity(),
+          );
+          throw new RuntimeServiceError(
+            "stale_projection",
+            `viewport observation does not match the query: ${mismatch}`,
+          );
+        }
+        preparedProjectionContext = expected;
+        return { ...presentation, resources: presentation.resources };
+      };
+      await handleRuntimeService(request, correlationId, {
+        bridge,
+        currentPresentation,
+        heldKeys,
+        pumpDevices,
+        clock: () => testEnvironment.clock,
+        nextEntropy: () => testEnvironment.nextEntropy(),
+        send: (message, correlation) =>
+          active() && lease.active() ? send(message, correlation) : Promise.resolve(undefined),
+        resourceGeneration: resources,
+        imagePixels,
+        audio,
+        sql: sqlProvider,
+        lease,
+        html: {
+          measurement: htmlMeasurements,
+          async prepare(expected, lease) {
+            lease.assertActive();
+            // HTML probes render in their own hidden host. Bind canonical resources and the
+            // confirmed environment without painting an unfinished REDRAW 0 game frame.
+            const projected = currentPresentation();
+            const viewport = currentGameViewport();
+            if (!viewport || !viewport.isConnected)
+              throw new RuntimeServiceError(
+                "stale_projection",
+                "HTML measurement requires the confirmed mounted viewport",
+              );
+            const viewportSize = projectionEnvironment(expected, projected.revision);
+            if (!viewportSize)
+              throw new RuntimeServiceError(
+                "stale_projection",
+                "HTML measurement requires the confirmed historical environment",
+              );
+            const preferences = {
+              fontFamilyOverride: effectivePreferences.value.fontFamilyOverride,
+              fontSizeOverridePx: effectivePreferences.value.fontSizeOverridePx,
+              imageScale: effectivePreferences.value.imageScale,
+            };
+            const preferenceIdentity = JSON.stringify(preferences);
+            const spaces = replaceFullWidthSpaces.value;
+            const assertCurrent = () => {
+              lease.assertActive();
+              if (
+                !active() ||
+                currentGameViewport() !== viewport ||
+                !projectionEnvironment(expected, currentPresentation().revision) ||
+                replaceFullWidthSpaces.value !== spaces ||
+                JSON.stringify({
+                  fontFamilyOverride: effectivePreferences.value.fontFamilyOverride,
+                  fontSizeOverridePx: effectivePreferences.value.fontSizeOverridePx,
+                  imageScale: effectivePreferences.value.imageScale,
+                }) !== preferenceIdentity
+              )
+                throw new RuntimeServiceError(
+                  "stale_projection",
+                  "HTML projection, resources or preferences changed",
+                );
+            };
+            assertCurrent();
+            return {
+              binding: {
+                viewport,
+                viewportSize,
+                context: { ...expected },
+                resources: projected.resources,
+                resourceGeneration: resources,
+                preferences,
+                replaceFullWidthSpaces: spaces,
+                resourceBridge: bridge,
+              },
+              guard: { signal: lease.signal, assertCurrent },
+            };
+          },
+        },
+        projection: {
+          prepare: prepareProjection,
+          prepareEnvironment: (expected, lease) => prepareProjection(expected, lease, false),
+          matches: (expected) => active() && projectionMatches(expected),
+          matchesEnvironment: (expected) => active() && projectionEnvironmentMatches(expected),
+          pointer: () => {
+            if (preparedProjectionContext)
+              testEvidence.pointerSample({
+                requestId: request.request_id,
+                epoch,
+                sessionGeneration: runtimeSessionObservationGeneration,
+                context: preparedProjectionContext,
+              });
+            return pointerObservation.sample(epoch);
+          },
+          lineGeometry: (query, serviceLease) => projectLineGeometry(query, serviceLease.signal),
+          canvas: (query, projected, lease) =>
+            canvasPixels.sample(query, projected.resources, resources, lease, () => {
+              const current = resolveCanvasReplay(
+                currentPresentation().resources.canvases,
+                query.canvasId,
+                query.canvasRevision,
+              );
+              return active() && projectionMatches(query.context) && current != null;
+            }),
+        },
+      });
+    } catch (error) {
+      // Malformed IDs cannot be correlated safely; resource saturation can return an explicit error.
+      if (!active()) return;
+      if (error instanceof RuntimeServiceError && error.category === "resource_limit") {
+        try {
+          await send(
+            {
+              type: "service_response",
+              value: {
+                request_id: request.request_id,
+                result: {
+                  type: "error",
+                  error: { code: "frontend.resource_limit", message: error.message },
+                },
+              },
+            },
+            correlationId,
+          );
+        } catch (failure) {
+          if (active())
+            log("warning", `前端服务失败 ${request.kind}/${request.operation}: ${String(failure)}`);
+        }
+      } else log("warning", `前端服务失败 ${request.kind}/${request.operation}: ${String(error)}`);
+    } finally {
+      if (
+        projectionObservationBarrier &&
+        projectionBarrierGeneration === viewportProjectionBarrierGeneration
+      ) {
+        projectionObservationBarriers.delete(projectionObservationBarrier);
+        if (projectionObservationBarriers.size === 0 && deferredViewportProjection)
+          viewportProjectionFlushAfterBatch = Math.max(
+            viewportProjectionFlushAfterBatch ?? 0,
+            serviceBatchSequence + 1,
+          );
+      }
+    }
   }
 
   async function submitText(): Promise<void> {
@@ -1401,7 +1822,39 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function skip(): Promise<void> {
     if (!runtimeReady.value || gameInteractionsBlocked.value || diagnosisExporting.value) return;
+    // Native message-skip input is submitted and pumped as one atomic host operation. Let the
+    // matching physical release reach the runtime first; otherwise a game that observes MOUSEB
+    // while processing the continuation can wait for an edge that the blocked host cannot accept.
+    if (heldMouseButtons.has(2)) {
+      await waitForPhysicalMouseRelease(2);
+      await awaitDeviceSubmissions();
+    }
     await runtimeInput.requestMessageSkip();
+  }
+
+  function waitForPhysicalMouseRelease(code: number): Promise<void> {
+    if (!heldMouseButtons.has(code)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const cleanup = () => {
+        document.removeEventListener("mouseup", onMouseUpRelease, true);
+        document.removeEventListener("visibilitychange", onClientBoundaryRelease);
+        window.removeEventListener("blur", onClientBoundaryRelease);
+      };
+      const finish = () => {
+        cleanup();
+        resolve();
+      };
+      const onMouseUpRelease = (event: MouseEvent) => {
+        if (mouseCode(event.button) === code) finish();
+      };
+      const onClientBoundaryRelease = () => {
+        if (!document.hasFocus() || document.visibilityState !== "visible") finish();
+      };
+      document.addEventListener("mouseup", onMouseUpRelease, true);
+      document.addEventListener("visibilitychange", onClientBoundaryRelease);
+      window.addEventListener("blur", onClientBoundaryRelease);
+      if (!heldMouseButtons.has(code)) finish();
+    });
   }
 
   async function continueFromViewport(): Promise<void> {
@@ -1425,8 +1878,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function advanceTimedWait(): Promise<void> {
     if (diagnosisExporting.value) return;
     const wait = currentPresentation().inputWait;
+    const advancingDevicePump = devicePumpTimeAdvancePending;
     if (
-      wait?.deadline_ns == null ||
+      (wait?.deadline_ns == null && !advancingDevicePump) ||
       pendingGameInput.value != null ||
       pendingInputUndo.value != null
     )
@@ -1497,6 +1951,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
 
   async function replaceRuntimeSession(): Promise<void> {
     clearSessionTimers();
+    audio.cancelPendingLoads();
     try {
       await runtimePump.waitUntilIdle();
       await cancelTimelineTransfers();
@@ -1504,7 +1959,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
       await nextTick();
       await yieldToPaint();
       await bridge.prepareSessionReplacement();
-      const batch = await bridge.createSession(sessionOptions());
+      runtimeSessionObservationGeneration += 1;
+      const options = sessionOptions();
+      const batch = await bridge.createSession(options);
+      sessionAudioAvailable = options.audioAvailable;
       runtimePump.setReady(true);
       await handleBatch(batch);
     } catch (error) {
@@ -1533,6 +1991,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       return false;
     runtimePump.setTransitioning(true);
     clearSessionTimers();
+    audio.cancelPendingLoads();
     try {
       await runtimePump.waitUntilIdle();
       // The transition lock suppresses both browser and native pump scheduling. Once Runtime has
@@ -1624,7 +2083,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     fullManifestImports.clear();
     retiredFullManifestCommandIds.clear();
     projectFileExportState.finish();
-    resetRuntimeTimelineState(true);
+    resetRuntimeTimelineState(true, fullSession, fullSession);
     runtimeDiagnosis.reset();
     traditionalSaves.reset();
     runtimeLogs.clear();
@@ -1632,6 +2091,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (!preserveProjectLoad) finishProjectLoad();
     runtimePump.setReady(false);
     phase.value = "negotiating";
+    resetDeviceInputState(false);
     runtimeEpoch.value = 0;
     testEnvironment.resetTimeAdvance();
     runtimeConfiguration.reset();
@@ -1642,9 +2102,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimeManifestSparse = false;
   }
 
-  function resetRuntimeTimelineState(advanceResources = true): void {
+  function resetRuntimeTimelineState(
+    advanceResources = true,
+    resetViewport = true,
+    resetSqlProvider = true,
+  ): void {
+    resetViewportProjectionBarriers();
+    serviceRequests.reset();
+    if (resetSqlProvider) sqlProvider.reset();
+    pointerObservation.clear();
+    canvasPixels.clear();
+    htmlMeasurements.clear();
     presentationProjection.reset();
-    if (advanceResources) advanceProjectResourceGeneration();
+    if (advanceResources) advanceProjectResourceGeneration(false);
     testAudioPlayback.clear();
     inputUndo.value = null;
     fault.value = null;
@@ -1652,14 +2122,26 @@ export const useRuntimeStore = defineStore("runtime", () => {
     runtimeDebug.resetSession();
     prompt.value = "";
     runtimeInput.reset();
-    runtimeViewport.reset();
+    // Returning to title keeps the same physical host environment in core. Full session
+    // replacement must discard it; new geometry observations invalidate it immediately.
+    if (resetViewport) {
+      viewportLayoutIdentity = "";
+      viewportLayoutIdentityAtProjection = "";
+      runtimeViewport.reset();
+    }
     runtimeImport.reset();
   }
 
-  function advanceProjectResourceGeneration(): void {
+  function advanceProjectResourceGeneration(resetSqlProvider = true): void {
+    resetViewportProjectionBarriers();
+    serviceRequests.reset();
+    if (resetSqlProvider) sqlProvider.reset();
+    pointerObservation.clear();
+    canvasPixels.clear();
+    htmlMeasurements.clear();
     projectResourceGeneration.value += 1;
-    resourceUrlRegistry.releaseBeforeGeneration(projectResourceGeneration.value);
     audio.resetResources(projectResourceGeneration.value);
+    resourceUrlRegistry.releaseBeforeGeneration(projectResourceGeneration.value);
     imagePixels.clear();
   }
 
@@ -1680,6 +2162,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (projectLoading.value || runtimePump.transitioning || diagnosisExporting.value) return;
     beginProjectLoad("正在重新加载项目…");
     runtimePump.setTransitioning(true);
+    audio.cancelPendingLoads();
     try {
       await runtimePump.waitUntilIdle();
       await compiledCacheExport.cancel();
@@ -1795,6 +2278,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const activeExport: ExportState = {
       name,
       kind,
+      runtimeKind: request.kind,
       chunks: [],
       received: 0,
     };
@@ -1817,6 +2301,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     exportState = {
       name: "save00.sav",
       kind: "download",
+      runtimeKind: "traditional_save",
       chunks: [],
       received: 0,
     };
@@ -1834,6 +2319,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
             name: exportState.name,
             received: exportState.received,
             descriptor: exportState.descriptor,
+          }
+        : null,
+      fullManifest: fullManifestImport
+        ? {
+            submittedBytes: fullManifestImport.submittedBytes,
+            totalBytes: fullManifestImport.totalBytes,
+            commitStarted: fullManifestImport.commitStarted,
+            cancelled: fullManifestImport.cancelled,
           }
         : null,
       ...runtimeImport.testState(),
@@ -1855,6 +2348,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     return Object.fromEntries(
       [...testAudioPlayback.entries()].sort(([left], [right]) => left.localeCompare(right)),
     );
+  }
+
+  function testAudioProviderState() {
+    return audio.providerSnapshot();
   }
 
   async function openTraditionalSaveDialog(mode: "export" | "import"): Promise<void> {
@@ -1932,9 +2429,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     try {
       await stageFullManifestImport(activeExport, "project_file");
     } catch (error) {
-      const cancelled = !projectFileExporting.value && exportState == null;
-      await finishProjectFileExport(cancelled ? "cancelled" : "failed");
-      if (cancelled) return;
+      if (exportState !== activeExport) return;
+      await finishProjectFileExport("failed");
       throw error;
     }
   }
@@ -1990,6 +2486,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const pending: NonNullable<typeof fullManifestImport> = {
       activeExport,
       totalBytes: descriptor.totalBytes,
+      submittedBytes: 0,
+      hasher: blake3.create(),
       purpose,
       commandMessageIds: new Set<string>(),
       cancelled: false,
@@ -2029,38 +2527,60 @@ export const useRuntimeStore = defineStore("runtime", () => {
       await requestFullManifestTransferCancel(pending);
       return true;
     }
-    const hasher = blake3.create();
-    for (let offset = 0; offset < pending.totalBytes; offset += FULL_PROJECT_MANIFEST_CHUNK_BYTES) {
-      if (pending.cancelled) return true;
+    return true;
+  }
+
+  async function advanceFullManifestImport(): Promise<void> {
+    const pending = fullManifestImport;
+    if (!pending || pending.cancelled || pending.transferId == null || pending.commitStarted)
+      return;
+    try {
+      await submitNextFullManifestChunk(pending);
+    } catch (error) {
+      if (pending.cancelled) return;
+      await cleanupFullManifestImport(true, pending);
+      const message = `完整项目 manifest 传输失败：${String(error)}`;
+      if (pending.activeExport.kind === "diagnosis_project")
+        await failDiagnosisExport(pending.activeExport, message);
+      else await finishProjectFileExport("failed", message);
+    }
+  }
+
+  async function submitNextFullManifestChunk(
+    pending: FullManifestImportTransaction,
+  ): Promise<void> {
+    const offset = pending.submittedBytes;
+    if (offset < pending.totalBytes) {
       const expected = Math.min(FULL_PROJECT_MANIFEST_CHUNK_BYTES, pending.totalBytes - offset);
-      let data: Uint8Array;
-      try {
-        data = await bridge.readFullProjectManifestChunk(offset, expected);
-      } catch (error) {
-        if (pending.cancelled) return true;
-        throw error;
-      }
-      if (pending.cancelled) return true;
+      const data = await bridge.readFullProjectManifestChunk(offset, expected);
+      if (pending.cancelled) return;
       if (data.byteLength !== expected) throw new Error("完整项目 manifest 临时文件读取不完整");
-      hasher.update(data);
+      pending.hasher.update(data);
       await submitFullManifestCommand(pending, {
         type: "state_import_chunk",
         value: {
-          transfer_id: value.transfer_id,
+          transfer_id: pending.transferId,
           offset,
           data,
         },
       });
-      if (pending.cancelled) return true;
+      if (pending.cancelled) return;
+      pending.submittedBytes += expected;
+      if (pending.purpose === "project_file")
+        projectFileExportState.setProgress({
+          stage: "submitting",
+          completed: pending.submittedBytes,
+          total: pending.totalBytes,
+        });
+      return;
     }
     pending.commitStarted = true;
     const messageId = await submitFullManifestCommand(pending, {
       type: "state_import_commit",
-      value: { transfer_id: value.transfer_id, digest: hasher.digest() },
+      value: { transfer_id: pending.transferId, digest: pending.hasher.digest() },
     });
     pending.commitMessageId = String(messageId);
     await releaseFullManifestHost(pending);
-    return true;
   }
 
   async function finishFullManifestImport(
@@ -2208,7 +2728,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function cancelProjectFileExport(): Promise<void> {
-    if (!projectFileExporting.value) return;
+    if (!projectFileExporting.value || exportState?.kind !== "project_file") return;
     await finishProjectFileExport("cancelled", "已取消导出全量项目文件", true);
   }
 
@@ -2218,8 +2738,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
     cancelRuntime = outcome !== "success",
   ): Promise<void> {
     const pendingManifest = fullManifestImport;
+    if (pendingManifest) pendingManifest.cancelled = true;
     exportState = undefined;
-    const resumeCache = projectFileExportState.finish();
+    // Stop host reads/writes before waiting for queued Runtime commands. Otherwise cancellation
+    // can leave the producer allocating data while Runtime is busy draining the transfer.
+    if (outcome !== "success") {
+      try {
+        await bridge.cancelProjectFileExport();
+      } catch (error) {
+        log("warning", `清理全量项目导出临时文件失败：${String(error)}`);
+      }
+    }
     if (pendingManifest) await cleanupFullManifestImport(cancelRuntime, pendingManifest);
     if (outcome !== "success") {
       try {
@@ -2227,14 +2756,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
           await send({ type: "state_export_cancel", value: { kind: "full_project_file" } });
       } catch (error) {
         log("warning", `取消 Runtime 全量项目导出失败：${String(error)}`);
-      } finally {
-        try {
-          await bridge.cancelProjectFileExport();
-        } catch (error) {
-          log("warning", `清理全量项目导出临时文件失败：${String(error)}`);
-        }
       }
     }
+    const resumeCache = projectFileExportState.finish();
     if (message) baseStatus.value = message;
     if (resumeCache) scheduleCompiledCacheExport();
     if (diagnosisExporting.value && !exportState)
@@ -2248,6 +2772,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (completed.hostWriteFailure) throw completed.hostWriteFailure.error;
     const result =
       completed.kind === "compiled_cache" ||
+      completed.kind === "project_file" ||
       completed.kind === "download" ||
       completed.kind === "input_replay_download"
         ? new Uint8Array()
@@ -2401,7 +2926,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       await requestDebugGrant();
     } else {
       if (debugGrant.value)
-        await bridge.submitDebug({
+        await submitObservedDebug({
           type: "revoke",
           value: { grant_id: debugGrant.value.token.grant_id, reason: "disabled by user" },
         });
@@ -2415,6 +2940,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function handleDebug(message: any, correlationId?: number | bigint): Promise<void> {
+    if (
+      message.type === "error" &&
+      debugRequests.deferReply(correlationId, () => handleDebug(message, correlationId))
+    )
+      return;
     if (message.type === "grant") {
       debugRequests.pausePending = false;
       debugRequests.grantRefreshNeeded = false;
@@ -2443,6 +2973,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
     } else if (message.type === "response") {
       const request = debugRequests.take(correlationId);
       const response = message.value;
+      if (!request)
+        debugRequests.deferReply(correlationId, async () => {
+          debugRequests.take(correlationId)?.resolve?.(response);
+        });
+      // Apply presentation in receive order; only completion waits for registration.
+      // Replaying the response after a newer stopped event would restore an old stop.
       const fiber = runtimeDebug.applyResponse(response);
       if (response.type === "fiber_page") {
         if (stackOpen.value && fiber)
@@ -2474,8 +3010,16 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
   }
 
+  async function submitObservedDebug(message: any): Promise<number | bigint> {
+    const epoch = runtimeEpoch.value;
+    const sessionGeneration = runtimeSessionObservationGeneration;
+    const messageId = await bridge.submitDebug(message);
+    testEvidence.sent("debug", message, messageId, epoch, undefined, sessionGeneration);
+    return messageId;
+  }
+
   async function requestDebugGrant(): Promise<void> {
-    await bridge.submitDebug(
+    await submitObservedDebug(
       transportValue({
         type: "hello",
         value: {
@@ -2501,27 +3045,72 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function debugCommand(command: any): Promise<void> {
     if (!debugGrant.value || diagnosisExporting.value) return;
     const grant = debugGrant.value.token;
-    const messageId = await bridge.submitDebug(
-      transportValue({
-        type: "request",
-        value: { grant, command },
-      }),
+    await debugRequests.submit(
+      () =>
+        submitObservedDebug(
+          transportValue({
+            type: "request",
+            value: { grant, command },
+          }),
+        ),
+      (messageId) => debugRequests.register(messageId, grant, command?.type),
     );
-    debugRequests.register(messageId, grant, command?.type);
   }
 
   async function debugRequest(command: any, timeoutMs = 10_000): Promise<any> {
     if (!debugGrant.value) throw new Error("debug grant 尚未就绪");
     const grant = debugGrant.value.token;
-    const messageId = await bridge.submitDebug(
-      transportValue({
-        type: "request",
-        value: { grant, command },
-      }),
+    return debugRequests.submit(
+      () =>
+        submitObservedDebug(
+          transportValue({
+            type: "request",
+            value: { grant, command },
+          }),
+        ),
+      (messageId) => {
+        const response = debugRequests.wait(messageId, grant, command?.type, timeoutMs);
+        schedulePump(0);
+        return response;
+      },
     );
-    const response = debugRequests.wait(messageId, grant, command?.type, timeoutMs);
-    schedulePump(0);
-    return response;
+  }
+
+  async function inspectTypedWatches(watches: string[]): Promise<Record<string, unknown>> {
+    if (import.meta.env.VITE_RUSTYERA_TEST !== "1")
+      throw new Error("typed observation requires test mode");
+    const epoch = runtimeEpoch.value;
+    const lifecycle = lifecycleGeneration;
+    if (!debugEnabled.value) {
+      await enableDebug();
+      await waitUntil(() => debugGrant.value != null, 10_000, "typed debug grant");
+    }
+    const alreadyStopped = debugStopToken(debugStop.value) != null;
+    if (!alreadyStopped) {
+      await pauseDebug();
+      await waitUntil(() => debugStopToken(debugStop.value) != null, 10_000, "typed debug stop");
+    }
+    const stop = { ...debugStopToken(debugStop.value) };
+    const current = () =>
+      lifecycle === lifecycleGeneration &&
+      sameServiceInteger(epoch, runtimeEpoch.value) &&
+      ["session_epoch", "pause_epoch", "program_generation", "runtime_revision"].every((field) =>
+        sameServiceInteger(stop[field], debugStopToken(debugStop.value)?.[field]),
+      );
+    try {
+      return await readTestTypedWatches(
+        watches,
+        stop,
+        debugRequest,
+        () => {
+          if (!current()) throw new Error("typed watch stop or session changed");
+        },
+        lifecycle,
+      );
+    } finally {
+      // Never resume a replacement session or somebody else's newer stop.
+      if (!alreadyStopped && current()) await continueDebug();
+    }
   }
 
   async function inspectWatches(watches: string[]): Promise<Record<string, unknown>> {
@@ -2578,7 +3167,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       !debugGrant.value ||
       debugStopToken(debugStop.value) ||
       debugRequests.pausePending ||
-      !["running", "waiting_input", "waiting_external"].includes(phase.value)
+      !["running", "waiting_input", "waiting_external", "faulted"].includes(phase.value)
     )
       return;
     debugRequests.pausePending = true;
@@ -2769,13 +3358,45 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await runtimeClientPreferences.save(scope, value);
   }
 
-  async function projectViewport(measurement = currentGameViewportMeasurement()): Promise<void> {
+  async function projectViewport(
+    measurement = currentGameViewportMeasurement(),
+    layoutIdentity = viewportLayoutIdentity,
+  ): Promise<void> {
+    viewportLayoutIdentity = layoutIdentity;
+    const environmentIdentity = viewportEnvironmentIdentity();
+    if (projectionObservationBarriers.size > 0 && measurement != null) {
+      deferredViewportProjection = { measurement: { ...measurement }, layoutIdentity };
+      return;
+    }
     await runtimeViewport.observe(
       measurement,
       runtimePump.ready,
       presentation.revision,
       prompt.value,
+      viewportStyleIdentity(layoutIdentity),
+      environmentIdentity,
     );
+    if (measurement) {
+      viewportLayoutIdentityAtProjection = layoutIdentity;
+    }
+  }
+
+  async function flushDeferredViewportProjection(batchSequence: number): Promise<void> {
+    if (
+      !deferredViewportProjection ||
+      projectionObservationBarriers.size > 0 ||
+      viewportProjectionFlushAfterBatch == null ||
+      batchSequence < viewportProjectionFlushAfterBatch
+    )
+      return;
+    const deferred = deferredViewportProjection;
+    deferredViewportProjection = undefined;
+    viewportProjectionFlushAfterBatch = undefined;
+    try {
+      await projectViewport(deferred.measurement, deferred.layoutIdentity);
+    } catch (error) {
+      log("warning", `延后提交视口投影失败：${String(error)}`);
+    }
   }
 
   async function settleProjectViewport(): Promise<void> {
@@ -2789,12 +3410,166 @@ export const useRuntimeStore = defineStore("runtime", () => {
       value: {
         focused: document.hasFocus(),
         visible: document.visibilityState === "visible",
-        audio_available: true,
+        audio_available: audio.providerAvailable(),
         reduce_motion: matchMedia("(prefers-reduced-motion: reduce)").matches,
         high_contrast: matchMedia("(prefers-contrast: more)").matches,
         screen_reader: false,
       },
     });
+  }
+
+  function resetDeviceInputState(clearPhysicalState: boolean): void {
+    deviceGeneration += 1;
+    deviceEventSequence = 0;
+    devicePumpTimeAdvancePending = false;
+    deviceSubmissionFailure = undefined;
+    deviceSynchronizationPending = true;
+    if (!clearPhysicalState) return;
+    heldKeys.clear();
+    heldMouseButtons.clear();
+    heldMousePositions.clear();
+    keyToggleStates.clear();
+  }
+
+  function queueDeviceState(
+    device: "keyboard" | "mouse",
+    code: number,
+    pressed: boolean,
+    toggle: boolean,
+    repeat: boolean,
+    x = 0,
+    y = 0,
+  ): Promise<void> {
+    if (!runtimePump.ready || !Number.isInteger(code) || code < 0 || code > 255)
+      return Promise.resolve();
+    const generation = deviceGeneration;
+    const eventSequence = ++deviceEventSequence;
+    const message: RuntimeMessage = {
+      type: "device_state_changed",
+      value: {
+        event_sequence: eventSequence,
+        toggle,
+        repeat,
+        device,
+        code,
+        pressed,
+        x: Math.max(-2147483648, Math.min(2147483647, Math.trunc(x))),
+        y: Math.max(-2147483648, Math.min(2147483647, Math.trunc(y))),
+        monotonic_time_ns: testEnvironment.sampleMonotonic(),
+      },
+    };
+    const submission = deviceSubmissionTail.then(async () => {
+      if (generation !== deviceGeneration || !runtimePump.ready) return;
+      if (deviceSubmissionFailure?.generation === generation) throw deviceSubmissionFailure.error;
+      await send(message);
+    });
+    deviceSubmissionTail = submission.catch((error) => {
+      if (generation !== deviceGeneration) return;
+      if (!deviceSubmissionFailure) {
+        deviceSubmissionFailure = { generation, error };
+        log("warning", `设备状态提交失败：${String(error)}`, true, "none");
+      }
+    });
+    return deviceSubmissionTail;
+  }
+
+  function synchronizeHeldDeviceState(): Promise<void> {
+    if (!deviceSynchronizationPending || !runtimePump.ready || BigInt(runtimeEpoch.value) === 0n)
+      return deviceSubmissionTail;
+    deviceSynchronizationPending = false;
+    for (const code of [...heldKeys].sort((left, right) => left - right))
+      void queueDeviceState("keyboard", code, true, keyToggleStates.get(code) ?? false, false);
+    for (const code of [...heldMouseButtons].sort((left, right) => left - right)) {
+      const [x, y] = heldMousePositions.get(code) ?? [0, 0];
+      void queueDeviceState("mouse", code, true, false, false, x, y);
+    }
+    return deviceSubmissionTail;
+  }
+
+  async function awaitDeviceSubmissions(): Promise<void> {
+    await synchronizeHeldDeviceState();
+    await deviceSubmissionTail;
+    if (deviceSubmissionFailure?.generation === deviceGeneration)
+      throw deviceSubmissionFailure.error;
+  }
+
+  function observePhysicalDeviceState(
+    device: "keyboard" | "mouse",
+    code: number,
+    pressed: boolean,
+    toggle: boolean,
+    repeat: boolean,
+    x = 0,
+    y = 0,
+  ): Promise<void> {
+    if (!Number.isInteger(code) || code < 0 || code > 255) return Promise.resolve();
+    // Synchronize the state before this edge. Events observed while no session
+    // was ready remain represented by the held sets and are replayed first.
+    void synchronizeHeldDeviceState();
+    if (device === "keyboard") {
+      keyToggleStates.set(code, toggle);
+      if (pressed) heldKeys.add(code);
+      else heldKeys.delete(code);
+    } else if (pressed) {
+      heldMouseButtons.add(code);
+      heldMousePositions.set(code, [x, y]);
+    } else {
+      heldMouseButtons.delete(code);
+      heldMousePositions.delete(code);
+    }
+    return queueDeviceState(device, code, pressed, toggle, repeat, x, y);
+  }
+
+  async function pumpDevices(
+    epoch: ServiceInteger,
+    afterEventSequence: ServiceInteger,
+  ): Promise<ServiceInteger> {
+    const generation = deviceGeneration;
+    // A zero-delay task yields to keyboard, mouse, blur and visibility callbacks
+    // already queued for this browser/WebView pump. It is an event boundary, not
+    // a timing approximation.
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    await awaitDeviceSubmissions();
+    if (generation !== deviceGeneration || !sameServiceInteger(epoch, runtimeEpoch.value))
+      throw new RuntimeServiceError("stale_projection", "device pump epoch changed");
+    if (BigInt(afterEventSequence) > BigInt(deviceEventSequence))
+      throw new RuntimeServiceError(
+        "invalid_request",
+        "device pump watermark exceeds submitted events",
+      );
+    // A positive snake AWAIT starts only after this acknowledgement. Its duration is retained by
+    // core rather than exposed in the device-pump ABI, so keep sampling frontend time until core
+    // leaves waiting_external. AWAIT 0 may receive one harmless sample before its phase update.
+    devicePumpTimeAdvancePending = true;
+    return deviceEventSequence;
+  }
+
+  async function signalMessageSkip(): Promise<void> {
+    if (heldMouseButtons.has(2)) return;
+    // Touch and accessibility secondary actions have no MouseEvent. Submit a
+    // balanced compatibility pair so they do not leave a fabricated held button.
+    void synchronizeHeldDeviceState();
+    void queueDeviceState("mouse", 2, true, false, false);
+    void queueDeviceState("mouse", 2, false, false, false);
+    await awaitDeviceSubmissions();
+  }
+
+  function onClientStateBoundary(): void {
+    if (!document.hasFocus() || document.visibilityState !== "visible") {
+      for (const code of [...heldKeys])
+        void observePhysicalDeviceState(
+          "keyboard",
+          code,
+          false,
+          keyToggleStates.get(code) ?? false,
+          false,
+        );
+      for (const code of [...heldMouseButtons]) {
+        const [x, y] = heldMousePositions.get(code) ?? [0, 0];
+        void observePhysicalDeviceState("mouse", code, false, false, false, x, y);
+      }
+    }
+    void sendClientState();
   }
 
   async function shutdown(): Promise<void> {
@@ -2808,7 +3583,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await send({ type: "shutdown_request", value: { graceful: true } });
   }
 
-  async function send(message: RuntimeMessage, correlationId?: number): Promise<number | bigint> {
+  async function send(
+    message: RuntimeMessage,
+    correlationId?: ServiceInteger,
+  ): Promise<number | bigint> {
+    if (message.type === "input" || message.type === "client_state_changed")
+      await awaitDeviceSubmissions();
+    const observedEpoch = runtimeEpoch.value;
+    const observedSessionGeneration = runtimeSessionObservationGeneration;
     const telemetry = startupTelemetry.value;
     const startupStart =
       message.type === "start" &&
@@ -2816,6 +3598,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       telemetry.milestones.startSubmittedMs == null;
     if (startupStart) telemetry.milestones.startSubmittedMs = startupTelemetryState.elapsedMs();
     const transported = transportValue(message);
+    const observedMessage = testEvidence.prepareMessage(transported);
     if (
       bridge.kind === "tauri" &&
       message.type === "input" &&
@@ -2825,7 +3608,17 @@ export const useRuntimeStore = defineStore("runtime", () => {
       const batch = await runtimePump.submitAndHandle(() =>
         bridge.submitRuntimeAndPump!(transported, correlationId),
       );
-      if (batch) return batch.submittedMessageId;
+      if (batch) {
+        testEvidence.sent(
+          "runtime",
+          observedMessage,
+          batch.submittedMessageId,
+          observedEpoch,
+          correlationId,
+          observedSessionGeneration,
+        );
+        return batch.submittedMessageId;
+      }
     }
     const submission = bridge.submitRuntime(transported, correlationId);
     // WorkerClient posts both requests to one Worker port, so queue the drive immediately:
@@ -2833,6 +3626,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
     // Native IPC does not expose that ordering guarantee and keeps the acknowledgement barrier.
     if (bridge.kind === "browser") schedulePump(0);
     const messageId = await submission;
+    testEvidence.sent(
+      "runtime",
+      observedMessage,
+      messageId,
+      observedEpoch,
+      correlationId,
+      observedSessionGeneration,
+    );
     if (startupStart) startupTelemetryState.startMessageId = String(messageId);
     if (bridge.kind !== "browser") schedulePump(0);
     return messageId;
@@ -2932,7 +3733,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function onKeyDown(event: KeyboardEvent): void {
-    heldKeys.add(event.keyCode);
+    const code = keyboardDeviceCode(event);
+    if (code != null)
+      void observePhysicalDeviceState(
+        "keyboard",
+        code,
+        true,
+        keyboardToggle(event, code),
+        event.repeat,
+      );
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
       event.preventDefault();
       void undo();
@@ -2968,7 +3777,65 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function onKeyUp(event: KeyboardEvent): void {
-    heldKeys.delete(event.keyCode);
+    const code = keyboardDeviceCode(event);
+    if (code != null)
+      void observePhysicalDeviceState("keyboard", code, false, keyboardToggle(event, code), false);
+  }
+
+  function keyboardDeviceCode(event: KeyboardEvent): number | undefined {
+    const physical = event.code;
+    const letter = /^Key([A-Z])$/.exec(physical)?.[1];
+    if (letter) return letter.charCodeAt(0);
+    const digit = /^Digit([0-9])$/.exec(physical)?.[1];
+    if (digit) return digit.charCodeAt(0);
+    const numpad = /^Numpad([0-9])$/.exec(physical)?.[1];
+    if (numpad) return 96 + Number(numpad);
+    const functionKey = /^F([1-9]|1[0-9]|2[0-4])$/.exec(physical)?.[1];
+    if (functionKey) return 111 + Number(functionKey);
+    const standardized = KEYBOARD_DEVICE_CODES[physical];
+    if (standardized != null) return standardized;
+    return Number.isInteger(event.keyCode) && event.keyCode > 0 && event.keyCode <= 255
+      ? event.keyCode
+      : undefined;
+  }
+
+  function keyboardToggle(event: KeyboardEvent, code: number): boolean {
+    if (code === 20) return event.getModifierState("CapsLock");
+    if (code === 144) return event.getModifierState("NumLock");
+    if (code === 145) return event.getModifierState("ScrollLock");
+    return false;
+  }
+
+  function mouseCode(button: number): number | undefined {
+    return button === 0 ? 1 : button === 2 ? 2 : button === 1 ? 4 : undefined;
+  }
+
+  function onMouseDown(event: MouseEvent): void {
+    const code = mouseCode(event.button);
+    if (code == null) return;
+    void observePhysicalDeviceState(
+      "mouse",
+      code,
+      true,
+      false,
+      false,
+      event.clientX,
+      event.clientY,
+    );
+  }
+
+  function onMouseUp(event: MouseEvent): void {
+    const code = mouseCode(event.button);
+    if (code == null) return;
+    void observePhysicalDeviceState(
+      "mouse",
+      code,
+      false,
+      false,
+      false,
+      event.clientX,
+      event.clientY,
+    );
   }
 
   function liveMemoryCounters(): LiveMemoryCounters {
@@ -3115,6 +3982,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
     enableDebug,
     debugCommand,
     inspectWatches,
+    inspectTypedWatches,
+    testRuntimeEvidence: (messageTypes?: string[]) =>
+      testEvidence.snapshot(
+        runtimeSessionObservationGeneration,
+        messageTypes ? new Set(messageTypes) : undefined,
+      ),
+    testRuntimeEvidenceSummary: () => testEvidence.summary(runtimeSessionObservationGeneration),
+    testBackgroundWorkRevision: () => runtimePump.backgroundWorkRevision,
     openDebugDialog,
     closeDebugDialog,
     stepDebug,
@@ -3128,6 +4003,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     restoreState,
     testTransferState,
     testAudioPlaybackState,
+    testAudioProviderState,
     liveMemoryCounters,
   };
 });

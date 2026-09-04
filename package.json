@@ -7,6 +7,7 @@
     "dev": "vite --port 1420",
     "build": "vue-tsc -b && vite build",
     "build:wasm": "node scripts/build-wasm.mjs",
+    "fixture:snake-sql": "node scripts/generate-snake-sql-fixture.mjs",
     "benchmark:startup": "node scripts/startup-benchmark.mjs",
     "cargo:local": "node scripts/cargo-local.mjs",
     "check:core-rev": "node scripts/check-core-rev.mjs",
@@ -27,6 +28,7 @@
   },
   "dependencies": {
     "@noble/hashes": "^2.0.1",
+    "@sqlite.org/sqlite-wasm": "3.53.0-build1",
     "@tanstack/vue-virtual": "^3.13.12",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.4.0",

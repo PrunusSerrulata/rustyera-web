@@ -1,3 +1,4 @@
+import type { CompatibilityIdentity } from "@/core/compatibility";
 export type RuntimeMessage = { type: string; value?: any };
 export type DebugMessage = { type: string; value?: any };
 
@@ -349,6 +350,7 @@ export interface ProjectConfigurationEntry {
 }
 
 export interface ProjectConfigurationSnapshot {
+  compatibility?: CompatibilityIdentity;
   project_revision: number | bigint;
   source_digest: Uint8Array;
   entries: ProjectConfigurationEntry[];
@@ -416,6 +418,7 @@ export type DisplayRun =
   | { type: "text_layout"; text: string; style: TextStyle; columns: number }
   | {
       type: "button";
+      value: { type: "integer"; value: number | bigint } | { type: "string"; value: string };
       runs: DisplayRun[];
       token: InteractionToken;
       title?: string;
@@ -439,8 +442,8 @@ export type DisplayRun =
   | { type: "space"; width: PresentationLength };
 
 export interface InteractionToken {
-  epoch: number;
-  id: number;
+  epoch: number | bigint;
+  id: number | bigint;
 }
 
 export interface DisplayLine {
@@ -450,6 +453,19 @@ export interface DisplayLine {
   line_end: boolean;
   alignment: "left" | "center" | "right";
   runs: DisplayRun[];
+  text_background_eligible?: boolean;
+}
+
+export interface PresentationSettings {
+  drawable_width: number | bigint;
+  line_height: number | bigint;
+  background: Color;
+  button_focus_foreground: Color;
+  maximum_physical_lines: number;
+  prevent_button_wrap: boolean;
+  legacy_nonbutton_wrap: boolean;
+  drawable_height: number | bigint;
+  text_line_background?: Color | null;
 }
 
 export interface MediaPlacement {

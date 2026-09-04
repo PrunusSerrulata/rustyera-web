@@ -1,4 +1,4 @@
-import { flushPromises, mount } from "@vue/test-utils";
+import { enableAutoUnmount, flushPromises, mount } from "@vue/test-utils";
 import { nextTick, reactive } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -18,6 +18,7 @@ const store = reactive({
       sprites: [
         {
           name: "TW_TITLE000",
+          revision: 3,
           size: [1041, 16],
           frames: [
             {
@@ -44,11 +45,21 @@ vi.mock("@/platform", () => ({ platformBridge: () => ({}) }));
 vi.mock("@/stores/runtime", () => ({ useRuntimeStore: () => store }));
 
 import MediaImage from "@/components/MediaImage.vue";
+import {
+  HtmlMeasurementScope,
+  htmlMeasurementProjectionKey,
+  type HtmlMeasurementBinding,
+} from "@/components/htmlMeasurementProjection";
+import type { FrontendBridge } from "@/core/types";
 
 const canvasReplayStub = {
-  props: ["visible"],
-  template: '<canvas class="canvas-replay-test" :data-visible="String(visible)" />',
+  props: ["visible", "replay"],
+  template:
+    '<canvas class="canvas-replay-test" :data-visible="String(visible)" :data-revision="String(replay?.revision)" />',
 };
+
+// Earlier live wrappers must not react to the next case's shared store reset.
+enableAutoUnmount(afterEach);
 
 describe("Era sprite images", () => {
   beforeEach(() => {
@@ -58,6 +69,7 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "TW_TITLE000",
+        revision: 3,
         size: [1041, 16],
         frames: [
           {
@@ -105,6 +117,7 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "TW_TITLE000",
+        revision: 3,
         size: [1041, 16],
         frames: [
           {
@@ -133,6 +146,30 @@ describe("Era sprite images", () => {
     expect(wrapper.get<HTMLElement>(".media-sprite").attributes("style")).toContain(
       "width: 1041px",
     );
+  });
+
+  it("applies a resolved HTML fixed matrix in place of the opacity filter", async () => {
+    const wrapper = mount(MediaImage, {
+      props: {
+        placement: {
+          resource_id: "matrix.png",
+          width: 10_000,
+          height: 10_000,
+          depth: 0,
+          opacity: { numerator: 1, denominator: 2 },
+          revision: 3,
+          color_matrix: {
+            type: "fixed",
+            value: Array.from({ length: 25 }, (_, index) => (index % 6 === 0 ? 256 : 0)),
+          },
+        },
+      },
+    });
+    await flushPromises();
+    expect(wrapper.get("feColorMatrix").attributes("values")?.split(" ")).toHaveLength(20);
+    const imageStyle = wrapper.get("img").attributes("style");
+    expect(wrapper.get(".media-positioned").attributes("style")).toContain("opacity: 1");
+    expect(imageStyle).toContain("filter: url(");
   });
 
   it("matches sprite names case-insensitively and crops the source sheet", async () => {
@@ -165,6 +202,7 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "女性",
+        revision: 4,
         size: [64, 64],
         frames: [
           {
@@ -201,6 +239,7 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "钟表_09_00",
+        revision: 4,
         size: [100, 100],
         frames: [
           {
@@ -327,6 +366,7 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "portrait",
+        revision: 5,
         size: [100, 100],
         frames: [{ resource_id: "portrait.webp", source_rectangle: [10, 20, 100, 100] }],
       },
@@ -431,11 +471,13 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "portrait",
+        revision: 6,
         size: [100, 100],
         frames: [{ resource_id: "base.webp", source_rectangle: [0, 0, 100, 100] }],
       },
       {
         name: "portrait_hover",
+        revision: 6,
         size: [100, 100],
         frames: [{ resource_id: "hover.webp", source_rectangle: [0, 0, 100, 100] }],
       },
@@ -489,14 +531,17 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "颜绘3000",
+        revision: 8,
         size: [150, 150],
         frames: [],
         canvas_id: 42,
+        canvas_revision: 7,
       },
     ];
     store.presentation.resources.canvases = [
       {
         canvas_id: 42,
+        revision: 7,
         size: { width: 150, height: 150 },
         commands: [],
       },
@@ -530,14 +575,54 @@ describe("Era sprite images", () => {
     expect(canvas.attributes("displayheight")).toBe("108");
   });
 
+  it("renders a selected scene animation frame backed by a replay canvas", () => {
+    store.presentation.resources.sprites = [
+      {
+        name: "ANIMATED",
+        revision: 9,
+        size: [20, 20],
+        frames: [{ canvas_id: 42, canvas_revision: 7, delay_ms: 20 }],
+      },
+    ];
+    store.presentation.resources.canvases = [
+      { canvas_id: 42, revision: 6, size: { width: 1, height: 1 }, commands: [] },
+      { canvas_id: 42, revision: 7, size: { width: 20, height: 20 }, commands: [] },
+    ];
+    const wrapper = mount(MediaImage, {
+      props: {
+        placement: {
+          resource_id: "ANIMATED",
+          width: 20_000,
+          height: 20_000,
+          depth: 0,
+          opacity: { numerator: 1, denominator: 1 },
+          revision: 9,
+        },
+        allowFrameCanvas: true,
+        spriteRevision: 9,
+      },
+      global: { stubs: { CanvasReplay: canvasReplayStub } },
+    });
+    expect(wrapper.find(".canvas-replay-test").exists()).toBe(true);
+    expect(wrapper.get(".canvas-replay-test").attributes("data-revision")).toBe("7");
+  });
+
   it("retains the generated canvas until its final sprite has painted", async () => {
     const animation = {
       canvas_id: 42,
+      revision: 7,
       size: { width: 100, height: 100 },
       commands: [],
     };
     store.presentation.resources.sprites = [
-      { name: "portrait", size: [100, 100], frames: [], canvas_id: 42 },
+      {
+        name: "portrait",
+        revision: 9,
+        size: [100, 100],
+        frames: [],
+        canvas_id: 42,
+        canvas_revision: 7,
+      },
     ];
     store.presentation.resources.canvases = [animation];
     let resolveFinal!: (value: string) => void;
@@ -571,6 +656,7 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "portrait",
+        revision: 9,
         size: [100, 100],
         frames: [{ resource_id: "portrait.webp", source_rectangle: [0, 0, 100, 100] }],
       },
@@ -604,11 +690,19 @@ describe("Era sprite images", () => {
   it("cancels stale non-line handoffs and keeps the canvas on image failure or unmount", async () => {
     const animation = {
       canvas_id: 42,
+      revision: 7,
       size: { width: 100, height: 100 },
       commands: [],
     };
     store.presentation.resources.sprites = [
-      { name: "portrait", size: [100, 100], frames: [], canvas_id: 42 },
+      {
+        name: "portrait",
+        revision: 9,
+        size: [100, 100],
+        frames: [],
+        canvas_id: 42,
+        canvas_revision: 7,
+      },
     ];
     store.presentation.resources.canvases = [animation];
     const animationFrames: FrameRequestCallback[] = [];
@@ -635,6 +729,7 @@ describe("Era sprite images", () => {
     store.presentation.resources.sprites = [
       {
         name: "portrait",
+        revision: 9,
         size: [100, 100],
         frames: [{ resource_id: "portrait.webp", source_rectangle: [0, 0, 100, 100] }],
       },
@@ -664,5 +759,158 @@ describe("Era sprite images", () => {
     expect(animationFrames).toHaveLength(1);
     wrapper.unmount();
     expect(cancelAnimationFrame).toHaveBeenCalledTimes(2);
+  });
+
+  function measurementScope(readMetadata = vi.fn(async () => ({ width: 100, height: 50 }))) {
+    const viewport = document.createElement("section");
+    Object.defineProperties(viewport, {
+      clientWidth: { value: 320 },
+      clientHeight: { value: 200 },
+    });
+    document.body.append(viewport);
+    const controller = new AbortController();
+    const binding: HtmlMeasurementBinding = {
+      viewport,
+      viewportSize: { width: 320, height: 200 },
+      context: { presentationRevision: 1, environmentRevision: 2, projectionSpaceRevision: 3 },
+      resources: {
+        sprites: [
+          {
+            name: "MEASURE",
+            revision: 4,
+            size: [100, 50],
+            frames: [{ resource_id: "frozen.png", source_rectangle: [0, 0, 100, 50] }],
+          },
+        ],
+        canvases: [],
+      },
+      resourceGeneration: 17,
+      preferences: { fontFamilyOverride: null, fontSizeOverridePx: null, imageScale: 1 },
+      replaceFullWidthSpaces: false,
+      resourceBridge: {
+        readImageMetadata: readMetadata,
+        readResource: vi.fn(),
+      } as unknown as FrontendBridge,
+    };
+    const base = {
+      foreground: { red: 0, green: 0, blue: 0, alpha: 255 },
+      bold: false,
+      italic: false,
+      underline: false,
+      strikeout: false,
+      font_millipixels: 16000,
+    };
+    const scope = new HtmlMeasurementScope(
+      binding,
+      { current: base, base, settings: { line_height: 17000 } },
+      { signal: controller.signal, assertCurrent() {} },
+    );
+    return {
+      scope,
+      controller,
+      binding,
+      dispose() {
+        scope.dispose();
+        viewport.remove();
+      },
+    };
+  }
+
+  function mountMeasuredImage(scope: HtmlMeasurementScope) {
+    return mount(MediaImage, {
+      props: {
+        placement: {
+          resource_id: "MEASURE",
+          revision: 4,
+          width: 0,
+          height: 17000,
+          opacity: { numerator: 1, denominator: 1 },
+        },
+      },
+      global: { provide: { [htmlMeasurementProjectionKey as symbol]: scope } },
+    });
+  }
+
+  it("measures through the frozen image binding without following mutable project resources", async () => {
+    vi.stubGlobal(
+      "Image",
+      class {
+        src = "";
+        naturalWidth = 100;
+        naturalHeight = 50;
+        decode = vi.fn().mockResolvedValue(undefined);
+      },
+    );
+    const measurement = measurementScope();
+    const wrapper = mountMeasuredImage(measurement.scope);
+    try {
+      store.projectResourceGeneration = 999;
+      store.presentation.resources.sprites = [];
+      await measurement.scope.settle();
+      await nextTick();
+      expect(resourceUrl).toHaveBeenCalledWith(
+        measurement.binding.resourceBridge,
+        "frozen.png",
+        4,
+        17,
+      );
+      expect(wrapper.get("img").attributes("src")).toBe("blob:era-image");
+      expect(wrapper.get<HTMLElement>(".media-positioned").element.style.width).toBe("34px");
+    } finally {
+      wrapper.unmount();
+      measurement.dispose();
+    }
+    expect(releaseResourceUrl).toHaveBeenCalled();
+  });
+
+  it("rejects oversized image metadata before acquiring or decoding the resource", async () => {
+    const measurement = measurementScope(vi.fn(async () => ({ width: 8193, height: 1 })));
+    const wrapper = mountMeasuredImage(measurement.scope);
+    try {
+      await expect(measurement.scope.settle()).rejects.toMatchObject({
+        category: "resource_limit",
+      });
+      expect(resourceUrl).not.toHaveBeenCalled();
+      expect(wrapper.find("img").exists()).toBe(false);
+    } finally {
+      wrapper.unmount();
+      measurement.dispose();
+    }
+  });
+
+  it("rejects an image decode cancelled in flight and releases the URL lease", async () => {
+    let finish!: () => void;
+    const decode = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    vi.stubGlobal(
+      "Image",
+      class {
+        src = "";
+        naturalWidth = 100;
+        naturalHeight = 50;
+        decode = decode;
+      },
+    );
+    const measurement = measurementScope();
+    const wrapper = mountMeasuredImage(measurement.scope);
+    const rejected = expect(measurement.scope.settle()).rejects.toMatchObject({
+      category: "stale_projection",
+    });
+    await flushPromises();
+    expect(decode).toHaveBeenCalledOnce();
+    measurement.controller.abort();
+    finish();
+    try {
+      await rejected;
+      expect(wrapper.find("img").exists()).toBe(false);
+    } finally {
+      wrapper.unmount();
+      measurement.dispose();
+    }
+    expect(releaseResourceUrl).toHaveBeenCalled();
   });
 });

@@ -144,6 +144,44 @@ describe("BrowserFileSaveDialog", () => {
     await vi.waitFor(() => expect(activeRelease).toHaveBeenCalledOnce());
   });
 
+  it("releases a browser download only after explicit confirmation, not Escape", async () => {
+    const share = vi.fn();
+    vi.stubGlobal("navigator", { share });
+    const wrapper = mount(BrowserFileSaveDialog, { attachTo: document.body });
+    const release = vi.fn();
+    window.dispatchEvent(
+      new CustomEvent(BROWSER_FILE_SAVE_EVENT, {
+        detail: { file: new File([], "large.reraproj"), mode: "download", release },
+      }),
+    );
+    await nextTick();
+    const dialog = document.querySelector<HTMLElement>("[aria-label='文件下载已开始']")!;
+    dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await nextTick();
+    expect(release).not.toHaveBeenCalled();
+    expect(dialog.querySelector<HTMLButtonElement>("[aria-label='关闭']")?.disabled).toBe(true);
+    button("下载已结束").click();
+    await nextTick();
+    expect(release).toHaveBeenCalledOnce();
+    expect(share).not.toHaveBeenCalled();
+    expect(document.querySelector("[aria-label='文件下载已开始']")).toBeNull();
+    wrapper.unmount();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("does not delete a browser download's backing file on unmount", async () => {
+    const wrapper = mount(BrowserFileSaveDialog, { attachTo: document.body });
+    const release = vi.fn();
+    window.dispatchEvent(
+      new CustomEvent(BROWSER_FILE_SAVE_EVENT, {
+        detail: { file: new File([], "active.reraproj"), mode: "download", release },
+      }),
+    );
+    await nextTick();
+    wrapper.unmount();
+    expect(release).not.toHaveBeenCalled();
+  });
+
   it("ignores malformed global save events", async () => {
     vi.stubGlobal("navigator", { share: vi.fn() });
     const wrapper = mount(BrowserFileSaveDialog, { attachTo: document.body });

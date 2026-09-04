@@ -1,3 +1,4 @@
+import { referenceCompatibility, snakeCompatibility } from "./compatibilityTestSupport";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { blake3 } from "@noble/hashes/blake3.js";
 
@@ -299,12 +300,37 @@ interface WorkerRequest {
 }
 
 const requests: WorkerRequest[] = [];
+// Metadata preflights are asserted separately from the existing byte-transfer contract.
+const metadataRequests: WorkerRequest[] = [];
 const runtimeWorkers: MemoryWorker[] = [];
 const workerEvents: Array<
   | { type: "request"; worker: MemoryWorker; method: string }
   | { type: "terminate"; worker: MemoryWorker }
 > = [];
 let respond: (method: string, args: unknown[]) => unknown;
+
+function workerResponse(method: string, args: unknown[]): unknown {
+  const result = respond(method, args);
+  if (method === "resolveProjectCompatibility" && (result == null || typeof result !== "object"))
+    return {
+      request_id: 0,
+      identity: referenceCompatibility(),
+      configuration_digest:
+        (args[0] as { payload?: { value?: string } } | null)?.payload?.value == null
+          ? null
+          : blake3(
+              new TextEncoder().encode(
+                (args[0] as { payload: { value: string } }).payload.value
+                  .replace(/^\uFEFF+/, "")
+                  .replace(/\r\n?/g, "\n"),
+              ),
+            ),
+      diagnostics: [],
+    };
+  if (method === "projectFileManifest" && (result == null || typeof result !== "object"))
+    return { project_revision: 1, compatibility: referenceCompatibility(), files: [] };
+  return result;
+}
 
 class MemoryWorker {
   onmessage?: (event: MessageEvent) => void;
@@ -318,7 +344,12 @@ class MemoryWorker {
   }
 
   postMessage(message: WorkerRequest["message"], transfer: Transferable[] = []): void {
-    requests.push({ worker: this, message, transfer });
+    const destination = ["resolveProjectCompatibility", "projectFileManifest"].includes(
+      message.method,
+    )
+      ? metadataRequests
+      : requests;
+    destination.push({ worker: this, message, transfer });
     workerEvents.push({ type: "request", worker: this, method: message.method });
     queueMicrotask(() => {
       try {
@@ -332,7 +363,7 @@ class MemoryWorker {
           } as MessageEvent);
         }
         this.onmessage?.({
-          data: { id: message.id, result: respond(message.method, message.args) },
+          data: { id: message.id, result: workerResponse(message.method, message.args) },
         } as MessageEvent);
       } catch (error) {
         this.onmessage?.({
@@ -353,6 +384,7 @@ async function installCache(root: MemoryDirectoryHandle, bytes: Uint8Array): Pro
 describe("browser startup bridge", () => {
   beforeEach(() => {
     requests.length = 0;
+    metadataRequests.length = 0;
     runtimeWorkers.length = 0;
     workerEvents.length = 0;
     pickBrowserDirectory.mockReset();
@@ -371,6 +403,147 @@ describe("browser startup bridge", () => {
     vi.stubGlobal("Worker", MemoryWorker);
   });
 
+  it("resolves compatibility before cache lookup and binds snake storage", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    const source = await root.getFileHandle("main.erb", { create: true });
+    await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
+    await installCache(root, Uint8Array.of(9, 8, 7));
+    pickBrowserDirectory.mockResolvedValue({
+      handle: root,
+      persistHandle: false,
+      projectName: "game",
+    });
+    respond = (method) =>
+      method === "resolveProjectCompatibility"
+        ? {
+            request_id: 0,
+            identity: snakeCompatibility(),
+            configuration_digest: null,
+            diagnostics: [],
+          }
+        : 1n;
+    const bridge = new BrowserBridge();
+    await bridge.openProject();
+    expect(metadataRequests.map((request) => request.message.method)).toEqual([
+      "resolveProjectCompatibility",
+    ]);
+    expect(requests.map((request) => request.message.method)).toEqual(["loadProjectBinary"]);
+    const encoded = requests[0].message.args[0] as Uint8Array;
+    const view = new DataView(encoded.buffer);
+    const identity = JSON.parse(
+      new TextDecoder().decode(encoded.subarray(24, 24 + view.getUint32(20, true))),
+    );
+    expect(identity).toEqual(snakeCompatibility());
+    const owned = bridge as unknown as { project: BrowserProject };
+    expect(owned.project.compatibility()).toEqual(snakeCompatibility());
+    expect((await owned.project.dataRoot()).name).toBe("emuera.skia.snake");
+  });
+
+  it("does not bind a late compatibility result after the open was cancelled", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const manifest = await project.scanQuick();
+    const response = deferred<unknown>();
+    respond = (method) => (method === "resolveProjectCompatibility" ? response.promise : 1n);
+    const bridge = new BrowserBridge();
+    const pending = (
+      bridge as unknown as {
+        resolveCompatibility(project: BrowserProject, manifest: unknown): Promise<void>;
+      }
+    ).resolveCompatibility(project, manifest);
+    const rejected = expect(pending).rejects.toThrow(/取消|关闭/);
+    await flushMicrotasks();
+    await bridge.dispose();
+    response.resolve({ request_id: 0, identity: snakeCompatibility(), diagnostics: [] });
+    await rejected;
+    expect(manifest.compatibility).toBeUndefined();
+    expect(requests).toEqual([]);
+  });
+
+  it("does not resurrect an open whose scan completes after disposal", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    const release = vi.fn();
+    pickBrowserDirectory.mockResolvedValue({ handle: root, persistHandle: false, release });
+    const delayed = deferred<Awaited<ReturnType<BrowserProject["scanQuick"]>>>();
+    const scan = vi.spyOn(BrowserProject.prototype, "scanQuick").mockReturnValue(delayed.promise);
+    const bridge = new BrowserBridge();
+    const pending = bridge.openProject();
+    const rejected = expect(pending).rejects.toThrow(/取消/);
+    await vi.waitFor(() => expect(scan).toHaveBeenCalledOnce());
+    await bridge.dispose();
+    delayed.resolve({ project_revision: 1, files: [] });
+    await rejected;
+    expect(metadataRequests).toEqual([]);
+    expect(requests).toEqual([]);
+    expect(release).toHaveBeenCalledOnce();
+    expect((bridge as unknown as { project?: BrowserProject }).project).toBeUndefined();
+  });
+
+  it("does not submit a delayed cache result to a replacement session", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    pickBrowserDirectory.mockResolvedValue({ handle: root, persistHandle: false });
+    const delayed = deferred<Uint8Array | undefined>();
+    const cache = vi
+      .spyOn(BrowserProject.prototype, "readCompiledCache")
+      .mockReturnValue(delayed.promise);
+    const bridge = new BrowserBridge();
+    const pending = bridge.openProject();
+    const rejected = expect(pending).rejects.toThrow(/Runtime 已替换/);
+    await vi.waitFor(() => expect(cache).toHaveBeenCalledOnce());
+    await bridge.createSession(SESSION_OPTIONS);
+    delayed.resolve(Uint8Array.of(1, 2, 3));
+    await rejected;
+    expect(requests.map((request) => request.message.method)).toEqual(["create"]);
+    expect((bridge as unknown as { project?: BrowserProject }).project).toBeUndefined();
+  });
+
+  it("rejects a same-profile configuration change discovered during materialization", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    const configuration = await root.getFileHandle("reraconfig.toml", { create: true });
+    const original = '[meta]\nschema_version = 4\n[compatibility]\nprofile = "emuera.em"\n';
+    await (await configuration.createWritable()).write(original);
+    pickBrowserDirectory.mockResolvedValue({ handle: root, persistHandle: false });
+    vi.spyOn(BrowserProject.prototype, "quickManifestHasAllSources").mockReturnValue(false);
+    const materialize = BrowserProject.prototype.materialize;
+    vi.spyOn(BrowserProject.prototype, "materialize").mockImplementation(async function (
+      this: BrowserProject,
+      ...args
+    ) {
+      await (await configuration.createWritable()).write(original + "# edited after resolve\n");
+      return materialize.apply(this, args);
+    });
+    const bridge = new BrowserBridge();
+    await expect(bridge.openProject()).rejects.toThrow(/兼容解析后发生变化/);
+    expect(metadataRequests.map((request) => request.message.method)).toEqual([
+      "resolveProjectCompatibility",
+    ]);
+    expect(requests).toEqual([]);
+    expect((bridge as unknown as { project?: BrowserProject }).project).toBeUndefined();
+  });
+
+  it("never falls back to source or binds storage after invalid compatibility", async () => {
+    const root = new MemoryDirectoryHandle("game");
+    pickBrowserDirectory.mockResolvedValue({
+      handle: root,
+      persistHandle: false,
+      projectName: "game",
+    });
+    respond = (method) =>
+      method === "resolveProjectCompatibility"
+        ? {
+            request_id: 0,
+            identity: null,
+            configuration_digest: null,
+            diagnostics: [{ message: "unknown profile" }],
+          }
+        : 1n;
+    const bridge = new BrowserBridge();
+    await expect(bridge.openProject()).rejects.toThrow("unknown profile");
+    expect(requests).toEqual([]);
+    expect((bridge as unknown as { project?: BrowserProject }).project).toBeUndefined();
+    expect(await directoryEntryNames(root)).not.toContain("profiles");
+  });
+
   it("reloads a constrained packaged project and imports its snapshot only after replacing the old VM worker", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", {
@@ -386,7 +559,7 @@ describe("browser startup bridge", () => {
       if (method === "loadProjectFile")
         return {
           storageKey: "ios-restore-key",
-          manifest: { project_revision: 3, files: [] },
+          manifest: { project_revision: 3, compatibility: referenceCompatibility(), files: [] },
           cacheImported: true,
         };
       return 1n;
@@ -474,7 +647,7 @@ describe("browser startup bridge", () => {
       handle: root,
       persistHandle: false,
       projectName: "game",
-      manifest: { project_revision: 1, files: [] },
+      manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
     });
     const bridge = new BrowserBridge();
 
@@ -503,14 +676,14 @@ describe("browser startup bridge", () => {
         handle: new MemoryDirectoryHandle("first"),
         persistHandle: false,
         projectName: "first",
-        manifest: { project_revision: 1, files: [] },
+        manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
         release: firstRelease,
       })
       .mockResolvedValueOnce({
         handle: new MemoryDirectoryHandle("second"),
         persistHandle: false,
         projectName: "second",
-        manifest: { project_revision: 1, files: [] },
+        manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
         release: secondRelease,
       });
     const bridge = new BrowserBridge();
@@ -535,7 +708,7 @@ describe("browser startup bridge", () => {
         persistHandle: false,
         storagePersistent: true,
         projectName: "active",
-        manifest: { project_revision: 1, files: [] },
+        manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
         release: firstRelease,
       })
       .mockResolvedValueOnce({
@@ -543,7 +716,7 @@ describe("browser startup bridge", () => {
         persistHandle: false,
         storagePersistent: false,
         projectName: "candidate",
-        manifest: { project_revision: 1, files: [] },
+        manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
         release: candidateRelease,
       });
     const bridge = new BrowserBridge();
@@ -570,14 +743,14 @@ describe("browser startup bridge", () => {
         handle: new MemoryDirectoryHandle("first"),
         persistHandle: false,
         projectName: "first",
-        manifest: { project_revision: 1, files: [] },
+        manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
         release: firstRelease,
       })
       .mockResolvedValueOnce({
         handle: new MemoryDirectoryHandle("second"),
         persistHandle: false,
         projectName: "second",
-        manifest: { project_revision: 1, files: [] },
+        manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
         release: secondRelease,
       });
     vi.spyOn(ProjectFontRegistry.prototype, "replace")
@@ -601,7 +774,7 @@ describe("browser startup bridge", () => {
       handle: new MemoryDirectoryHandle("directory"),
       persistHandle: false,
       projectName: "directory",
-      manifest: { project_revision: 1, files: [] },
+      manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
       release: directoryRelease,
     });
     const file = new File([Uint8Array.of(1, 2, 3)], "packaged.reraproj");
@@ -610,7 +783,7 @@ describe("browser startup bridge", () => {
       if (method === "loadProjectFileBytes") {
         return {
           storageKey: "packaged-font-failure",
-          manifest: { project_revision: 2, files: [] },
+          manifest: { project_revision: 2, compatibility: referenceCompatibility(), files: [] },
           cacheImported: true,
         };
       }
@@ -635,7 +808,7 @@ describe("browser startup bridge", () => {
     pickBrowserDirectory.mockResolvedValue({
       handle: new MemoryDirectoryHandle("candidate"),
       persistHandle: false,
-      manifest: { project_revision: 1, files: [] },
+      manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
       release,
     });
 
@@ -684,7 +857,7 @@ describe("browser startup bridge", () => {
 
     expect(runtimeWorkers).toHaveLength(2);
     expect(firstWorker.terminate).toHaveBeenCalledOnce();
-    expect(requests[0]?.message.args[0]).toMatchObject({ retainProjectSourcePayloads: true });
+    expect(requests[0]?.message.args[0]).toMatchObject({ retainProjectSourcePayloads: false });
   });
 
   it("reports the live worker generation and current WASM linear memory", async () => {
@@ -792,6 +965,7 @@ describe("browser startup bridge", () => {
       projectName: "game",
       manifest: {
         project_revision: 1,
+        compatibility: referenceCompatibility(),
         files: [
           {
             relative_path: "main.erb",
@@ -873,6 +1047,7 @@ describe("browser startup bridge", () => {
     });
     const manifest = {
       project_revision: 1,
+      compatibility: referenceCompatibility(),
       files: ["one", "two"].map((name, index) => ({
         relative_path: `${name}.erb`,
         category: "erb",
@@ -924,6 +1099,7 @@ describe("browser startup bridge", () => {
         projectName: "old-game",
         manifest: {
           project_revision: 1,
+          compatibility: referenceCompatibility(),
           files: [
             {
               relative_path: "old.erb",
@@ -940,6 +1116,7 @@ describe("browser startup bridge", () => {
         projectName: "new-game",
         manifest: {
           project_revision: 2,
+          compatibility: referenceCompatibility(),
           files: ["one", "two"].map((name) => ({
             relative_path: `${name}.erb`,
             category: "erb",
@@ -1056,6 +1233,80 @@ describe("browser startup bridge", () => {
     expect(requests.some((request) => request.message.method === "loadProjectBinary")).toBe(true);
   });
 
+  it("keeps portable manifest resources authorized after a configuration write", async () => {
+    const storage = new MemoryDirectoryHandle("game-storage");
+    const contents = "<root>portable</root>";
+    const bytes = new TextEncoder().encode(contents);
+    const source = {
+      name: "map.xml",
+      size: bytes.byteLength,
+      lastModified: 1,
+      arrayBuffer: async () => bytes.buffer.slice(0),
+      slice: (start = 0, end = bytes.byteLength) => {
+        const chunk = bytes.slice(start, end);
+        return { arrayBuffer: async () => chunk.buffer.slice(0) } as Blob;
+      },
+    } as File;
+    const handle = overlayBrowserDirectory(storage as any, [
+      { path: "plugins/map.xml", file: source },
+    ]);
+    pickBrowserDirectory.mockResolvedValue({
+      handle,
+      persistHandle: false,
+      projectName: "game",
+      manifest: {
+        project_revision: 1,
+        compatibility: snakeCompatibility(),
+        files: [
+          {
+            relative_path: "plugins/map.xml",
+            category: "resource",
+            payload: { type: "external", byteLength: bytes.byteLength },
+            content_hash: blake3(bytes),
+          },
+        ],
+      },
+    });
+    respond = (method) =>
+      method === "resolveProjectCompatibility"
+        ? {
+            request_id: 0,
+            identity: snakeCompatibility(),
+            configuration_digest: null,
+            diagnostics: [],
+          }
+        : 1n;
+    const bridge = new BrowserBridge();
+
+    await bridge.openProject();
+    await bridge.writeProjectConfiguration(new Uint8Array(), "[meta]\nschema_version = 5\n");
+
+    const read = await bridge.handleStorage({
+      request_id: 1,
+      namespace: "resource",
+      relative_path: "plugins/map.xml",
+      operation: { type: "read" },
+    });
+    expect(read, JSON.stringify(read)).toMatchObject({
+      request_id: 1,
+      result: { type: "read", data: [...bytes] },
+    });
+    await expect(
+      bridge.handleStorage({
+        request_id: 2,
+        namespace: "resource",
+        relative_path: "plugins",
+        operation: { type: "list", recursive: true, pattern: "*.xml" },
+      }),
+    ).resolves.toMatchObject({
+      request_id: 2,
+      result: {
+        type: "listed",
+        entries: [expect.objectContaining({ relative_path: "plugins/map.xml" })],
+      },
+    });
+  });
+
   it("falls back with one binary manifest transfer and retries its cache without rescanning", async () => {
     const root = new MemoryDirectoryHandle("game");
     await installCache(root, Uint8Array.of(9, 8, 7));
@@ -1063,6 +1314,7 @@ describe("browser startup bridge", () => {
     const secondResourcePayload = { type: "bytes" as const, value: Uint8Array.of(5, 6) };
     const manifest = {
       project_revision: 1,
+      compatibility: referenceCompatibility(),
       files: [
         {
           relative_path: "main.erb",
@@ -1104,7 +1356,7 @@ describe("browser startup bridge", () => {
 
     const fallback = requests.find((request) => request.message.method === "loadProjectBinary");
     const encoded = fallback?.message.args[0] as Uint8Array;
-    expect(new TextDecoder().decode(encoded.subarray(0, 8))).toBe("RERMAN01");
+    expect(new TextDecoder().decode(encoded.subarray(0, 8))).toBe("RERMAN02");
     expect(new TextDecoder().decode(encoded)).toContain("@SYSTEM_TITLE\nRETURN\n");
     expect(containsBytes(encoded, resourcePayload.value)).toBe(true);
     expect(containsBytes(encoded, secondResourcePayload.value)).toBe(true);
@@ -1123,7 +1375,7 @@ describe("browser startup bridge", () => {
       handle: root,
       persistHandle: false,
       projectName: "game",
-      manifest: { project_revision: 1, files: [] },
+      manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
     });
     const bridge = new BrowserBridge();
     await bridge.openProject();
@@ -1143,7 +1395,7 @@ describe("browser startup bridge", () => {
       persistHandle: false,
       storagePersistent: false,
       projectName: "game",
-      manifest: { project_revision: 1, files: [] },
+      manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
     });
     const bridge = new BrowserBridge();
     await bridge.openProject();
@@ -1194,6 +1446,37 @@ describe("browser startup bridge", () => {
     closed.resolve();
     await expect(saving).resolves.toBe(true);
     expect(progress).toHaveBeenLastCalledWith({ completed: 2, total: 2 });
+  });
+
+  it("observes exported payload identities instead of compact source placeholders", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    const identity = {
+      projectRevision: 1n,
+      files: [
+        {
+          relativePath: "csv/GAMEBASE.CSV",
+          category: "csv",
+          contentHash: "a".repeat(64),
+          payloadKind: "utf8",
+          byteLength: 80n,
+        },
+      ],
+    };
+    respond = (method) => {
+      if (method !== "projectFileIdentity") throw new Error(`unexpected observation ${method}`);
+      return identity;
+    };
+    streamDiagnosisArchiveInWorker.mockResolvedValue(20);
+    const input = diagnosisInput();
+    await expect(new BrowserBridge().saveDiagnosis("identity.tar.zst", input)).resolves.toBe(true);
+    expect(window.__RUSTYERA_TEST_DOWNLOADS__?.at(-1)?.projectIdentity?.files[0]).toMatchObject({
+      relativePath: "csv/GAMEBASE.CSV",
+      byteLength: 80,
+      contentHash: identity.files[0].contentHash,
+    });
+    expect(
+      requests.find((row) => row.message.method === "projectFileIdentity")?.message.args[0],
+    ).toEqual(input.projectFile);
   });
 
   it("falls back to download chunks when OPFS export initialization fails", async () => {
@@ -1337,7 +1620,7 @@ describe("browser startup bridge", () => {
       handle: root,
       persistHandle: false,
       projectName: "game",
-      manifest: { project_revision: 1, files: [] },
+      manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
     });
     const bridge = new BrowserBridge();
     await bridge.openProject();
@@ -1360,6 +1643,112 @@ describe("browser startup bridge", () => {
     );
   });
 
+  it("releases a manifest spool that finishes after export cancellation", async () => {
+    pickBrowserDirectory.mockResolvedValue({
+      handle: new MemoryDirectoryHandle("game"),
+      persistHandle: false,
+      projectName: "game",
+    });
+    const bridge = new BrowserBridge();
+    await bridge.openProject();
+    let finishStaging!: (
+      value: import("@/platform/browserProject").BrowserFullManifestSpool,
+    ) => void;
+    const release = vi.fn(async () => {});
+    const entered = deferred<void>();
+    const stagingSpy = vi
+      .spyOn(BrowserProject.prototype, "stageFullManifest")
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishStaging = resolve;
+            entered.resolve();
+          }),
+      );
+    try {
+      const staging = bridge.stageFullProjectManifest();
+      const rejected = expect(staging).rejects.toMatchObject({ name: "AbortError" });
+      await entered.promise;
+      await bridge.cancelProjectFileExport();
+      finishStaging({ totalBytes: 1, read: async () => Uint8Array.of(1), release });
+      await rejected;
+      expect(release).toHaveBeenCalledOnce();
+      await expect(bridge.readFullProjectManifestChunk(0, 1)).rejects.toThrow("尚未暂存");
+    } finally {
+      stagingSpy.mockRestore();
+    }
+  });
+
+  it.each(
+    (["write", "close", "getFile"] as const).flatMap((phase) =>
+      [false, true].map((reject) => ({ phase, reject })),
+    ),
+  )(
+    "does not publish a cancelled OPFS download after late $phase (reject=$reject)",
+    async ({ phase, reject }) => {
+      const storage = new MemoryDirectoryHandle("storage");
+      vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+      const blocked = deferred<void>();
+      const entered = deferred<void>();
+      const originalCreate = MemoryFileHandle.prototype.createWritable;
+      const create = vi
+        .spyOn(MemoryFileHandle.prototype, "createWritable")
+        .mockImplementation(async function (this: MemoryFileHandle, options) {
+          const writer = await originalCreate.call(this, options);
+          if (phase === "write") {
+            const original = writer.write;
+            writer.write = async (input) => {
+              entered.resolve();
+              await blocked.promise;
+              return original(input);
+            };
+          } else if (phase === "close") {
+            writer.close = async () => {
+              entered.resolve();
+              await blocked.promise;
+            };
+          }
+          return writer;
+        });
+      const bridge = new BrowserBridge();
+      try {
+        await bridge.beginProjectFileExport("first.reraproj");
+        if (phase === "getFile") {
+          const [name] = await directoryEntryNames(storage);
+          const handle = await storage.getFileHandle(name!);
+          const original = handle.getFile.bind(handle);
+          vi.spyOn(handle, "getFile").mockImplementationOnce(async () => {
+            const file = await original();
+            entered.resolve();
+            await blocked.promise;
+            return file;
+          });
+        }
+        const write = bridge.writeProjectFileChunk(Uint8Array.of(1), true, true);
+        await entered.promise;
+        await bridge.cancelProjectFileExport();
+        create.mockRestore();
+        await bridge.beginProjectFileExport("replacement.reraproj");
+        if (reject) {
+          const rejection = expect(write).rejects.toThrow("writer aborted");
+          blocked.reject(new Error("writer aborted"));
+          await rejection;
+        } else {
+          blocked.resolve();
+          await write;
+        }
+        // The replacement remains writable and owns its own completion lifecycle.
+        await expect(
+          bridge.writeProjectFileChunk(Uint8Array.of(2), true, false),
+        ).resolves.toBeUndefined();
+        await bridge.cancelProjectFileExport();
+        expect(await directoryEntryNames(storage)).toEqual([]);
+      } finally {
+        create.mockRestore();
+      }
+    },
+  );
+
   it("defers the fallback project-file OPFS copy until configuration is edited", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
@@ -1370,7 +1759,7 @@ describe("browser startup bridge", () => {
       if (method === "loadProjectFileBytes")
         return {
           storageKey: "legacy-key",
-          manifest: { project_revision: 3, files: [] },
+          manifest: { project_revision: 3, compatibility: referenceCompatibility(), files: [] },
           cacheImported: true,
         };
       if (method === "prepareProjectConfigurationUpdate") {
@@ -1418,6 +1807,55 @@ describe("browser startup bridge", () => {
     });
   });
 
+  it("keeps packaged snake saves in the persistent copy without writing the selected file", async () => {
+    const storage = new MemoryDirectoryHandle("storage");
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    const originalBytes = Uint8Array.of(1, 2, 3, 4);
+    const file = new File([originalBytes], "game.reraproj");
+    pickBrowserFile.mockResolvedValue(file);
+    respond = (method) => {
+      if (method === "traditionalSaveSlotCount") return 2;
+      if (method === "resolveProjectCompatibility")
+        return {
+          request_id: 0,
+          identity: snakeCompatibility(),
+          configuration_digest: null,
+          diagnostics: [],
+        };
+      if (method === "projectFileManifest")
+        return {
+          project_revision: 3,
+          compatibility: snakeCompatibility(),
+          files: [],
+        };
+      if (method === "loadProjectFileBytes")
+        return {
+          storageKey: "packaged-snake",
+          manifest: {
+            project_revision: 3,
+            compatibility: snakeCompatibility(),
+            files: [],
+          },
+          cacheImported: true,
+        };
+      return 1n;
+    };
+    const bridge = new BrowserBridge();
+
+    await bridge.openProjectFile();
+    await bridge.traditionalSaves.writeSlot(0, Uint8Array.of(9, 8, 7));
+
+    expect(file.size).toBe(originalBytes.byteLength);
+    expect("createWritable" in file).toBe(false);
+    const projectRoot = await (
+      await storage.getDirectoryHandle(".rustyera-project-files")
+    ).getDirectoryHandle("packaged-snake");
+    const saved = await (await projectRoot.getDirectoryHandle("sav")).getFileHandle("save00.sav");
+    expect(new Uint8Array(await (await saved.getFile()).arrayBuffer())).toEqual(
+      Uint8Array.of(9, 8, 7),
+    );
+  });
+
   it("reuses a refreshed packaged-project cache and retains the embedded fallback", async () => {
     const storage = new MemoryDirectoryHandle("storage");
     vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
@@ -1440,6 +1878,7 @@ describe("browser startup bridge", () => {
           storageKey,
           manifest: {
             project_revision: 3,
+            compatibility: referenceCompatibility(),
             files: [
               {
                 relative_path: "resources/a.bin",
@@ -1493,7 +1932,7 @@ describe("browser startup bridge", () => {
       if (method === "loadProjectFileBytes") {
         return {
           storageKey,
-          manifest: { project_revision: 3, files: [] },
+          manifest: { project_revision: 3, compatibility: referenceCompatibility(), files: [] },
           cacheImported: true,
         };
       }
@@ -1529,6 +1968,7 @@ describe("browser startup bridge", () => {
           storageKey: "ios-key",
           manifest: {
             project_revision: 3,
+            compatibility: referenceCompatibility(),
             files: [
               {
                 relative_path: "resources/a.bin",
@@ -1602,7 +2042,7 @@ describe("browser startup bridge", () => {
         if (method === "loadProjectFile")
           return {
             storageKey: "session-key",
-            manifest: { project_revision: 3, files: [] },
+            manifest: { project_revision: 3, compatibility: referenceCompatibility(), files: [] },
             cacheImported: true,
           };
         return 1n;
@@ -1705,7 +2145,7 @@ describe("browser startup bridge", () => {
       if (method === "loadProjectFileBytes")
         return {
           storageKey: "writable-key",
-          manifest: { project_revision: 1, files: [] },
+          manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
           cacheImported: true,
         };
       if (method === "prepareProjectConfigurationUpdate") {
@@ -1743,7 +2183,7 @@ describe("browser startup bridge", () => {
       if (method === "loadProjectFileBytes")
         return {
           storageKey: "selected-key",
-          manifest: { project_revision: 1, files: [] },
+          manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
           cacheImported: true,
         };
       return 1n;
@@ -1829,7 +2269,7 @@ describe("browser startup bridge", () => {
         if (method === "loadProjectFileBytes")
           return {
             storageKey: "large-key",
-            manifest: { project_revision: 1, files: [] },
+            manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
             cacheImported: true,
           };
         return 1n;
@@ -1891,7 +2331,7 @@ describe("browser startup bridge", () => {
       if (method === "loadProjectFileBytes") {
         return {
           storageKey: "retry-key",
-          manifest: { project_revision: 1, files: [] },
+          manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
           cacheImported: true,
         };
       }
@@ -1937,7 +2377,7 @@ describe("browser startup bridge", () => {
       if (attempts++ > 0) throw new Error("invalid project file");
       return {
         storageKey: "active-key",
-        manifest: { project_revision: 1, files: [] },
+        manifest: { project_revision: 1, compatibility: referenceCompatibility(), files: [] },
         cacheImported: true,
       };
     };
@@ -1953,7 +2393,7 @@ describe("browser startup bridge", () => {
   it("retires the active portable project when replacement submission fails", async () => {
     const active = new MemoryDirectoryHandle("active-storage");
     const broken = new MemoryDirectoryHandle("broken-storage");
-    const manifest = { project_revision: 1, files: [] };
+    const manifest = { project_revision: 1, compatibility: referenceCompatibility(), files: [] };
     pickBrowserDirectory
       .mockResolvedValueOnce({
         handle: active,
@@ -1999,6 +2439,7 @@ describe("browser startup bridge", () => {
       projectName: "game",
       manifest: {
         project_revision: 1,
+        compatibility: referenceCompatibility(),
         files: [
           {
             relative_path: "emuera.config",
@@ -2044,10 +2485,12 @@ function diagnosisInput() {
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((complete) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((complete, fail) => {
     resolve = complete;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 async function flushMicrotasks(): Promise<void> {

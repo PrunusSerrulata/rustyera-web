@@ -14,9 +14,15 @@ export async function finalizeBrowserGameRun({
     stopError = error;
   }
 
-  const cleanupResults = await Promise.allSettled(
-    cleanups.map((cleanup) => Promise.resolve().then(cleanup)),
-  );
+  const cleanupResults = [];
+  for (const cleanup of cleanups) {
+    try {
+      await cleanup();
+      cleanupResults.push({ status: "fulfilled" });
+    } catch (reason) {
+      cleanupResults.push({ status: "rejected", reason });
+    }
+  }
   const cleanupError = cleanupResults.find((result) => result.status === "rejected")?.reason;
   const selectedError = monitorError() ?? stopError ?? runError ?? cleanupError;
   const finalOutcome = selectedError ? classifyError(selectedError) : outcome;

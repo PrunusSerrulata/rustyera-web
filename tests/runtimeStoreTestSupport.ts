@@ -20,16 +20,69 @@ export const emptyBatch = () => ({
   events: [],
 });
 
-export function stubRunningAudioContext(): void {
+export function stubRunningAudioContext(
+  resumeImplementation: () => Promise<void> = async () => undefined,
+): { resume: ReturnType<typeof vi.fn> } {
+  const resumeAudio = vi.fn(resumeImplementation);
+  vi.stubGlobal(
+    "Audio",
+    class extends EventTarget {
+      preservesPitch = true;
+      preload = "";
+      paused = true;
+      ended = false;
+      duration = 1;
+      currentTime = 0;
+      playbackRate = 1;
+      loop = false;
+      src = "";
+      readyState = 1;
+      error = null;
+      onended: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      play = vi.fn(async () => {
+        this.paused = false;
+      });
+      pause = vi.fn(() => {
+        this.paused = true;
+      });
+      load = vi.fn();
+      removeAttribute = vi.fn(() => {
+        this.src = "";
+      });
+    },
+  );
+  const OriginalUrl = URL;
+  vi.stubGlobal(
+    "URL",
+    class extends OriginalUrl {
+      static createObjectURL = vi.fn(() => "blob:audio");
+      static revokeObjectURL = vi.fn();
+    },
+  );
   vi.stubGlobal(
     "AudioContext",
     class {
       state = "running";
       destination = {};
-      resume = vi.fn(async () => {});
-      createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn() }));
+      resume = resumeAudio;
+      close = vi.fn(async () => {});
+      createGain() {
+        return {
+          gain: { value: 1 },
+          connect: vi.fn(() => ({ connect: vi.fn() })),
+          disconnect: vi.fn(),
+        };
+      }
+      createMediaElementSource() {
+        return {
+          connect: vi.fn(() => ({ connect: vi.fn() })),
+          disconnect: vi.fn(),
+        };
+      }
     },
   );
+  return { resume: resumeAudio };
 }
 import { useRuntimeStore } from "@/stores/runtime";
 
@@ -269,7 +322,7 @@ export async function storeWithPendingCompiledCacheWrite(write: Promise<void>) {
 
 export async function storeWithInputWait(
   wait: Record<string, unknown>,
-  extraEvents: ReturnType<typeof runtimeEvent>[] = [],
+  extraEvents: (ReturnType<typeof runtimeEvent> | ReturnType<typeof debugEvent>)[] = [],
 ) {
   bridge.pump.mockResolvedValueOnce({
     ...emptyBatch(),

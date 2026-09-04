@@ -22,6 +22,53 @@ npm run test:browser-compat -- --browser safari
 Pass `--project-file PATH --startup-only` to either native-browser command when validating a real
 packaged-project cache path rather than the default portable directory fixture.
 
+Use `--full-project-export` with a source directory to export through the visible file menu,
+check the streamed download header and length, and require restored interaction. The observer
+reads only the header; it does not materialize a second complete project byte array.
+
+For acceptance requiring native driver input, use `--native-driver-inputs` with a startup,
+output-marker, or audio flow. It uses WebDriver clicks and file upload, retaining the production
+file input and handler while suppressing the OS sheet. It never injects a FileList or change
+event. Unsupported driver uploads fail explicitly; do not fall back to computer use or injected
+files. `--traditional-state PATH` configures an ordinary save restore before the visible project
+open action; `--expect-watches PATH` compares a JSON watch/value object through read-only debug
+inspection after startup.
+
+For the actual TW round trip, use `--snake-interop --expect-watches PATH` instead of
+`--traditional-state`: it initializes the normal title and SQL connections, then clicks Continue,
+slot 1000 and its load confirmation before comparing typed state and project storage traffic.
+Typed values come from public variable descriptors and `read_variable` replies, including exact
+Integer/String values and character addresses. Enumeration follows returned cursors only; the
+independent five-second complete-state watchdog remains active during large symbol walks.
+Project packages contain program/resources, not writable saves. For packaged interop runs, the
+runner prepares both reference files in the fresh browser's real OPFS `sav` directory under the
+package's BLAKE3 storage key before opening the project. It verifies SHA-256 against the fixture
+manifest and reads the written bytes back, refuses existing project storage, and records this as
+fixture preparation. Subsequent GLOBAL/slot reads still execute through the production host.
+The WebDriver-only native host records storage request/response pairs in its isolated project.
+Those operations finish inside Rust before reaching Vue; their native process/project context is
+kept separate from frontend wire epochs. Bulk bytes are represented by length and BLAKE3 digest.
+
+Audio acceptance can combine `--snake-audio` with an actual `--project-file` export when a native
+driver cannot upload directories; retain `--project` to identify its source fixture. File upload
+must still go through that browser's native WebDriver input, followed by every audio assertion.
+
+When explicitly testing without foreground focus, `--background-dom` drives rendered, enabled
+controls through their DOM handlers and records focus, visibility and untrusted-event evidence.
+It does not establish native input coverage. Safari packaged-project imports use the isolated
+file-picker adapter. `--webdriver-open` probes only the opening button with SafariDriver input.
+For locked-session media semantics, Safari supports the opt-in `--safari-allow-autoplay` flag,
+which supplies the documented `webkit:alwaysAllowAutoplay` capability to that automation session.
+It changes no persistent user preferences. Report this mode separately: playback observations
+remain real, but default-policy autoplay and trusted-gesture unlock are not verified by it.
+
+For a deliberate compile rejection, a Chromium scenario may set
+`expect_project_load_failure` to the exact protocol diagnostic code (for example
+`compiler.invalidhir`). It must omit gameplay actions and reference comparison. The runner checks
+the received failed `project_load_report`, settled loading state, bounded notifications and a
+visible, enabled project-open menu. Tauri uses `tests/tauri/project-load-failure.spec.mjs` for the
+same invalid-HIR path. The ordinary five-second complete-snapshot watchdog remains active.
+
 When the host OS is not macOS, do not launch or require Safari; report Safari as not applicable
 rather than skipped, passed, or failed. Do not use WebKit as a substitute.
 
@@ -55,6 +102,13 @@ The snapshot cadence is independent from action pacing. Poll actionable browser 
 never insert a 5-second sleep between folder navigation, selection, confirmation, permission, and
 page-load transitions.
 
+When the user explicitly authorizes the temporary loading allowance, set
+`RUSTYERA_TEST_LOADING_STALL_INTERVALS=4` for that run. Only `projectLoading=true` without
+an active wait, interactive state or export may accumulate four unchanged five-second intervals
+before failing. Actual progress resets the count. All captures still have a five-second deadline;
+faults and protocol rejections still fail immediately. After loading, the first unchanged interval
+fails again. This override does not resolve or waive the underlying loading performance problem.
+
 After clicking the native compatibility runner's visible project-open button, require the portable
 directory-file fallback or project-open state to become observable within 10 seconds. On failure,
 report every created file input's type, multiplicity, accept filter, and directory property/attribute
@@ -76,12 +130,19 @@ Use JSON `schema_version: 1`. The format is a compatible superset of the TUI sce
 - `project`: Absolute path or path relative to the scenario. `--project` overrides it.
 - `project_file`: Optional `.reraproj` path relative to the scenario. Chromium opens it through the
   visible project-file picker while `project` remains the isolated support tree for test services.
+- `summary_observations`: Optional boolean for large-project scenarios. It retains runtime,
+  presentation and diagnostics in action observations without materializing the complete wire
+  ledger. Use explicit typed/storage assertions for protocol evidence. Complete DOM/runtime
+  watchdog snapshots and their five-second failure rule are unchanged. Action settling ignores
+  the internal cooperative pump counter; actual wait, output, fault and other state changes still
+  reset its stable-frame count.
 - `mode`: `fixed` or `autonomous`.
 - `start.type`: `new_game`, `traditional_save`, or `vm_snapshot`; restores require `path` or CLI
   `--state`.
 - `seed`: Optional unsigned 64-bit integer for `new_game`. Use a decimal string above JavaScript's
-  safe integer range. If absent, the runner creates and records a random seed. Restored state owns
-  its RNG and ignores `seed`.
+  safe integer range. If absent, the runner creates and records a random seed. A VM snapshot owns
+  its RNG and ignores `seed`; a standard snake traditional save preserves the runtime's current
+  SFMT state and does not restore SQL state or the other variable scope.
 - `clock`: Optional ISO timestamp; default `2026-01-01T00:00:00Z`.
 - `compiled_cache`: Copy an existing v8 project cache into the isolated browser fixture and verify
   the browser import path; absent or false forces a cold source load.
@@ -157,8 +218,9 @@ An action has `type`:
 - `assert_canvas_pixels`: `locator` plus an `expect` subset such as `count`, `width`, `height`, or
   `nontransparent_at_least`. Use it to prove that a generated canvas contains rendered pixels, not
   merely that an empty canvas element has layout dimensions.
-- `query_media_replay`: `resource_name`. Returns the test-only, read-only sprite and canvas replay
-  graph for diagnosing a generated image without mutating Pinia or runtime state.
+- `query_media_replay`: `resource_name`, optional `expect` subset. Returns the test-only, read-only
+  sprite and canvas replay graph for diagnosing a generated image without mutating Pinia or runtime
+  state.
 - `advance_intermediate_waits_until`: advances a variable number of visible integer, Enter,
   Enter-compatible one-input, and deadline waits until `until.media_sources_at_least` distinct
   presentation image sources exist. Use `integer_value` (default `0`) for repeated route/encounter
@@ -173,6 +235,7 @@ An action has `type`:
   Deadline waits are observed until the runtime advances them; the runner must not click through
   them.
 - `assert_state`: an `expect` subset of the serialized frontend snapshot.
+- `assert_interop`: compare a nonempty `expect` map of `{type: "integer" | "string", value: "..."}` through `inspectTyped`, including character watches such as `NO@0`. Requires an absolute, unused `evidence_path`; raw typed and storage observations are saved before assertions. It checks successful project GLOBAL reads and rejects private save fallback. A lifecycle file import does not establish a production ordinary-slot read.
 - `edit_project_source`: test setup for a hot-reload scenario; requires `relative_path`, `expected`,
   and `replacement`, and replaces exactly one fragment inside the isolated project.
 - `reload_project`: invokes the production Browser/WASM reload path with `scope` (`all`, `folder`,
@@ -180,6 +243,13 @@ An action has `type`:
   Set `expect_success: false` only when testing rollback after a deliberately invalid reload; the
   runner then requires the runtime epoch to remain unchanged and the frontend to restore interaction.
 - `export_diagnosis`: invokes the production diagnosis-export lifecycle and waits for its download.
+- `save_download`: arms a native Playwright download event, then clicks the visible export control
+  at `selector` and saves the actual bytes to an unused absolute `path`. Requires its filename to
+  end in `name_suffix`. Use to retain a streamed artifact for another native client.
+- `cancel_project_export`: clicks the export control at `selector`, waits for at least 8 MiB of
+  actual manifest submissions, then clicks the visible cancellation button. Requires an unused
+  absolute `evidence_path`; records memory, transfer state and cancellation protocol evidence.
+  Use a project whose full manifest exceeds 8 MiB, followed by `save_download` to prove retry.
 - `assert_diagnosis_project_manifest`: hashes each declared UTF-8 `sources` value and compares it
   with the manifest decoded from the exported `.reraproj` by the real WASM worker.
 - `wait_compiled_cache_saved`: waits until the production cache export has completed.
@@ -215,3 +285,25 @@ and complete observable state needed for exact comparison and failure reporting.
 
 Reference comparison checks normalized output added since the prior stable wait, wait kind, and
 watches. DOM and frontend-only assertions are never projected onto Emuera.
+
+To use a previously installed Chromium without downloading a browser, add
+`--chromium-executable /absolute/path/to/chromium` to `npm run test:game -- run ...`
+(or `serve`). The default browser selection is unchanged when the option is absent.
+
+### Explicit background DOM acceptance
+
+When the task authorizes DOM-driven background coverage, `test:browser-compat` accepts
+`--background-dom` for startup/output/audio flows. `test:tauri` accepts it for the compiler-error,
+snake interop, and audio specs. This mode skips foreground/window restoration and invokes real
+rendered, enabled DOM controls through the existing WebDriver script channel. The ordinary mode
+keeps native input. The modes are exclusive; neither grants computer-use permissions.
+
+Background evidence records document focus/visibility, script activation, and untrusted DOM input.
+Keep runtime results, provider errors, storage effects, and the five-second watchdog authoritative.
+Verify OS lock status separately before claiming locked-session coverage. Successful DOM input does
+not cover native pointer/key delivery, IME, system file sheets, or real user-gesture audio unlock.
+Do not patch visibility, animation frames, activation, Pinia state, or runtime results.
+
+For bounded protocol diagnosis, `test:game` accepts `--protocol-types TYPE,TYPE`. The watchdog reads
+only those immutable wire records, filtering before parsing large unrelated payloads. Raw records
+retain their original indices and the selection is explicit in the evidence.

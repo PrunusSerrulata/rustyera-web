@@ -36,9 +36,7 @@ describe("browser PWA configuration", () => {
     expect(rustyEraPwaOptions.workbox?.globPatterns).toContain(
       "**/*.{html,js,css,wasm,webmanifest,png,svg,ico}",
     );
-    expect(rustyEraPwaOptions.workbox?.maximumFileSizeToCacheInBytes).toBeGreaterThan(
-      15 * 1024 * 1024,
-    );
+    expect(rustyEraPwaOptions.workbox?.maximumFileSizeToCacheInBytes).toBe(24 * 1024 * 1024);
     expect(rustyEraPwaOptions.workbox?.navigateFallback).toBe("index.html");
     expect(
       rustyEraPwaOptions.workbox?.ignoreURLParametersMatching?.some((pattern) => pattern.test("v")),

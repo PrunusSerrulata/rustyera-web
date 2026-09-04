@@ -46,7 +46,7 @@ use crate::ipc::{
 };
 use crate::project::{ProjectFontSource, ProjectHost, ProjectReloadScope, ProjectReloadTargets};
 use crate::services::native_service;
-use crate::storage::StorageHost;
+use crate::storage::{StorageHost, TraditionalSaveSlot};
 
 #[derive(Clone, Default)]
 struct AppState {
@@ -69,6 +69,17 @@ struct NativeManifestSpool {
 #[serde(rename_all = "camelCase")]
 struct StagedManifestDescriptor {
     total_bytes: u64,
+}
+
+#[tauri::command]
+async fn inspect_project_file_identity(
+    bytes: Value,
+) -> Result<era_web_bridge::ProjectFileIdentitySummary, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        era_web_bridge::inspect_project_file_identity(&decode_ipc_bytes(bytes)?)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn emit_scanning_progress(app: &AppHandle, completed: usize, total: usize) {
@@ -312,7 +323,7 @@ fn pump_frontend_session(
             FRONTEND_DRIVE_BUDGET,
             FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
             NATIVE_PUMP_MAXIMUM_EXTERNAL_REQUESTS,
-            |request| storage.handle(request),
+            |request| storage.handle_with_project(request, project),
             |request| native_service(request, project),
         )
     } else {
@@ -331,7 +342,7 @@ fn pump_message_skip_session(
             FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
             MESSAGE_SKIP_MAXIMUM_OBSERVABLE_BATCHES,
             NATIVE_PUMP_MAXIMUM_EXTERNAL_REQUESTS,
-            |request| storage.handle(request),
+            |request| storage.handle_with_project(request, project),
             |request| native_service(request, project),
         )
     } else {
@@ -363,6 +374,7 @@ async fn open_project(
         )?;
         let (source_index_reused_files, source_index_hashed_files) = host.source_index_stats();
         let quick_scan_ms = started.elapsed().as_secs_f64() * 1000.0;
+        with_session(&state, |session| host.resolve_compatibility(session))?;
         let identity = host.identity();
         let cache_started = Instant::now();
         let cache = host.compiled_cache()?;
@@ -392,11 +404,14 @@ async fn open_project(
             false
         };
         let submit_ms = submit_started.elapsed().as_secs_f64() * 1000.0 - source_read_ms;
-        let storage_root = host.root().to_owned();
+        let resource_root = host.root().to_owned();
+        let profile = host.identity().compatibility.profile;
+        let storage_root = host.runtime_storage_root();
+        let save_root = host.runtime_save_root();
         install_project_state(
             &state,
             host,
-            StorageHost::new(storage_root),
+            StorageHost::with_storage_roots(resource_root, storage_root, save_root, profile),
             preferences::ProjectPreferenceLocation {
                 path: path.clone(),
                 project_file: false,
@@ -426,7 +441,8 @@ async fn open_project_file(
     tauri::async_runtime::spawn_blocking(move || {
         retire_project_state(&state)?;
         let started = Instant::now();
-        let host = ProjectHost::from_project_file(&path)?;
+        let mut host = ProjectHost::from_project_file(&path)?;
+        with_session(&state, |session| host.resolve_compatibility(session))?;
         let identity = host.identity();
         let sidecar = match host.compiled_cache() {
             Ok(cache) => cache,
@@ -455,13 +471,16 @@ async fn open_project_file(
         }
         let submit_ms = started.elapsed().as_secs_f64() * 1000.0;
         let storage_root = host.runtime_storage_root();
+        let save_root = host.runtime_save_root();
+        let profile = host.identity().compatibility.profile;
+        let resource_root = host.root().to_owned();
         // Keep only packaged resource lookup data while the cache candidate is pending. If both a
         // refreshed sidecar and the embedded legacy cache are incompatible, `submit_project_source`
         // lazily decodes the authoritative package and transfers ownership of its source manifest.
         install_project_state(
             &state,
             host,
-            StorageHost::new(storage_root),
+            StorageHost::with_storage_roots(resource_root, storage_root, save_root, profile),
             preferences::ProjectPreferenceLocation {
                 path,
                 project_file: true,
@@ -688,14 +707,104 @@ async fn storage_request(state: State<'_, AppState>, request: Value) -> Result<R
     let request = storage::decode_request(request)?;
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let response = state
+        let mut storage = state.storage.lock().map_err(lock_error)?;
+        let project = state.project.lock().map_err(lock_error)?;
+        let response = storage
+            .as_mut()
+            .ok_or_else(|| "no project storage is open".to_owned())?
+            .handle_with_project(request, project.as_ref());
+        storage::encode_response(&response)
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn traditional_save_list_slots(
+    state: State<'_, AppState>,
+) -> Result<Vec<TraditionalSaveSlot>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = state.session.lock().map_err(lock_error)?;
+        let slot_count = session
+            .as_ref()
+            .ok_or_else(|| "runtime session has not been created".to_owned())?
+            .traditional_save_slot_count()?;
+        state
             .storage
             .lock()
             .map_err(lock_error)?
-            .as_mut()
-            .ok_or_else(|| "no project storage is open".to_owned())?
-            .handle(request);
-        storage::encode_response(&response)
+            .as_ref()
+            .ok_or_else(|| "no project is open".to_owned())?
+            .list_traditional_save_slots(slot_count)
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn traditional_save_read(state: State<'_, AppState>, slot: u32) -> Result<Response, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = state.session.lock().map_err(lock_error)?;
+        let slot_count = session
+            .as_ref()
+            .ok_or_else(|| "runtime session has not been created".to_owned())?
+            .traditional_save_slot_count()?;
+        if slot >= slot_count {
+            return Err("traditional save slot is outside the active project range".into());
+        }
+        state
+            .storage
+            .lock()
+            .map_err(lock_error)?
+            .as_ref()
+            .ok_or_else(|| "no project is open".to_owned())?
+            .read_traditional_save(slot)
+            .map(Response::new)
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn traditional_save_inspect(
+    state: State<'_, AppState>,
+    bytes: Value,
+) -> Result<era_web_bridge::WebTraditionalSaveInspection, String> {
+    let bytes = decode_ipc_bytes(bytes)?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        with_session(&state, |session| session.inspect_traditional_save(&bytes))
+    })
+    .await
+    .map_err(|error| format!("frontend background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn traditional_save_write(
+    state: State<'_, AppState>,
+    slot: u32,
+    bytes: Value,
+) -> Result<(), String> {
+    let bytes = decode_ipc_bytes(bytes)?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = state.session.lock().map_err(lock_error)?;
+        let session = session
+            .as_ref()
+            .ok_or_else(|| "runtime session has not been created".to_owned())?;
+        if slot >= session.traditional_save_slot_count()? {
+            return Err("traditional save slot is outside the active project range".into());
+        }
+        session.inspect_traditional_save(&bytes)?;
+        state
+            .storage
+            .lock()
+            .map_err(lock_error)?
+            .as_ref()
+            .ok_or_else(|| "no project is open".to_owned())?
+            .write_traditional_save(slot, &bytes)
     })
     .await
     .map_err(|error| format!("frontend background task failed: {error}"))?
@@ -790,6 +899,7 @@ pub fn run() {
             submit_runtime,
             submit_runtime_and_pump,
             stage_full_project_manifest,
+            inspect_project_file_identity,
             read_full_project_manifest_chunk,
             release_full_project_manifest,
             submit_debug,
@@ -807,6 +917,10 @@ pub fn run() {
             read_project_font,
             write_project_configuration,
             storage_request,
+            traditional_save_list_slots,
+            traditional_save_read,
+            traditional_save_inspect,
+            traditional_save_write,
             list_fonts,
             memory::memory_snapshot,
             preferences::load_preferences,

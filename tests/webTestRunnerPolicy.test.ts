@@ -1,22 +1,167 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path, { resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { startCompleteSnapshotMonitor } from "../scripts/tauri-test-support.mjs";
+import {
+  assertSnapshotProgress,
+  snapshotCaptureTimeout,
+  startCompleteSnapshotMonitor,
+} from "../scripts/tauri-test-support.mjs";
+import {
+  installRemoteFileSystem,
+  isolatedProject,
+  projectRuntimeStorageRoot,
+  publishCrossHostArtifacts,
+} from "../scripts/web-test-lib.mjs";
 import { finalizeBrowserGameRun } from "../scripts/web-test-lifecycle.mjs";
 
 afterEach(() => vi.useRealTimers());
 
 describe("browser game runner progress policy", () => {
+  it("hands Snake-profile caches through their profile-scoped runtime storage", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rustyera-snake-cache-handoff-test-"));
+    const source = path.join(root, "source");
+    const input = path.join(root, "input.reracache");
+    const output = path.join(root, "output.reracache");
+    let isolated: Awaited<ReturnType<typeof isolatedProject>> | undefined;
+    try {
+      await mkdir(source, { recursive: true });
+      await Promise.all([
+        writeFile(input, new Uint8Array([9, 8, 7, 6])),
+        writeFile(
+          path.join(source, "reraconfig.toml"),
+          '[compatibility]\nprofile = "emuera.skia.snake"\n',
+        ),
+      ]);
+      isolated = await isolatedProject(source, { compiledCacheInput: input });
+      const runtimeRoot = await projectRuntimeStorageRoot(isolated.project);
+      const cache = path.join(runtimeRoot, ".rustyera", "cache", "compiled-project.reracache");
+      expect([...new Uint8Array(await readFile(cache))]).toEqual([9, 8, 7, 6]);
+
+      await publishCrossHostArtifacts({
+        source,
+        isolated: isolated.project,
+        cacheInput: input,
+        cacheOutput: output,
+        succeeded: true,
+        cacheSaved: true,
+      });
+      expect([...new Uint8Array(await readFile(output))]).toEqual([9, 8, 7, 6]);
+    } finally {
+      await isolated?.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("hands owned Snake runtime storage to a fresh isolated client", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rustyera-snake-storage-handoff-test-"));
+    const source = path.join(root, "source");
+    const output = path.join(root, "runtime-storage");
+    let producer: Awaited<ReturnType<typeof isolatedProject>> | undefined;
+    let consumer: Awaited<ReturnType<typeof isolatedProject>> | undefined;
+    try {
+      await mkdir(source, { recursive: true });
+      await writeFile(
+        path.join(source, "reraconfig.toml"),
+        '[compatibility]\nprofile = "emuera.skia.snake"\n',
+      );
+      producer = await isolatedProject(source);
+      const producerRoot = await projectRuntimeStorageRoot(producer.project);
+      const revision = path.join(producerRoot, "data", "sql", "v1", "identity", "revision");
+      await mkdir(path.dirname(revision), { recursive: true });
+      await writeFile(revision, new Uint8Array([1, 3, 3, 7]));
+
+      await publishCrossHostArtifacts({
+        source,
+        isolated: producer.project,
+        runtimeStorageOutput: output,
+        succeeded: true,
+        cacheSaved: false,
+      });
+      consumer = await isolatedProject(source, { runtimeStorageInput: output });
+      const consumerRoot = await projectRuntimeStorageRoot(consumer.project);
+      expect([
+        ...new Uint8Array(
+          await readFile(path.join(consumerRoot, "data", "sql", "v1", "identity", "revision")),
+        ),
+      ]).toEqual([1, 3, 3, 7]);
+    } finally {
+      await consumer?.close();
+      await producer?.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("streams every remote filesystem write chunk into one atomically committed file", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rustyera-remote-fs-test-"));
+    const installedBindings: string[] = [];
+    const page = {
+      async exposeBinding(name: string, callback: (source: unknown, request: unknown) => unknown) {
+        installedBindings.push(name);
+        Reflect.set(window, name, (request: unknown) => callback({}, request));
+      },
+      async addInitScript(script: () => void) {
+        script();
+      },
+    };
+    try {
+      await installRemoteFileSystem(page, root);
+      const directory = await window.showDirectoryPicker?.({ mode: "readwrite" });
+      const file = await directory?.getFileHandle("cache.reracache", { create: true });
+      const writer = await file?.createWritable({ keepExistingData: false });
+      await writer?.write(new Uint8Array([1, 2, 3]));
+      await writer?.write(new Uint8Array([4, 5]));
+      await writer?.close();
+
+      expect([...new Uint8Array(await readFile(path.join(root, "cache.reracache")))]).toEqual([
+        1, 2, 3, 4, 5,
+      ]);
+      expect(await readFile(path.join(root, "cache.reracache"))).toHaveLength(5);
+    } finally {
+      for (const name of installedBindings) Reflect.deleteProperty(window, name);
+      Reflect.deleteProperty(window, "showDirectoryPicker");
+      Reflect.deleteProperty(window, "__RUSTYERA_TEST_FS_REPLACE__");
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("allows the first scenario action to assert an expected startup fault", () => {
+    const runner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
+    const scenario = JSON.parse(
+      readFileSync(resolve("tools/runtime-tester/scenarios/snake-sql-invalid-seed.json"), "utf8"),
+    );
+
+    expect(runner).toContain("scenario.actions[0]?.allow_fault !== true");
+    expect(scenario.actions[0]).toMatchObject({
+      type: "assert_state",
+      allow_fault: true,
+      expect: {
+        fault: {
+          code: "vm_fault",
+          context: { api: "sql_connect", stage: "runtime" },
+        },
+      },
+      expect_prefix: {
+        fault: { message: "rustyera.sql/open/invalid_source:" },
+      },
+    });
+  });
+
   it("uses the shared five-second complete snapshot monitor", () => {
     const runner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
+    const library = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const snapshots = readFileSync(resolve("scripts/tauri-test-support.mjs"), "utf8");
 
     expect(runner).toContain(
       'import { startCompleteSnapshotMonitor } from "./tauri-test-support.mjs"',
     );
     expect(runner).toContain('eventType: "browser-game-snapshot"');
     expect(runner).toContain("snapshotMonitor.failure");
+    expect(library).toContain("snapshotSummary()");
+    expect(snapshots).toContain("snapshotSummary?.()");
     expect(runner).not.toContain("OBSERVATION_REPORT_MS");
     expect(runner).not.toContain("OBSERVATION_STALL_MS");
     expect(runner).toContain("action.settle_auto_enter ?? action.auto_enter !== false");
@@ -42,7 +187,22 @@ describe("browser game runner progress policy", () => {
     expect(timedWaitBranch).toContain("continue;");
     expect(timedWaitBranch).not.toContain("runAction");
     expect(stableEnterBranch).toContain('source: "automatic_enter"');
-    expect(stableEnterBranch).toContain('await runAction(page, { type: "input", value: "" })');
+    expect(stableEnterBranch).toContain(
+      'await runAction(page, { type: "input", value: "", keyboard_submit: true })',
+    );
+  });
+
+  it("can persist an owned save immediately after the fixed action queue", () => {
+    const runner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
+    const afterActions = runner.slice(
+      runner.indexOf("for (const action of scenario.actions)"),
+      runner.indexOf('if (args.command === "run")'),
+    );
+
+    expect(afterActions).toContain("if (scenario.traditional_save_after_actions)");
+    expect(afterActions).toContain(
+      "await saveTraditionalCheckpoint(scenario.traditional_save_after_actions.path)",
+    );
   });
 
   it("sets the repository browser path before importing Playwright", () => {
@@ -89,6 +249,27 @@ describe("browser game runner progress policy", () => {
     expect(firstAsyncScript).toBeGreaterThan(monitor);
     expect(snapshots).toContain("complete snapshot capture exceeded");
     expect(snapshots).toContain("Promise.race");
+    const cacheExport = {
+      document: [],
+      runtime: {
+        projectLoading: true,
+        transfer: { export: { name: "compiled-project.reracache" } },
+      },
+    };
+    expect(snapshotCaptureTimeout(cacheExport)).toBe(5000);
+    expect(() => assertSnapshotProgress(cacheExport, cacheExport)).toThrow("identical");
+    expect(library).toContain('includes("runtime.compiled_cache_failed")');
+    expect(library).toContain("compiled cache export failed:");
+    expect(library).toContain("{ timeout: 0 },");
+  });
+
+  it("treats an output-marker compatibility probe as startup-only", () => {
+    const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+
+    expect(runner).toContain("Boolean(expectedOutput) ||");
+    expect(runner.indexOf("Boolean(expectedOutput) ||")).toBeLessThan(
+      runner.indexOf('compatibilityStage = "checking automatic interaction assistance"'),
+    );
   });
 
   it("checks global preferences through the real UI before native-browser project load", () => {
@@ -133,10 +314,17 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain("chunks.push(Uint8Array.from(raw");
     expect(runner).toContain("new File(chunks");
     expect(runner).not.toContain('atob(chunks.join(""))');
+    const portablePicker = runner.slice(
+      runner.indexOf("async function installPortableProjectPicker("),
+      runner.indexOf("async function exerciseProjectPreferencesDuringLoad("),
+    );
+    expect(portablePicker).toContain("if (allowFocusEvent)");
+    expect(portablePicker).toContain("!backgroundDom");
   });
 
   it("drives native Firefox and Safari through a real packaged-project picker", () => {
     const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
+    const library = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
 
     expect(runner).toContain('process.argv.indexOf("--project-file")');
     expect(runner).toContain('element.accept.includes(".reraproj")');
@@ -148,11 +336,11 @@ describe("browser game runner progress policy", () => {
     expect(runner).toContain('browserName === "safari" ? "/__rustyera_compat_project_file"');
     expect(runner).toContain("picker?.injected === true");
     expect(runner).toContain("assertPackagedStartup(observed.startupTelemetry)");
-    expect(runner).toContain("source preparation slow path");
+    expect(library).toContain("source preparation slow path");
     expect(runner).toContain("projectPreferencesDuringLoad");
-    expect(runner).toContain("project preferences during loading");
+    expect(library).toContain("project preferences during loading");
     expect(runner).toContain("verifyProjectPreferencesAfterLoad(browser)");
-    expect(runner).toContain("project preferences after loading");
+    expect(library).toContain("project preferences after loading");
   });
 
   it("provides a native-browser game-log input smoke flow", () => {
@@ -657,7 +845,11 @@ describe("browser game runner progress policy", () => {
     const order: string[] = [];
     const originalMonitorError = new Error("identical complete snapshots");
     const cleanups = [
-      vi.fn(() => order.push("cleanup-1")),
+      vi.fn(async () => {
+        order.push("cleanup-1-start");
+        await Promise.resolve();
+        order.push("cleanup-1-end");
+      }),
       vi.fn(() => {
         order.push("cleanup-2");
         throw new Error("secondary cleanup failure");
@@ -695,6 +887,7 @@ describe("browser game runner progress policy", () => {
     expect(events.find((event) => event.type === "error")?.message).not.toContain(
       "page closed after monitor failure",
     );
+    expect(order.indexOf("cleanup-1-end")).toBeLessThan(order.indexOf("cleanup-2"));
     expect(order.at(-1)).toBe("close");
     expect(order.indexOf("result")).toBeLessThan(order.indexOf("close"));
   });

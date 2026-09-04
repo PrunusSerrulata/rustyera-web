@@ -1,18 +1,28 @@
+import {
+  configureServiceLifecycle,
+  serviceLifecycleSummary,
+  serviceLifecycleSnapshot,
+  type ServiceLifecycleConfiguration,
+} from "@/testing/serviceLifecycle";
 import type { Pinia } from "pinia";
 
-import { plainLine } from "@/core/presentation";
+import { observedLineText } from "@/testing/presentationText";
 import { hex } from "@/platform/browserProjectFilesystem";
 import type { RuntimeTestConfiguration } from "@/stores/runtime";
 import { useRuntimeStore } from "@/stores/runtime";
 
 export interface WebTestControl {
   configure(configuration: RuntimeTestConfiguration): void;
+  configureServiceLifecycle(configuration: ServiceLifecycleConfiguration): void;
   openProject(): Promise<void>;
-  waitForStableObservation(timeoutMs?: number): Promise<Record<string, unknown>>;
+  waitForStableObservation(timeoutMs?: number, summary?: boolean): Promise<Record<string, unknown>>;
   snapshot(): Record<string, unknown>;
+  snapshotSummary(): Record<string, unknown>;
+  protocolEvidence(messageTypes: string[]): Record<string, unknown>;
   mediaPlacements(): Record<string, unknown>;
   mediaReplay(resourceName: string): Record<string, unknown>;
   inspect(watches: string[]): Promise<Record<string, unknown>>;
+  inspectTyped(watches: string[]): Promise<Record<string, unknown>>;
   exportSnapshot(): Promise<void>;
   exportTraditionalSave(): Promise<void>;
   takeDownload(timeoutMs?: number): Promise<{ name: string; bytes: number[] }>;
@@ -37,12 +47,28 @@ export function isStableObservationCandidate(
   );
 }
 
+export function stableObservationSignature(snapshot: Record<string, unknown>): string {
+  const observed = { ...snapshot };
+  // Servicing the background pump does not change an otherwise ready input boundary.
+  // This affects only action settling; the complete-snapshot watchdog keeps this field.
+  delete observed.cooperativeBackgroundWorkRevision;
+  return JSON.stringify(observed);
+}
+
 export function installWebTestControl(pinia: Pinia): void {
   const store = useRuntimeStore(pinia);
-  const snapshot = (): Record<string, unknown> =>
+  const createSnapshot = (summary: boolean): Record<string, unknown> =>
     serialize({
       bridgeKind: store.bridgeKind,
+      serviceEvidence: summary ? store.testRuntimeEvidenceSummary() : store.testRuntimeEvidence(),
+      serviceLifecycle: summary ? serviceLifecycleSummary() : serviceLifecycleSnapshot(),
+      buildIdentity: {
+        corePin: import.meta.env.VITE_RUSTYERA_CORE_FULL_REVISION,
+        wasmRevision: import.meta.env.VITE_RUSTYERA_WASM_REVISION,
+        frontendVersion: import.meta.env.VITE_RUSTYERA_FRONTEND_VERSION,
+      },
       phase: store.phase,
+      cooperativeBackgroundWorkRevision: store.testBackgroundWorkRevision(),
       runtimeEpoch: store.runtimeEpoch,
       status: store.status,
       projectOpen: store.projectOpen,
@@ -53,15 +79,23 @@ export function installWebTestControl(pinia: Pinia): void {
       wait: store.presentation.inputWait,
       presentationRevision: store.presentation.revision,
       historyRevision: store.presentation.historyRevision,
-      output: store.presentation.lines.map(plainLine),
+      output: store.presentation.lines.map(observedLineText),
       htmlIsland: store.presentation.htmlIsland,
       audio: Object.fromEntries(
-        store.presentation.audio.map((channel: any) => [
-          String(channel.channel_id),
-          { resourceId: channel.resource_id, playing: channel.playing },
+        store.presentation.audio.map((channel) => [
+          channel.channel.type === "sound"
+            ? `sound:${String(channel.channel.channel)}`
+            : channel.channel.type,
+          {
+            resourceId: channel.resourceId,
+            state: channel.state,
+            playing: channel.state === "playing",
+            revision: channel.revision,
+          },
         ]),
       ),
       audioPlayback: store.testAudioPlaybackState(),
+      audioProvider: store.testAudioProviderState(),
       fault: store.fault,
       logs: store.logs.slice(-100),
       logNotifications: store.logNotifications,
@@ -92,14 +126,20 @@ export function installWebTestControl(pinia: Pinia): void {
       },
       lastDownload: downloadSummary(window.__RUSTYERA_TEST_DOWNLOADS__?.at(-1)),
     });
+  const snapshot = (): Record<string, unknown> => createSnapshot(false);
+  const snapshotSummary = (): Record<string, unknown> => createSnapshot(true);
 
   window.__RUSTYERA_TEST__ = {
     configure: (configuration) => store.configureTestRun(configuration),
+    configureServiceLifecycle,
     openProject: () => store.openProject(),
     snapshot,
+    snapshotSummary,
+    protocolEvidence: (messageTypes) => serialize(store.testRuntimeEvidence(messageTypes)),
     mediaPlacements: () => presentationMedia(store.presentation),
     mediaReplay: (resourceName) => mediaReplay(store.presentation.resources, resourceName),
     inspect: (watches) => store.inspectWatches(watches),
+    inspectTyped: async (watches) => serialize(await store.inspectTypedWatches(watches)),
     exportSnapshot: () => store.exportSnapshot("normal"),
     exportTraditionalSave: () => store.exportTraditionalSaveForTest(),
     async replaceProjectSource(relativePath, expected, replacement) {
@@ -123,12 +163,12 @@ export function installWebTestControl(pinia: Pinia): void {
         )}`,
       );
     },
-    async waitForStableObservation(timeoutMs = 30_000) {
+    async waitForStableObservation(timeoutMs = 30_000, summary = false) {
       const deadline = performance.now() + timeoutMs;
       let previous = "";
       let stableFrames = 0;
       while (performance.now() < deadline) {
-        const current = JSON.stringify(snapshot());
+        const current = stableObservationSignature(snapshotSummary());
         const observable = isStableObservationCandidate(
           store.phase,
           store.canInteract,
@@ -138,7 +178,7 @@ export function installWebTestControl(pinia: Pinia): void {
         );
         if (observable && current === previous) stableFrames += 1;
         else stableFrames = 0;
-        if (stableFrames >= 2) return snapshot();
+        if (stableFrames >= 2) return summary ? snapshotSummary() : snapshot();
         previous = current;
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
@@ -168,7 +208,7 @@ function presentationMedia(presentation: any): Record<string, unknown> {
         for (const node of run.document?.nodes ?? []) visitNode(node, line.line_id);
     }
   }
-  return serialize({ images, backgrounds: presentation.backgrounds ?? [] });
+  return serialize({ images, scene: presentation.scene ?? { revision: 0, layers: [] } });
 }
 
 function mediaReplay(resources: any, resourceName: string): Record<string, unknown> {
@@ -199,6 +239,27 @@ function mediaReplay(resources: any, resourceName: string): Record<string, unkno
         (name) => String(item.name).toUpperCase() === String(name).toUpperCase(),
       ),
     ),
+    referencedSpriteGeometry: Object.fromEntries(
+      sprites
+        .filter((item: any) =>
+          [...spriteNames].some(
+            (name) => String(item.name).toUpperCase() === String(name).toUpperCase(),
+          ),
+        )
+        .map((item: any) => [
+          String(item.name).toUpperCase(),
+          {
+            size: item.size,
+            position: item.position,
+            firstFrame: item.frames?.[0]
+              ? {
+                  source_rectangle: item.frames[0].source_rectangle,
+                  offset: item.frames[0].offset,
+                }
+              : null,
+          },
+        ]),
+    ),
     canvases: canvases.filter((item: any) => canvasIds.has(Number(item.canvas_id))),
   });
 }
@@ -209,6 +270,7 @@ function downloadSummary(download?: {
   size?: number;
   projectMagic?: Uint8Array;
   projectManifest?: import("@/platform/browserProject").BrowserManifest;
+  projectIdentity?: import("@/platform/projectFileManifestTransfer").ProjectFileIdentitySummary;
   inputReplay?: Uint8Array;
 }): unknown {
   if (!download) return null;
@@ -229,9 +291,33 @@ function downloadSummary(download?: {
               .map((file) => [file.relative_path, hex(file.content_hash)]),
           ),
           projectRevision: download.projectManifest.project_revision,
+          projectIdentityFiles: download.projectManifest.files.map((file) => ({
+            relativePath: file.relative_path,
+            category: file.category,
+            // For source text this is the submitted UTF-8 payload digest; for Resource it is raw.
+            contentHash: hex(file.content_hash),
+            payloadKind: file.payload.type,
+            byteLength:
+              file.payload.type === "external"
+                ? file.payload.byteLength
+                : file.payload.type === "bytes"
+                  ? file.payload.value.length
+                  : new TextEncoder().encode(file.payload.value).length,
+          })),
         }
       : {}),
     ...replay,
+    ...(download.projectIdentity
+      ? {
+          projectRevision: download.projectIdentity.projectRevision,
+          projectHashes: Object.fromEntries(
+            download.projectIdentity.files
+              .filter((file) => file.category !== "resource")
+              .map((file) => [file.relativePath, file.contentHash]),
+          ),
+          projectIdentityFiles: download.projectIdentity.files,
+        }
+      : {}),
   };
 }
 

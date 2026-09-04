@@ -129,8 +129,10 @@ export function formatDiagnosisLogs(entries: DiagnosisLogEntry[]): string {
 
 export function formatDiagnostic(value: any): string {
   const source = value.source;
-  const detail =
+  const context = formatCompatibilityContext(value.context);
+  const message =
     value.code == null ? String(value.message ?? "") : `[${value.code}] ${value.message}`;
+  const detail = `${message}${context ? ` [${context}]` : ""}`;
   if (!source) return detail;
   const line = source.line == null ? "?" : String(Number(source.line) + 1);
   const column = source.byte_column == null ? "?" : String(Number(source.byte_column) + 1);
@@ -151,3 +153,4 @@ function timestampedFileName(prefix: string, extension: string, now: Date): stri
   const time = `${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`;
   return `${prefix}_${date}-${time}.${extension}`;
 }
+import { formatCompatibilityContext } from "@/core/compatibility";

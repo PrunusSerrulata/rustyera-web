@@ -56,7 +56,12 @@ export class RuntimeExportTransferState {
     }
     activeExport.requestMessageId = undefined;
     if (ready.result.type !== "ready") {
-      const label = expectedKind === "input_replay" ? "操作序列" : "快照";
+      const label =
+        expectedKind === "input_replay"
+          ? "操作序列"
+          : expectedKind === "traditional_save"
+            ? "传统存档"
+            : "快照";
       const message = `当前状态不能导出${label}：${(ready.result.reasons ?? []).join(", ")}`;
       const failedKind = activeExport.kind;
       if (failedKind !== "compiled_cache") this.context.logWarning(message);
@@ -209,6 +214,7 @@ export class RuntimeExportTransferState {
         activeExport.chunks.push(bytes);
       }
     } catch (error) {
+      if (this.context.exportState() !== activeExport) return;
       if (activeExport.kind === "project_file") {
         await this.context.failProjectFile();
       } else if (
@@ -227,6 +233,7 @@ export class RuntimeExportTransferState {
         throw error;
       return;
     }
+    if (this.context.exportState() !== activeExport) return;
     if (activeExport.kind === "compiled_cache") {
       this.context.continueCompiledCache(activeExport, chunk.complete);
       return;

@@ -29,6 +29,26 @@ describe("runtime service CBOR codec", () => {
     );
   });
 
+  it("uses shortest-form CBOR for small bigint service results", () => {
+    const bytes = Uint8Array.of(1, 2, 3);
+    const encoded = encodeServicePayload(
+      new Map<number, unknown>([
+        [0, 0n],
+        [1, -1n],
+        [2, bytes],
+      ]),
+    );
+
+    expect([...encoded]).toEqual([0xa3, 0x00, 0x00, 0x01, 0x20, 0x02, 0x43, 0x01, 0x02, 0x03]);
+    expect(decodeServicePayload(encoded)).toEqual(
+      new Map<number, unknown>([
+        [0, 0],
+        [1, -1],
+        [2, bytes],
+      ]),
+    );
+  });
+
   it("rejects projected values outside the byte range", () => {
     expect(() => decodeServicePayload(BigUint64Array.from([256n]))).toThrow(
       "runtime service payload contains a non-byte value",

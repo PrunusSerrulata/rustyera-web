@@ -75,35 +75,82 @@ describe("runtime pump coordinator", () => {
     coordinator.clearTimer();
   });
 
-  it("continues bounded compute-only work without another timer", async () => {
+  it.each(["compute", "cooperative"])(
+    "continues bounded %s work without an idle timer",
+    async (kind) => {
+      const work =
+        kind === "compute" ? batch("more_work") : { ...batch(), cooperativeBackgroundWork: true };
+      const pump = vi
+        .fn<() => Promise<PumpBatch>>()
+        .mockResolvedValueOnce(work)
+        .mockResolvedValueOnce(work)
+        .mockResolvedValueOnce(batch("idle"));
+      const advanceTimedWait = vi.fn(async () => {});
+      const coordinator = createCoordinator({ pump, advanceTimedWait });
+      coordinator.setReady(true);
+
+      coordinator.schedule(0);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(pump).toHaveBeenCalledTimes(3);
+      expect(advanceTimedWait).toHaveBeenCalledTimes(3);
+      expect(vi.getTimerCount()).toBe(1);
+      coordinator.clearTimer();
+    },
+  );
+
+  it("reports only completed cooperative slices as background progress", async () => {
+    const cooperative = { ...batch("more_work"), cooperativeBackgroundWork: true };
     const pump = vi
       .fn<() => Promise<PumpBatch>>()
-      .mockResolvedValueOnce(batch("more_work"))
-      .mockResolvedValueOnce(batch("more_work"))
-      .mockResolvedValueOnce(batch("idle"));
-    const advanceTimedWait = vi.fn(async () => {});
-    const coordinator = createCoordinator({ pump, advanceTimedWait });
-    coordinator.setReady(true);
-
-    coordinator.schedule(0);
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(pump).toHaveBeenCalledTimes(3);
-    expect(advanceTimedWait).toHaveBeenCalledTimes(3);
-    expect(vi.getTimerCount()).toBe(1);
-    coordinator.clearTimer();
-  });
-
-  it("yields compute-only work at the contiguous fairness boundary", async () => {
-    const pump = vi.fn(async () => batch("more_work"));
+      .mockResolvedValueOnce(cooperative)
+      .mockResolvedValue(batch());
     const coordinator = createCoordinator({ pump });
     coordinator.setReady(true);
 
     coordinator.schedule(0);
-    await vi.runOnlyPendingTimersAsync();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(coordinator.backgroundWorkRevision).toBe(1);
 
-    expect(pump).toHaveBeenCalledTimes(8);
-    expect(vi.getTimerCount()).toBe(1);
+    await coordinator.submitAndHandle(async () => ({
+      ...submittedBatch(),
+      cooperativeBackgroundWork: true,
+    }));
+    expect(coordinator.backgroundWorkRevision).toBe(2);
+    coordinator.clearTimer();
+  });
+
+  it.each(["compute", "cooperative"])(
+    "yields %s work at the contiguous fairness boundary",
+    async (kind) => {
+      const work =
+        kind === "compute" ? batch("more_work") : { ...batch(), cooperativeBackgroundWork: true };
+      const pump = vi.fn(async () => work);
+      const coordinator = createCoordinator({ pump });
+      coordinator.setReady(true);
+
+      coordinator.schedule(0);
+      await vi.runOnlyPendingTimersAsync();
+
+      expect(pump).toHaveBeenCalledTimes(8);
+      expect(vi.getTimerCount()).toBe(1);
+      coordinator.clearTimer();
+    },
+  );
+
+  it("continues cooperative work from a submission without the idle polling delay", async () => {
+    const pump = vi.fn(async () => batch());
+    const coordinator = createCoordinator({ pump });
+    coordinator.setReady(true);
+    await coordinator.submitAndHandle(async () => ({
+      ...submittedBatch(),
+      cooperativeBackgroundWork: true,
+    }));
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(pump).toHaveBeenCalledOnce();
+    expect(coordinator.backgroundWorkRevision).toBe(1);
     coordinator.clearTimer();
   });
 

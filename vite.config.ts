@@ -37,10 +37,12 @@ export default defineConfig({
       `${coreVersion} (${coreRevision.slice(0, 8)})`,
     ),
     "import.meta.env.VITE_RUSTYERA_CORE_REVISION": JSON.stringify(coreRevision.slice(0, 8)),
+    "import.meta.env.VITE_RUSTYERA_CORE_FULL_REVISION": JSON.stringify(coreRevision),
     "import.meta.env.VITE_RUSTYERA_WASM_REVISION": JSON.stringify(wasmRevision),
   },
   clearScreen: false,
   server: { strictPort: true },
+  optimizeDeps: { exclude: ["@sqlite.org/sqlite-wasm"] },
   envPrefix: ["VITE_", "TAURI_"],
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },

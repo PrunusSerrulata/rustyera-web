@@ -1,5 +1,10 @@
+import storagePatternVectors from "./fixtures/snake-storage-patterns.json";
+import { storagePattern } from "@/platform/storagePattern";
+import { referenceCompatibility, snakeCompatibility } from "./compatibilityTestSupport";
 import { describe, expect, it, vi } from "vitest";
 import { blake3 } from "@noble/hashes/blake3.js";
+import { compatibilityCbor } from "@/core/compatibility";
+import { decodeServicePayload, encodeServicePayload } from "@/core/serviceCodec";
 
 import {
   BrowserProject,
@@ -11,6 +16,7 @@ import {
   saveSlotName,
   scanBrowserProjectFile,
 } from "../src/platform/browserProject";
+import { dispatchBrowserStorage } from "@/platform/browserProjectStorage";
 import { createProjectProgressReporter } from "@/platform/browserProjectUtilities";
 import {
   FailingIndexDirectoryHandle,
@@ -18,6 +24,91 @@ import {
   SaveFileHandle,
   writeFixtureFile,
 } from "./browserProjectTestSupport";
+
+function referenceProject(...args: ConstructorParameters<typeof BrowserProject>): BrowserProject {
+  const project = new BrowserProject(...args);
+  project.bindResolvedCompatibility(referenceCompatibility(), null);
+  return project;
+}
+
+it("shares snake project saves while isolating runtime data and caches", async () => {
+  const root = new SaveDirectoryHandle("game");
+  const reference = referenceProject(root as unknown as FileSystemDirectoryHandle);
+  reference.setCompatibility(referenceCompatibility());
+  const snake = referenceProject(root as unknown as FileSystemDirectoryHandle);
+  snake.setCompatibility(snakeCompatibility());
+  await reference.writeTraditionalSave(0, Uint8Array.of(1));
+  await expect(snake.readTraditionalSave(0)).resolves.toEqual(Uint8Array.of(1));
+  await snake.writeTraditionalSave(0, Uint8Array.of(2));
+  expect(await reference.readTraditionalSave(0)).toEqual(Uint8Array.of(2));
+  expect(await snake.readTraditionalSave(0)).toEqual(Uint8Array.of(2));
+  expect(await snake.cacheDirectory(true)).not.toBe(await reference.cacheDirectory(true));
+  const snakeData = await snake.storage({
+    request_id: 2,
+    namespace: "data",
+    relative_path: "state.db",
+    operation: {
+      type: "write",
+      data: [3],
+      atomic_replace: true,
+      precondition: { type: "any" },
+    },
+  });
+  expect(snakeData.result.type).toBe("written");
+  await expect(root.getDirectoryHandle("data")).rejects.toMatchObject({ name: "NotFoundError" });
+  const snakeLog = await snake.storage({
+    request_id: 4,
+    namespace: "log",
+    relative_path: "runtime.log",
+    operation: {
+      type: "write",
+      data: [4],
+      atomic_replace: true,
+      precondition: { type: "any" },
+    },
+  });
+  expect(snakeLog.result.type).toBe("written");
+  await expect(root.getDirectoryHandle("logs")).rejects.toMatchObject({ name: "NotFoundError" });
+  const globalDirectory = await root.getDirectoryHandle("sav");
+  await writeFixtureFile(globalDirectory, "global.sav", "standard global");
+  const snakeGlobal = await snake.storage({
+    request_id: 3,
+    namespace: "global_save",
+    relative_path: "global.sav",
+    operation: { type: "read" },
+  });
+  expect(snakeGlobal.result.data).toEqual([...new TextEncoder().encode("standard global")]);
+  await writeFixtureFile(root, "resource.txt", "shared");
+  await snake.scanQuick();
+  const response = await snake.storage({
+    request_id: 1,
+    namespace: "resource",
+    relative_path: "resource.txt",
+    operation: { type: "read" },
+  });
+  expect(response.result.data).toEqual([...new TextEncoder().encode("shared")]);
+});
+
+it("retains compatibility and root configuration when discarding submitted source payloads", () => {
+  const manifest = {
+    project_revision: 1,
+    compatibility: snakeCompatibility(),
+    files: [
+      {
+        relative_path: "reraconfig.toml",
+        category: "configuration",
+        payload: {
+          type: "utf8" as const,
+          value: '[compatibility]\nprofile = "emuera.skia.snake"\n',
+        },
+        content_hash: new Uint8Array(32),
+      },
+    ],
+  };
+  const lightweight = cacheIdentityManifest(manifest);
+  expect(lightweight.compatibility).toEqual(snakeCompatibility());
+  expect(lightweight.files[0].payload).toEqual(manifest.files[0].payload);
+});
 
 function deferred<T>(): {
   promise: Promise<T>;
@@ -40,6 +131,8 @@ function manifestIdentityHex(manifest: {
     resource_manifest: 3,
     resource: 4,
     configuration: 5,
+    als: 6,
+    erd: 7,
   };
   const encoder = new TextEncoder();
   const identity: number[] = [];
@@ -115,6 +208,58 @@ describe("browser resource manifest normalization", () => {
 });
 
 describe("browser project font resources", () => {
+  it("spools many files in bounded writes without changing CBOR payloads or hashes", async () => {
+    const root = new SaveDirectoryHandle("game");
+    for (let index = 0; index < 1000; index += 1)
+      await writeFixtureFile(root, `source-${index}.erb`, `;${"脚本".repeat(100)}\n`);
+    const project = referenceProject(root as any);
+    const manifest = await project.scan();
+    const storage = new SaveDirectoryHandle("opfs");
+    const originalGet = storage.getFileHandle.bind(storage);
+    const sizes: number[] = [];
+    vi.spyOn(storage, "getFileHandle").mockImplementation(async (...args) => {
+      const handle = await originalGet(...args);
+      const originalCreate = handle.createWritable.bind(handle);
+      vi.spyOn(handle, "createWritable").mockImplementation(async (options) => {
+        const writer = await originalCreate(options);
+        const originalWrite = writer.write.bind(writer);
+        writer.write = async (bytes) => {
+          sizes.push(bytes.byteLength);
+          // The producer must await consumption before reusing its buffer.
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          await originalWrite(bytes);
+        };
+        return writer;
+      });
+      return handle;
+    });
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    try {
+      const spool = await project.stageFullManifest();
+      const decoded = decodeServicePayload(await spool.read(0, spool.totalBytes)) as Map<
+        number,
+        any
+      >;
+      expect(decoded.get(0)).toBe(manifest.project_revision);
+      expect(decoded.get(2)).toEqual(compatibilityCbor(manifest.compatibility));
+      expect(decoded.get(1)).toHaveLength(manifest.files.length);
+      for (const [index, file] of manifest.files.entries()) {
+        if (file.payload.type !== "utf8") throw new Error("fixture must contain source text");
+        const encoded = decoded.get(1)[index] as Map<number, any>;
+        expect(encoded.get(0)).toBe(file.relative_path);
+        expect(encoded.get(2)).toEqual([0, [file.payload.value]]);
+        expect(encoded.get(3)).toEqual(file.content_hash);
+      }
+      expect(sizes.length).toBeGreaterThan(1);
+      expect(sizes.length).toBeLessThan(10);
+      expect(Math.max(...sizes)).toBeLessThanOrEqual(256 * 1024);
+      expect(sizes.reduce((sum, size) => sum + size, 0)).toBe(spool.totalBytes);
+      await spool.release();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("packages supported files below the case-insensitive font directory", () => {
     for (const extension of ["ttf", "otf", "ttc", "woff", "woff2"]) {
       const bytes = new TextEncoder().encode(extension);
@@ -124,14 +269,18 @@ describe("browser project font resources", () => {
         payload: { type: "external", byteLength: bytes.byteLength },
       });
     }
-    expect(scanBrowserProjectFile("font/license.txt", new Uint8Array(), new Set())).toBeUndefined();
+    expect(scanBrowserProjectFile("font/license.txt", new Uint8Array(), new Set())).toMatchObject({
+      relative_path: "font/license.txt",
+      category: "resource",
+      payload: { type: "external", byteLength: 0 },
+    });
   });
 
   it("materializes font resources for full project exports and page registration", async () => {
     const root = new SaveDirectoryHandle("game");
     const fonts = await root.getDirectoryHandle("font", { create: true });
     await writeFixtureFile(fonts, "Project.ttf", Uint8Array.of(1, 2, 3));
-    const project = new BrowserProject(root as any);
+    const project = referenceProject(root as any);
 
     const manifest = await project.scanQuick();
 
@@ -149,6 +298,18 @@ describe("browser project font resources", () => {
     await expect(project.materialize()).resolves.toMatchObject({
       files: [{ payload: { type: "external", byteLength: 3 } }],
     });
+
+    // Portable directory imports retain the manifest hash, without the scanner's change token.
+    project.useImportedManifest(manifest);
+    const storage = new SaveDirectoryHandle("opfs");
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    const spool = await project.stageFullManifest();
+    const encoded = await spool.read(0, spool.totalBytes);
+    const compatibility = encodeServicePayload(compatibilityCbor(manifest.compatibility));
+    expect(encoded.slice(-compatibility.length - 1)).toEqual(Uint8Array.of(2, ...compatibility));
+    await spool.release();
+    await writeFixtureFile(fonts, "Project.ttf", Uint8Array.of(3, 2, 1));
+    await expect(project.stageFullManifest()).rejects.toThrow("资源在项目扫描后发生变化");
   });
 });
 
@@ -198,7 +359,7 @@ describe("browser project reads", () => {
     });
 
     try {
-      const scan = new BrowserProject(root as any).scanQuick();
+      const scan = referenceProject(root as any).scanQuick();
       await Promise.all([firstReadStarted.promise, fifthSnapshotStarted.promise]);
       releaseFirstRead.resolve();
       releaseFifthSnapshot.resolve();
@@ -215,7 +376,7 @@ describe("browser project reads", () => {
     await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
     const progress = vi.fn();
 
-    await new BrowserProject(root as any).scanQuick(progress);
+    await referenceProject(root as any).scanQuick(progress);
 
     expect(progress.mock.calls).toEqual([
       [0, 0],
@@ -232,9 +393,9 @@ describe("browser project reads", () => {
     const source = await erb.getFileHandle("main.erb", { create: true });
     await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
 
-    const coldProject = new BrowserProject(root as any, 1, "game", true);
+    const coldProject = referenceProject(root as any, 1, "game", true);
     const cold = await coldProject.scanQuick();
-    const warmProject = new BrowserProject(root as any, 1, "game", true);
+    const warmProject = referenceProject(root as any, 1, "game", true);
     const warm = await warmProject.scanQuick();
 
     expect(cold.files[0].payload).toEqual({ type: "utf8", value: "@MAIN\nRETURN\n" });
@@ -248,7 +409,7 @@ describe("browser project reads", () => {
     const root = new SaveDirectoryHandle("game");
     const source = await root.getFileHandle("main.erb", { create: true });
     await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
-    await new BrowserProject(root as any, 1, "game", true).scanQuick();
+    await referenceProject(root as any, 1, "game", true).scanQuick();
     const privateDirectory = await root.getDirectoryHandle(".rustyera");
     const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
     const indexHandle = await cacheDirectory.getFileHandle("source-index-v1.json");
@@ -261,7 +422,7 @@ describe("browser project reads", () => {
       await indexHandle.createWritable()
     ).write(new TextEncoder().encode(JSON.stringify(index)));
 
-    const migrated = new BrowserProject(root as any, 1, "game", true);
+    const migrated = referenceProject(root as any, 1, "game", true);
     await migrated.scanQuick();
 
     expect(migrated.sourceIndexStats()).toMatchObject({ reusedFiles: 1, hashedFiles: 0 });
@@ -274,9 +435,9 @@ describe("browser project reads", () => {
     await (
       await source.createWritable()
     ).write(new TextEncoder().encode("@MAIN\nPRINTL CHANGED\nRETURN\n"));
-    const updated = new BrowserProject(root as any, 1, "game", true);
+    const updated = referenceProject(root as any, 1, "game", true);
     await updated.scanQuick();
-    const repeated = new BrowserProject(root as any, 1, "game", true);
+    const repeated = referenceProject(root as any, 1, "game", true);
     await repeated.scanQuick();
 
     expect(updated.sourceIndexStats()).toMatchObject({ reusedFiles: 0, hashedFiles: 1 });
@@ -287,10 +448,10 @@ describe("browser project reads", () => {
     const root = new SaveDirectoryHandle("game");
     const source = await root.getFileHandle("main.erb", { create: true });
     await (await source.createWritable()).write(new TextEncoder().encode("@ONE\nRETURN\n"));
-    const first = await new BrowserProject(root as any).scanQuick();
+    const first = await referenceProject(root as any).scanQuick();
     source.replacePreservingMetadata(new TextEncoder().encode("@TWO\nRETURN\n"));
 
-    const second = await new BrowserProject(root as any).scanQuick();
+    const second = await referenceProject(root as any).scanQuick();
 
     expect(second.files[0].content_hash).not.toEqual(first.files[0].content_hash);
     expect(second.files[0].payload).toEqual({ type: "utf8", value: "@TWO\nRETURN\n" });
@@ -301,8 +462,8 @@ describe("browser project reads", () => {
     const erb = await root.getDirectoryHandle("ERB", { create: true });
     const source = await erb.getFileHandle("main.erb", { create: true });
     await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
-    await new BrowserProject(root as any, 1, "game", true).scanQuick();
-    const project = new BrowserProject(root as any, 1, "game", true);
+    await referenceProject(root as any, 1, "game", true).scanQuick();
+    const project = referenceProject(root as any, 1, "game", true);
     await project.scanQuick();
 
     const materialized = await project.materialize();
@@ -322,7 +483,7 @@ describe("browser project reads", () => {
     await (await accented.createWritable()).write(new TextEncoder().encode("@ACCENTED\nRETURN\n"));
     await (await ascii.createWritable()).write(new TextEncoder().encode("@ASCII\nRETURN\n"));
 
-    const manifest = await new BrowserProject(root as any).scanQuick();
+    const manifest = await referenceProject(root as any).scanQuick();
 
     expect(manifest.files.map((file) => file.relative_path)).toEqual(["z.erb", "é.erb"]);
   });
@@ -351,7 +512,7 @@ describe("browser project reads", () => {
     await writeFixtureFile(root, "é.erb", "@ACCENTED\nRETURN\n");
     await writeFixtureFile(root, "z.erb", "@ASCII\nRETURN\n");
 
-    const project = new BrowserProject(root as any);
+    const project = referenceProject(root as any);
     const manifest = await project.scanQuick();
     const quickIdentity = manifestIdentityHex(manifest);
 
@@ -378,7 +539,7 @@ describe("browser project reads", () => {
     const root = new SaveDirectoryHandle("game");
     const first = await root.getFileHandle("one.erb", { create: true });
     await (await first.createWritable()).write(new TextEncoder().encode("@ONE\nRETURN\n"));
-    const project = new BrowserProject(root as any, 1, "game", true);
+    const project = referenceProject(root as any, 1, "game", true);
     await project.scanQuick();
     const second = await root.getFileHandle("two.erb", { create: true });
     await (await second.createWritable()).write(new TextEncoder().encode("@TWO\nRETURN\n"));
@@ -402,7 +563,7 @@ describe("browser project reads", () => {
     const index = await cacheDirectory.getFileHandle("source-index-v1.json", { create: true });
     await (await index.createWritable()).write(new TextEncoder().encode("{broken"));
 
-    const manifest = await new BrowserProject(root as any, 1, "game", true).scanQuick();
+    const manifest = await referenceProject(root as any, 1, "game", true).scanQuick();
 
     expect(manifest.files[0].payload).toEqual({ type: "utf8", value: "@MAIN\nRETURN\n" });
   });
@@ -418,7 +579,7 @@ describe("browser project reads", () => {
     const root = new SaveDirectoryHandle("game");
     const resources = await root.getDirectoryHandle("resources", { create: true });
     await writeFixtureFile(resources, "image.png", pngHeader(2, 3));
-    await new BrowserProject(root as any, 1, "game", true).scanQuick();
+    await referenceProject(root as any, 1, "game", true).scanQuick();
     const privateDirectory = await root.getDirectoryHandle(".rustyera");
     const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
     const indexHandle = await cacheDirectory.getFileHandle("source-index-v1.json");
@@ -430,7 +591,7 @@ describe("browser project reads", () => {
       await indexHandle.createWritable()
     ).write(new TextEncoder().encode(JSON.stringify(index)));
 
-    const warm = new BrowserProject(root as any, 1, "game", true);
+    const warm = referenceProject(root as any, 1, "game", true);
     const manifest = await warm.scanQuick();
 
     expect(warm.sourceIndexStats()).toMatchObject({ reusedFiles: 1, hashedFiles: 0 });
@@ -455,7 +616,7 @@ describe("browser project reads", () => {
     const source = await root.getFileHandle("main.erb", { create: true });
     await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
 
-    const manifest = await new BrowserProject(root as any, 1, "game", true).scanQuick();
+    const manifest = await referenceProject(root as any, 1, "game", true).scanQuick();
 
     expect(manifest.files[0].payload).toEqual({ type: "utf8", value: "@MAIN\nRETURN\n" });
   });
@@ -464,7 +625,7 @@ describe("browser project reads", () => {
     const root = new SaveDirectoryHandle("game");
     const source = await root.getFileHandle("main.erb", { create: true });
     await (await source.createWritable()).write(new TextEncoder().encode("@MAIN\nRETURN\n"));
-    await new BrowserProject(root as any).scanQuick();
+    await referenceProject(root as any).scanQuick();
     const privateDirectory = await root.getDirectoryHandle(".rustyera");
     const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
     const index = await cacheDirectory.getFileHandle("source-index-v1.json");
@@ -478,8 +639,8 @@ describe("browser project reads", () => {
       abort: async () => {},
     });
 
-    await new BrowserProject(root as any).scanQuick();
-    const trusted = new BrowserProject(root as any, 1, "game", true);
+    await referenceProject(root as any).scanQuick();
+    const trusted = referenceProject(root as any, 1, "game", true);
     await trusted.scanQuick();
 
     expect(trusted.sourceIndexStats()).toMatchObject({ reusedFiles: 0, hashedFiles: 1 });
@@ -491,11 +652,11 @@ describe("browser project reads", () => {
     const second = await root.getFileHandle("two.erb", { create: true });
     await (await first.createWritable()).write(new TextEncoder().encode("@ONE\nRETURN\n"));
     await (await second.createWritable()).write(new TextEncoder().encode("@TWO\nRETURN\n"));
-    await new BrowserProject(root as any, 1, "game", true).scanQuick();
+    await referenceProject(root as any, 1, "game", true).scanQuick();
     await (await first.createWritable()).write(new TextEncoder().encode("@NEW\nRETURN\n"));
     await root.removeEntry("two.erb");
 
-    const refreshed = await new BrowserProject(root as any, 1, "game", true).scanQuick();
+    const refreshed = await referenceProject(root as any, 1, "game", true).scanQuick();
 
     expect(refreshed.files).toHaveLength(1);
     expect(refreshed.files[0]).toMatchObject({
@@ -509,8 +670,8 @@ describe("browser project reads", () => {
     const resources = await root.getDirectoryHandle("resources", { create: true });
     const handle = await resources.getFileHandle("e\u0301.png", { create: true });
     await (await handle.createWritable()).write(Uint8Array.of(4, 5, 6));
-    await new BrowserProject(root as any, 1, "game", true).scanQuick();
-    const project = new BrowserProject(root as any, 1, "game", true);
+    await referenceProject(root as any, 1, "game", true).scanQuick();
+    const project = referenceProject(root as any, 1, "game", true);
     const manifest = await project.scanQuick();
 
     expect(manifest.files[0].payload).toEqual({
@@ -531,8 +692,8 @@ describe("browser project reads", () => {
     const sound = await root.getDirectoryHandle("sound", { create: true });
     const handle = await sound.getFileHandle("主题.mp3", { create: true });
     await (await handle.createWritable()).write(Uint8Array.of(4, 5, 6));
-    await new BrowserProject(root as any, 1, "game", true).scanQuick();
-    const project = new BrowserProject(root as any, 1, "game", true);
+    await referenceProject(root as any, 1, "game", true).scanQuick();
+    const project = referenceProject(root as any, 1, "game", true);
 
     const manifest = await project.scanQuick();
 
@@ -557,7 +718,7 @@ describe("browser project reads", () => {
     const other = await erb.getDirectoryHandle("other", { create: true });
     await writeFixtureFile(selected, "command.erb", "@COM0\nPRINTL OLD\nRETURN 1\n");
     await writeFixtureFile(other, "command.erb", "@COM1\nPRINTL OLD\nRETURN 1\n");
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
     await project.scan();
 
     await writeFixtureFile(selected, "command.erb", "@COM0\nPRINTL SELECTED\nRETURN 1\n");
@@ -605,12 +766,7 @@ describe("browser project reads", () => {
   it("refreshes the portable source index after an incremental reload scan", async () => {
     const root = new SaveDirectoryHandle("game");
     await writeFixtureFile(root, "main.erb", "@MAIN\nPRINTL OLD\nRETURN\n");
-    const project = new BrowserProject(
-      root as unknown as FileSystemDirectoryHandle,
-      1,
-      "game",
-      true,
-    );
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle, 1, "game", true);
     await project.scanQuick();
     await writeFixtureFile(root, "main.erb", "@MAIN\nPRINTL UPDATED VALUE\nRETURN\n");
 
@@ -624,7 +780,7 @@ describe("browser project reads", () => {
     expect(index.version).toBe(3);
     expect(index.files["main.erb"].signature).toBe(`${source.size}:${source.lastModified}`);
     expect(index.files["main.erb"].size).toBe(source.size);
-    const repeated = new BrowserProject(
+    const repeated = referenceProject(
       root as unknown as FileSystemDirectoryHandle,
       2,
       "game",
@@ -637,7 +793,7 @@ describe("browser project reads", () => {
   it("discards a rejected scoped reload without changing the active manifest", async () => {
     const root = new SaveDirectoryHandle("game");
     await writeFixtureFile(root, "main.erb", "@SYSTEM_TITLE\nPRINTL OLD\nRETURN\n");
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
     await project.scan();
     await writeFixtureFile(root, "main.erb", "@SYSTEM_TITLE\nPRINTL NEW\nRETURN\n");
 
@@ -653,7 +809,7 @@ describe("browser project reads", () => {
     const root = new SaveDirectoryHandle("game");
     await writeFixtureFile(root, "main.erb", "@SYSTEM_TITLE\nPRINTL OLD\nRETURN\n");
     await writeFixtureFile(root, "other.erb", "@OTHER\nPRINTL OLD\nRETURN\n");
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
     const original = await project.scan();
     project.markRuntimeManifestSparse();
     project.releaseSubmittedSourcePayloads();
@@ -689,7 +845,7 @@ describe("browser project reads", () => {
   it("rejects an invalid reload scope before changing its revision or baseline", async () => {
     const root = new SaveDirectoryHandle("game");
     await writeFixtureFile(root, "main.erb", "@SYSTEM_TITLE\nPRINTL OLD\nRETURN\n");
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
     await project.scan();
     await writeFixtureFile(root, "main.erb", "@SYSTEM_TITLE\nPRINTL NEW\nRETURN\n");
 
@@ -710,7 +866,7 @@ describe("browser project reads", () => {
     const erb = await root.getDirectoryHandle("ERB", { create: true });
     const commands = await erb.getDirectoryHandle("commands", { create: true });
     await writeFixtureFile(commands, "hot.erb", "@COM0\nRETURN 1\n");
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
     await project.scan();
     await commands.removeEntry("hot.erb");
     await writeFixtureFile(commands, "new.erh", "#DIM TEST\n");
@@ -727,8 +883,12 @@ describe("browser project reads", () => {
     await (
       await handle.createWritable()
     ).write(new TextEncoder().encode("[display]\r\nfont_size = 12\r\n"));
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
-    project.useImportedManifest({ project_revision: 1, files: [] });
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
+    project.useImportedManifest({
+      project_revision: 1,
+      compatibility: referenceCompatibility(),
+      files: [],
+    });
     const { blake3 } = await import("@noble/hashes/blake3.js");
     const digest = blake3(new TextEncoder().encode("[display]\nfont_size = 12\n"));
 
@@ -751,7 +911,7 @@ describe("browser project reads", () => {
     });
     await (await cache.createWritable()).write(new TextEncoder().encode("base-tail"));
     const prepare = vi.fn();
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
     project.useConfigurationUpdatePreparer(prepare);
 
     await project.writeConfiguration(
@@ -776,7 +936,7 @@ describe("browser project reads", () => {
       create: true,
     });
     await (await cache.createWritable()).write(new TextEncoder().encode("stale-cache"));
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
     project.useConfigurationUpdatePreparer(async () => {
       throw new Error("stale cache");
     });
@@ -801,7 +961,7 @@ describe("browser project reads", () => {
       create: true,
     });
     await (await cache.createWritable()).write(new TextEncoder().encode("base-tail"));
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
     project.useConfigurationUpdatePreparer(async () => {
       cache.replacePreservingMetadata(new TextEncoder().encode("evil-tail"));
       const result = new Uint8Array(8 + 7);
@@ -831,7 +991,7 @@ describe("browser project reads", () => {
     cacheDirectory.removeEntry = async () => {
       throw new DOMException("quota", "QuotaExceededError");
     };
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
     project.useConfigurationUpdatePreparer(async () => {
       throw new Error("stale cache");
     });
@@ -848,7 +1008,7 @@ describe("browser project reads", () => {
 
   it("treats repeated first-time writes as idempotent and rejects non-UTF-8 TOML", async () => {
     const root = new SaveDirectoryHandle("game");
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
     const contents = "[meta]\nschema_version = 1\n";
     await project.writeConfiguration(new Uint8Array(), contents);
     await project.writeConfiguration(new Uint8Array(), contents.replaceAll("\n", "\r\n"));
@@ -864,7 +1024,7 @@ describe("browser project reads", () => {
     ).createWritable();
     await writer.write(new TextEncoder().encode(original));
     await writer.close();
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
     const originalDigest = blake3(new TextEncoder().encode(original));
     await project.writeConfiguration(originalDigest, upgraded);
     await project.writeConfiguration(originalDigest, upgraded);
@@ -874,8 +1034,12 @@ describe("browser project reads", () => {
   });
 
   it("keeps packaged configuration read-only without a writable file handle", async () => {
-    const project = new BrowserProject(new SaveDirectoryHandle("storage") as any, 1, "game");
-    project.useEmbeddedManifest({ project_revision: 1, files: [] });
+    const project = referenceProject(new SaveDirectoryHandle("storage") as any, 1, "game");
+    project.useEmbeddedManifest({
+      project_revision: 1,
+      compatibility: referenceCompatibility(),
+      files: [],
+    });
 
     await expect(
       project.writeConfiguration(new Uint8Array(), "[text]\nfont_size = 18\n"),
@@ -891,7 +1055,7 @@ describe("browser project reads", () => {
         await cacheDirectory.getFileHandle("compiled-project.reracache", { create: true })
       ).createWritable()
     ).write(Uint8Array.of(9, 8, 7));
-    const project = new BrowserProject(root as any, 1, "game");
+    const project = referenceProject(root as any, 1, "game");
     const handle = new SaveFileHandle("game.reraproj", new TextEncoder().encode("base-tail"));
     const file = await handle.getFile();
     const prepare = vi.fn(async () => {
@@ -901,7 +1065,11 @@ describe("browser project reads", () => {
       return result;
     });
     project.usePackagedFile(file, handle as any, prepare);
-    project.useEmbeddedManifest({ project_revision: 1, files: [] });
+    project.useEmbeddedManifest({
+      project_revision: 1,
+      compatibility: referenceCompatibility(),
+      files: [],
+    });
 
     await project.writeConfiguration(
       new Uint8Array(),
@@ -932,12 +1100,16 @@ describe("browser project reads", () => {
       create: true,
     });
     await (await cache.createWritable()).write(Uint8Array.of(9, 8, 7));
-    const project = new BrowserProject(root as any, 1, "game");
+    const project = referenceProject(root as any, 1, "game");
     const handle = new SaveFileHandle("game.reraproj", new TextEncoder().encode("base-tail"));
     project.usePackagedFile(await handle.getFile(), handle as any, async () => {
       throw new Error("update rejected");
     });
-    project.useEmbeddedManifest({ project_revision: 1, files: [] });
+    project.useEmbeddedManifest({
+      project_revision: 1,
+      compatibility: referenceCompatibility(),
+      files: [],
+    });
 
     await expect(
       project.writeConfiguration(new Uint8Array(), "[text]\nfont_size = 18\n"),
@@ -946,7 +1118,7 @@ describe("browser project reads", () => {
   });
 
   it("reuses the selected packaged file without copying it into browser storage", async () => {
-    const project = new BrowserProject(new SaveDirectoryHandle("storage") as any, 1, "game");
+    const project = referenceProject(new SaveDirectoryHandle("storage") as any, 1, "game");
     const bytes = Uint8Array.of(1, 2, 3, 4);
     const file = new File([], "game.reraproj");
     Object.defineProperty(file, "arrayBuffer", { value: async () => bytes.buffer.slice(0) });
@@ -967,17 +1139,18 @@ describe("browser project reads", () => {
     });
     const refreshed = Uint8Array.of(9, 8, 7);
     await (await cacheHandle.createWritable()).write(refreshed);
-    const project = new BrowserProject(root as any, 1, "game");
+    const project = referenceProject(root as any, 1, "game");
     project.usePackagedFile(new File([Uint8Array.of(1, 2, 3, 4)], "game.reraproj"));
 
     await expect(project.readCompiledCache()).resolves.toEqual(refreshed);
   });
 
   it("serves resources embedded in a packaged project", async () => {
-    const project = new BrowserProject(new SaveDirectoryHandle("storage") as any, 1, "game");
+    const project = referenceProject(new SaveDirectoryHandle("storage") as any, 1, "game");
     const resource = Uint8Array.of(1, 2, 3);
     project.useEmbeddedManifest({
       project_revision: 3,
+      compatibility: referenceCompatibility(),
       files: [
         {
           relative_path: "resources/a.png",
@@ -997,13 +1170,14 @@ describe("browser project reads", () => {
   });
 
   it("reads worker-owned packaged resources on demand without retaining their payload", async () => {
-    const project = new BrowserProject(new SaveDirectoryHandle("storage") as any, 1, "game");
+    const project = referenceProject(new SaveDirectoryHandle("storage") as any, 1, "game");
     const read = vi.fn(async (_path: string, maximum?: number) =>
       Uint8Array.of(4, 5, 6).slice(0, maximum),
     );
     project.useOwnedEmbeddedManifest(
       {
         project_revision: 3,
+        compatibility: referenceCompatibility(),
         files: [
           {
             relative_path: "resources/a.png",
@@ -1029,9 +1203,10 @@ describe("browser project reads", () => {
     const handle = await resources.getFileHandle("a.png", { create: true });
     const bytes = Uint8Array.of(4, 5, 6);
     await (await handle.createWritable()).write(bytes);
-    const project = new BrowserProject(root as any, 1, "game");
+    const project = referenceProject(root as any, 1, "game");
     project.useImportedManifest({
       project_revision: 1,
+      compatibility: referenceCompatibility(),
       files: [
         {
           relative_path: "resources/a.png",
@@ -1144,6 +1319,7 @@ describe("browser compiled cache identity", () => {
     const hash = new Uint8Array(32).fill(7);
     const manifest = {
       project_revision: 7,
+      compatibility: referenceCompatibility(),
       files: [
         {
           relative_path: "ERB/main.erb",
@@ -1156,6 +1332,7 @@ describe("browser compiled cache identity", () => {
 
     expect(cacheIdentityManifest(manifest)).toEqual({
       project_revision: 7,
+      compatibility: referenceCompatibility(),
       files: [
         {
           relative_path: "ERB/main.erb",
@@ -1171,7 +1348,7 @@ describe("browser compiled cache identity", () => {
     const root = new SaveDirectoryHandle("game");
     const oldSource = "@SYSTEM_TITLE\nPRINTL OLD\nRETURN\n";
     await writeFixtureFile(root, "main.erb", oldSource);
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
     const imported = await project.scan();
     project.useImportedManifest(imported);
 
@@ -1212,7 +1389,7 @@ describe("browser compiled cache identity", () => {
 describe("browser traditional saves", () => {
   it("treats a missing save namespace as an empty directory", async () => {
     const root = new SaveDirectoryHandle("project");
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
 
     const response = await project.storage({
       request_id: 5n,
@@ -1230,7 +1407,7 @@ describe("browser traditional saves", () => {
     const xml = await root.getDirectoryHandle("XML", { create: true });
     const source = await xml.getFileHandle("SKILL_LIFE.xml", { create: true });
     await (await source.createWritable()).write(new TextEncoder().encode("<project />"));
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
 
     const response = await project.storage({
       request_id: 6n,
@@ -1289,7 +1466,7 @@ describe("browser traditional saves", () => {
 
   it("creates a missing save only after its write precondition passes", async () => {
     const root = new SaveDirectoryHandle("project");
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
 
     const response = await project.storage({
       request_id: 7n,
@@ -1311,7 +1488,7 @@ describe("browser traditional saves", () => {
 
   it("lists, writes, and reads numbered slots in the project sav directory", async () => {
     const root = new SaveDirectoryHandle("project");
-    const project = new BrowserProject(root as unknown as FileSystemDirectoryHandle);
+    const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
 
     expect(await project.listTraditionalSaveSlots(3)).toEqual([
       { slot: 0, occupied: false },
@@ -1329,5 +1506,860 @@ describe("browser traditional saves", () => {
     expect(await project.readTraditionalSave(1)).toEqual(Uint8Array.of(4, 5, 6));
     expect(saveSlotName(1)).toBe("save01.sav");
     expect(() => saveSlotName(100)).toThrow("存档槽位必须介于 00 和 99");
+  });
+});
+
+it.each(["project", "data"])(
+  "isolates every mutable read operation for snake %s",
+  async (namespace) => {
+    const root = new SaveDirectoryHandle("game");
+    const shared = await root.getDirectoryHandle("shared", { create: true });
+    await writeFixtureFile(shared, "sentinel.xml", "reference sentinel");
+    const reference = referenceProject(root as unknown as FileSystemDirectoryHandle);
+    reference.setCompatibility(referenceCompatibility());
+    const snake = referenceProject(root as unknown as FileSystemDirectoryHandle);
+    snake.setCompatibility(snakeCompatibility());
+    await snake.scanQuick();
+    for (const operation of [
+      { type: "read" },
+      { type: "stat" },
+      { type: "read_range", offset: 0, maximum_bytes: 64 },
+      { type: "list", recursive: false, pattern: "sentinel.xml" },
+    ]) {
+      const request = {
+        request_id: 1,
+        namespace,
+        relative_path: operation.type === "list" ? "shared" : "shared/sentinel.xml",
+        operation,
+      };
+      expect((await reference.storage(request)).result.type).not.toBe("error");
+      const isolated = (await snake.storage(request)).result;
+      if (namespace === "data" && operation.type === "list")
+        expect(isolated).toEqual({ type: "listed", entries: [] });
+      else expect(isolated.type).toBe("error");
+    }
+    const resource = await snake.storage({
+      request_id: 2,
+      namespace: "resource",
+      relative_path: "shared/sentinel.xml",
+      operation: { type: "read" },
+    });
+    expect(resource.result.data).toEqual([...new TextEncoder().encode("reference sentinel")]);
+  },
+);
+
+it("does not bind mutable storage before compatibility resolution", async () => {
+  const project = new BrowserProject(
+    new SaveDirectoryHandle("game") as unknown as FileSystemDirectoryHandle,
+  );
+  await expect(project.dataRoot()).rejects.toThrow();
+});
+
+it("reuses the resolved snake data root across serial storage requests", async () => {
+  const root = new SaveDirectoryHandle("game");
+  const rootLookup = vi.spyOn(root, "getDirectoryHandle");
+  const project = referenceProject(root as unknown as FileSystemDirectoryHandle);
+  project.setCompatibility(snakeCompatibility());
+
+  const first = await project.dataRoot();
+  const second = await project.dataRoot();
+
+  expect(second).toBe(first);
+  expect(rootLookup).toHaveBeenCalledTimes(1);
+});
+
+describe("manifest-authorized resource storage", () => {
+  it("reads embedded resources without falling back to same-name project files", async () => {
+    const root = new SaveDirectoryHandle("game");
+    await writeFixtureFile(root, "seed.xml", "outside");
+    const project = referenceProject(root as any);
+    const bytes = Uint8Array.from(new TextEncoder().encode("inside"));
+    project.useOwnedEmbeddedManifest({
+      project_revision: 1,
+      compatibility: referenceCompatibility(),
+      files: [
+        {
+          relative_path: "seed.xml",
+          category: "resource",
+          content_hash: blake3(bytes),
+          payload: { type: "bytes", value: bytes },
+        },
+      ],
+    });
+    const request = {
+      request_id: 1,
+      namespace: "resource",
+      relative_path: "seed.xml",
+      operation: { type: "read" },
+    };
+    expect(project.embeddedManifest()?.files[0]?.payload).toEqual({
+      type: "external",
+      byteLength: bytes.byteLength,
+    });
+    expect((await project.storage(request)).result).toEqual({
+      type: "read",
+      data: [...bytes],
+      revision: [...blake3(bytes)].map((value) => value.toString(16).padStart(2, "0")).join(""),
+    });
+    project.useOwnedEmbeddedManifest({
+      project_revision: 2,
+      compatibility: referenceCompatibility(),
+      files: [
+        {
+          relative_path: "seed.xml",
+          category: "resource",
+          content_hash: blake3(new TextEncoder().encode("outside")),
+          payload: { type: "external", byteLength: 7 },
+        },
+      ],
+    });
+    expect((await project.storage(request)).result).toMatchObject({
+      type: "error",
+      error: { kind: "invalid_data" },
+    });
+  });
+  it("rejects normalized resource collisions and recursive Data directory cycles", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const project = referenceProject(root as any);
+    const resource = {
+      category: "resource",
+      content_hash: blake3(Uint8Array.of(1)),
+      payload: { type: "bytes" as const, value: Uint8Array.of(1) },
+    };
+    project.useImportedManifest({
+      project_revision: 1,
+      files: [
+        { ...resource, relative_path: "é.xml" },
+        { ...resource, relative_path: "e\u0301.xml" },
+      ],
+    });
+    expect(
+      (
+        await project.storage({
+          request_id: 1,
+          namespace: "resource",
+          relative_path: "",
+          operation: { type: "list", recursive: true },
+        })
+      ).result,
+    ).toMatchObject({ type: "error", error: { kind: "invalid_data" } });
+    const data = await root.getDirectoryHandle("data", { create: true });
+    vi.spyOn(data, "entries").mockImplementation(async function* () {
+      yield ["loop", data] as [string, SaveDirectoryHandle];
+    });
+    expect(
+      (
+        await project.storage({
+          request_id: 1,
+          namespace: "data",
+          relative_path: "",
+          operation: { type: "list", recursive: true },
+        })
+      ).result,
+    ).toMatchObject({ type: "error", error: { kind: "invalid_data" } });
+  });
+  it("does not authorize unselected resource changes during a scoped script reload", async () => {
+    const root = new SaveDirectoryHandle("game");
+    await writeFixtureFile(root, "main.erb", "@MAIN\nRETURN 1\n");
+    await writeFixtureFile(root, "seed.xml", "old");
+    const project = referenceProject(root as any);
+    await project.scan();
+    await writeFixtureFile(root, "main.erb", "@MAIN\nRETURN 2\n");
+    await writeFixtureFile(root, "seed.xml", "new");
+    await project.reloadRequest({ type: "script", path: "main.erb" });
+    const request = {
+      request_id: 1,
+      namespace: "resource",
+      relative_path: "seed.xml",
+      operation: { type: "read" },
+    };
+    expect((await project.storage(request)).result).toMatchObject({
+      type: "error",
+      error: { kind: "conflict" },
+    });
+    project.finalizeReload(true);
+    expect((await project.storage(request)).result).toMatchObject({
+      type: "error",
+      error: { kind: "conflict" },
+    });
+    await project.reloadRequest({ type: "all" });
+    project.finalizeReload(true);
+    expect((await project.storage(request)).result).toMatchObject({
+      type: "read",
+      data: [...new TextEncoder().encode("new")],
+    });
+  });
+  it("reads, stats and enumerates committed resources separately from the Data overlay", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const plugins = await root.getDirectoryHandle("plugins", { create: true });
+    const nested = await plugins.getDirectoryHandle("nested", { create: true });
+    await writeFixtureFile(plugins, "a.xml", "source");
+    await writeFixtureFile(nested, "b.txt", "nested");
+    await writeFixtureFile(root, "main.erb", "@MAIN\nRETURN\n");
+    const project = referenceProject(root as any);
+    project.setCompatibility(snakeCompatibility());
+    await project.scanQuick();
+    const call = async (relative_path: string, operation: any, namespace = "resource") =>
+      (await project.storage({ request_id: 1, namespace, relative_path, operation })).result;
+    await call(
+      "plugins/a.xml",
+      {
+        type: "write",
+        data: [...new TextEncoder().encode("overlay")],
+        precondition: { type: "any" },
+      },
+      "data",
+    );
+    expect((await call("PLUGINS/a.xml", { type: "read" })).data).toEqual([
+      ...new TextEncoder().encode("source"),
+    ]);
+    expect((await call("plugins/a.xml", { type: "read" }, "data")).data).toEqual([
+      ...new TextEncoder().encode("overlay"),
+    ]);
+    const listed = await call("plugins", { type: "list", recursive: true, pattern: "*" });
+    expect(listed.entries.map((entry: any) => entry.relative_path)).toEqual([
+      "plugins/a.xml",
+      "plugins/nested/b.txt",
+    ]);
+    expect(
+      (await call("plugins", { type: "list", recursive: false, pattern: "*.xml" })).entries,
+    ).toHaveLength(1);
+    expect(await call("plugins/a.xml", { type: "stat" })).toMatchObject({
+      type: "metadata",
+      byte_length: 6,
+    });
+    expect(
+      await call("plugins/a.xml", {
+        type: "read_range",
+        offset: 2,
+        maximum_bytes: 3,
+        change_token: listed.entries[0].change_token,
+      }),
+    ).toMatchObject({ type: "read_chunk", data: [117, 114, 99], complete: false });
+    expect(
+      await call("plugins/a.xml", {
+        type: "read_range",
+        offset: 0,
+        maximum_bytes: 1,
+        change_token: "old",
+      }),
+    ).toMatchObject({ type: "error", error: { kind: "conflict" } });
+    expect(await call("main.erb", { type: "read" })).toMatchObject({
+      type: "error",
+      error: { kind: "permission_denied" },
+    });
+  });
+
+  it("rejects Resource write/delete before creating any private or source directory", async () => {
+    const root = new SaveDirectoryHandle("game");
+    await writeFixtureFile(root, "seed.xml", "seed");
+    const project = referenceProject(root as any);
+    project.setCompatibility(snakeCompatibility());
+    for (const operation of [
+      { type: "write", data: [1], precondition: { type: "any" } },
+      { type: "delete", precondition: { type: "any" } },
+    ]) {
+      const result = await project.storage({
+        request_id: 1,
+        namespace: "resource",
+        relative_path: "missing/sub/seed.xml",
+        operation,
+      });
+      expect(result.result).toMatchObject({ type: "error", error: { kind: "read_only" } });
+    }
+    await expect(root.getDirectoryHandle("missing")).rejects.toMatchObject({
+      name: "NotFoundError",
+    });
+    await expect(root.getDirectoryHandle(".rustyera")).rejects.toMatchObject({
+      name: "NotFoundError",
+    });
+    expect(await (await (await root.getFileHandle("seed.xml")).getFile()).text()).toBe("seed");
+  });
+
+  it.each(["read", "stat", "read_range", "list"])(
+    "detects same-metadata mutations during %s",
+    async (type) => {
+      const root = new SaveDirectoryHandle("game");
+      await writeFixtureFile(root, "seed.xml", "one");
+      const project = referenceProject(root as any);
+      await project.scanQuick();
+      (await root.getFileHandle("seed.xml")).replacePreservingMetadata(
+        new TextEncoder().encode("two"),
+      );
+      const result = await project.storage({
+        request_id: 1,
+        namespace: "resource",
+        relative_path: type === "list" ? "" : "seed.xml",
+        operation: { type, recursive: true, offset: 0, maximum_bytes: 1 },
+      });
+      expect(result.result).toMatchObject({ type: "error", error: { kind: "conflict" } });
+    },
+  );
+
+  it("rejects invalid ranges and oversize full reads before opening the file", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const project = referenceProject(root as any);
+    project.useImportedManifest({
+      project_revision: 1,
+      files: [
+        {
+          relative_path: "large.xml",
+          category: "resource",
+          content_hash: blake3(Uint8Array.of(1)),
+          payload: { type: "external", byteLength: 64 * 1024 * 1024 + 1 },
+        },
+      ],
+    });
+    const open = vi.spyOn(root, "getFileHandle");
+    for (const operation of [
+      { type: "read" },
+      { type: "read_range", offset: -1, maximum_bytes: 1 },
+      { type: "read_range", offset: 0, maximum_bytes: 4 * 1024 * 1024 + 1 },
+    ]) {
+      expect(
+        (
+          await project.storage({
+            request_id: 1,
+            namespace: "resource",
+            relative_path: "large.xml",
+            operation,
+          })
+        ).result,
+      ).toMatchObject({ type: "error", error: { kind: "invalid_data" } });
+    }
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("does not accept an asynchronous read from a replaced project manifest", async () => {
+    const root = new SaveDirectoryHandle("game");
+    await writeFixtureFile(root, "seed.xml", "seed");
+    const project = referenceProject(root as any);
+    const manifest = await project.scanQuick();
+    const handle = await root.getFileHandle("seed.xml");
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const getFile = handle.getFile.bind(handle);
+    vi.spyOn(handle, "getFile").mockImplementationOnce(async () => {
+      started.resolve();
+      await release.promise;
+      return getFile();
+    });
+    const pending = project.storage({
+      request_id: 1,
+      namespace: "resource",
+      relative_path: "seed.xml",
+      operation: { type: "read" },
+    });
+    await started.promise;
+    project.useImportedManifest({ ...manifest, project_revision: 2 });
+    release.resolve();
+    expect((await pending).result).toMatchObject({ type: "error", error: { kind: "conflict" } });
+  });
+});
+
+describe("ALS and ERD project ingestion", () => {
+  it.each(["names.als", "nested/names.ERD"])("requires UTF-8 for %s", (path) => {
+    expect(() => scanBrowserProjectFile(path, Uint8Array.of(0x82, 0xa0), new Set())).toThrow(
+      `${path} 不是有效的 UTF-8 文件`,
+    );
+    const text = "10,索引\r\n";
+    const bytes = new TextEncoder().encode(`\uFEFF${text}`);
+    const scanned = scanBrowserProjectFile(path, bytes, new Set());
+    expect(scanned?.payload).toEqual({ type: "utf8", value: text });
+    expect(scanned?.content_hash).toEqual(blake3(new TextEncoder().encode(text)));
+    expect(scanned?.content_hash).not.toEqual(blake3(bytes));
+  });
+
+  it("keeps ALS/ERD categories through warm source-index reuse, hydration and scoped reload", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const erb = await root.getDirectoryHandle("ERB", { create: true });
+    const nested = await erb.getDirectoryHandle("indices", { create: true });
+    const csv = await root.getDirectoryHandle("CSV", { create: true });
+    await writeFixtureFile(nested, "BUFF.erd", "10,主名\n");
+    await writeFixtureFile(nested, "BUFF.als", "11,别名\n");
+    await writeFixtureFile(csv, "TRAIN.als", "12,训练\n");
+    const cold = await referenceProject(root as any, 1, "game", true).scanQuick();
+    const project = referenceProject(root as any, 1, "game", true);
+    const warm = await project.scanQuick();
+    expect(warm.files.map((file) => file.category)).toEqual(["als", "als", "erd"]);
+    expect(warm.files.map((file) => file.content_hash)).toEqual(
+      cold.files.map((file) => file.content_hash),
+    );
+    expect(project.sourceIndexStats().reusedFiles).toBe(3);
+    expect(warm.files.every((file) => file.payload.type === "utf8" && !file.payload.value)).toBe(
+      true,
+    );
+    expect((await project.materialize()).files).toEqual(cold.files);
+    expect((await project.projectReloadTargets()).scripts).toContain("ERB/indices/BUFF.erd");
+
+    await writeFixtureFile(nested, "BUFF.als", "13,更新\n");
+    await nested.removeEntry("BUFF.erd");
+    await writeFixtureFile(nested, "MATRIX@2.erd", "10,新索引\n");
+    const reload = await project.reloadRequest({ type: "folder", path: "ERB/indices" });
+    expect(reload.changes).toHaveLength(3);
+    expect(reload.changes).toContainEqual({
+      type: "remove",
+      relative_path: "ERB/indices/BUFF.erd",
+      category: "erd",
+    });
+    project.finalizeReload(true);
+    const updated = await project.materialize();
+    expect(updated.files.map((file) => file.relative_path)).toEqual([
+      "CSV/TRAIN.als",
+      "ERB/indices/BUFF.als",
+      "ERB/indices/MATRIX@2.erd",
+    ]);
+    expect(manifestIdentityHex(updated)).not.toBe(manifestIdentityHex(cold));
+  });
+
+  it("applies canonical roots without treating index data as executable source", () => {
+    const roots = new Set(["csv", "erb"]);
+    const bytes = new TextEncoder().encode("10,entry\n");
+    for (const path of ["ERB/nested/name.erd", "ERB/nested/name.als", "CSV/TRAIN.als"])
+      expect(scanBrowserProjectFile(path, bytes, roots)?.category).toBe(
+        path.endsWith(".erd") ? "erd" : "als",
+      );
+    for (const path of ["loose.erd", "CSV/name.erd", "notes/name.als"])
+      expect(scanBrowserProjectFile(path, bytes, roots)).toBeUndefined();
+    expect(scanBrowserProjectFile("flat.als", bytes, new Set())?.category).toBe("als");
+  });
+
+  it("rejects normalized name collisions before a source-index entry can overwrite another", async () => {
+    const root = new SaveDirectoryHandle("game");
+    await writeFixtureFile(root, "BUFF.erd", "10,one\n");
+    await writeFixtureFile(root, "buff.erd", "11,two\n");
+    await expect(referenceProject(root as any).scanQuick()).rejects.toThrow("项目路径归一化冲突");
+  });
+});
+
+describe("read-only project data resource inventory", () => {
+  it("retains raw XML/text/database bytes and hashes across cold, warm and full manifests", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const plugins = await root.getDirectoryHandle("plugins", { create: true });
+    const bytes = Uint8Array.of(0xef, 0xbb, 0xbf, 0x0d, 0x0a, 0xff);
+    for (const suffix of ["xml", "txt", "db", "sqlite", "dll"])
+      await writeFixtureFile(plugins, `fixture.${suffix}`, bytes);
+    const saves = await root.getDirectoryHandle("sav", { create: true });
+    await writeFixtureFile(saves, "txt00.txt", "user save");
+    const cold = await referenceProject(root as any, 1, "game", true).scanQuick();
+    const project = referenceProject(root as any, 1, "game", true);
+    const warm = await project.scanQuick();
+    expect(warm.files).toEqual(cold.files);
+    expect(warm.files.map((file) => file.relative_path)).toEqual([
+      "plugins/fixture.db",
+      "plugins/fixture.sqlite",
+      "plugins/fixture.txt",
+      "plugins/fixture.xml",
+    ]);
+    for (const file of warm.files) {
+      expect(file).toMatchObject({
+        category: "resource",
+        payload: { type: "external", byteLength: bytes.byteLength },
+      });
+      expect(file.content_hash).toEqual(blake3(bytes));
+      expect(await project.readResource(file.relative_path)).toEqual(bytes);
+    }
+    expect((await project.materialize()).files).toEqual(cold.files);
+    const storage = new SaveDirectoryHandle("opfs");
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => storage } });
+    try {
+      const full = await project.stageFullManifest();
+      expect(full.totalBytes).toBeGreaterThan(bytes.length * 4);
+      await full.release();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("snake Data normalized identity", () => {
+  async function entryNames(directory: SaveDirectoryHandle): Promise<string[]> {
+    const names: string[] = [];
+    for await (const [name] of directory.entries()) names.push(name);
+    return names;
+  }
+
+  async function dataProject() {
+    const root = new SaveDirectoryHandle("game");
+    const project = referenceProject(root as any);
+    project.setCompatibility(snakeCompatibility());
+    const data = (await (
+      await project.dataRoot()
+    ).getDirectoryHandle("data", { create: true })) as unknown as SaveDirectoryHandle;
+    const call = async (relative_path: string, operation: any, namespace = "data") =>
+      (await project.storage({ request_id: 1, namespace, relative_path, operation })).result;
+    return { root, project, data, call };
+  }
+
+  it("uses the same identity for nested reads, metadata, list, updates and deletes without guessing Resource fallback", async () => {
+    const { root, project, data, call } = await dataProject();
+    const sourceDirectory = await (
+      await root.getDirectoryHandle("plugins", { create: true })
+    ).getDirectoryHandle("café", { create: true });
+    await writeFixtureFile(sourceDirectory, "seed.txt", "source");
+    await project.scanQuick();
+    const actual = await (
+      await data.getDirectoryHandle("PlUgIns", { create: true })
+    ).getDirectoryHandle("Cafe\u0301", { create: true });
+    await writeFixtureFile(actual, "SEED.TXT", "overlay");
+    const handle = await actual.getFileHandle("SEED.TXT");
+    const bytes = (text: string) => [...new TextEncoder().encode(text)];
+    for (const path of ["plugins/CAFÉ/seed.txt", "PLUGINS/cafe\u0301/SEED.TXT"]) {
+      expect(await call(path, { type: "read" })).toMatchObject({
+        type: "read",
+        data: bytes("overlay"),
+      });
+      expect(await call(path, { type: "stat" })).toMatchObject({
+        type: "metadata",
+        byte_length: 7,
+      });
+      expect(await call(path, { type: "read_range", offset: 1, maximum_bytes: 3 })).toMatchObject({
+        type: "read_chunk",
+        data: bytes("ver"),
+      });
+    }
+    const listed = await call("pLuGiNs", { type: "list", recursive: true, pattern: "*" });
+    expect(listed.entries.map((entry: any) => entry.relative_path)).toEqual([
+      "PlUgIns/Café/SEED.TXT",
+    ]);
+    expect((await call(listed.entries[0].relative_path, { type: "read" })).data).toEqual(
+      bytes("overlay"),
+    );
+    expect((await call("PLUGINS/café/seed.txt", { type: "read" }, "resource")).data).toEqual(
+      bytes("source"),
+    );
+    expect(
+      await call("plugins/CAFÉ/Seed.Txt", {
+        type: "write",
+        data: bytes("changed"),
+        precondition: { type: "any" },
+      }),
+    ).toMatchObject({ type: "written" });
+    expect(await actual.getFileHandle("SEED.TXT")).toBe(handle);
+    expect(await (await handle.getFile()).text()).toBe("changed");
+    expect(await entryNames(actual)).toEqual(["SEED.TXT"]);
+    expect(
+      await call("New/e\u0301.txt", {
+        type: "write",
+        data: bytes("new"),
+        precondition: { type: "any" },
+      }),
+    ).toMatchObject({ type: "written" });
+    const created = await data.getDirectoryHandle("New");
+    expect(await entryNames(created)).toEqual(["é.txt"]);
+    expect(await call("new/É.TXT", { type: "read" })).toMatchObject({
+      type: "read",
+      data: bytes("new"),
+    });
+    expect(
+      await call("PLUGINS/café/seed.txt", { type: "delete", precondition: { type: "any" } }),
+    ).toEqual({ type: "deleted" });
+    expect(await call("plugins/café/seed.txt", { type: "read" })).toMatchObject({
+      type: "error",
+      error: { kind: "not_found" },
+    });
+    expect((await call("plugins/café/seed.txt", { type: "read" }, "resource")).data).toEqual(
+      bytes("source"),
+    );
+  });
+
+  it.each([
+    ["seed.txt", "SEED.TXT"],
+    ["é.txt", "e\u0301.txt"],
+    ["İ.txt", "i\u0307.txt"],
+  ])("rejects ambiguous sibling identities %s / %s before any mutation", async (first, second) => {
+    const { data, call } = await dataProject();
+    await writeFixtureFile(data, first, "first");
+    await writeFixtureFile(data, second, "second");
+    const before = await data.getFileHandle(first);
+    const write = vi.spyOn(before, "createWritable");
+    for (const operation of [
+      { type: "read" },
+      { type: "stat" },
+      { type: "read_range", offset: 0, maximum_bytes: 1 },
+      { type: "write", data: [1], precondition: { type: "any" } },
+      { type: "delete", precondition: { type: "any" } },
+      { type: "list", recursive: true },
+    ]) {
+      const path = operation.type === "list" ? "" : first;
+      expect(await call(path, operation)).toMatchObject({
+        type: "error",
+        error: { kind: "invalid_data" },
+      });
+    }
+    expect(
+      await call("new/different.txt", { type: "write", data: [1], precondition: { type: "any" } }),
+    ).toMatchObject({ type: "error", error: { kind: "invalid_data" } });
+    expect(write).not.toHaveBeenCalled();
+    expect(await (await before.getFile()).text()).toBe("first");
+    await expect(data.getDirectoryHandle("new")).rejects.toMatchObject({ name: "NotFoundError" });
+  });
+
+  it("keeps permission failures distinct and does not swallow delete metadata errors", async () => {
+    const { data, call } = await dataProject();
+    await writeFixtureFile(data, "Seed.TXT", "safe");
+    const handle = await data.getFileHandle("Seed.TXT");
+    const denied = new DOMException("denied", "NotAllowedError");
+    const scan = vi.spyOn(data, "entries").mockImplementation(() => {
+      throw denied;
+    });
+    expect(await call("seed.txt", { type: "read" })).toMatchObject({
+      type: "error",
+      error: { kind: "permission_denied" },
+    });
+    scan.mockRestore();
+    const read = vi.spyOn(handle, "getFile").mockRejectedValue(denied);
+    expect(await call("SEED.txt", { type: "delete", precondition: { type: "any" } })).toMatchObject(
+      { type: "error", error: { kind: "permission_denied" } },
+    );
+    read.mockRestore();
+    expect(await (await handle.getFile()).text()).toBe("safe");
+  });
+
+  it("rejects excessive paths, cyclic directory handles and paths outside the granted root", async () => {
+    const { data, call } = await dataProject();
+    for (const path of ["a".repeat(4097), Array(257).fill("a").join("/"), "bad\0name.txt"]) {
+      expect(
+        await call(path, { type: "write", data: [1], precondition: { type: "any" } }),
+      ).toMatchObject({ type: "error", error: { kind: "invalid_data" } });
+    }
+    expect(await entryNames(data)).toEqual([]);
+    (data as any).children.set("Loop", data);
+    expect(await call("loop/a.txt", { type: "read" })).toMatchObject({
+      type: "error",
+      error: { kind: "invalid_data" },
+    });
+    (data as any).children.clear();
+    await writeFixtureFile(data, "Outside.txt", "private");
+    (data as any).resolve = async () => null;
+    expect(await call("outside.TXT", { type: "read" })).toMatchObject({
+      type: "error",
+      error: { kind: "permission_denied" },
+    });
+    expect(await call("", { type: "list", recursive: true })).toMatchObject({
+      type: "error",
+      error: { kind: "permission_denied" },
+    });
+  });
+
+  it("bounds complete parent scans before creating a missing target", async () => {
+    const { data, call } = await dataProject();
+    const handle = new SaveFileHandle("existing");
+    const scan = vi.spyOn(data, "entries").mockImplementation(async function* () {
+      for (let index = 0; index <= 100_000; index += 1)
+        yield [`entry${index}`, handle] as [string, SaveFileHandle];
+    });
+    expect(
+      await call("new.txt", { type: "write", data: [1], precondition: { type: "any" } }),
+    ).toMatchObject({ type: "error", error: { kind: "invalid_data" } });
+    scan.mockRestore();
+    expect(await entryNames(data)).toEqual([]);
+  });
+
+  it("keeps the original profile and disabled root fallback independent of snake identity", async () => {
+    const root = new SaveDirectoryHandle("game");
+    const data = await root.getDirectoryHandle("data", { create: true });
+    await writeFixtureFile(data, "Literal.TXT", "old");
+    const reference = referenceProject(root as any);
+    const operation = { type: "read" };
+    expect(
+      (
+        await reference.storage({
+          request_id: 1,
+          namespace: "data",
+          relative_path: "Literal.TXT",
+          operation,
+        })
+      ).result.type,
+    ).toBe("read");
+    expect(
+      (
+        await reference.storage({
+          request_id: 1,
+          namespace: "data",
+          relative_path: "literal.txt",
+          operation,
+        })
+      ).result,
+    ).toMatchObject({ type: "error", error: { kind: "not_found" } });
+    await expect(
+      dispatchBrowserStorage(root as any, "data", "literal.txt", operation, root as any, false),
+    ).rejects.toMatchObject({ name: "NotFoundError" });
+    await writeFixtureFile(data, "literal.txt", "separate");
+    const written = await reference.storage({
+      request_id: 1,
+      namespace: "data",
+      relative_path: "Literal.TXT",
+      operation: { type: "write", data: [9], precondition: { type: "any" } },
+    });
+    expect(written.result.type).toBe("written");
+    const listed = await reference.storage({
+      request_id: 1,
+      namespace: "data",
+      relative_path: "",
+      operation: { type: "list", recursive: true },
+    });
+    expect(listed.result.entries.map((entry: any) => entry.relative_path)).toEqual([
+      "Literal.TXT",
+      "literal.txt",
+    ]);
+  });
+});
+
+describe("bounded storage patterns and traversal error boundaries", () => {
+  it("uses the shared snake scalar/NFC/Unicode-lowercase vectors", () => {
+    for (const entry of storagePatternVectors.cases) {
+      const match = () => storagePattern(entry.pattern, "emuera.skia.snake")(entry.name);
+      if (entry.error)
+        expect(match, entry.id).toThrowError(expect.objectContaining({ name: "DataError" }));
+      else expect(match(), entry.id).toBe(entry.expected);
+    }
+  });
+
+  it("keeps the original non-Unicode regex case, UTF-16 wildcard and endpoint rules", () => {
+    for (const [pattern, name, expected] of [
+      ["?.txt", "😀.txt", false],
+      ["??.txt", "😀.txt", true],
+      ["s", "ſ", false],
+      ["k", "K", false],
+      ["σ", "ς", true],
+      ["ß", "ẞ", false],
+      ["[ab]", "a", false],
+      ["[ab]", "[ab]", true],
+      ["é", "e\u0301", false],
+      ["*a", "*ba", true],
+      ["?a", "?a", true],
+      ["", "anything", true],
+      ["foo", "foo\n", false],
+      ["*", "foo\n", false],
+      ["*", "foo\r", false],
+      ["*", "foo\u2028", false],
+      ["*", "foo\u2029", false],
+      ["*", "foo\r\n", false],
+      ["foo\n", "foo\n", true],
+      ["*\n", "foo\n", true],
+      ["a*b", "a\nb", false],
+    ] as const)
+      expect(storagePattern(pattern, "emuera.em")(name), `${pattern}/${name}`).toBe(expected);
+    expect(() => storagePattern(`*${"a".repeat(2000)}b`, "emuera.em")("a".repeat(4000))).toThrow(
+      "工作限额",
+    );
+  });
+
+  async function fixture(snake: boolean) {
+    const root = new SaveDirectoryHandle("game");
+    const project = referenceProject(root as any);
+    if (snake) project.setCompatibility(snakeCompatibility());
+    const data = (await (
+      await project.dataRoot()
+    ).getDirectoryHandle("data", { create: true })) as unknown as SaveDirectoryHandle;
+    const list = async (path = "", pattern: string | null = null, namespace = "data") =>
+      (
+        await project.storage({
+          request_id: 1,
+          namespace,
+          relative_path: path,
+          operation: { type: "list", pattern, recursive: true },
+        })
+      ).result;
+    return { root, project, data, list };
+  }
+
+  it("matches snake Data and manifest Resource with the same literal brackets, scalar and NFC rules", async () => {
+    const { root, project, data, list } = await fixture(true);
+    const names = ["SEED.TXT", "😀.txt", "e\u0301.txt", "[ab].txt", "a.txt"];
+    for (const name of names) {
+      await writeFixtureFile(root, name, "source");
+      await writeFixtureFile(data, name, "overlay");
+    }
+    await project.scanQuick();
+    for (const pattern of ["*.txt", "?.txt", "É.TXT", "[ab].txt", ""]) {
+      const dataResult = await list("", pattern);
+      const resources = await list("", pattern, "resource");
+      expect(dataResult.type).toBe("listed");
+      expect(resources.type).toBe("listed");
+      expect(dataResult.entries.map((entry: any) => entry.relative_path)).toEqual(
+        resources.entries.map((entry: any) => entry.relative_path),
+      );
+    }
+  });
+
+  it.each([false, true])(
+    "does not turn an already enumerated missing file into empty success or root fallback (snake=%s)",
+    async (snake) => {
+      const { root, data, list } = await fixture(snake);
+      await writeFixtureFile(root, "fallback.txt", "must not appear");
+      await writeFixtureFile(data, "good.txt", "good");
+      const disappearing = await data.getFileHandle("gone.txt", { create: true });
+      vi.spyOn(disappearing, "getFile").mockRejectedValue(
+        new DOMException("removed during scan", "NotFoundError"),
+      );
+      const result = await list();
+      expect(result).toMatchObject({ type: "error", error: { kind: "conflict" } });
+      expect(result.entries).toBeUndefined();
+    },
+  );
+
+  it.each(["NotFoundError", "NotAllowedError"])(
+    "preserves an error from inside an opened subdirectory: %s",
+    async (name) => {
+      const { data, list } = await fixture(true);
+      await writeFixtureFile(data, "good.txt", "good");
+      const nested = await data.getDirectoryHandle("nested", { create: true });
+      const brokenEntries = nested.entries();
+      vi.spyOn(brokenEntries, "next").mockRejectedValue(
+        new DOMException("subdirectory failed", name),
+      );
+      vi.spyOn(nested, "entries").mockReturnValue(brokenEntries);
+      const result = await list();
+      expect(result).toMatchObject({
+        type: "error",
+        error: { kind: name === "NotFoundError" ? "conflict" : "permission_denied" },
+      });
+      expect(result.entries).toBeUndefined();
+    },
+  );
+
+  it.each([false, true])(
+    "validates real basenames before filtering at root and nested scopes (snake=%s)",
+    async (snake) => {
+      for (const name of ["bad\\name.txt", "C:seed.txt"]) {
+        const { data, list } = await fixture(snake);
+        const nested = await data.getDirectoryHandle("nested", { create: true });
+        await writeFixtureFile(nested, name, "invalid");
+        for (const path of ["", "nested"])
+          expect(await list(path, "*.xml")).toMatchObject({
+            type: "error",
+            error: { kind: "invalid_data" },
+          });
+      }
+    },
+  );
+
+  it("returns an existing alias handle's logical prefix, not its backing directory name", async () => {
+    const { project, data, list } = await fixture(true);
+    const real = new SaveDirectoryHandle("real");
+    await writeFixtureFile(real, "A.txt", "alias contents");
+    const alias = new SaveDirectoryHandle("AliAs");
+    vi.spyOn(alias, "entries").mockImplementation(() => real.entries());
+    vi.spyOn(alias, "getFileHandle").mockImplementation((name, options) =>
+      real.getFileHandle(name, options),
+    );
+    vi.spyOn(data, "entries").mockImplementation(async function* () {
+      yield ["AliAs", alias] as [string, SaveDirectoryHandle];
+    });
+    vi.spyOn(data, "getDirectoryHandle").mockImplementation(async (name) => {
+      if (name === "AliAs") return alias;
+      throw new DOMException("missing", "NotFoundError");
+    });
+    const result = await list("ALIAS");
+    expect(result.entries.map((entry: any) => entry.relative_path)).toEqual(["AliAs/A.txt"]);
+    const read = await project.storage({
+      request_id: 2,
+      namespace: "data",
+      relative_path: result.entries[0].relative_path,
+      operation: { type: "read" },
+    });
+    expect(read.result.data).toEqual([...new TextEncoder().encode("alias contents")]);
   });
 });

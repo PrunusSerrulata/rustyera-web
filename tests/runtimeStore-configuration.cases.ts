@@ -1,4 +1,5 @@
 import { bridge } from "./runtimeStoreTestSupport";
+import { snakeCompatibility } from "./compatibilityTestSupport";
 import { describe, expect, it, vi } from "vitest";
 import {
   installRuntimeStoreTestHarness,
@@ -12,6 +13,8 @@ import {
   mockProjectSelection,
   useRuntimeStore,
   runtimeEvent,
+  deferred,
+  flushMicrotasks,
 } from "./runtimeStoreTestSupport";
 
 describe("runtime store configuration", () => {
@@ -42,6 +45,7 @@ describe("runtime store configuration", () => {
             request_id: 7,
             kind: "canvas",
             operation: "decode_canvas_image",
+            operation_version: { major: 1, minor: 0 },
             payload: [...encodeServicePayload(new Map([[0, png]]))],
           },
           41,
@@ -52,6 +56,7 @@ describe("runtime store configuration", () => {
             request_id: 8,
             kind: "canvas",
             operation: "decode_canvas_image",
+            operation_version: { major: 1, minor: 0 },
             payload: [...encodeServicePayload(new Map([[0, Uint8Array.of(1, 2, 3)]]))],
           },
           42,
@@ -79,6 +84,123 @@ describe("runtime store configuration", () => {
     );
     expect(errorCall[1]).toBe(42);
     expect(errorCall[0].value.result).toMatchObject({ type: "error" });
+  });
+
+  it("handles cancellation while a service decode is pending without blocking later events", async () => {
+    const metadata = deferred<{
+      width: number;
+      height: number;
+      format: string;
+      animated: boolean;
+    }>();
+    bridge.readImageMetadata.mockReturnValueOnce(metadata.promise);
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "service_request",
+          {
+            request_id: 9,
+            kind: "image",
+            operation: "image_metadata",
+            operation_version: { major: 1, minor: 0 },
+            payload: [...encodeServicePayload(new Map([[0, "pending.png"]]))],
+          },
+          41,
+          1,
+        ),
+        runtimeEvent("cancel_external_request", { request_id: 9, kind: "service" }, undefined, 1),
+        runtimeEvent("state_changed", { phase: "waiting_external", epoch: 1 }, undefined, 1),
+      ],
+    });
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    expect(store.phase).toBe("waiting_external");
+    expect(bridge.readImageMetadata).toHaveBeenCalledWith("pending.png");
+    metadata.resolve({ width: 1, height: 1, format: "png", animated: false });
+    await flushMicrotasks();
+    expect(
+      bridge.submitRuntime.mock.calls.some(([message]) => message.type === "service_response"),
+    ).toBe(false);
+  });
+
+  it("keeps each service event bound to its epoch when the request ID is reused", async () => {
+    const metadata = deferred<{
+      width: number;
+      height: number;
+      format: string;
+      animated: boolean;
+    }>();
+    bridge.readImageMetadata
+      .mockReturnValueOnce(metadata.promise)
+      .mockResolvedValueOnce({ width: 2, height: 3, format: "png", animated: false });
+    const request = (resource: string) => ({
+      request_id: 9,
+      kind: "image",
+      operation: "image_metadata",
+      operation_version: { major: 1, minor: 0 },
+      payload: [...encodeServicePayload(new Map([[0, resource]]))],
+    });
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("service_request", request("old.png"), 41, 1),
+        runtimeEvent("service_request", request("new.png"), 42, 2),
+      ],
+    });
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    metadata.resolve({ width: 1, height: 1, format: "png", animated: false });
+    await flushMicrotasks();
+    const responses = bridge.submitRuntime.mock.calls.filter(
+      ([message]) => message.type === "service_response",
+    );
+    expect(responses).toHaveLength(1);
+    expect(responses[0][1]).toBe(42);
+    expect(decodeServicePayload(responses[0][0].value.result.payload)).toEqual(
+      new Map<number, unknown>([
+        [0, 2],
+        [1, 3],
+        [2, "png"],
+        [3, false],
+      ]),
+    );
+  });
+
+  it("reports background service transport failures without fabricating a successful reply", async () => {
+    bridge.submitRuntime.mockImplementation(async (message) => {
+      if (message.type === "service_response") throw new Error("service send failed");
+      return 1;
+    });
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "service_request",
+          {
+            request_id: 9,
+            kind: "entropy",
+            operation: "random_seed",
+            operation_version: { major: 1, minor: 0 },
+            payload: [...encodeServicePayload(new Map())],
+          },
+          41,
+          1,
+        ),
+      ],
+    });
+    const store = useRuntimeStore();
+    await store.enableDebug();
+    await flushMicrotasks();
+    expect(
+      store.logs.some(
+        (entry) =>
+          entry.message.includes("前端服务失败") && entry.message.includes("service send failed"),
+      ),
+    ).toBe(true);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(([message]) => message.type === "service_response"),
+    ).toHaveLength(1);
   });
 
   it("uses isolated default preferences in end-to-end test builds", async () => {
@@ -131,6 +253,102 @@ describe("runtime store configuration", () => {
     expect(bridge.submitRuntime.mock.calls.some(([message]) => message.type === "start")).toBe(
       true,
     );
+  });
+
+  it("routes an earlier stale projection rejection before an unregistered preference reply", async () => {
+    const configuration = {
+      project_revision: 4,
+      source_digest: new Uint8Array(32),
+      entries: [configurationEntry("UseMouse", "YES")],
+      restart_pending: false,
+      generated_source: null,
+    };
+    const delayedPreferenceId = deferred<number>();
+    let nextMessageId = 1;
+    let preferenceApplications = 0;
+    let startupPreferenceId: number | undefined;
+    let projectionId: number | undefined;
+    let currentPreferenceId: number | undefined;
+    bridge.submitRuntime.mockImplementation((message) => {
+      const messageId = nextMessageId++;
+      if (message.type === "projection_observation") projectionId = messageId;
+      if (message.type === "apply_client_preferences") {
+        preferenceApplications += 1;
+        if (preferenceApplications === 1) startupPreferenceId = messageId;
+        else {
+          currentPreferenceId = messageId;
+          return delayedPreferenceId.promise;
+        }
+      }
+      return Promise.resolve(messageId);
+    });
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", { success: true, diagnostics: [], configuration }),
+      ],
+    });
+    const store = useRuntimeStore();
+    store.projectOpen = true;
+
+    await store.enableDebug();
+    expect(startupPreferenceId).toBeDefined();
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("client_preferences_applied", { configuration }, startupPreferenceId)],
+    });
+    await advanceUntil(() =>
+      bridge.submitRuntime.mock.calls.some(([message]) => message.type === "start"),
+    );
+
+    await store.projectViewport({
+      width: 100,
+      height: 80,
+      lineColumns: 20,
+      chromeWidth: 0,
+      chromeHeight: 0,
+    });
+    expect(projectionId).toBeDefined();
+    const saving = store.saveClientPreferences("global", {
+      settings: { UseMouse: "NO" },
+    });
+    await flushMicrotasks();
+    expect(currentPreferenceId).toBeDefined();
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "command_rejected",
+          {
+            message: "projection observation does not match the canonical presentation",
+            context: { identity: snakeCompatibility(), stage: "protocol" },
+          },
+          projectionId,
+        ),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(store.logs.some((entry) => entry.message.includes("非预期的客户端偏好响应"))).toBe(
+      false,
+    );
+    expect(store.settingsBusy).toBe(true);
+
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("client_preferences_applied", { configuration }, currentPreferenceId)],
+    });
+    delayedPreferenceId.resolve(currentPreferenceId!);
+    await vi.advanceTimersByTimeAsync(32);
+    await saving;
+
+    expect(store.settingsBusy).toBe(false);
+    expect(store.preferencesOpen).toBe(false);
+    expect(
+      store.logNotifications.some((entry) =>
+        entry.message.includes("projection observation does not match"),
+      ),
+    ).toBe(false);
   });
 
   it("preserves an interleaved game wait until a saved preference is acknowledged", async () => {
@@ -743,9 +961,12 @@ describe("runtime store configuration", () => {
     await store.enableDebug();
 
     expect(store.logs).toHaveLength(10_000);
-    expect(store.logNotifications).toHaveLength(10_000);
+    expect(store.logNotifications).toHaveLength(32);
     expect(store.logs[0].message).toContain("error 5");
-    expect(store.logNotifications[0]?.message).toContain("error 5");
+    expect(store.logNotifications[0]?.message).toContain("error 9973");
+    expect(store.status).toBe("项目加载失败，请查看日志");
+    expect(store.projectLoading).toBe(false);
+    expect(store.canOpenProject).toBe(true);
   });
 
   it("does not notify when a pump failure opens the fatal dialog", async () => {
@@ -980,6 +1201,11 @@ describe("runtime store configuration", () => {
     const store = useRuntimeStore();
     await store.enableDebug();
     await Promise.resolve();
+    expect(
+      bridge.submitRuntime.mock.calls.some(([message]) =>
+        ["apply_client_preferences", "start"].includes(message.type),
+      ),
+    ).toBe(false);
     bridge.pump
       .mockResolvedValueOnce({
         ...emptyBatch(),
@@ -1011,12 +1237,16 @@ describe("runtime store configuration", () => {
                 generated_source: null,
               },
             },
-            22,
+            21,
           ),
         ],
       });
     await vi.advanceTimersByTimeAsync(64);
     expect(store.configurationReadOnly).toBe(false);
+    const startupCommands = bridge.submitRuntime.mock.calls.map(([message]) => message.type);
+    expect(startupCommands.indexOf("apply_client_preferences")).toBeGreaterThan(
+      startupCommands.indexOf("finalize_configuration_update"),
+    );
 
     const saving = store.saveProjectSettings([{ code: "FontSize", value: "22" }]);
     await Promise.resolve();

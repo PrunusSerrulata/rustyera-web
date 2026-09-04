@@ -14,6 +14,7 @@ function fixture(withProject = true) {
   const applyHostConfiguration = vi.fn(async () => undefined);
   const applyAudio = vi.fn();
   const finishStatus = vi.fn();
+  const logWarning = vi.fn();
   const state = new RuntimeClientPreferencesState({
     bridge: {
       savePreferences,
@@ -48,6 +49,7 @@ function fixture(withProject = true) {
     appendElapsed: vi.fn(),
     finishStatus,
     clearStatus: vi.fn(),
+    logWarning,
     logError: vi.fn(),
   });
   return {
@@ -60,6 +62,7 @@ function fixture(withProject = true) {
     applyHostConfiguration,
     applyAudio,
     finishStatus,
+    logWarning,
   };
 }
 
@@ -151,6 +154,97 @@ describe("runtime client preference transactions", () => {
     second.state.reset();
     await expect(reset).rejects.toThrow("已取消");
     expect(await second.state.handleApplied({ configuration: {} }, 7)).toBe(false);
+  });
+
+  it("reconciles an Applied response that arrives before send returns its message ID", async () => {
+    const current = fixture();
+    let finishSubmission!: (messageId: number) => void;
+    current.send.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishSubmission = resolve;
+        }),
+    );
+
+    const application = current.state.apply();
+    await flushMicrotasks();
+    expect(await current.state.handleApplied({ configuration: {} }, 7)).toBe(true);
+    expect(current.applyAudio).not.toHaveBeenCalled();
+
+    finishSubmission(7);
+    await application;
+    expect(current.applyAudio).toHaveBeenCalledOnce();
+    expect(current.logWarning).not.toHaveBeenCalled();
+  });
+
+  it("reconciles an early rejection and reports only unmatched early correlations", async () => {
+    const rejected = fixture();
+    let finishRejectedSubmission!: (messageId: number) => void;
+    rejected.send.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishRejectedSubmission = resolve;
+        }),
+    );
+    const application = rejected.state.apply();
+    await flushMicrotasks();
+    expect(rejected.state.reject(7, "denied early")).toBe(true);
+    finishRejectedSubmission(7);
+    await expect(application).rejects.toThrow("denied early");
+    expect(rejected.logWarning).not.toHaveBeenCalled();
+
+    const unmatched = fixture();
+    let finishUnmatchedSubmission!: (messageId: number) => void;
+    unmatched.send.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishUnmatchedSubmission = resolve;
+        }),
+    );
+    const pending = unmatched.state.apply();
+    await flushMicrotasks();
+    expect(await unmatched.state.handleApplied({ configuration: {} }, 8)).toBe(true);
+    finishUnmatchedSubmission(7);
+    await flushMicrotasks();
+    expect(unmatched.logWarning).toHaveBeenCalledWith(
+      "忽略了非预期的客户端偏好响应（correlation 8）",
+    );
+    expect(await unmatched.state.handleApplied({ configuration: {} }, 7)).toBe(true);
+    await pending;
+  });
+
+  it("does not let a retired send completion disable early replies for a newer session", async () => {
+    const current = fixture();
+    let finishRetiredSubmission!: (messageId: number) => void;
+    let finishCurrentSubmission!: (messageId: number) => void;
+    current.send
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishRetiredSubmission = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishCurrentSubmission = resolve;
+          }),
+      );
+
+    const retired = current.state.apply();
+    await flushMicrotasks();
+    current.state.reset();
+    await expect(retired).rejects.toThrow("已取消");
+
+    const application = current.state.apply();
+    await flushMicrotasks();
+    finishRetiredSubmission(6);
+    await flushMicrotasks();
+    expect(await current.state.handleApplied({ configuration: {} }, 7)).toBe(true);
+    finishCurrentSubmission(7);
+    await application;
+    expect(current.applyAudio).toHaveBeenCalledOnce();
+    expect(current.logWarning).not.toHaveBeenCalled();
   });
 
   it("keeps an interleaved game wait intact while a save awaits Applied", async () => {

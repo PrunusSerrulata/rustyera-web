@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "project": "../../../.rustyera/test-runs/snake-audio-provider",
+  "mode": "fixed",
+  "seed": 123456,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [],
+  "goal": {
+    "output_contains": [
+      "invalid_get=0,invalid_is=-1,invalid_control=-1",
+      "invalid_action=-2",
+      "playing=0",
+      "sound_play_duration=5000",
+      "volume=37",
+      "omitted=5000,r0=5000",
+      "pause_ret=1",
+      "paused_is=-1",
+      "resume_ret=1",
+      "resumed_is=0",
+      "rate_omitted=1,speed=250,pitch_zero=1,pitch_nonzero=1",
+      "speed_low=10",
+      "speed_high=1000",
+      "stop_ret=1,stopped=-1,stopped_duration=0,stopped_position=0",
+      "channels=0,1,2,3,4,5,6,7,8,9",
+      "all_busy_overwrite_0_duration=750",
+      "paused_reused_3_duration=750",
+      "short_natural_state=-1,duration=0,position=0",
+      "corrupt_decode_continued=1",
+      "final_pitch_nonzero=1",
+      "bgm_playing=1",
+      "bgm_pause_ret=1",
+      "bgm_paused=0",
+      "bgm_resume_ret=1",
+      "bgm_stop_ret=1,bgm_stopped=0",
+      "BATCH5_GUI_DONE"
+    ],
+    "snake_audio_relations": true
+  },
+  "limits": {
+    "max_steps": 64,
+    "timeout_seconds": 60
+  }
+}

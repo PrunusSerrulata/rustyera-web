@@ -178,13 +178,22 @@ function normalizeSourceIndexEntry(value: unknown): BrowserSourceIndexEntry | un
 function categoryName(value: unknown): string | undefined {
   if (typeof value === "string") return value;
   if (typeof value !== "number" || !Number.isInteger(value)) return undefined;
-  return ["csv", "erh", "erb", "resource_manifest", "resource", "configuration"][value];
+  return ["csv", "erh", "erb", "resource_manifest", "resource", "configuration", "als", "erd"][
+    value
+  ];
 }
 
 function categoryCode(value: string): number {
-  const code = ["csv", "erh", "erb", "resource_manifest", "resource", "configuration"].indexOf(
-    value,
-  );
+  const code = [
+    "csv",
+    "erh",
+    "erb",
+    "resource_manifest",
+    "resource",
+    "configuration",
+    "als",
+    "erd",
+  ].indexOf(value);
   if (code < 0) throw new Error(`unknown project source-index category: ${value}`);
   return code;
 }

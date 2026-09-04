@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "project": "../../../../rustyera-core/tools/runtime-tester/fixture-snake-service-lifecycle",
+  "mode": "fixed",
+  "seed": 123456,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [
+    {
+      "type": "input",
+      "value": "1"
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".game-viewport canvas"
+      },
+      "expect": {
+        "count": 0
+      }
+    },
+    {
+      "type": "fill",
+      "locator": {
+        "css": ".prompt-bar input"
+      },
+      "value": "0"
+    },
+    {
+      "type": "hover",
+      "locator": {
+        "role": "button",
+        "name": "SNAKE_LIFECYCLE_TARGET",
+        "exact": true
+      }
+    },
+    {
+      "type": "press",
+      "locator": {
+        "css": ".prompt-bar input"
+      },
+      "key": "Enter",
+      "advances_game": true,
+      "semantic_input": "0"
+    },
+    {
+      "type": "fill",
+      "locator": {
+        "css": ".prompt-bar input"
+      },
+      "value": "1"
+    },
+    {
+      "type": "hover",
+      "locator": {
+        "css": ".game-viewport"
+      }
+    },
+    {
+      "type": "press",
+      "locator": {
+        "css": ".prompt-bar input"
+      },
+      "key": "Enter",
+      "advances_game": true,
+      "semantic_input": "1"
+    },
+    {
+      "type": "fill",
+      "locator": {
+        "css": ".prompt-bar input"
+      },
+      "value": "2"
+    },
+    {
+      "type": "hover",
+      "locator": {
+        "css": "#menu-file"
+      }
+    },
+    {
+      "type": "press",
+      "locator": {
+        "css": ".prompt-bar input"
+      },
+      "key": "Enter",
+      "advances_game": true,
+      "semantic_input": "2"
+    },
+    {
+      "type": "set_viewport",
+      "width": 1100,
+      "height": 700
+    },
+    {
+      "type": "fill",
+      "locator": {
+        "css": ".prompt-bar input"
+      },
+      "value": "3"
+    },
+    {
+      "type": "hover",
+      "locator": {
+        "role": "button",
+        "name": "SNAKE_LIFECYCLE_TARGET",
+        "exact": true
+      }
+    },
+    {
+      "type": "press",
+      "locator": {
+        "css": ".prompt-bar input"
+      },
+      "key": "Enter",
+      "advances_game": true,
+      "semantic_input": "3"
+    },
+    {
+      "type": "scroll_key",
+      "locator": {
+        "css": ".game-viewport"
+      },
+      "key": "PageUp"
+    },
+    {
+      "type": "fill",
+      "locator": {
+        "css": ".prompt-bar input"
+      },
+      "value": "4"
+    },
+    {
+      "type": "press",
+      "locator": {
+        "css": ".prompt-bar input"
+      },
+      "key": "Enter",
+      "advances_game": true,
+      "semantic_input": "4"
+    },
+    {
+      "type": "input",
+      "value": "5"
+    },
+    {
+      "type": "input",
+      "value": "0"
+    }
+  ],
+  "watches": ["LIFE_BUTTON:0", "LIFE_BUTTON:1", "LIFE_BUTTON:2", "LIFE_BUTTON:3", "LIFE_BUTTON:4"],
+  "goal": {
+    "output_contains": ["SNAKE_LIFECYCLE_SERVICES=4294901760/4278190335/1", "SNAKE_LIFECYCLE_DONE"],
+    "wait_kind": "integer_value",
+    "watch_equals": {
+      "LIFE_BUTTON:0": "41",
+      "LIFE_BUTTON:1": "",
+      "LIFE_BUTTON:2": "",
+      "LIFE_BUTTON:3": "41",
+      "LIFE_BUTTON:4": ""
+    }
+  },
+  "limits": {
+    "max_steps": 32,
+    "timeout_seconds": 180
+  }
+}

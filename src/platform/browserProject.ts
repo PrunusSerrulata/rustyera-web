@@ -1,4 +1,10 @@
 import { blake3 } from "@noble/hashes/blake3.js";
+import { Encoder } from "cbor-x";
+import {
+  compatibilityCbor,
+  requireCompatibilityIdentity,
+  type CompatibilityIdentity,
+} from "@/core/compatibility";
 
 import { decodeImageMetadata } from "@/core/imageMetadata";
 import type { ProjectReloadScope, ProjectReloadTargets } from "@/core/types";
@@ -14,7 +20,8 @@ import {
 import {
   createProjectProgressReporter,
   decodeProjectSource,
-  isScriptCategory,
+  decodeProtocolBytes,
+  isReloadableCategory,
   projectReloadScopeMatches,
   projectReloadSelector,
   runBounded,
@@ -33,6 +40,10 @@ import {
   writeBrowserSourceIndex,
 } from "@/platform/browserProjectSourceIndex";
 import { dispatchBrowserStorage } from "@/platform/browserProjectStorage";
+import {
+  maximumResourceReadBytes,
+  type BrowserStorageResource,
+} from "@/platform/browserResourceStorage";
 import { isPackagedProjectFontPath, type ProjectFontSource } from "@/platform/projectFonts";
 import { scanBrowserProjectFilesOffThread } from "@/platform/browserProjectScanPool";
 import type { ScannedFile } from "@/platform/browserProjectScanner";
@@ -62,6 +73,8 @@ export interface BrowserTraditionalSaveSlot {
 export interface BrowserManifest {
   project_revision: number;
   files: ScannedFile[];
+  /** Absent only between file scanning and the mandatory core compatibility resolution. */
+  compatibility?: CompatibilityIdentity;
 }
 
 export interface BrowserFullManifestSpool {
@@ -142,6 +155,9 @@ export class BrowserProject {
   private runtimeManifestSparse = false;
   private pendingReload?: PendingBrowserReload;
   private scanMetricsValue: BrowserProjectScanMetrics = emptyScanMetrics();
+  private compatibilityValue?: CompatibilityIdentity;
+  private resolvedConfigurationDigest?: Uint8Array | null;
+  private dataRootValue?: FileSystemDirectoryHandle;
 
   constructor(
     readonly root: FileSystemDirectoryHandle,
@@ -152,6 +168,94 @@ export class BrowserProject {
 
   setSourceIndexTrusted(trusted: boolean): void {
     this.sourceIndexTrusted = trusted;
+  }
+
+  setCompatibility(value: unknown): void {
+    const compatibility = requireCompatibilityIdentity(value);
+    if (this.compatibilityValue?.profile !== compatibility.profile) this.dataRootValue = undefined;
+    this.compatibilityValue = compatibility;
+    if (this.manifestValue) this.manifestValue.compatibility = this.compatibilityValue;
+  }
+
+  bindResolvedCompatibility(identity: unknown, digest: unknown): void {
+    if (digest != null && !(digest instanceof Uint8Array) && !Array.isArray(digest))
+      throw new Error("Runtime 返回了无效的项目配置摘要");
+    if (
+      Array.isArray(digest) &&
+      !digest.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)
+    )
+      throw new Error("Runtime 返回了无效的项目配置摘要");
+    const bytes = digest == null ? null : decodeProtocolBytes(digest);
+    if (bytes != null && bytes.byteLength !== 32)
+      throw new Error("Runtime 返回了无效的项目配置摘要");
+    this.setCompatibility(identity);
+    this.resolvedConfigurationDigest = bytes?.slice() ?? null;
+  }
+
+  async validateResolvedConfiguration(manifest: BrowserManifest): Promise<void> {
+    const expected = this.resolvedConfigurationDigest;
+    if (expected === undefined) throw new Error("项目兼容配置尚未解析");
+    const matches = (actual: Uint8Array | null) =>
+      expected === null ? actual === null : actual !== null && equalBytes(expected, actual);
+    if (!matches(projectConfigurationDigest(manifest)))
+      throw new Error("项目根配置在兼容解析后发生变化，请重新打开项目");
+    const current = await this.rootConfiguration();
+    if (
+      !matches(
+        projectConfigurationDigest({
+          project_revision: manifest.project_revision,
+          files: current ? [current] : [],
+        }),
+      )
+    )
+      throw new Error("项目根配置在兼容解析后发生变化，请重新打开项目");
+  }
+
+  compatibility(): CompatibilityIdentity {
+    return requireCompatibilityIdentity(this.compatibilityValue);
+  }
+
+  async dataRoot(create = true): Promise<FileSystemDirectoryHandle> {
+    if (this.compatibility().profile === "emuera.em") return this.root;
+    if (this.dataRootValue) return this.dataRootValue;
+    let directory = this.root;
+    for (const name of [".rustyera", "profiles", "emuera.skia.snake"])
+      directory = await directory.getDirectoryHandle(name, { create });
+    this.dataRootValue = directory;
+    return this.dataRootValue;
+  }
+
+  async cacheDirectory(create = false): Promise<FileSystemDirectoryHandle> {
+    const root = await this.dataRoot(create);
+    const directory = await root.getDirectoryHandle(".rustyera", { create });
+    return directory.getDirectoryHandle("cache", { create });
+  }
+
+  async rootConfiguration(): Promise<ScannedFile | undefined> {
+    const manifest = this.manifestValue;
+    const source = manifest?.files.find(
+      (file) => file.relative_path.replaceAll("\\", "/").toLowerCase() === "reraconfig.toml",
+    );
+    if (!source) {
+      if (!this.usesEmbeddedManifest && !this.importedSnapshot) {
+        for await (const [name] of this.root.entries())
+          if (name.toLowerCase() === "reraconfig.toml")
+            throw new Error("项目根配置在扫描后新增，请重新打开项目");
+      }
+      return undefined;
+    }
+    if (this.usesEmbeddedManifest || this.importedSnapshot) return source;
+    const handle = this.files.get(source.relative_path.toLowerCase());
+    if (!handle) throw new Error("项目根配置在扫描后消失");
+    const file = await handle.getFile();
+    const contents = normalizeLineEndings(
+      decodeProjectSource(new Uint8Array(await file.arrayBuffer()), source.relative_path),
+    );
+    const digest = blake3(new TextEncoder().encode(contents));
+    if (!equalBytes(digest, source.content_hash))
+      throw new Error("项目根配置在扫描后发生变化，请重新打开项目");
+    source.payload = { type: "utf8", value: contents };
+    return source;
   }
 
   sourceIndexStats(): { trusted: boolean; reusedFiles: number; hashedFiles: number } {
@@ -179,6 +283,7 @@ export class BrowserProject {
   }
 
   useOwnedEmbeddedManifest(owned: BrowserManifest, resourceReader?: PackagedResourceReader): void {
+    this.setCompatibility(owned.compatibility);
     this.revision = owned.project_revision;
     this.embeddedResources.clear();
     this.packagedResourceReader = resourceReader;
@@ -222,6 +327,7 @@ export class BrowserProject {
   }
 
   useImportedManifest(manifest: BrowserManifest): void {
+    if (manifest.compatibility) this.setCompatibility(manifest.compatibility);
     this.importedSnapshot = true;
     this.sourcePayloadsReleased = false;
     this.canonicalPaths.clear();
@@ -313,8 +419,8 @@ export class BrowserProject {
       throw error;
     }
     this.files.set("reraconfig.toml", handle);
-    this.manifestValue = undefined;
-    this.sourcePayloadsReleased = false;
+    this.updateManifestConfiguration(contents);
+    this.pendingSnapshot = undefined;
     await this.invalidateCompiledCache();
   }
 
@@ -336,21 +442,20 @@ export class BrowserProject {
     const update = await prepare(projectBytes, expectedDigest, contents);
     await applyProjectFileUpdate(handle, current.size, projectDigest, update);
     this.packagedFile = await handle.getFile();
-    this.updateEmbeddedConfiguration(contents);
+    this.updateManifestConfiguration(contents);
     await this.invalidateCompiledCache();
   }
 
   async invalidateCompiledCache(): Promise<void> {
     try {
-      const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
-      const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
+      const cacheDirectory = await this.cacheDirectory();
       await cacheDirectory.removeEntry("compiled-project.reracache");
     } catch {
       // The cache is derived data. A stale survivor is rejected by its project identity later.
     }
   }
 
-  private updateEmbeddedConfiguration(contents: string): void {
+  private updateManifestConfiguration(contents: string): void {
     const manifest = this.manifestValue;
     if (!manifest) return;
     const source = normalizeLineEndings(contents);
@@ -463,7 +568,11 @@ export class BrowserProject {
       sourceReadDecodeHashMs,
       sourceIndexHashedFiles: requests.length,
     };
-    this.manifestValue = { project_revision: this.revision, files };
+    this.manifestValue = {
+      project_revision: this.revision,
+      files,
+      compatibility: this.compatibilityValue,
+    };
     this.pendingSnapshot = undefined;
     this.sourcePayloadsReleased = false;
     return this.manifestValue;
@@ -672,7 +781,11 @@ export class BrowserProject {
       sourceIndexReusedFiles: reused.filter(Boolean).length,
       sourceIndexHashedFiles: reused.filter((value) => !value).length,
     };
-    this.manifestValue = { project_revision: this.revision, files };
+    this.manifestValue = {
+      project_revision: this.revision,
+      files,
+      compatibility: this.compatibilityValue,
+    };
     this.sourcePayloadsReleased = false;
     return this.manifestValue;
   }
@@ -738,7 +851,11 @@ export class BrowserProject {
     progress?.(snapshot.files.length, snapshot.files.length);
     files.sort(compareScannedFiles);
     this.pendingSnapshot = undefined;
-    this.manifestValue = { project_revision: this.revision, files };
+    this.manifestValue = {
+      project_revision: this.revision,
+      files,
+      compatibility: this.compatibilityValue,
+    };
     this.sourcePayloadsReleased = false;
     return this.manifestValue;
   }
@@ -752,17 +869,34 @@ export class BrowserProject {
     const name = `.rustyera-full-manifest-${crypto.randomUUID()}.cbor`;
     const handle = await root.getFileHandle(name, { create: true });
     const writer = await handle.createWritable({ keepExistingData: false });
+    // CBOR emits many one-byte headers. Coalesce them into bounded writes instead
+    // of scheduling an OPFS operation for every field of every project file.
+    const buffer = new Uint8Array(256 * 1024);
+    let buffered = 0;
+    const flush = async () => {
+      if (!buffered) return;
+      throwIfAborted(signal);
+      await writer.write(buffer.subarray(0, buffered) as FileSystemWriteChunkType);
+      buffered = 0;
+    };
     let totalBytes = 0;
     const write = async (bytes: Uint8Array) => {
       totalBytes += bytes.byteLength;
       if (totalBytes > 1024 * 1024 * 1024)
         throw new Error("full project manifest exceeds the 1 GiB transfer limit");
-      await writer.write(bytes as FileSystemWriteChunkType);
+      for (let offset = 0; offset < bytes.byteLength;) {
+        throwIfAborted(signal);
+        const count = Math.min(buffer.length - buffered, bytes.byteLength - offset);
+        buffer.set(bytes.subarray(offset, offset + count), buffered);
+        buffered += count;
+        offset += count;
+        if (buffered === buffer.length) await flush();
+      }
     };
     let completed = 0;
     progress?.(completed, manifest.files.length);
     try {
-      await write(Uint8Array.of(0xa2, 0x00));
+      await write(Uint8Array.of(0xa3, 0x00));
       await write(cborHead(0, manifest.project_revision));
       await write(Uint8Array.of(0x01));
       await write(cborHead(4, manifest.files.length));
@@ -792,6 +926,14 @@ export class BrowserProject {
         completed += 1;
         progress?.(completed, manifest.files.length);
       }
+      await write(Uint8Array.of(0x02));
+      await write(
+        // Integer-keyed protocol maps must not acquire cbor-x's explicit-Map extension tag.
+        new Encoder({ useRecords: false, mapsAsObjects: false }).encode(
+          compatibilityCbor(manifest.compatibility),
+        ),
+      );
+      await flush();
       await writer.close();
     } catch (error) {
       await writer.abort().catch(() => undefined);
@@ -831,9 +973,13 @@ export class BrowserProject {
     if (!handle) throw new Error(`未知资源：${source.relative_path}`);
     const file = await handle.getFile();
     const signature = `${file.size}:${file.lastModified}`;
+    // FileList imports authorize resource bytes by length/hash but do not retain a filesystem
+    // change token. Validate any recorded token, then always verify the complete content below.
+    const identity = this.resourceIdentities.get(key);
     if (
+      !identity ||
       file.size !== source.payload.byteLength ||
-      this.resourceIdentities.get(key)?.signature !== signature
+      (identity.signature != null && identity.signature !== signature)
     )
       throw new Error(`资源在项目扫描后发生变化：${source.relative_path}`);
     const hasher = blake3.create();
@@ -863,8 +1009,7 @@ export class BrowserProject {
 
   async readPersistedCompiledCache(progress?: FileScanProgress): Promise<Uint8Array | undefined> {
     try {
-      const privateDirectory = await this.root.getDirectoryHandle(".rustyera");
-      const cacheDirectory = await privateDirectory.getDirectoryHandle("cache");
+      const cacheDirectory = await this.cacheDirectory();
       const handle = await cacheDirectory.getFileHandle("compiled-project.reracache");
       return readFileInChunks(await handle.getFile(), progress);
     } catch (error) {
@@ -877,12 +1022,12 @@ export class BrowserProject {
     if (this.embeddedManifest()) return { folders: [], scripts: [] };
     const paths = new Set(
       (this.manifestValue?.files ?? [])
-        .filter((file) => isScriptCategory(file.category))
+        .filter((file) => isReloadableCategory(file.category))
         .map((file) => file.relative_path),
     );
     const { files: current } = await this.enumerateFiles();
     for (const file of current) {
-      if (isScriptCategory(file.category)) paths.add(file.relativePath);
+      if (isReloadableCategory(file.category)) paths.add(file.relativePath);
     }
     const scripts = [...paths].sort(comparePaths);
     const folders = [
@@ -909,6 +1054,7 @@ export class BrowserProject {
       this.name,
       this.sourceIndexTrusted,
     );
+    if (this.compatibilityValue) candidate.setCompatibility(this.compatibilityValue);
     let current = await candidate.scan(progress);
     const oldByPath = new Map(previous.files.map((file) => [file.relative_path, file]));
     const newByPath = new Map(current.files.map((file) => [file.relative_path, file]));
@@ -970,7 +1116,11 @@ export class BrowserProject {
       ].sort(compareScannedFiles);
       this.pendingReload = {
         candidate,
-        manifest: { project_revision: current.project_revision, files },
+        manifest: {
+          project_revision: current.project_revision,
+          files,
+          compatibility: this.compatibilityValue,
+        },
         runtimeManifestSparse: false,
       };
     } else {
@@ -1004,9 +1154,28 @@ export class BrowserProject {
     for (const [path, canonical] of candidate.canonicalPaths) {
       if (activePaths.has(path)) this.canonicalPaths.set(path, canonical);
     }
+    const previousResourceIdentities = new Map(this.resourceIdentities);
     this.resourceIdentities.clear();
-    for (const [path, identity] of candidate.resourceIdentities) {
-      if (activePaths.has(path)) this.resourceIdentities.set(path, identity);
+    for (const file of pending.manifest.files) {
+      if (file.category !== "resource") continue;
+      const key = file.relative_path.toLowerCase();
+      const current = candidate.resourceIdentities.get(key);
+      const previous = previousResourceIdentities.get(key);
+      const matching =
+        current && equalBytes(current.contentHash, file.content_hash) ? current : previous;
+      this.resourceIdentities.set(key, {
+        contentHash: file.content_hash,
+        byteLength:
+          file.payload.type === "external"
+            ? file.payload.byteLength
+            : file.payload.type === "bytes"
+              ? file.payload.value.length
+              : new TextEncoder().encode(file.payload.value).length,
+        signature:
+          matching && equalBytes(matching.contentHash, file.content_hash)
+            ? matching.signature
+            : undefined,
+      });
     }
   }
 
@@ -1124,12 +1293,22 @@ export class BrowserProject {
 
   async storage(request: any): Promise<any> {
     try {
+      const generation = this.manifestValue;
       const result = await dispatchBrowserStorage(
         this.root,
         request.namespace,
         request.relative_path,
         request.operation,
+        ["save", "global_save", "resource"].includes(request.namespace)
+          ? this.root
+          : await this.dataRoot(),
+        this.compatibility().profile === "emuera.em",
+        request.namespace === "resource" ? this.storageResources() : [],
+        this.compatibility().profile === "emuera.skia.snake" ? "nfc_lower" : "literal",
+        this.compatibility().profile,
       );
+      if (request.namespace === "resource" && generation !== this.manifestValue)
+        throw new DOMException("资源项目在读取期间发生变化", "InvalidModificationError");
       return { request_id: request.request_id, result };
     } catch (error) {
       return {
@@ -1140,6 +1319,56 @@ export class BrowserProject {
         },
       };
     }
+  }
+
+  private storageResources(): BrowserStorageResource[] {
+    const canonical = new Set<string>();
+    const resources: BrowserStorageResource[] = [];
+    for (const file of this.manifestValue?.files ?? []) {
+      if (file.category !== "resource") continue;
+      const path = safePath(file.relative_path);
+      const canonicalKey = path.toLowerCase();
+      if (canonical.has(canonicalKey))
+        throw new DOMException("资源清单包含重复规范路径", "DataError");
+      canonical.add(canonicalKey);
+      // The active manifest authorizes both scanned and embedded resources. Scan identities only
+      // contribute change tokens; they cannot supply stale paths or omit packaged-only entries.
+      const key = file.relative_path.toLowerCase();
+      const byteLength =
+        file.payload.type === "external"
+          ? file.payload.byteLength
+          : file.payload.type === "bytes"
+            ? file.payload.value.byteLength
+            : new TextEncoder().encode(file.payload.value).byteLength;
+      const observed = this.resourceIdentities.get(key);
+      const signature =
+        observed?.byteLength === byteLength && equalBytes(observed.contentHash, file.content_hash)
+          ? observed.signature
+          : undefined;
+      const embedded = this.embeddedResources.get(canonicalKey);
+      const embeddedManifest = this.usesEmbeddedManifest;
+      const packaged = embeddedManifest ? this.packagedResourceReader : undefined;
+      const handle = this.files.get(key);
+      resources.push({
+        path,
+        byteLength,
+        contentHash: file.content_hash,
+        signature,
+        open: async () => {
+          if (embedded) return embedded;
+          if (packaged) {
+            if (byteLength > maximumResourceReadBytes)
+              throw new DOMException("打包资源超过读取限额", "DataError");
+            return packaged(path, maximumResourceReadBytes + 1);
+          }
+          if (embeddedManifest) throw new DOMException("打包资源没有内嵌字节", "DataError");
+          const source = handle ?? (await optionalFileHandle(this.root, path.split("/")));
+          if (!source) throw new DOMException("清单资源已被删除", "InvalidModificationError");
+          return source.getFile();
+        },
+      });
+    }
+    return resources;
   }
 
   private async enumerateFiles(progress?: (visitedEntries: number) => void) {
@@ -1277,6 +1506,7 @@ function checkedSaveSlotCount(value: number): number {
 export function cacheIdentityManifest(manifest: BrowserManifest): BrowserManifest {
   return {
     project_revision: manifest.project_revision,
+    compatibility: manifest.compatibility,
     files: manifest.files.map((file) => ({
       ...file,
       payload: identityPayload(file),
@@ -1285,10 +1515,18 @@ export function cacheIdentityManifest(manifest: BrowserManifest): BrowserManifes
 }
 
 function identityPayload(file: ScannedFile): ScannedFile["payload"] {
+  if (file.relative_path.replaceAll("\\", "/").toLowerCase() === "reraconfig.toml")
+    return file.payload;
   return file.category === "resource"
     ? file.payload.type === "external"
       ? file.payload
-      : { type: "bytes", value: new Uint8Array() }
+      : {
+          type: "external",
+          byteLength:
+            file.payload.type === "bytes"
+              ? file.payload.value.byteLength
+              : new TextEncoder().encode(file.payload.value).byteLength,
+        }
     : { type: "utf8", value: "" };
 }
 
@@ -1328,6 +1566,8 @@ function projectCategoryCode(category: string): number {
     resource_manifest: 3,
     resource: 4,
     configuration: 5,
+    als: 6,
+    erd: 7,
   }[category];
   if (code == null) throw new Error(`未知项目文件类别：${category}`);
   return code;
@@ -1381,4 +1621,15 @@ function compareCodePoints(left: string, right: string): number {
 
 function equalStringSets(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
   return left.size === right.size && [...left].every((value) => right.has(value));
+}
+
+function projectConfigurationDigest(manifest: BrowserManifest): Uint8Array | null {
+  const config = manifest.files.find(
+    (file) => file.relative_path.replaceAll("\\", "/").toLowerCase() === "reraconfig.toml",
+  );
+  if (!config) return null;
+  if (config.payload.type !== "utf8") throw new Error("项目根配置不是完整 UTF-8 文本");
+  return blake3(
+    new TextEncoder().encode(normalizeLineEndings(config.payload.value.replace(/^\uFEFF+/, ""))),
+  );
 }

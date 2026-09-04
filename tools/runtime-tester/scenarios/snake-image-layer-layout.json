@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eratw-sub-modding",
+  "mode": "fixed",
+  "start": {
+    "type": "vm_snapshot"
+  },
+  "viewport": {
+    "width": 2048,
+    "height": 900
+  },
+  "actions": [
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-line.html-image-layer-line" },
+      "fields": ["count", "visible"],
+      "expect": { "count": 3, "visible": true }
+    },
+    {
+      "type": "assert_layout",
+      "locator": {
+        "css": ".game-line:is([data-line-id='511'], [data-line-id='513'], [data-line-id='515']) .media-positioned > .media-visual"
+      },
+      "expect": {
+        "count": 3,
+        "visible": true,
+        "same_top_within": 2
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": {
+        "css": ".game-line[data-line-id='511'] .media-positioned > .media-visual"
+      },
+      "relative_to": {
+        "css": ".game-line[data-line-id='510']"
+      },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "top_aligned_within": 1
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": {
+        "css": ".game-line[data-line-id='515'] .media-positioned > .media-visual"
+      },
+      "relative_to": {
+        "css": ".game-line[data-line-id='521']"
+      },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "above": { "min": 0, "max": 17 },
+        "no_overlap": true
+      }
+    },
+    {
+      "type": "query_media_replay",
+      "resource_name": "別顔_服_パジャマ_笑顔_30",
+      "expect": {
+        "sprite": {
+          "name": "別顔_服_パジャマ_笑顔_30",
+          "size": [270, 270],
+          "position": [0, 0],
+          "canvas_id": 320,
+          "canvas_revision": 2
+        },
+        "referencedSpriteGeometry": {
+          "30_FACEPARTS_01": {
+            "size": [77, 51],
+            "position": [0, 0],
+            "firstFrame": {
+              "source_rectangle": [470, 55, 77, 51],
+              "offset": [99, 76]
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "scroll_key",
+      "locator": { "css": ".game-viewport" },
+      "key": "PageUp"
+    },
+    {
+      "type": "scroll_key",
+      "locator": { "css": ".game-viewport" },
+      "key": "PageUp"
+    },
+    {
+      "type": "assert_layout",
+      "locator": {
+        "css": ".game-line[data-line-id='431'] .media-positioned > .media-visual"
+      },
+      "expect": {
+        "count": 2,
+        "visible": true,
+        "same_left_within": 1,
+        "same_top_within": 1
+      }
+    },
+    {
+      "type": "scroll_key",
+      "locator": { "css": ".game-viewport" },
+      "key": "PageUp"
+    },
+    {
+      "type": "assert_layout",
+      "locator": {
+        "css": ".game-line[data-line-id='379'] .media-positioned > .media-visual"
+      },
+      "expect": {
+        "count": 2,
+        "visible": true,
+        "same_left_within": 1,
+        "same_top_within": 1
+      }
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "fault": null,
+        "canInteract": true
+      }
+    }
+  ],
+  "limits": {
+    "max_steps": 20,
+    "timeout_seconds": 900
+  }
+}

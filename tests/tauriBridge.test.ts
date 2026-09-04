@@ -23,6 +23,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open, save }));
 vi.mock("@/platform/diagnosis", () => ({ streamDiagnosisArchiveInWorker }));
 
 import { TauriBridge } from "@/platform/tauriBridge";
+import { configureServiceLifecycle } from "@/testing/serviceLifecycle";
 import { sfntFont } from "./fontFixture";
 
 function mockNativeProject(metrics: Record<string, unknown>): void {
@@ -48,7 +49,11 @@ describe("Tauri project restart", () => {
   });
 
   afterEach(() => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    configureServiceLifecycle({});
+    vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+    window.__RUSTYERA_TEST_DOWNLOADS__ = undefined;
     Reflect.deleteProperty(document, "fonts");
   });
 
@@ -213,6 +218,45 @@ describe("Tauri project restart", () => {
     expect(invoke).toHaveBeenCalledWith("cancel_compiled_cache_export");
   });
 
+  it("exposes native traditional-save listing, inspection, import, export, and overwrite", async () => {
+    open.mockResolvedValue("/tmp/save01.sav");
+    save.mockResolvedValue("/tmp/exported-save01.sav");
+    invoke.mockImplementation(async (command) => {
+      if (command === "traditional_save_list_slots")
+        return [
+          { slot: 0, occupied: false },
+          { slot: 1, occupied: true },
+        ];
+      if (command === "traditional_save_read" || command === "read_import")
+        return Uint8Array.of(1, 2, 3);
+      if (command === "traditional_save_inspect") return { description: "slot one" };
+      return undefined;
+    });
+    const saves = new TauriBridge().traditionalSaves;
+
+    await expect(saves.listSlots()).resolves.toEqual([
+      { slot: 0, occupied: false },
+      { slot: 1, occupied: true },
+    ]);
+    await expect(saves.inspect(Uint8Array.of(1, 2, 3))).resolves.toEqual({
+      description: "slot one",
+    });
+    await expect(saves.pickImport()).resolves.toEqual({
+      name: "save01.sav",
+      bytes: Uint8Array.of(1, 2, 3),
+    });
+    await saves.exportSlot(1);
+    await saves.writeSlot(1, Uint8Array.of(3, 2, 1));
+
+    expect(commandCalls("traditional_save_read")).toEqual([["traditional_save_read", { slot: 1 }]]);
+    expect(commandCalls("write_export")).toEqual([
+      ["write_export", { path: "/tmp/exported-save01.sav", bytes: { $rustyeraBytes: "AQID" } }],
+    ]);
+    expect(commandCalls("traditional_save_write")).toEqual([
+      ["traditional_save_write", { slot: 1, bytes: { $rustyeraBytes: "AwIB" } }],
+    ]);
+  });
+
   it("disposes native owners and listeners without closing the containing window", async () => {
     const unlisten = vi.fn();
     listen.mockResolvedValueOnce(unlisten);
@@ -260,13 +304,16 @@ describe("Tauri project restart", () => {
   });
 
   it("streams state exports through the native atomic writer", async () => {
-    save.mockResolvedValue("/tmp/state.snapshot");
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    configureServiceLifecycle({ stateExportPath: "/tmp/state.snapshot" });
     invoke.mockResolvedValue(undefined);
     const bridge = new TauriBridge();
 
     await expect(bridge.beginStateExport("state.snapshot", 3)).resolves.toBe(true);
     await bridge.writeStateExportChunk(Uint8Array.of(1, 2, 3), true, false);
     await bridge.writeStateExportChunk(new Uint8Array(), false, true);
+
+    expect(save).not.toHaveBeenCalled();
 
     expect(commandCalls("write_export_chunk")).toEqual([
       [
@@ -288,6 +335,22 @@ describe("Tauri project restart", () => {
         },
       ],
     ]);
+  });
+
+  it("consumes the lifecycle full-project destination once for the native writer", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    configureServiceLifecycle({ stateExportPath: "/tmp/full-export.reraproj" });
+    invoke.mockResolvedValue(undefined);
+    const bridge = new TauriBridge();
+    await expect(bridge.beginProjectFileExport("game.reraproj")).resolves.toBe(true);
+    await bridge.writeProjectFileChunk(Uint8Array.of(1), true, true);
+    expect(commandCalls("write_export_chunk")[0]?.[1]).toMatchObject({
+      path: "/tmp/full-export.reraproj",
+    });
+    expect(save).not.toHaveBeenCalled();
+    save.mockResolvedValueOnce(null);
+    await expect(bridge.beginProjectFileExport("again.reraproj")).resolves.toBe(false);
+    expect(save).toHaveBeenCalledOnce();
   });
 
   it("tags compiled-cache chunks, including the empty completion write", async () => {
@@ -358,6 +421,94 @@ describe("Tauri project restart", () => {
         },
       ],
     ]);
+  });
+
+  it("publishes native export identity only after the actual archive is committed", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    vi.stubEnv("VITE_RUSTYERA_TAURI_EXPORT_PATH", "/tmp/fixed-fallback.tar.zst");
+    configureServiceLifecycle({ diagnosisExportPath: "/tmp/identity.tar.zst" });
+    const committed = deferred<void>();
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "inspect_project_file_identity")
+        return {
+          projectRevision: 1,
+          files: [
+            {
+              relativePath: "csv/GAMEBASE.CSV",
+              category: "csv",
+              contentHash: "a".repeat(64),
+              payloadKind: "utf8",
+              byteLength: 80,
+            },
+          ],
+        };
+      if (command === "write_export_chunk" && args.complete) await committed.promise;
+    });
+    streamDiagnosisArchiveInWorker.mockImplementation(async (input, write) => {
+      // Match real Worker ownership transfer, which invalidates the caller's views.
+      structuredClone(input, {
+        transfer: [input.snapshot.buffer, input.projectFile.buffer, input.inputReplay.buffer],
+      });
+      await write(Uint8Array.of(1, 2));
+      return 20;
+    });
+    const bridge = new TauriBridge();
+    const pending = bridge.saveDiagnosis("identity.tar.zst", diagnosisInput());
+    await flushMicrotasks();
+    expect(window.__RUSTYERA_TEST_DOWNLOADS__).toBeUndefined();
+    committed.resolve();
+    await expect(pending).resolves.toBe(true);
+    expect(window.__RUSTYERA_TEST_DOWNLOADS__?.at(-1)?.projectIdentity?.files[0].byteLength).toBe(
+      80,
+    );
+    expect(save).not.toHaveBeenCalled();
+    expect(commandCalls("inspect_project_file_identity")[0]?.[1]).toEqual({
+      bytes: { $rustyeraBytes: "Aw==" },
+    });
+    expect(commandCalls("write_export_chunk")).toEqual([
+      [
+        "write_export_chunk",
+        {
+          path: "/tmp/identity.tar.zst",
+          bytes: { $rustyeraBytes: "AQI=" },
+          reset: true,
+          complete: false,
+        },
+      ],
+      [
+        "write_export_chunk",
+        {
+          path: "/tmp/identity.tar.zst",
+          bytes: { $rustyeraBytes: "" },
+          reset: false,
+          complete: true,
+        },
+      ],
+    ]);
+    await expect(bridge.saveDiagnosis("fallback.tar.zst", diagnosisInput())).resolves.toBe(true);
+    expect(commandCalls("write_export_chunk").at(-1)?.[1]).toMatchObject({
+      path: "/tmp/fixed-fallback.tar.zst",
+      complete: true,
+    });
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("consumes a failed diagnosis destination and publishes no false download", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    vi.stubEnv("VITE_RUSTYERA_TAURI_EXPORT_PATH", "");
+    configureServiceLifecycle({ diagnosisExportPath: "/tmp/failed.tar.zst" });
+    invoke.mockRejectedValueOnce(new Error("native identity inspection failed"));
+    const bridge = new TauriBridge();
+    await expect(bridge.saveDiagnosis("failed.tar.zst", diagnosisInput())).rejects.toThrow(
+      "native identity inspection failed",
+    );
+    expect(commandCalls("cancel_export")).toHaveLength(1);
+    expect(commandCalls("write_export_chunk")).toHaveLength(0);
+    expect(streamDiagnosisArchiveInWorker).not.toHaveBeenCalled();
+    expect(window.__RUSTYERA_TEST_DOWNLOADS__).toBeUndefined();
+    save.mockResolvedValue(undefined);
+    await expect(bridge.saveDiagnosis("next.tar.zst", diagnosisInput())).resolves.toBe(false);
+    expect(save).toHaveBeenCalledWith({ defaultPath: "next.tar.zst" });
   });
 
   it("keeps the previous project when opening a replacement fails", async () => {
@@ -715,6 +866,60 @@ describe("Tauri lossless integer transport", () => {
       message: { type: "service_response", value: { payload: bytes } },
       correlationId: undefined,
     });
+  });
+
+  it("serializes delayed native runtime submissions in frontend observation order", async () => {
+    let releaseFirst!: (value: unknown) => void;
+    const first = new Promise<unknown>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let runtimeCalls = 0;
+    invoke.mockImplementation((command) => {
+      if (command !== "submit_runtime") return Promise.resolve(undefined);
+      runtimeCalls += 1;
+      return runtimeCalls === 1 ? first : Promise.resolve(runtimeCalls);
+    });
+    const bridge = new TauriBridge();
+    const submissions = [
+      bridge.submitRuntime({
+        type: "device_state_changed",
+        value: { event_sequence: 1, device: "keyboard", code: 65, pressed: true },
+      }),
+      bridge.submitRuntime({
+        type: "input",
+        value: { intent: { type: "any_key", value: "a" } },
+      }),
+      bridge.submitRuntime({
+        type: "device_state_changed",
+        value: { event_sequence: 2, device: "keyboard", code: 65, pressed: false },
+      }),
+      bridge.submitRuntime({
+        type: "client_state_changed",
+        value: { focused: false, visible: true },
+      }),
+      bridge.submitRuntime({
+        type: "device_state_changed",
+        value: { event_sequence: 3, device: "mouse", code: 2, pressed: true },
+      }),
+      bridge.submitRuntime({
+        type: "device_state_changed",
+        value: { event_sequence: 4, device: "mouse", code: 2, pressed: false },
+      }),
+    ];
+    await Promise.resolve();
+
+    expect(commandCalls("submit_runtime")).toHaveLength(1);
+    releaseFirst(1);
+    await Promise.all(submissions);
+
+    expect(commandCalls("submit_runtime").map(([, args]) => (args as any).message.type)).toEqual([
+      "device_state_changed",
+      "input",
+      "device_state_changed",
+      "client_state_changed",
+      "device_state_changed",
+      "device_state_changed",
+    ]);
   });
 
   it("submits and decodes a native pumped input in one IPC call", async () => {

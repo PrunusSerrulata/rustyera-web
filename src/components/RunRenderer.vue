@@ -2,6 +2,8 @@
 import { computed } from "vue";
 
 import HtmlNode from "@/components/HtmlNode.vue";
+import { usePointerButton } from "@/components/usePointerButton";
+import { pointerButtonValue } from "@/platform/pointerObservation";
 import MediaImage from "@/components/MediaImage.vue";
 import TextRunGroup from "@/components/TextRunGroup.vue";
 import {
@@ -14,6 +16,7 @@ import {
 import { projectRectangleShape, projectSpaceShape } from "@/core/shapeProjection";
 import { lastRenderableTextNodeIndex, nextRenderableTextCharacter } from "@/core/htmlBoxLayout";
 import type { DisplayRun } from "@/core/types";
+import { plainRun } from "@/core/presentation";
 import { useRuntimeStore } from "@/stores/runtime";
 
 defineOptions({ name: "RunRenderer" });
@@ -25,6 +28,11 @@ const props = defineProps<{
   positionedMediaRightColumns?: number;
 }>();
 const store = useRuntimeStore();
+const pointerButton = usePointerButton(() => {
+  if (props.run.type !== "button") return undefined;
+  const value = pointerButtonValue(props.run.value);
+  return value == null ? undefined : { epoch: props.run.token.epoch, value };
+});
 
 type NestedFragment =
   | { type: "text_group"; key: number; runs: TextDisplayRun[] }
@@ -116,8 +124,10 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
   >
   <button
     v-else-if="run.type === 'button'"
+    :ref="pointerButton"
     class="game-button"
     :disabled="!store.interactionEnabled(run) || !store.canInteract"
+    :aria-label="plainRun(run) || undefined"
     :aria-description="run.title || undefined"
     :data-era-tooltip="run.title || undefined"
     @click="store.activate(run.token)"

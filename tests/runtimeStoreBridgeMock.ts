@@ -32,7 +32,7 @@ export const bridge = {
     return 1;
   }),
   submitRuntimeAndPump: undefined as FrontendBridge["submitRuntimeAndPump"],
-  submitDebug: vi.fn(async () => 1),
+  submitDebug: vi.fn<FrontendBridge["submitDebug"]>(async () => 1),
   pump: vi.fn(),
   projectProgressListener: undefined as ((progress: ProjectProgress) => void) | undefined,
   setProjectProgressListener: vi.fn(

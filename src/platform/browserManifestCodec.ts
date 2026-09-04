@@ -1,8 +1,9 @@
 import type { BrowserManifest, ScannedFile } from "@/platform/browserProject";
 import { yieldToMainThread } from "@/platform/mainThread";
+import { requireCompatibilityIdentity } from "@/core/compatibility";
 
-const MAGIC = new TextEncoder().encode("RERMAN01");
-const HEADER_BYTES = MAGIC.byteLength + 8 + 4;
+const MAGIC = new TextEncoder().encode("RERMAN02");
+const HEADER_BYTES = MAGIC.byteLength + 8 + 4 + 4;
 const RECORD_HEADER_BYTES = 1 + 4 + 1 + 8 + 1;
 const PREPARE_PROGRESS = 25;
 const PROGRESS_TOTAL = 100;
@@ -16,6 +17,8 @@ const CATEGORY_CODES: Record<string, number> = {
   resource_manifest: 3,
   resource: 4,
   configuration: 5,
+  als: 6,
+  erd: 7,
 };
 
 interface EncodedFile {
@@ -72,7 +75,10 @@ export async function encodeBrowserManifest(
   const report = progressReporter(progress);
   report(0);
   const encoded: EncodedFile[] = [];
-  let totalBytes = HEADER_BYTES;
+  const compatibility = encoder.encode(
+    JSON.stringify(requireCompatibilityIdentity(manifest.compatibility)),
+  );
+  let totalBytes = HEADER_BYTES + compatibility.byteLength;
   let bytesSinceYield = 0;
   for (let index = 0; index < manifest.files.length; index += 1) {
     const source = manifest.files[index];
@@ -112,7 +118,11 @@ export async function encodeBrowserManifest(
   offset += 8;
   view.setUint32(offset, encoded.length, true);
   offset += 4;
-  const copyTotal = totalBytes - HEADER_BYTES;
+  view.setUint32(offset, compatibility.byteLength, true);
+  offset += 4;
+  output.set(compatibility, offset);
+  offset += compatibility.byteLength;
+  const copyTotal = totalBytes - HEADER_BYTES - compatibility.byteLength;
   const copyState = { copied: 0, yieldedAt: 0 };
   for (let index = 0; index < encoded.length; index += 1) {
     const { source, path, payloadBytes } = encoded[index];

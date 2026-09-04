@@ -1,4 +1,5 @@
 import type { BrowserManifest } from "@/platform/browserProject";
+import { requireCompatibilityIdentity } from "@/core/compatibility";
 
 const PROJECT_FILE_CATEGORIES = new Set([
   "csv",
@@ -7,8 +8,55 @@ const PROJECT_FILE_CATEGORIES = new Set([
   "resource_manifest",
   "resource",
   "configuration",
+  "als",
+  "erd",
 ]);
 const PROJECT_FILE_IMAGE_FORMATS = ["bmp", "gif", "jpeg", "png", "webp"] as const;
+
+export interface ProjectFileIdentitySummary {
+  projectRevision: number;
+  files: Array<{
+    relativePath: string;
+    category: string;
+    contentHash: string;
+    payloadKind: "utf8" | "bytes";
+    byteLength: number;
+  }>;
+}
+
+export function normalizeProjectFileIdentity(value: unknown): ProjectFileIdentitySummary {
+  const identity = requireRecord(value, "项目导出身份");
+  if (!Array.isArray(identity.files)) throw new Error("项目导出身份 files 不是数组");
+  const paths = new Set<string>();
+  return {
+    projectRevision: requireSafeInteger(identity.projectRevision, "项目导出身份 revision"),
+    files: identity.files.map((item) => {
+      const file = requireRecord(item, "项目导出文件身份");
+      if (
+        typeof file.relativePath !== "string" ||
+        !file.relativePath ||
+        paths.has(file.relativePath)
+      )
+        throw new Error("项目导出文件身份路径无效或重复");
+      paths.add(file.relativePath);
+      if (
+        typeof file.category !== "string" ||
+        !PROJECT_FILE_CATEGORIES.has(file.category) ||
+        typeof file.contentHash !== "string" ||
+        !/^[0-9a-f]{64}$/.test(file.contentHash) ||
+        (file.payloadKind !== "utf8" && file.payloadKind !== "bytes")
+      )
+        throw new Error("项目导出文件身份内容无效");
+      return {
+        relativePath: file.relativePath,
+        category: file.category,
+        contentHash: file.contentHash,
+        payloadKind: file.payloadKind,
+        byteLength: requireSafeInteger(file.byteLength, "项目导出文件字节长度"),
+      };
+    }),
+  };
+}
 type ProjectFileImageFormat = (typeof PROJECT_FILE_IMAGE_FORMATS)[number];
 
 export function normalizeProjectFileManifest(manifest: unknown): BrowserManifest {
@@ -16,6 +64,7 @@ export function normalizeProjectFileManifest(manifest: unknown): BrowserManifest
   if (!Array.isArray(record.files)) throw new Error("项目文件清单 files 不是数组");
   return {
     project_revision: requireSafeInteger(record.project_revision, "项目文件清单 revision"),
+    compatibility: requireCompatibilityIdentity(record.compatibility),
     files: record.files.map((value, index) => normalizeProjectFile(value, index)),
   };
 }

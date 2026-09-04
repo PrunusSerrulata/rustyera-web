@@ -1,3 +1,5 @@
+import { formatCompatibilityContext } from "@/core/compatibility";
+
 const FAULT_CODES: Record<string, string> = {
   invalid_state: "InvalidState",
   invalid_message: "InvalidMessage",
@@ -27,5 +29,6 @@ export function formatRuntimeFault(fault: unknown): string {
     }
     location += "）";
   }
-  return `Runtime 故障 [${code}]${context}：${String(value.message ?? "")}${location}`;
+  const compatibility = formatCompatibilityContext(value.context);
+  return `Runtime 故障 [${code}]${context}：${String(value.message ?? "")}${location}${compatibility ? ` [${compatibility}]` : ""}`;
 }

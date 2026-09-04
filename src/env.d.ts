@@ -13,6 +13,7 @@ interface ImportMetaEnv {
   readonly VITE_RUSTYERA_FRONTEND_COMMIT?: string;
   readonly VITE_RUSTYERA_CORE_VERSION: string;
   readonly VITE_RUSTYERA_CORE_REVISION: string;
+  readonly VITE_RUSTYERA_CORE_FULL_REVISION: string;
 }
 
 interface Window {
@@ -47,6 +48,7 @@ interface Window {
     size?: number;
     projectMagic?: Uint8Array;
     projectManifest?: import("@/platform/browserProject").BrowserManifest;
+    projectIdentity?: import("@/platform/projectFileManifestTransfer").ProjectFileIdentitySummary;
     inputReplay?: Uint8Array;
   }>;
 }

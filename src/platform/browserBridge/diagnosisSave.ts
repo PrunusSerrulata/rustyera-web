@@ -1,6 +1,6 @@
 import type { DiagnosisArchiveInput, DiagnosisArchiveProgress } from "@/core/diagnosis";
 import { streamDiagnosisArchiveInWorker } from "@/platform/diagnosis";
-import type { BrowserManifest } from "@/platform/browserProject";
+import { normalizeProjectFileIdentity } from "@/platform/projectFileManifestTransfer";
 import type { WorkerClient } from "@/platform/workerClient";
 import { downloadBrowserBlob } from "@/platform/browserDownload";
 
@@ -13,10 +13,9 @@ export async function saveBrowserDiagnosis(
   if (import.meta.env.VITE_RUSTYERA_TEST === "1") {
     const prefix = new Uint8Array(4);
     const projectMagic = input.projectFile.slice(0, 8);
-    const projectManifest = (await worker.call(
-      "projectFileManifest",
-      input.projectFile,
-    )) as BrowserManifest;
+    const projectIdentity = normalizeProjectFileIdentity(
+      await worker.call("projectFileIdentity", input.projectFile),
+    );
     const inputReplay = new Uint8Array(input.inputReplay);
     let size = 0;
     const totalBytes = await streamDiagnosisArchiveInWorker(
@@ -33,7 +32,7 @@ export async function saveBrowserDiagnosis(
       bytes: prefix,
       size,
       projectMagic,
-      projectManifest,
+      projectIdentity,
       inputReplay,
     });
     reportProgress?.({ completed: totalBytes, total: totalBytes });

@@ -27,11 +27,18 @@ interface RuntimeClientPreferencesContext {
   appendElapsed(token: number, seconds: number): void;
   finishStatus(token: number, message: string): void;
   clearStatus(token: number): void;
+  logWarning(message: string): void;
   logError(message: string): void;
 }
 
+type EarlyApplicationReply = { type: "applied"; value: any } | { type: "rejected"; reason: string };
+
 interface PendingApplication {
-  messageId: string;
+  generation: number;
+  messageId?: string;
+  submitting: boolean;
+  settling: boolean;
+  earlyReplies: Map<string, EarlyApplicationReply>;
   resolve(): void;
   reject(error: Error): void;
 }
@@ -41,7 +48,6 @@ export class RuntimeClientPreferencesState {
   readonly error = ref("");
   private pending: PendingApplication | undefined;
   private generation = 0;
-  private submitting = false;
   private statusToken: number | undefined;
   private startedAt: number | undefined;
   private elapsedTimer: number | undefined;
@@ -90,7 +96,15 @@ export class RuntimeClientPreferencesState {
         .map(([code, value]) => ({ code, value }));
     return new Promise<void>((resolve, reject) => {
       const generation = this.generation;
-      this.submitting = true;
+      const pending: PendingApplication = {
+        generation,
+        submitting: true,
+        settling: false,
+        earlyReplies: new Map(),
+        resolve,
+        reject,
+      };
+      this.pending = pending;
       void this.context
         .send({
           type: "apply_client_preferences",
@@ -101,48 +115,92 @@ export class RuntimeClientPreferencesState {
           },
         })
         .then((messageId) => {
-          this.submitting = false;
-          if (generation !== this.generation) {
-            reject(new Error("客户端偏好操作已取消"));
-            return;
+          if (generation !== this.generation || this.pending !== pending) return;
+          pending.submitting = false;
+          pending.messageId = String(messageId);
+          const earlyReply = pending.earlyReplies.get(pending.messageId);
+          for (const correlation of pending.earlyReplies.keys()) {
+            if (correlation !== pending.messageId)
+              this.context.logWarning(`忽略了非预期的客户端偏好响应（correlation ${correlation}）`);
           }
-          this.pending = { messageId: String(messageId), resolve, reject };
+          pending.earlyReplies.clear();
+          if (earlyReply) void this.finishEarlyReply(pending, earlyReply);
         })
         .catch((error) => {
-          this.submitting = false;
-          reject(error instanceof Error ? error : new Error(String(error)));
+          if (this.pending !== pending) return;
+          pending.submitting = false;
+          this.pending = undefined;
+          pending.reject(error instanceof Error ? error : new Error(String(error)));
         });
     });
   }
 
   async handleApplied(value: any, correlationId: number | bigint | undefined): Promise<boolean> {
-    if (!this.pending || this.pending.messageId !== String(correlationId)) return false;
-    const pending = this.pending;
-    this.pending = undefined;
+    const pending = this.matchOrDefer(correlationId, { type: "applied", value });
+    if (!pending) return false;
+    if (pending.messageId == null) return true;
+    return this.finishApplied(pending, value);
+  }
+
+  private async finishApplied(pending: PendingApplication, value: any): Promise<boolean> {
+    if (this.pending !== pending || pending.settling) return false;
+    pending.settling = true;
     try {
       this.context.updateConfiguration(value.configuration);
       await this.context.applyHostConfiguration();
+      if (this.pending !== pending || pending.generation !== this.generation) return true;
       this.context.applyAudio(this.context.effective());
+      this.pending = undefined;
       pending.resolve();
     } catch (error) {
+      if (this.pending !== pending) return true;
+      this.pending = undefined;
       pending.reject(error instanceof Error ? error : new Error(String(error)));
     }
     return true;
   }
 
   reject(correlationId: number | bigint | undefined, reason: string): boolean {
-    if (!this.pending || this.pending.messageId !== String(correlationId)) return false;
-    const pending = this.pending;
+    const pending = this.matchOrDefer(correlationId, { type: "rejected", reason });
+    if (!pending) return false;
+    if (pending.messageId == null) return true;
     this.pending = undefined;
     pending.reject(new Error(reason));
     return true;
   }
 
+  private matchOrDefer(
+    correlationId: number | bigint | undefined,
+    reply: EarlyApplicationReply,
+  ): PendingApplication | undefined {
+    const pending = this.pending;
+    if (!pending || pending.settling || correlationId == null) return undefined;
+    const correlation = String(correlationId);
+    if (pending.messageId != null) return pending.messageId === correlation ? pending : undefined;
+    if (!pending.submitting || pending.earlyReplies.has(correlation)) return undefined;
+    if (pending.earlyReplies.size >= 8) return undefined;
+    pending.earlyReplies.set(correlation, reply);
+    return pending;
+  }
+
+  private async finishEarlyReply(
+    pending: PendingApplication,
+    reply: EarlyApplicationReply,
+  ): Promise<void> {
+    if (reply.type === "applied") {
+      await this.finishApplied(pending, reply.value);
+      return;
+    }
+    if (this.pending !== pending) return;
+    this.pending = undefined;
+    pending.reject(new Error(reply.reason));
+  }
+
   reset(reason = "客户端偏好操作已取消"): void {
     this.generation += 1;
-    this.submitting = false;
     const pending = this.pending;
     this.pending = undefined;
+    pending?.earlyReplies.clear();
     pending?.reject(new Error(reason));
     this.busy.value = false;
     this.error.value = "";

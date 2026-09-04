@@ -12,14 +12,18 @@ use era_runtime::{
     ProjectProgressReporter, RuntimeDriveBudget, RuntimeDriveState, RuntimeOptions, RuntimeSession,
 };
 use era_runtime_protocol::{
-    ClientCapabilities, ClientHello, ConfigurationClientProfile, ExternalResource, FileCategory,
-    FilePayload, InputModality, ProjectIdentity, ProjectLoadRequest, ProjectManifest,
-    RUNTIME_PROTOCOL_VERSION, RuntimeFeature, RuntimeLimits, RuntimeMessage,
+    AUDIO_OBSERVATION_OPERATION, ClientCapabilities, ClientHello, ConfigurationClientProfile,
+    ExternalResource, FileCategory, FilePayload, InputModality, ProjectCompatibilityResolved,
+    ProjectIdentity, ProjectLoadRequest, ProjectManifest, RUNTIME_PROTOCOL_VERSION,
+    ResolveProjectCompatibility, RuntimeFeature, RuntimeLimits, RuntimeMessage, SQL_OPERATION,
     SequenceAcknowledgement, ServerHello, ServiceCapability, ServiceKind, ServiceRequest,
     ServiceResponse, StorageCapabilities, StorageRequest, StorageResponse, SubmittedFile,
 };
 use erabasic_vm::VmConfig;
 use serde::{Deserialize, Serialize};
+
+mod project_file_identity;
+pub use project_file_identity::{ProjectFileIdentitySummary, inspect_project_file_identity};
 
 const DEFAULT_ENVELOPE_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
@@ -36,7 +40,7 @@ pub struct WebSessionOptions {
     pub available_fonts: Vec<String>,
     #[serde(default = "default_locales")]
     pub preferred_locales: Vec<String>,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub audio_available: bool,
     #[serde(default = "default_debug_scope_mask")]
     pub debug_scope_mask: u64,
@@ -54,7 +58,7 @@ impl Default for WebSessionOptions {
             client_name: default_client_name(),
             available_fonts: Vec::new(),
             preferred_locales: default_locales(),
-            audio_available: true,
+            audio_available: false,
             debug_scope_mask: default_debug_scope_mask(),
             maximum_envelope_bytes: DEFAULT_ENVELOPE_BYTES,
             configuration_profile: default_configuration_profile(),
@@ -146,6 +150,25 @@ pub struct WebSession {
 }
 
 impl WebSession {
+    /// Resolve project metadata through the shared public core parser after negotiation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session has not completed its hello exchange.
+    pub fn resolve_project_compatibility(
+        &self,
+        configuration: Option<SubmittedFile>,
+    ) -> Result<ProjectCompatibilityResolved, String> {
+        if !self.is_negotiated() {
+            return Err("project compatibility requires a negotiated session".into());
+        }
+        Ok(era_runtime::resolve_project_compatibility(
+            &ResolveProjectCompatibility {
+                request_id: 0,
+                configuration,
+            },
+        ))
+    }
     /// Create a negotiated graphics/audio-capable web session.
     ///
     /// # Errors
@@ -289,9 +312,36 @@ impl WebSession {
     /// Returns an error when the project file is corrupt, unsupported, or exceeds its own
     /// transfer size.
     pub fn project_file_manifest(&self, bytes: &[u8]) -> Result<ProjectManifest, String> {
-        era_runtime::decode_project_file_frontend_manifest(bytes, bytes.len())
+        let manifest = era_runtime::decode_project_file_frontend_manifest(bytes, bytes.len())
             .map(|decoded| decoded.manifest)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        self.validate_manifest_compatibility(&manifest)?;
+        Ok(manifest)
+    }
+
+    fn validate_manifest_compatibility(&self, manifest: &ProjectManifest) -> Result<(), String> {
+        let configuration = manifest
+            .files
+            .iter()
+            .find(|file| {
+                file.relative_path
+                    .replace('\\', "/")
+                    .eq_ignore_ascii_case("reraconfig.toml")
+            })
+            .cloned();
+        let resolved = self.resolve_project_compatibility(configuration)?;
+        let identity = resolved.identity.ok_or_else(|| {
+            resolved
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?;
+        if identity != manifest.compatibility {
+            return Err("project compatibility does not match its root configuration".into());
+        }
+        Ok(())
     }
 
     /// Submit an already validated portable-project source manifest and return its browser
@@ -317,6 +367,7 @@ impl WebSession {
         &mut self,
         decoded: era_runtime::DecodedProjectFile,
     ) -> Result<(u64, ProjectManifest), String> {
+        self.validate_manifest_compatibility(&decoded.manifest)?;
         let (runtime_manifest, frontend_manifest) =
             split_browser_project_manifest(decoded.manifest)?;
         let message_id = self.load_project(runtime_manifest)?;
@@ -337,6 +388,10 @@ impl WebSession {
             .runtime
             .stage_project_file_cache(bytes)
             .map_err(|error| error.to_string())?;
+        if let Err(error) = self.validate_manifest_compatibility(&decoded.manifest) {
+            self.runtime.clear_staged_project_file_cache();
+            return Err(error);
+        }
         let result = self.load_project_request(decoded.identity, None, None);
         if result.is_err() {
             self.runtime.clear_staged_project_file_cache();
@@ -709,6 +764,12 @@ fn split_browser_project_manifest(
                 }
                 _ => file.payload.clone(),
             }
+        } else if file
+            .relative_path
+            .replace('\\', "/")
+            .eq_ignore_ascii_case("reraconfig.toml")
+        {
+            file.payload.clone()
         } else {
             empty_file_payload(&file.payload)
         };
@@ -722,6 +783,7 @@ fn split_browser_project_manifest(
     let frontend = ProjectManifest {
         project_revision: runtime.project_revision,
         files: frontend_files,
+        compatibility: runtime.compatibility.clone(),
     };
     if project_identity(&runtime)? != original_identity
         || project_identity(&frontend)? != original_identity
@@ -916,22 +978,35 @@ pub fn project_identity(manifest: &ProjectManifest) -> Result<ProjectIdentity, S
     Ok(ProjectIdentity {
         project_revision: manifest.project_revision,
         source_digest: era_protocol::ProtocolBytes::new(hasher.finalize().as_bytes().to_vec()),
+        compatibility: manifest.compatibility.clone(),
+        configuration_digest: era_runtime::compatibility_configuration_digest(manifest),
     })
 }
 
 fn client_hello(options: WebSessionOptions, limits: RuntimeLimits) -> ClientHello {
     let v1 = VersionRange::exact(era_protocol::ProtocolVersion::new(1, 0));
-    let services = [
+    let mut services = [
         (ServiceKind::Entropy, "random_seed"),
         (ServiceKind::Clock, "local_date_time"),
         (ServiceKind::InputState, "get_key_state"),
+        (
+            ServiceKind::InputState,
+            era_runtime_protocol::DEVICE_PUMP_OPERATION,
+        ),
+        (ServiceKind::InputState, "pointer_state"),
         (ServiceKind::Image, "image_metadata"),
         (ServiceKind::Image, "image_pixel"),
         (ServiceKind::Canvas, "decode_canvas_image"),
+        (ServiceKind::Canvas, "sample_canvas_pixel"),
         (ServiceKind::PresentationQuery, "get_display_line"),
         (ServiceKind::PresentationQuery, "html_get_printed_str"),
         (ServiceKind::PresentationQuery, "serialize_physical_history"),
+        (
+            ServiceKind::PresentationQuery,
+            era_runtime_protocol::GET_LINE_GEOMETRY_OPERATION,
+        ),
         (ServiceKind::FontMetrics, "gget_text_size"),
+        (ServiceKind::Sql, SQL_OPERATION),
     ]
     .into_iter()
     .map(|(kind, operation)| ServiceCapability {
@@ -939,7 +1014,19 @@ fn client_hello(options: WebSessionOptions, limits: RuntimeLimits) -> ClientHell
         operation: operation.into(),
         versions: v1,
     })
-    .collect();
+    .chain(
+        ["html_string_len", "html_substring", "html_string_lines"]
+            .into_iter()
+            .map(|operation| ServiceCapability {
+                kind: ServiceKind::PresentationQuery,
+                operation: operation.into(),
+                versions: VersionRange::exact(era_protocol::ProtocolVersion::new(2, 0)),
+            }),
+    )
+    .collect::<Vec<_>>();
+    if options.audio_available {
+        services.push(audio_observation_capability());
+    }
     ClientHello {
         runtime_versions: VersionRange::exact(RUNTIME_PROTOCOL_VERSION),
         client_name: options.client_name,
@@ -962,6 +1049,17 @@ fn client_hello(options: WebSessionOptions, limits: RuntimeLimits) -> ClientHell
         ],
         requested_limits: limits,
         capabilities: ClientCapabilities {
+            environment: [
+                era_runtime_protocol::INPUT_TIMED_VIEWPORT_CAPABILITY,
+                era_runtime_protocol::INPUT_DEVICE_LATCH_CAPABILITY,
+                era_runtime_protocol::INPUT_DEVICE_PUMP_CAPABILITY,
+            ]
+            .into_iter()
+            .map(|name| era_runtime_protocol::EnvironmentCapability {
+                name: name.into(),
+                versions: VersionRange::exact(era_runtime_protocol::INPUT_ENVIRONMENT_VERSION),
+            })
+            .collect(),
             input_modalities: vec![InputModality::Keyboard, InputModality::Mouse],
             rich_text: true,
             html: true,
@@ -982,6 +1080,14 @@ fn client_hello(options: WebSessionOptions, limits: RuntimeLimits) -> ClientHell
         },
         preferred_locales: options.preferred_locales,
         configuration_profile: Some(options.configuration_profile),
+    }
+}
+
+fn audio_observation_capability() -> ServiceCapability {
+    ServiceCapability {
+        kind: ServiceKind::Audio,
+        operation: AUDIO_OBSERVATION_OPERATION.into(),
+        versions: VersionRange::exact(era_protocol::ProtocolVersion::new(1, 0)),
     }
 }
 

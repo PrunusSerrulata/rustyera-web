@@ -191,6 +191,7 @@ describe("display line rendering", () => {
             { type: "text_layout", text: "middle", columns: 6, style: textStyle() },
             {
               type: "button",
+              value: { type: "string", value: "click-value" },
               runs: [{ type: "text", text: "click", style: textStyle() }],
               token: { epoch: 1, id: 1 },
               enabled: true,
