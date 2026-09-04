@@ -214,6 +214,15 @@ describe("browser game runner progress policy", () => {
     );
   });
 
+  it("installs the protocol evidence filter before the application starts", () => {
+    const runner = readFileSync(resolve("scripts/web-test.mjs"), "utf8");
+    const filter = runner.indexOf("window.__RUSTYERA_TEST_PROTOCOL_TYPES__ = types");
+    const navigation = runner.indexOf("await page.goto(`http://127.0.0.1:${port}`)");
+
+    expect(filter).toBeGreaterThan(-1);
+    expect(navigation).toBeGreaterThan(filter);
+  });
+
   it("forces native-browser startup measurements to use empty OPFS and cold telemetry", () => {
     const runner = readFileSync(resolve("scripts/browser-compat-test.mjs"), "utf8");
 

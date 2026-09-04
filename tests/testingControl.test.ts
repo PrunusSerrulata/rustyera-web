@@ -78,6 +78,30 @@ describe("runtime evidence observations", () => {
     expect((evidence.snapshot() as any).records).toHaveLength(2);
   });
 
+  it("applies the runner protocol filter while records are captured", () => {
+    window.__RUSTYERA_TEST_PROTOCOL_TYPES__ = ["wait_changed"];
+    const evidence = new RuntimeEvidence(true);
+    evidence.receive({
+      channel: "runtime",
+      epoch: 1n,
+      sequence: 1n,
+      messageId: 1n,
+      message: { type: "diagnostic", value: { message: "x".repeat(1000) } },
+    });
+    evidence.receive({
+      channel: "runtime",
+      epoch: 1n,
+      sequence: 2n,
+      messageId: 2n,
+      message: { type: "wait_changed", value: { wait: null } },
+    });
+
+    expect(evidence.snapshot()).toMatchObject({
+      bytes: expect.any(Number),
+      records: [{ index: 0, message: { type: "wait_changed" } }],
+    });
+  });
+
   it("retains a large failed compile report without copying it into periodic summaries", () => {
     const evidence = new RuntimeEvidence(true);
     const message = "invalid HIR ".repeat(1_600_000);
@@ -103,6 +127,7 @@ describe("runtime evidence observations", () => {
 
   afterEach(() => {
     delete window.__RUSTYERA_POINTER_OBSERVATION__;
+    delete window.__RUSTYERA_TEST_PROTOCOL_TYPES__;
   });
 
   it("freezes independent DOM samples at the query boundary without changing wire indices", () => {

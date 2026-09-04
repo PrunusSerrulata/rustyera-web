@@ -265,6 +265,10 @@ async function execute(args) {
     page.on("console", (message) =>
       consoleMessages.push({ type: message.type(), text: message.text() }),
     );
+    if (args.protocol_types)
+      await page.addInitScript((types) => {
+        window.__RUSTYERA_TEST_PROTOCOL_TYPES__ = types;
+      }, args.protocol_types.split(","));
     await installRemoteFileSystem(page, webProject.project);
     if (scenario.project_file) {
       await page.addInitScript(() => {
@@ -276,10 +280,6 @@ async function execute(args) {
     }
     await page.goto(`http://127.0.0.1:${port}`);
     await page.waitForFunction(() => window.__RUSTYERA_TEST__ != null);
-    if (args.protocol_types)
-      await page.evaluate((types) => {
-        window.__RUSTYERA_TEST_PROTOCOL_TYPES__ = types;
-      }, args.protocol_types.split(","));
     snapshotMonitor = startCompleteSnapshotMonitor(
       { execute: (script) => page.evaluate(script) },
       {
