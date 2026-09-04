@@ -1,6 +1,6 @@
 import { bridge } from "./runtimeStoreTestSupport";
 import { describe, expect, it, vi } from "vitest";
-import type { ProjectOpenMetrics } from "@/core/types";
+import type { ProjectOpenMetrics, PumpBatch } from "@/core/types";
 import {
   installRuntimeStoreTestHarness,
   advanceUntil,
@@ -9,12 +9,19 @@ import {
   encodeServicePayload,
   flushMicrotasks,
   mockProjectSelection,
+  plainLine,
   runningBrowserStore,
   stubRunningAudioContext,
   useRuntimeStore,
   runtimeEvent,
   stateExportReadyEvent,
 } from "./runtimeStoreTestSupport";
+
+function advanceTimeCalls() {
+  return bridge.submitRuntime.mock.calls.filter(
+    ([message]: unknown[]) => (message as { type?: string }).type === "advance_time",
+  );
+}
 
 describe("runtime store startup-save", () => {
   installRuntimeStoreTestHarness();
@@ -130,6 +137,110 @@ describe("runtime store startup-save", () => {
         (call) => (call as unknown as [{ type?: string }])[0]?.type === "advance_time",
       ),
     ).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      name: "frontend and runtime clocks have different origins",
+      monotonicStartNs: 2_000_000_000,
+      deadlineNs: 1_000_000_000n,
+    },
+    {
+      name: "the runtime deadline exceeds JavaScript's safe integer range",
+      monotonicStartNs: 1_000_000,
+      deadlineNs: 9_007_199_254_740_993n,
+    },
+  ])("keeps an NF wait interactive before the runtime closes it: $name", async (clock) => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    const line = (lineId: number, text: string) => ({
+      line_id: lineId,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs: [{ type: "text", text, style: {} }],
+    });
+    const wait = {
+      kind: "string_value",
+      wait_id: 19,
+      submission_token: { epoch: 2, id: 6 },
+      deadline_ns: clock.deadlineNs,
+      viewport_policy: "preserve_user_viewport",
+    };
+    const nextWait = {
+      ...wait,
+      wait_id: 20,
+      submission_token: { epoch: 2, id: 7 },
+    };
+    const completedFrame = deferred<PumpBatch>();
+    const nextFrame: PumpBatch = {
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("presentation_delta", {
+          base_revision: 2,
+          new_revision: 3,
+          operations: [
+            { type: "append_line", line: line(2, "frame 2") },
+            { type: "set_input_wait", input_wait: nextWait },
+          ],
+        }),
+        runtimeEvent("wait_changed", { type: "opened", value: nextWait }),
+      ],
+    };
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        state: "output_ready",
+        events: [
+          runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          runtimeEvent("presentation_snapshot", {
+            revision: 1,
+            history: { logical_lines: [line(1, "frame 1")] },
+            input_wait: wait,
+            redraw: { enabled: true },
+          }),
+          runtimeEvent("wait_changed", { type: "opened", value: wait }),
+        ],
+      })
+      .mockResolvedValueOnce(emptyBatch())
+      .mockResolvedValueOnce(emptyBatch())
+      .mockResolvedValueOnce(emptyBatch())
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("wait_changed", { type: "closed", value: null }),
+          runtimeEvent("presentation_delta", {
+            base_revision: 1,
+            new_revision: 2,
+            operations: [{ type: "delete_lines", count: 1 }],
+          }),
+        ],
+      })
+      .mockImplementationOnce(() => completedFrame.promise)
+      .mockResolvedValue(emptyBatch());
+    const store = useRuntimeStore();
+    store.configureTestRun({
+      start: { type: "new_game", seed: 42 },
+      monotonicStartNs: clock.monotonicStartNs,
+    });
+
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(32);
+    expect(advanceTimeCalls()).toHaveLength(1);
+    expect(store.canInteract).toBe(true);
+    expect(store.promptPlaceholder).toBe("输入内容；Enter 提交");
+    expect(plainLine(store.presentation.lines[0])).toBe("frame 1");
+
+    await advanceUntil(
+      () => !store.canInteract && plainLine(store.presentation.lines[0]) === "frame 1",
+    );
+    expect(store.canInteract).toBe(false);
+    expect(plainLine(store.presentation.lines[0])).toBe("frame 1");
+
+    completedFrame.resolve(nextFrame);
+    await flushMicrotasks();
+    expect(store.canInteract).toBe(true);
+    expect(plainLine(store.presentation.lines[0])).toBe("frame 2");
   });
 
   it("advances snake AWAIT time after acknowledging its device pump", async () => {

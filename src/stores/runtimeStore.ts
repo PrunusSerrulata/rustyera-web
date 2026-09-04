@@ -1911,16 +1911,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
       if (now < presentedTimedViewportWait.earliestAdvanceNs) return;
     }
     if (!testEnvironment.shouldAdvanceTime(now, TIME_ADVANCE_INTERVAL_NS)) return;
-    if (preservesTimedViewport) {
-      presentationProjection.beginInputTransition();
-      try {
-        await send({ type: "advance_time", value: { monotonic_time_ns: now } });
-      } catch (error) {
-        presentationProjection.cancelInputTransition();
-        throw error;
-      }
-      lastTimedViewportAdvanceNs = now;
-    } else await send({ type: "advance_time", value: { monotonic_time_ns: now } });
+    await send({ type: "advance_time", value: { monotonic_time_ns: now } });
+    if (preservesTimedViewport) lastTimedViewportAdvanceNs = now;
   }
 
   function sampleMonotonicTime(): number {
