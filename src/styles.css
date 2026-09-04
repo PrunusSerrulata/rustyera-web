@@ -779,6 +779,12 @@ select {
   left: 0;
   display: block;
 }
+.game-line.html-image-layer-line .media-positioned > .media-visual {
+  /* Keep the canonical placeholder rows in history while painting each layer
+     at the reference image origin. Individual translate composes with flips
+     and the existing bottom-anchor transform. */
+  translate: 0 var(--game-media-line-offset);
+}
 .media-positioned > .media-visual.media-bottom-anchored {
   /* Emuera's ypos=-height idiom anchors an escaped image to the preceding
      console-row boundary; the browser's configured inline slot and final line

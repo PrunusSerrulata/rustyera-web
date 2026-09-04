@@ -239,6 +239,27 @@ function mediaReplay(resources: any, resourceName: string): Record<string, unkno
         (name) => String(item.name).toUpperCase() === String(name).toUpperCase(),
       ),
     ),
+    referencedSpriteGeometry: Object.fromEntries(
+      sprites
+        .filter((item: any) =>
+          [...spriteNames].some(
+            (name) => String(item.name).toUpperCase() === String(name).toUpperCase(),
+          ),
+        )
+        .map((item: any) => [
+          String(item.name).toUpperCase(),
+          {
+            size: item.size,
+            position: item.position,
+            firstFrame: item.frames?.[0]
+              ? {
+                  source_rectangle: item.frames[0].source_rectangle,
+                  offset: item.frames[0].offset,
+                }
+              : null,
+          },
+        ]),
+    ),
     canvases: canvases.filter((item: any) => canvasIds.has(Number(item.canvas_id))),
   });
 }

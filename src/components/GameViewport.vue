@@ -24,6 +24,7 @@ import SceneCompositor from "@/components/SceneCompositor.vue";
 import { useTouchSecondaryAction } from "@/components/useTouchSecondaryAction";
 import { isViewportContinuationClick } from "@/core/viewportInteraction";
 import { htmlBoxRowLayoutsForRange } from "@/core/htmlBoxLayout";
+import { htmlImageLayerOffsets } from "@/core/htmlImageLayerLayout";
 import { usesConfiguredLineHeight } from "@/core/lineLayout";
 import { compactSceneDepthRanks, sceneDepthKey, sceneDepthRankKey } from "@/core/sceneStacking";
 import type {
@@ -246,6 +247,9 @@ const visibleBoxRowLayouts = computed(() => {
     visibleItems.at(-1)?.index ?? visibleItems[0].index,
   );
 });
+const imageLayerOffsets = computed(() =>
+  htmlImageLayerOffsets(store.presentation.lines, store.gameLineHeightPx),
+);
 const measuredHistoryHeight = computed(() => {
   // Reading the virtual items keeps this projection in step with row measurements.
   void items.value;
@@ -453,6 +457,11 @@ function lineMinimumHeight(line: any): string | undefined {
     : undefined;
 }
 
+function imageLayerOffset(index: number): string | undefined {
+  const offset = imageLayerOffsets.value.get(index);
+  return offset == null ? undefined : `${offset}px`;
+}
+
 function wholeLineBackground(line: PresentationLine | undefined): string | undefined {
   const color = store.presentation.settings.text_line_background as Color | null | undefined;
   if (!line?.text_background_eligible || color == null) return undefined;
@@ -646,13 +655,17 @@ watch(viewportLayoutIdentity, () => scheduleViewportSynchronization());
           :key="String(item.key)"
           :ref="(element) => element && virtualizer.measureElement(element as Element)"
           class="game-line"
-          :class="`align-${store.presentation.lines[item.index].alignment}`"
+          :class="[
+            `align-${store.presentation.lines[item.index].alignment}`,
+            { 'html-image-layer-line': imageLayerOffsets.has(item.index) },
+          ]"
           :data-index="item.index"
           :data-line-id="String(store.presentation.lines[item.index].line_id)"
           :style="{
             transform: `translateY(${item.start + historyBottomInset}px)`,
             minHeight: lineMinimumHeight(store.presentation.lines[item.index]),
             backgroundColor: wholeLineBackground(store.presentation.lines[item.index]),
+            '--game-media-line-offset': imageLayerOffset(item.index),
           }"
         >
           <DisplayLine

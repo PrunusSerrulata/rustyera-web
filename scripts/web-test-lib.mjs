@@ -1557,6 +1557,7 @@ export async function runAction(page, action) {
       (resourceName) => window.__RUSTYERA_TEST__.mediaReplay(resourceName),
       String(action.resource_name),
     );
+    if (action.expect) assertSubset(actual, action.expect);
     return { query: { media_replay: actual }, semanticInput: action.semantic_input };
   } else if (action.type === "assert_state") {
     // Ordinary state checks must not clone the entire startup wire ledger. Explicit

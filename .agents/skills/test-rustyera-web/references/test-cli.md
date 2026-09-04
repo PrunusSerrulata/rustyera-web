@@ -212,8 +212,9 @@ An action has `type`:
 - `assert_canvas_pixels`: `locator` plus an `expect` subset such as `count`, `width`, `height`, or
   `nontransparent_at_least`. Use it to prove that a generated canvas contains rendered pixels, not
   merely that an empty canvas element has layout dimensions.
-- `query_media_replay`: `resource_name`. Returns the test-only, read-only sprite and canvas replay
-  graph for diagnosing a generated image without mutating Pinia or runtime state.
+- `query_media_replay`: `resource_name`, optional `expect` subset. Returns the test-only, read-only
+  sprite and canvas replay graph for diagnosing a generated image without mutating Pinia or runtime
+  state.
 - `advance_intermediate_waits_until`: advances a variable number of visible integer, Enter,
   Enter-compatible one-input, and deadline waits until `until.media_sources_at_least` distinct
   presentation image sources exist. Use `integer_value` (default `0`) for repeated route/encounter

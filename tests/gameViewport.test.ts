@@ -127,6 +127,7 @@ describe("game viewport", () => {
     ];
     store.presentation.settings = {};
     store.presentation.inputWait = undefined;
+    store.gameLineHeightPx = 13;
     store.useMouse = true;
     store.scrollHeight = 1;
     virtualState.items = [];
@@ -1037,6 +1038,94 @@ describe("game viewport", () => {
     expect(wrapper.get<HTMLElement>(".game-line").attributes("style")).toContain(
       "min-height: 36px",
     );
+    wrapper.unmount();
+  });
+
+  it("projects zero-space image layers to one visual origin without removing history rows", async () => {
+    const zeroSpace = (lineId: number) => ({
+      line_id: lineId,
+      alignment: "left",
+      text_background_eligible: false,
+      runs: [
+        {
+          type: "html_document",
+          document: {
+            nodes: [
+              {
+                type: "element",
+                kind: "shape",
+                attributes: [],
+                semantic: {
+                  type: "shape",
+                  kind: "space",
+                  parameters: [{ unit: "font_height_hundredths", value: 0 }],
+                },
+                children: [],
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const image = (lineId: number, source: string, y: number) => ({
+      line_id: lineId,
+      alignment: "left",
+      text_background_eligible: false,
+      runs: [
+        {
+          type: "html_document",
+          document: {
+            nodes: [
+              {
+                type: "element",
+                kind: "paragraph",
+                attributes: [],
+                semantic: { type: "paragraph", alignment: "left" },
+                children: [
+                  {
+                    type: "element",
+                    kind: "image",
+                    attributes: [],
+                    semantic: {
+                      type: "image",
+                      source,
+                      display: "relative",
+                      y: { unit: "font_height_hundredths", value: y },
+                    },
+                    children: [],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    });
+    store.gameLineHeightPx = 17;
+    store.presentation.lines = [
+      zeroSpace(510),
+      image(511, "30_BODY_WEAR", 0),
+      zeroSpace(512),
+      image(513, "30_PANTS_WEAR_TYPE6_NORMAL", -100),
+      zeroSpace(514),
+      image(515, "30_SHADOW_LIFT", -200),
+    ] as any;
+    virtualState.items = store.presentation.lines.map((line, index) => ({
+      index,
+      key: String(line.line_id),
+      start: index * 17,
+    }));
+    virtualState.totalSize = 102;
+
+    const wrapper = mountViewport();
+    await nextTick();
+    const rows = wrapper.findAll<HTMLElement>(".virtual-history > .game-line");
+    expect(rows).toHaveLength(6);
+    expect(rows[1].classes()).toContain("html-image-layer-line");
+    expect(rows[1].element.style.getPropertyValue("--game-media-line-offset")).toBe("-17px");
+    expect(rows[3].element.style.getPropertyValue("--game-media-line-offset")).toBe("-34px");
+    expect(rows[5].element.style.getPropertyValue("--game-media-line-offset")).toBe("-51px");
+    expect(rows[0].element.style.getPropertyValue("--game-media-line-offset")).toBe("");
     wrapper.unmount();
   });
 
