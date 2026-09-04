@@ -431,6 +431,14 @@ describe("runtime store configuration", () => {
       events: [runtimeEvent("client_preferences_applied", { configuration }, 1)],
     });
     const store = useRuntimeStore();
+    const stableViewport = {
+      width: 900,
+      height: 600,
+      lineColumns: 90,
+      chromeWidth: 20,
+      chromeHeight: 90,
+    };
+    await store.projectViewport(stableViewport);
 
     await store.enableDebug();
     await vi.advanceTimersByTimeAsync(16);
@@ -450,7 +458,7 @@ describe("runtime store configuration", () => {
         expect.objectContaining({ code: "UseMouse" }),
         expect.objectContaining({ code: "ScrollHeight" }),
       ],
-      { width: 0, height: 0 },
+      { width: 20, height: 90 },
     );
 
     void store.saveProjectSettings([{ code: "FontSize", value: "18" }]);
@@ -469,6 +477,57 @@ describe("runtime store configuration", () => {
       },
       undefined,
     );
+  });
+
+  it("defers startup window dimensions until a stable input viewport is mounted", async () => {
+    const configuration = {
+      project_revision: 9,
+      source_digest: new Uint8Array(32).fill(4),
+      entries: [configurationEntry("WindowX", "900"), configurationEntry("WindowY", "600")],
+    };
+    const inputWait = {
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 4 },
+      deadline_ns: null,
+    };
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", { success: true, diagnostics: [], configuration }),
+        runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+        runtimeEvent("presentation_snapshot", {
+          revision: 1,
+          history: { logical_lines: [] },
+          input_wait: inputWait,
+          redraw: { enabled: true },
+        }),
+        runtimeEvent("wait_changed", { type: "opened", value: inputWait }),
+      ],
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("client_preferences_applied", { configuration }, 1)],
+    });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(16);
+    expect(bridge.applyProjectConfiguration).not.toHaveBeenCalled();
+
+    await store.projectViewport({
+      width: 900,
+      height: 600,
+      lineColumns: 90,
+      chromeWidth: 20,
+      chromeHeight: 90,
+    });
+
+    expect(bridge.applyProjectConfiguration).toHaveBeenCalledOnce();
+    expect(bridge.applyProjectConfiguration).toHaveBeenCalledWith(configuration.entries, {
+      width: 20,
+      height: 90,
+    });
   });
 
   it("persists a generated reraconfig with the absent-file precondition", async () => {

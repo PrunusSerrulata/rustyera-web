@@ -1,4 +1,3 @@
-/* global document */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyBackgroundDomInput } from "../scripts/dom-test-input.mjs";
 

@@ -453,6 +453,7 @@ let browser;
 let monitor;
 let runError;
 let finalizationError;
+let mochaFailure;
 try {
   activeStage = "starting the embedded WebDriver session";
   console.log(JSON.stringify({ type: "tauri-gui-start", binary }));
@@ -542,6 +543,14 @@ try {
       if (failures === 0) resolve();
       else reject(new Error(`${failures} Tauri end-to-end test(s) failed`));
     });
+    runner.once("fail", (test, error) => {
+      mochaFailure = {
+        test: test.fullTitle(),
+        name: error?.name ?? "Error",
+        message: error?.message ?? String(error),
+        stack: error?.stack ?? null,
+      };
+    });
     runner.once("error", reject);
   });
   try {
@@ -604,6 +613,12 @@ try {
     snapshotLog.end(resolve);
   });
 }
+if (mochaFailure)
+  await writeFile(
+    `${snapshotLogPath}.failure.json`,
+    `${JSON.stringify({ stage: activeStage, ...mochaFailure }, null, 2)}\n`,
+    { flag: "wx" },
+  );
 if (runError ?? finalizationError) throw runError ?? finalizationError;
 
 async function prewarmTuiCache(sourceProject, runDirectory) {

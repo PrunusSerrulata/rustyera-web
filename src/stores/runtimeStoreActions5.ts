@@ -23,6 +23,7 @@ import {
 import type { RuntimeStartKind } from "@/stores/runtimeState";
 
 export function createRuntimeStoreActions5(context: any) {
+  let clientConfigurationAwaitingStableViewport = false;
   async function restoreSnapshot(): Promise<void> {
     if (context.diagnosisExporting.value) return;
     const bytes = await context.runtimeImport.pickSnapshot();
@@ -475,11 +476,19 @@ export function createRuntimeStoreActions5(context: any) {
   }
 
   async function applyEffectiveClientConfiguration(): Promise<void> {
-    if (!context.projectConfiguration.value) return;
+    if (!context.projectConfiguration.value) {
+      clientConfigurationAwaitingStableViewport = false;
+      return;
+    }
+    if (context.bridge.kind === "tauri" && !context.runtimeViewport.measurement.value) {
+      clientConfigurationAwaitingStableViewport = true;
+      return;
+    }
+    clientConfigurationAwaitingStableViewport = false;
     try {
       await context.bridge.applyProjectConfiguration(
         context.configurationEntries.value,
-        context.runtimeViewport.chrome(currentGameViewportMeasurement()),
+        context.runtimeViewport.chrome(),
       );
     } catch (error) {
       context.log("warning", `客户端项目配置应用失败：${String(error)}`);
@@ -513,6 +522,11 @@ export function createRuntimeStoreActions5(context: any) {
     );
     if (measurement) {
       context.viewportLayoutIdentityAtProjection = layoutIdentity;
+      if (
+        clientConfigurationAwaitingStableViewport &&
+        context.currentPresentation().inputWait != null
+      )
+        await applyEffectiveClientConfiguration();
     }
   }
 

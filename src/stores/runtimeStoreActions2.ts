@@ -402,7 +402,7 @@ export function createRuntimeStoreActions2(context: any) {
       try {
         await context.bridge.applyProjectConfiguration(
           context.configurationEntries.value,
-          context.runtimeViewport.chrome(currentGameViewportMeasurement()),
+          context.runtimeViewport.chrome(),
         );
       } catch (error) {
         context.log("warning", `客户端项目配置应用失败：${String(error)}`);

@@ -34,7 +34,9 @@ preferences("Tauri client preferences", () => {
         ),
       { timeout: 5_000, interval: 50, timeoutMsg: "automatic menu did not hide below 480px" },
     );
-    await browser.setWindowSize(900, 700);
+    // The native WebDriver reports physical pixels on Retina while CSS media queries use logical
+    // viewport pixels. Keep this comfortably above 480 CSS px even at a 2x scale factor.
+    await browser.setWindowSize(1800, 1200);
     await browser.waitUntil(
       async () =>
         browser.execute(
@@ -272,8 +274,57 @@ preferences("Tauri client preferences", () => {
     assert.equal(resetState.fault, null);
     assert.equal(resetMetrics.fontSize, "20px");
     assert.equal(resetMetrics.lineHeight, "20px");
+
+    const viewportBeforeRestart = await gameViewportSize();
+    await $("button=文件").click();
+    await $("button=项目设置…").click();
+    const projectSettingsAfterFlow = await $(
+      ".dialog-panel[aria-label='RustyEra Tauri · 项目设置']",
+    );
+    await projectSettingsAfterFlow.waitForDisplayed();
+    await projectSettingsAfterFlow.$("button=显示").click();
+    await projectSettingsAfterFlow.$("button=使用当前主视口大小").click();
+    await projectSettingsAfterFlow.$("button=应用并重启").click();
+    await waitForRuntimeProgress({
+      browser,
+      snapshot,
+      label: "project did not return to a stable input wait after applying viewport size",
+      totalTimeout: PROJECT_TIMEOUT,
+      stallTimeout: PROJECT_TIMEOUT,
+      accept: async (nextState) => {
+        const actionCount = await browser.execute(
+          () => document.querySelectorAll(".interaction-assist-action").length,
+        );
+        return (
+          nextState?.projectOpen &&
+          nextState.phase === "waiting_input" &&
+          nextState.canInteract &&
+          actionCount > 0
+        );
+      },
+    });
+    const viewportAfterRestart = await gameViewportSize();
+    console.log(JSON.stringify({ viewportBeforeRestart, viewportAfterRestart }));
+    assertWithin(
+      Math.abs(viewportAfterRestart.width - viewportBeforeRestart.width),
+      1,
+      "restored game viewport width must match the saved width",
+    );
+    assertWithin(
+      Math.abs(viewportAfterRestart.height - viewportBeforeRestart.height),
+      1,
+      "restored game viewport height must match the saved height",
+    );
   });
 });
+
+async function gameViewportSize() {
+  return browser.execute(() => {
+    const viewport = document.querySelector(".game-viewport");
+    if (!(viewport instanceof HTMLElement)) throw new Error("game viewport is not available");
+    return { width: viewport.clientWidth, height: viewport.clientHeight };
+  });
+}
 
 async function findInitialFlowButton(scope = "") {
   for (const label of INITIAL_FLOW_LABELS) {

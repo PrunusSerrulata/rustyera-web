@@ -635,7 +635,7 @@ describe("Tauri project restart", () => {
     },
   );
 
-  it("applies native window settings from applicable project configuration", async () => {
+  it("applies native window settings from stable viewport chrome", async () => {
     const entry = (code: string, value: string) => ({
       code,
       japanese: "",
