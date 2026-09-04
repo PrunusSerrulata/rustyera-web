@@ -175,17 +175,9 @@ impl WebSession {
     ///
     /// Returns an error if the initial `ClientHello` cannot be encoded or queued.
     pub fn new(options: WebSessionOptions) -> Result<Self, String> {
-        let maximum_envelope_bytes = options.maximum_envelope_bytes.max(1024 * 1024);
-        let maximum_payload_bytes = maximum_envelope_bytes.saturating_sub(1024 * 1024).max(1024);
-        let limits = RuntimeLimits {
-            maximum_envelope_bytes,
-            maximum_payload_bytes,
-            maximum_pending_requests: 128,
-            maximum_journal_entries: 4096,
-            maximum_journal_bytes: DEFAULT_JOURNAL_BYTES,
-            maximum_drive_instructions: 1_000_000,
-            maximum_transfer_bytes: MAXIMUM_TRANSFER_BYTES,
-        };
+        let limits = session_limits(&options);
+        let maximum_envelope_bytes = limits.maximum_envelope_bytes;
+        let maximum_payload_bytes = limits.maximum_payload_bytes;
         let wire_limits = WireLimits {
             maximum_envelope_bytes: usize::try_from(maximum_envelope_bytes)
                 .map_err(|_| "maximum envelope size is not supported on this platform")?,
@@ -651,6 +643,27 @@ impl WebSession {
         self.next_message_id = self.next_message_id.saturating_add(1);
         value
     }
+}
+
+fn session_limits(options: &WebSessionOptions) -> RuntimeLimits {
+    let maximum_envelope_bytes = options.maximum_envelope_bytes.max(1024 * 1024);
+    RuntimeLimits {
+        maximum_envelope_bytes,
+        maximum_payload_bytes: maximum_envelope_bytes.saturating_sub(1024 * 1024).max(1024),
+        maximum_pending_requests: 128,
+        maximum_journal_entries: 4096,
+        maximum_journal_bytes: DEFAULT_JOURNAL_BYTES,
+        maximum_drive_instructions: 1_000_000,
+        maximum_transfer_bytes: MAXIMUM_TRANSFER_BYTES,
+    }
+}
+
+#[cfg(feature = "performance-audit")]
+/// Return the exact Core client projection used by a performance-audit session.
+#[must_use]
+pub fn performance_audit_client(options: WebSessionOptions) -> serde_json::Value {
+    let hello = client_hello(options.clone(), session_limits(&options));
+    serde_json::json!({"features": hello.features, "capabilities": hello.capabilities})
 }
 
 trait NativePumpDriver {

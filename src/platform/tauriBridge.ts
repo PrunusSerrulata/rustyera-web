@@ -43,6 +43,10 @@ import type {
 } from "@/core/types";
 import { defaultProjectPreferences } from "@/core/types";
 import { saveSlotName } from "@/platform/browserProjectUtilities";
+import {
+  PERFORMANCE_AUDIT_ENABLED,
+  recordPerformanceTiming,
+} from "@/testing/performanceAudit";
 
 type HostProjectOpenMetrics = Omit<ProjectOpenMetrics, "submittedAtMs" | "projectFonts">;
 type HostProjectFontSource = { relativePath: string; contentHash: number[]; byteLength: number };
@@ -159,17 +163,20 @@ export class TauriBridge implements FrontendBridge {
     correlationId?: number | bigint,
   ): Promise<SubmittedPumpBatch> {
     return this.enqueueRuntimeSubmission(async () => {
-      if (import.meta.env.VITE_RUSTYERA_TEST === "1")
-        performance.mark("rustyera:settlement-invoke-start");
+      const invokeStartedAt = PERFORMANCE_AUDIT_ENABLED ? performance.now() : undefined;
       const response = await invoke("submit_runtime_and_pump", {
         message: encodeIpcValue(message),
         correlationId: encodeIpcValue(correlationId),
       });
-      if (import.meta.env.VITE_RUSTYERA_TEST === "1")
-        performance.mark("rustyera:settlement-invoke-resolved");
+      if (PERFORMANCE_AUDIT_ENABLED) {
+        recordPerformanceTiming("invoke", "submit_and_pump", invokeStartedAt, () => ({
+          responseBytes: ipcResponseBytes(response),
+        }));
+      }
+      const decodeStartedAt = PERFORMANCE_AUDIT_ENABLED ? performance.now() : undefined;
       const decoded = decodeIpcResponse<SubmittedPumpBatch>(response);
-      if (import.meta.env.VITE_RUSTYERA_TEST === "1")
-        performance.mark("rustyera:settlement-decode-finished");
+      if (PERFORMANCE_AUDIT_ENABLED)
+        recordPerformanceTiming("decode", "submit_and_pump", decodeStartedAt);
       return decoded;
     });
   }
@@ -196,8 +203,19 @@ export class TauriBridge implements FrontendBridge {
   }
 
   async pump(): Promise<PumpBatch> {
+    const invokeStartedAt = PERFORMANCE_AUDIT_ENABLED ? performance.now() : undefined;
     try {
-      return decodeIpcResponse(await invoke("pump"));
+      const response = await invoke("pump");
+      if (PERFORMANCE_AUDIT_ENABLED) {
+        recordPerformanceTiming("invoke", "pump", invokeStartedAt, () => ({
+          responseBytes: ipcResponseBytes(response),
+        }));
+      }
+      const decodeStartedAt = PERFORMANCE_AUDIT_ENABLED ? performance.now() : undefined;
+      const decoded = decodeIpcResponse<PumpBatch>(response);
+      if (PERFORMANCE_AUDIT_ENABLED)
+        recordPerformanceTiming("decode", "pump", decodeStartedAt);
+      return decoded;
     } finally {
       this.refreshMemorySnapshot();
     }
@@ -696,6 +714,12 @@ export class TauriBridge implements FrontendBridge {
     await this.runtimeSubmissionTail;
     await invoke("destroy_session").catch(() => undefined);
   }
+}
+
+function ipcResponseBytes(response: unknown): number {
+  if (response instanceof ArrayBuffer) return response.byteLength;
+  if (ArrayBuffer.isView(response)) return response.byteLength;
+  return 0;
 }
 
 function emptyNativeMemoryCounters(): Omit<

@@ -11,6 +11,7 @@ export interface CompleteSnapshotMonitorOptions {
   label?: string;
   output?: (event: string) => void;
   snapshotContext?: () => unknown;
+  windowSafety?: () => Promise<unknown>;
 }
 
 export function snapshotProgressSignature(snapshot: unknown): string;

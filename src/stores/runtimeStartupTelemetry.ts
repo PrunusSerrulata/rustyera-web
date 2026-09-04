@@ -2,8 +2,14 @@ import { ref } from "vue";
 
 import type { ProjectOpenMetrics, ProjectProgress, ProjectProgressStage } from "@/core/types";
 import { STARTUP_DURATION_BY_STAGE, type StartupTelemetry } from "@/stores/runtimeState";
+import {
+  PERFORMANCE_AUDIT_ENABLED,
+  recordPerformanceElapsed,
+} from "@/testing/performanceAudit";
 
 export class RuntimeStartupTelemetryState {
+  // Compatibility projection used by loading UI and cache assertions. Performance samples are
+  // owned by testing/performanceAudit so loading and steady runtime share one epoch/sequence.
   readonly current = ref<StartupTelemetry>();
   startMessageId?: string;
 
@@ -59,6 +65,12 @@ export class RuntimeStartupTelemetryState {
       outcome: "loading",
       error: null,
     };
+    if (PERFORMANCE_AUDIT_ENABLED)
+      recordPerformanceElapsed("loading", "begin", 0, () => ({
+        attemptId: this.current.value?.attemptId ?? 0,
+        client,
+        selection,
+      }));
   }
 
   applyBridgeMetrics(metrics: ProjectOpenMetrics, client: "browser" | "tauri"): void {
@@ -85,6 +97,26 @@ export class RuntimeStartupTelemetryState {
     };
     telemetry.wasmMode = metrics.wasmMode ?? (client === "tauri" ? null : "single");
     telemetry.wasmMemory.constrained = metrics.memoryConstrained ?? null;
+    if (PERFORMANCE_AUDIT_ENABLED) {
+      const durations: Array<[string, number | null | undefined]> = [
+        ["bridge.quick_scan", metrics.quickScanMs],
+        ["bridge.cache_read", metrics.cacheReadMs],
+        ["bridge.source_read", metrics.sourceReadMs],
+        ["bridge.submit", metrics.submitMs],
+        ["host.enumerate", metrics.enumerateMs],
+        ["host.index_read", metrics.indexReadMs],
+        ["host.index_write", metrics.indexWriteMs],
+        ["host.stat", metrics.statMs],
+        ["host.source_read_decode_hash", metrics.sourceReadDecodeHashMs],
+        ["host.cache_read", metrics.cacheReadMs],
+        ["host.submission_transfer", metrics.submissionTransferMs ?? metrics.submitMs],
+      ];
+      for (const [operation, duration] of durations)
+        recordPerformanceElapsed("loading", operation, duration, () => ({
+          attemptId: telemetry.attemptId,
+          client,
+        }));
+    }
   }
 
   elapsedMs(): number {
@@ -99,6 +131,59 @@ export class RuntimeStartupTelemetryState {
       telemetry.scenario = telemetry.cacheHit ? "warm" : "cold";
     }
     telemetry.milestones.frontendReadyToStartMs = this.elapsedMs();
+    if (PERFORMANCE_AUDIT_ENABLED)
+      recordPerformanceElapsed(
+        "loading",
+        "milestone.frontend_ready_to_start",
+        telemetry.milestones.frontendReadyToStartMs,
+        () => ({ attemptId: telemetry.attemptId, scenario: telemetry.scenario }),
+      );
+  }
+
+  markRuntimeValidationReported(): void {
+    const telemetry = this.current.value;
+    if (!telemetry || telemetry.milestones.runtimeValidationReportedMs != null) return;
+    telemetry.milestones.runtimeValidationReportedMs = this.elapsedMs();
+    if (PERFORMANCE_AUDIT_ENABLED)
+      recordPerformanceElapsed(
+        "loading",
+        "milestone.runtime_validation_reported",
+        telemetry.milestones.runtimeValidationReportedMs,
+        () => ({ attemptId: telemetry.attemptId }),
+      );
+  }
+
+  markStartSubmitted(): void {
+    const telemetry = this.current.value;
+    if (!telemetry || telemetry.milestones.startSubmittedMs != null) return;
+    telemetry.milestones.startSubmittedMs = this.elapsedMs();
+    if (PERFORMANCE_AUDIT_ENABLED)
+      recordPerformanceElapsed(
+        "loading",
+        "milestone.start_submitted",
+        telemetry.milestones.startSubmittedMs,
+        () => ({ attemptId: telemetry.attemptId }),
+      );
+  }
+
+  completeFirstGamePhase(): void {
+    const telemetry = this.current.value;
+    if (!telemetry || telemetry.outcome !== "loading") return;
+    this.finishProgressStage();
+    telemetry.milestones.firstGamePhaseMs ??= this.elapsedMs();
+    telemetry.outcome = "success";
+    this.startMessageId = undefined;
+    if (PERFORMANCE_AUDIT_ENABLED)
+      recordPerformanceElapsed(
+        "loading",
+        "complete",
+        telemetry.milestones.firstGamePhaseMs,
+        () => ({
+          attemptId: telemetry.attemptId,
+          cacheHit: telemetry.cacheHit ?? false,
+          scenario: telemetry.scenario,
+        }),
+      );
   }
 
   fail(error: unknown): void {
@@ -108,6 +193,11 @@ export class RuntimeStartupTelemetryState {
     telemetry.outcome = "failure";
     telemetry.error = String(error);
     this.startMessageId = undefined;
+    if (PERFORMANCE_AUDIT_ENABLED)
+      recordPerformanceElapsed("loading", "failure", this.elapsedMs(), () => ({
+        attemptId: telemetry.attemptId,
+        error: telemetry.error ?? "unknown",
+      }));
   }
 
   recordProgress(progress: ProjectProgress): void {
@@ -168,6 +258,11 @@ export class RuntimeStartupTelemetryState {
       telemetry.durations[durationField] =
         coreDuration ?? (telemetry.durations[durationField] ?? 0) + duration;
     }
+    if (PERFORMANCE_AUDIT_ENABLED)
+      recordPerformanceElapsed("loading", `core.${stage}`, duration, () => ({
+        attemptId: telemetry.attemptId,
+        source: coreDuration == null ? "frontend_progress" : "runtime_progress",
+      }));
     this.progressStage = undefined;
     this.progressStageStartedAtMs = undefined;
   }

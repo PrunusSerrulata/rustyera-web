@@ -6,6 +6,7 @@ license.workspace = true
 
 [features]
 webdriver = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
+performance-audit = ["webdriver", "era-web-bridge/performance-audit"]
 
 [build-dependencies]
 tauri-build = { version = "2.5.3", features = [] }

@@ -23,4 +23,31 @@ describe("Tauri complete snapshot policy", () => {
 
     expect(snapshotProgressSignature(first)).toBe(snapshotProgressSignature(second));
   });
+
+  it("does not treat audit, profiler, or process observations as game progress", () => {
+    const first = {
+      document: [{ text: "stable" }],
+      runtime: {
+        phase: "waiting_input",
+        performanceAudit: { timingSamples: 1 },
+        startupTelemetry: { elapsedMs: 1 },
+        memory: { residentBytes: 1 },
+      },
+      windowSafety: { processTree: [{ pid: 1, cpuPercent: 1 }] },
+      profiler: { samples: 1 },
+    };
+    const second = {
+      document: [{ text: "stable" }],
+      runtime: {
+        phase: "waiting_input",
+        performanceAudit: { timingSamples: 200 },
+        startupTelemetry: { elapsedMs: 200 },
+        memory: { residentBytes: 999 },
+      },
+      windowSafety: { processTree: [{ pid: 1, cpuPercent: 99 }] },
+      profiler: { samples: 50 },
+    };
+
+    expect(snapshotProgressSignature(first)).toBe(snapshotProgressSignature(second));
+  });
 });

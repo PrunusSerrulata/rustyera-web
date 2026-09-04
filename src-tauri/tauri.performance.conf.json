@@ -1,0 +1,39 @@
+{
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "RustyEra Performance Audit",
+        "width": 1000,
+        "height": 720,
+        "minWidth": 640,
+        "minHeight": 480,
+        "backgroundColor": "#101114",
+        "resizable": false,
+        "visible": false,
+        "focus": false,
+        "focusable": false
+      }
+    ],
+    "security": {
+      "capabilities": [
+        {
+          "identifier": "webdriver-performance-audit",
+          "description": "Capabilities enabled only for the background Tauri performance audit",
+          "windows": ["main"],
+          "permissions": [
+            "core:default",
+            "core:window:allow-close",
+            "core:window:allow-hide",
+            "core:window:allow-set-position",
+            "core:window:allow-show",
+            "wdio:default",
+            "wdio-webdriver:default"
+          ]
+        }
+      ],
+      "csp": "default-src 'self'; img-src 'self' asset: blob: data: http://127.0.0.1:*; media-src 'self' asset: blob: data:; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:"
+    }
+  }
+}

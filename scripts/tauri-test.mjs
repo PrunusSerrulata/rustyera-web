@@ -40,13 +40,23 @@ import {
   allowsServiceOracleFault,
   recordServiceOracleWatchdog,
 } from "./snake-service-capture-client.mjs";
+import {
+  capturePerformanceWindowSafety,
+  observeForegroundApplication,
+  performanceAuditOptions,
+  resolvePerformanceRootPid,
+  validatePerformanceAuditProject,
+} from "./tauri-performance-audit.mjs";
 
 const repository = fileURLToPath(new URL("..", import.meta.url));
 const cargoLocal = path.join(repository, "scripts/cargo-local.mjs");
+const inheritedDeadline = Number(process.env.RUSTYERA_TEST_WALL_CLOCK_DEADLINE_MS);
 const taskDeadline =
   process.env.RUSTYERA_TEST_DISABLE_WALL_CLOCK_LIMIT === "1"
     ? undefined
-    : Date.now() + 60 * 60 * 1_000;
+    : Number.isSafeInteger(inheritedDeadline) && inheritedDeadline > Date.now()
+      ? inheritedDeadline
+      : Date.now() + 60 * 60 * 1_000;
 let activeStage = "parsing arguments";
 let lastCompleteSnapshot;
 const monitorObservation = { sequence: 0, runtime: undefined };
@@ -71,11 +81,19 @@ const requestedSpec = specIndex >= 0 ? arguments_[specIndex + 1] : undefined;
 // Keep game-specific image flows opt-in while they are under investigation.
 const configuredSpec = requestedSpec;
 const specName = configuredSpec ? path.basename(configuredSpec) : undefined;
+const perfAudit = performanceAuditOptions(arguments_, specName, {
+  repository,
+  requestedSpec,
+  resolve: path.resolve,
+});
 if (
   backgroundDom &&
-  !["project-load-failure.spec.mjs", "snake-interop.spec.mjs", "snake-audio.spec.mjs"].includes(
-    specName,
-  )
+  ![
+    "project-load-failure.spec.mjs",
+    "snake-interop.spec.mjs",
+    "snake-audio.spec.mjs",
+    "snake-runtime-performance.spec.mjs",
+  ].includes(specName)
 )
   throw new Error("--background-dom requires a supported DOM-only acceptance spec");
 const specProfiles = {
@@ -133,6 +151,12 @@ const specProfiles = {
   "snake-profile.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_PROFILE",
     copyProject: true,
+  },
+  "snake-runtime-performance.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_RUNTIME_PERFORMANCE",
+    copyProject: true,
+    release: true,
+    timeoutMs: 900_000,
   },
   "project-smoke.spec.mjs": { environmentFlag: "VITE_RUSTYERA_TAURI_PROJECT_SMOKE" },
   "erafl-save-load-shapes.spec.mjs": {
@@ -202,10 +226,6 @@ const specProfiles = {
   "rorona-load-scroll.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_RORONA_LOAD_SCROLL",
   },
-  "rorona-settlement-performance.spec.mjs": {
-    environmentFlag: "VITE_RUSTYERA_TAURI_RORONA_SETTLEMENT_PERFORMANCE",
-    release: true,
-  },
   "eratw-character-images.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_ERATW_CHARACTER_IMAGES",
     defaultState: "tests/fixtures/eratw/save18.sav",
@@ -246,13 +266,16 @@ const nativeProvider = requestedNativeProvider
 if (nativeProvider)
   console.log(JSON.stringify({ ...nativeProvider.provenance, stage: "before-build" }));
 await access(project);
+if (perfAudit.enabled) await validatePerformanceAuditProject(project);
 if (state) await access(state);
 if (specProfile?.copyProject) {
   if (!(await stat(project)).isDirectory())
-    throw new Error("the preferences test requires a source project directory");
+    throw new Error("the selected Tauri spec requires a source project directory");
   const testRuns = path.resolve(repository, ".rustyera/test-runs");
   await mkdir(testRuns, { recursive: true });
-  const runDirectory = await mkdtemp(path.join(testRuns, "tauri-preferences-"));
+  const runDirectory = await mkdtemp(
+    path.join(testRuns, perfAudit.enabled ? "tauri-performance-" : "tauri-preferences-"),
+  );
   const projectCopy = path.join(runDirectory, path.basename(project));
   await cp(project, projectCopy, { recursive: true });
   if (specName === "preferences.spec.mjs")
@@ -269,6 +292,7 @@ if (specProfile?.copyProject) {
   }
   console.log(JSON.stringify({ type: "test-project-copy", source: project, project: projectCopy }));
   project = projectCopy;
+  if (perfAudit.enabled) await validatePerformanceAuditProject(originalProject, project);
   if (specProfile.prewarmWithTui) project = await prewarmTuiCache(project, runDirectory);
 }
 
@@ -306,12 +330,15 @@ if (["snake-service-lifecycle.spec.mjs", "snake-sql.spec.mjs"].includes(specName
 const environment = {
   ...process.env,
   RUSTYERA_TEST_BACKGROUND_DOM: backgroundDom ? "1" : "0",
+  RUSTYERA_TAURI_PERF_AUDIT: perfAudit.enabled ? "1" : "0",
+  RUSTYERA_TAURI_PERF_WINDOW_MODE: perfAudit.windowMode ?? "",
   // WebdriverIO's bundled Undici dispatcher is incompatible with Node 26 when
   // it creates the local Tauri WebDriver session. Select Node's native fetch
   // before importing the service so the choice is cross-platform and stable.
   WDIO_USE_NATIVE_FETCH: "1",
   VITE_RUSTYERA_TEST: "1",
   VITE_RUSTYERA_TAURI_TEST: "1",
+  VITE_RUSTYERA_PERF_AUDIT: perfAudit.enabled ? "1" : "0",
   VITE_RUSTYERA_TEST_PROJECT: project,
   RUSTYERA_LIFECYCLE_REPLACEMENT_PROJECT: replacementProject ?? "",
   RUSTYERA_SQL_REPLACEMENT_PROJECT:
@@ -368,9 +395,11 @@ const buildArguments = [
   ...(release ? [] : ["--debug"]),
   "--no-bundle",
   "--features",
-  "webdriver",
+  perfAudit.enabled ? "webdriver,performance-audit" : "webdriver",
   "--config",
-  "src-tauri/tauri.webdriver.conf.json",
+  perfAudit.enabled
+    ? "src-tauri/tauri.performance.conf.json"
+    : "src-tauri/tauri.webdriver.conf.json",
   ...(nativeProvider?.cargoArguments ?? []),
 ];
 const contractOptions = {
@@ -453,6 +482,11 @@ let browser;
 let monitor;
 let runError;
 let finalizationError;
+const foregroundBaseline = perfAudit.enabled ? await observeForegroundApplication() : undefined;
+if (perfAudit.enabled)
+  console.log(
+    JSON.stringify({ type: "tauri-performance-foreground-baseline", foregroundBaseline }),
+  );
 try {
   activeStage = "starting the embedded WebDriver session";
   console.log(JSON.stringify({ type: "tauri-gui-start", binary }));
@@ -468,6 +502,26 @@ try {
   globalThis.browser = browser;
   globalThis.$ = browser.$.bind(browser);
   globalThis.$$ = browser.$$.bind(browser);
+  const performanceRootPid = perfAudit.enabled
+    ? await resolvePerformanceRootPid(binary)
+    : undefined;
+  if (performanceRootPid != null)
+    process.env.RUSTYERA_TAURI_PERF_ROOT_PID = String(performanceRootPid);
+  const windowSafety = perfAudit.enabled
+    ? () =>
+        capturePerformanceWindowSafety(
+          browser,
+          perfAudit.windowMode,
+          foregroundBaseline,
+          performanceRootPid,
+        )
+    : undefined;
+  if (windowSafety) {
+    const state = await windowSafety();
+    console.log(
+      JSON.stringify({ type: "tauri-performance-window-safety", stage: "connected", state }),
+    );
+  }
   activeStage = "running Tauri end-to-end specs";
   monitor = startTauriSessionMonitor(browser, {
     deadline: taskDeadline,
@@ -477,6 +531,7 @@ try {
       specName === "snake-service-oracle.spec.mjs"
         ? recordServiceOracleWatchdog(snapshot)
         : undefined,
+    windowSafety,
     output(message) {
       snapshotLog.write(`${message}\n`);
       const report = JSON.parse(message);

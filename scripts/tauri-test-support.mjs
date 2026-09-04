@@ -213,9 +213,25 @@ export function snapshotProgressSignature(snapshot) {
   // Polling/debug acknowledgements must not manufacture watchdog progress.
   // Keep its failure status and preserve the complete ledger in the raw snapshot.
   const runtime = snapshot?.runtime;
-  let observable = snapshot;
+  let observable = { ...snapshot };
+  delete observable.windowSafety;
+  delete observable.processTree;
+  delete observable.telemetry;
+  delete observable.profiler;
   if (runtime && typeof runtime === "object") {
     const projected = { ...runtime };
+    // Audit counters, process samples and profiler checkpoints are observations of
+    // the same frame. They must never keep an otherwise frozen game alive.
+    for (const field of [
+      "performanceAudit",
+      "startupTelemetry",
+      "memory",
+      "telemetry",
+      "process",
+      "profiler",
+      "profile",
+    ])
+      delete projected[field];
     for (const field of ["serviceEvidence", "serviceLifecycle"]) {
       const evidence = runtime[field];
       if (evidence && typeof evidence === "object") {
@@ -226,7 +242,7 @@ export function snapshotProgressSignature(snapshot) {
         );
       }
     }
-    observable = { ...snapshot, runtime: projected };
+    observable.runtime = projected;
   }
   return JSON.stringify(withoutReportMetadata(observable));
 }
@@ -244,6 +260,7 @@ export function startTauriSessionMonitor(
     snapshotContext = () => undefined,
     allowFault = () => false,
     onSnapshot,
+    windowSafety,
   } = {},
 ) {
   let stopped = false;
@@ -286,7 +303,11 @@ export function startTauriSessionMonitor(
           browser,
           snapshotCaptureTimeout(previousSnapshot, interval),
         );
-        const snapshot = { ...captured, operation: snapshotContext() };
+        const snapshot = {
+          ...captured,
+          operation: snapshotContext(),
+          windowSafety: await windowSafety?.(),
+        };
         const runtime = captured.runtime;
         // Persist the failure frontier before an observer or terminal-state check can throw.
         const event = {
@@ -310,7 +331,7 @@ export function startTauriSessionMonitor(
         }
         const currentSignature = captured.compactProgressSignature
           ? `${captured.compactProgressSignature}\n${JSON.stringify(
-              withoutReportMetadata(snapshot.operation),
+              withoutAuditMetadata(snapshot.operation),
             )}`
           : snapshotProgressSignature(snapshot);
         identicalIntervals =
@@ -351,6 +372,29 @@ export function startTauriSessionMonitor(
 }
 
 export const startCompleteSnapshotMonitor = startTauriSessionMonitor;
+
+function withoutAuditMetadata(value) {
+  if (Array.isArray(value)) return value.map(withoutAuditMetadata);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(
+          ([key]) =>
+            ![
+              "telemetry",
+              "startupTelemetry",
+              "memory",
+              "process",
+              "processTree",
+              "profiler",
+              "profile",
+              "sample",
+            ].includes(key),
+        )
+        .map(([key, child]) => [key, withoutAuditMetadata(child)]),
+    );
+  return withoutReportMetadata(value);
+}
 
 function withoutReportMetadata(value) {
   if (Array.isArray(value)) return value.map(withoutReportMetadata);

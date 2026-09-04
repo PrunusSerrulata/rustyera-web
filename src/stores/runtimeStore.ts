@@ -1042,9 +1042,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       startupTelemetry.value.milestones.firstGamePhaseMs == null &&
       ["running", "waiting_input", "waiting_external"].includes(value.phase)
     ) {
-      startupTelemetry.value.milestones.firstGamePhaseMs = startupTelemetryState.elapsedMs();
-      startupTelemetry.value.outcome = "success";
-      startupTelemetryState.startMessageId = undefined;
+      startupTelemetryState.completeFirstGamePhase();
       // Host-side work such as font registration may finish after Runtime has already
       // entered the game. The first game phase is the authoritative load boundary.
       finishProjectLoad();
@@ -1100,9 +1098,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
           break;
         }
         startupTelemetryState.finishProgressStage();
-        if (startupTelemetry.value)
-          startupTelemetry.value.milestones.runtimeValidationReportedMs =
-            startupTelemetryState.elapsedMs();
+        startupTelemetryState.markRuntimeValidationReported();
         const diagnostics = value.diagnostics ?? [];
         const runtimeAcceptedCompiledCache = diagnostics.some(
           (diagnostic: any) => diagnostic.code === "runtime.compiled_cache_hit",
@@ -3310,10 +3306,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     startupTelemetryState.completeFrontendReadiness();
     if (["running", "waiting_input", "waiting_external"].includes(phase.value)) {
       const telemetry = startupTelemetry.value;
-      if (telemetry?.outcome === "loading") {
-        telemetry.milestones.firstGamePhaseMs ??= startupTelemetryState.elapsedMs();
-        telemetry.outcome = "success";
-      }
+      if (telemetry?.outcome === "loading") startupTelemetryState.completeFirstGamePhase();
       finishProjectLoad();
       baseStatus.value = GAME_RUNNING_STATUS;
       if (!runtimeManifestSparse) scheduleCompiledCacheExport(1000);
@@ -3596,7 +3589,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
       message.type === "start" &&
       telemetry?.outcome === "loading" &&
       telemetry.milestones.startSubmittedMs == null;
-    if (startupStart) telemetry.milestones.startSubmittedMs = startupTelemetryState.elapsedMs();
+    if (startupStart) startupTelemetryState.markStartSubmitted();
     const transported = transportValue(message);
     const observedMessage = testEvidence.prepareMessage(transported);
     if (
