@@ -93,6 +93,7 @@ import { RuntimeClientPreferencesState } from "@/stores/runtimeClientPreferences
 import { RuntimeStatusState } from "@/stores/runtimeStatus";
 import { RuntimeStartupTelemetryState } from "@/stores/runtimeStartupTelemetry";
 import { RuntimeTestEnvironment } from "@/stores/runtimeTestEnvironment";
+import { nfFrameRecoveryNs } from "@/stores/runtimeTimedViewport";
 import { RuntimeTraditionalSaveState } from "@/stores/runtimeTraditionalSaves";
 import { RuntimeViewportState } from "@/stores/runtimeViewport";
 import { useSystemFontAccess } from "@/stores/systemFontAccess";
@@ -302,6 +303,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let deviceEventSequence = 0;
   let deviceGeneration = 0;
   let devicePumpTimeAdvancePending = false;
+  let presentedTimedViewportWait: { waitId: string; earliestAdvanceNs: number } | undefined;
+  let lastTimedViewportAdvanceNs: number | undefined;
   const testAudioPlayback = new Map<string, { starts: number; active: number }>();
   const audio = new AudioEngine(
     bridge,
@@ -403,6 +406,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     send,
     sampleMonotonic: () => testEnvironment.sampleMonotonic(),
     phase: () => phase.value,
+    beginPresentationTransition: () => presentationProjection.beginInputTransition(),
+    cancelPresentationTransition: () => presentationProjection.cancelInputTransition(),
     signalMessageSkip,
     logWarning: (message) =>
       log("warning", message, true, isNonNotifiedInputWarning(message) ? "none" : "all"),
@@ -1359,6 +1364,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
         )
           break;
         if (rejectedInput && !willRetryInput) {
+          presentationProjection.cancelInputTransition();
           runtimeInput.rejectInput(rejectedInput, willRetryInput);
         }
         runtimeInput.rejectUndo(correlation);
@@ -1505,6 +1511,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     if (BigInt(epoch) < BigInt(runtimeEpoch.value)) return false;
     if (!sameServiceInteger(epoch, runtimeEpoch.value)) {
       resetViewportProjectionBarriers();
+      resetTimedViewportRecovery();
       pointerObservation.clear();
       htmlMeasurements.clear();
       resetDeviceInputState(false);
@@ -1874,6 +1881,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
   async function advanceTimedWait(): Promise<void> {
     if (diagnosisExporting.value) return;
     const wait = currentPresentation().inputWait;
+    const preservesTimedViewport =
+      wait?.deadline_ns != null && wait.viewport_policy === "preserve_user_viewport";
+    if (wait != null && !preservesTimedViewport) {
+      resetTimedViewportRecovery();
+    }
     const advancingDevicePump = devicePumpTimeAdvancePending;
     if (
       (wait?.deadline_ns == null && !advancingDevicePump) ||
@@ -1882,12 +1894,42 @@ export const useRuntimeStore = defineStore("runtime", () => {
     )
       return;
     const now = sampleMonotonicTime();
+    if (preservesTimedViewport) {
+      const waitId = String(wait.wait_id);
+      if (presentedTimedViewportWait?.waitId !== waitId) {
+        // A short NF wait can already be overdue by the time its output batch has crossed WASM,
+        // Vue, and layout. Give the published frame at least one scheduler interval, and after
+        // the first frame match its recovery window to the preceding frame's build time. Light
+        // maps retain their requested cadence; expensive maps cannot consume the entire event
+        // loop by starting the next refresh immediately after a long build.
+        const elapsedSinceAdvance =
+          lastTimedViewportAdvanceNs == null ? undefined : now - lastTimedViewportAdvanceNs;
+        const recoveryNs = nfFrameRecoveryNs(elapsedSinceAdvance);
+        presentedTimedViewportWait = { waitId, earliestAdvanceNs: now + recoveryNs };
+        return;
+      }
+      if (now < presentedTimedViewportWait.earliestAdvanceNs) return;
+    }
     if (!testEnvironment.shouldAdvanceTime(now, TIME_ADVANCE_INTERVAL_NS)) return;
-    await send({ type: "advance_time", value: { monotonic_time_ns: now } });
+    if (preservesTimedViewport) {
+      presentationProjection.beginInputTransition();
+      try {
+        await send({ type: "advance_time", value: { monotonic_time_ns: now } });
+      } catch (error) {
+        presentationProjection.cancelInputTransition();
+        throw error;
+      }
+      lastTimedViewportAdvanceNs = now;
+    } else await send({ type: "advance_time", value: { monotonic_time_ns: now } });
   }
 
   function sampleMonotonicTime(): number {
     return testEnvironment.sampleMonotonic();
+  }
+
+  function resetTimedViewportRecovery(): void {
+    presentedTimedViewportWait = undefined;
+    lastTimedViewportAdvanceNs = undefined;
   }
 
   async function undo(): Promise<void> {
@@ -2090,6 +2132,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     resetDeviceInputState(false);
     runtimeEpoch.value = 0;
     testEnvironment.resetTimeAdvance();
+    resetTimedViewportRecovery();
     runtimeConfiguration.reset();
     runtimeClientPreferences.reset();
     projectPreferences.value = defaultProjectPreferences();

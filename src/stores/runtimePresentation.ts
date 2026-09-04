@@ -6,10 +6,7 @@ import {
   emptyPresentation,
   type PresentationState,
 } from "@/core/presentation";
-import {
-  PERFORMANCE_AUDIT_ENABLED,
-  recordPerformanceTiming,
-} from "@/testing/performanceAudit";
+import { PERFORMANCE_AUDIT_ENABLED, recordPerformanceTiming } from "@/testing/performanceAudit";
 
 export class RuntimePresentationProjection {
   readonly presentation = reactive(emptyPresentation());
@@ -43,6 +40,10 @@ export class RuntimePresentationProjection {
     this.stagedForInputTransition = true;
   }
 
+  cancelInputTransition(): void {
+    if (this.stagedForInputTransition) this.discard();
+  }
+
   closeInputWait(): void {
     this.beginInputTransition();
     this.current().inputWait = null;
@@ -68,9 +69,11 @@ export class RuntimePresentationProjection {
   shouldPublish(runtimeState: string): boolean {
     return (
       this.stagedReady ||
-      (this.stagedCanFlushWhenIdle &&
-        this.stagedPresentation != null &&
-        !["more_work", "output_ready"].includes(runtimeState))
+      (this.stagedPresentation != null &&
+        (["stopped", "faulted"].includes(runtimeState) ||
+          (!this.stagedForInputTransition &&
+            this.stagedCanFlushWhenIdle &&
+            runtimeState === "idle")))
     );
   }
 
@@ -86,8 +89,7 @@ export class RuntimePresentationProjection {
     }
     Object.assign(this.presentation, staged);
     this.discard();
-    if (PERFORMANCE_AUDIT_ENABLED)
-      recordPerformanceTiming("presentation", "publish", startedAt);
+    if (PERFORMANCE_AUDIT_ENABLED) recordPerformanceTiming("presentation", "publish", startedAt);
     return true;
   }
 

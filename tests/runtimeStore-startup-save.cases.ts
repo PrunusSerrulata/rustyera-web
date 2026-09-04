@@ -89,6 +89,49 @@ describe("runtime store startup-save", () => {
     ).toHaveLength(1);
   });
 
+  it("presents a short NF frame before advancing an already-overdue timeout", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    const wait = {
+      kind: "string_value",
+      wait_id: 18,
+      submission_token: { epoch: 2, id: 5 },
+      deadline_ns: 2_000_000,
+      viewport_policy: "preserve_user_viewport",
+    };
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        state: "output_ready",
+        events: [
+          runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          runtimeEvent("wait_changed", { type: "opened", value: wait }),
+        ],
+      })
+      .mockResolvedValue(emptyBatch());
+    const store = useRuntimeStore();
+    store.configureTestRun({
+      start: { type: "new_game", seed: 42 },
+      monotonicStartNs: 1_000_000,
+    });
+
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(store.canInteract).toBe(true);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        (call) => (call as unknown as [{ type?: string }])[0]?.type === "advance_time",
+      ),
+    ).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(16);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        (call) => (call as unknown as [{ type?: string }])[0]?.type === "advance_time",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("advances snake AWAIT time after acknowledging its device pump", async () => {
     vi.stubEnv("VITE_RUSTYERA_TEST", "1");
     bridge.createSession.mockResolvedValueOnce({
