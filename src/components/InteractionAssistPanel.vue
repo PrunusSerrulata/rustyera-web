@@ -49,6 +49,7 @@ const geometry = computed(() => {
   };
 });
 const visible = computed(() => geometry.value.show);
+const occupiedHeight = computed(() => (visible.value ? collapsedHeight.value : 0));
 const panelStyle = computed(() => ({
   maxHeight: visible.value && expanded.value ? `${geometry.value.expandedMaximum}px` : undefined,
 }));
@@ -69,6 +70,15 @@ watch(
     await nextTick();
     measurePanel();
   },
+);
+watch(
+  occupiedHeight,
+  async () => {
+    if (store.bridgeKind !== "tauri") return;
+    await nextTick();
+    await store.clientViewportChromeChanged();
+  },
+  { flush: "post" },
 );
 
 function phoneDevice(): boolean {

@@ -1099,6 +1099,15 @@ describe("runtime store configuration", () => {
       ...emptyBatch(),
       events: [runtimeEvent("client_preferences_applied", { configuration }, 1)],
     });
+    vi.stubGlobal("innerWidth", 920);
+    vi.stubGlobal("innerHeight", 690);
+    const viewport = document.createElement("main");
+    viewport.className = "game-viewport";
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 900 },
+      clientHeight: { configurable: true, value: 600 },
+    });
+    document.body.append(viewport);
     const store = useRuntimeStore();
     const stableViewport = {
       width: 900,
@@ -1178,12 +1187,21 @@ describe("runtime store configuration", () => {
       ...emptyBatch(),
       events: [runtimeEvent("client_preferences_applied", { configuration }, 1)],
     });
+    vi.stubGlobal("innerWidth", 920);
+    vi.stubGlobal("innerHeight", 690);
+    const viewport = document.createElement("main");
+    viewport.className = "game-viewport";
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 900 },
+      clientHeight: { configurable: true, value: 600 },
+    });
     const store = useRuntimeStore();
 
-    await store.enableDebug();
+    const loading = store.enableDebug();
     await vi.advanceTimersByTimeAsync(16);
     expect(bridge.applyProjectConfiguration).not.toHaveBeenCalled();
 
+    document.body.append(viewport);
     await store.projectViewport({
       width: 900,
       height: 600,
@@ -1191,11 +1209,88 @@ describe("runtime store configuration", () => {
       chromeWidth: 20,
       chromeHeight: 90,
     });
+    await loading;
 
     expect(bridge.applyProjectConfiguration).toHaveBeenCalledOnce();
     expect(bridge.applyProjectConfiguration).toHaveBeenCalledWith(configuration.entries, {
       width: 20,
       height: 90,
+    });
+  });
+
+  it("reapplies window geometry when the input assistance row appears after startup", async () => {
+    const configuration = {
+      project_revision: 9,
+      source_digest: new Uint8Array(32).fill(4),
+      entries: [configurationEntry("WindowX", "900"), configurationEntry("WindowY", "717")],
+    };
+    const inputWait = {
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 4 },
+      deadline_ns: null,
+    };
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("project_load_report", { success: true, diagnostics: [], configuration }),
+        runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+        runtimeEvent("presentation_snapshot", {
+          revision: 1,
+          history: { logical_lines: [] },
+          input_wait: inputWait,
+          redraw: { enabled: true },
+        }),
+        runtimeEvent("wait_changed", { type: "opened", value: inputWait }),
+      ],
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [runtimeEvent("client_preferences_applied", { configuration }, 1)],
+    });
+    vi.stubGlobal("innerWidth", 920);
+    vi.stubGlobal("innerHeight", 839);
+    let viewportHeight = 749;
+    const viewport = document.createElement("main");
+    viewport.className = "game-viewport";
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 900 },
+      clientHeight: { configurable: true, get: () => viewportHeight },
+    });
+    document.body.append(viewport);
+    const store = useRuntimeStore();
+
+    await store.projectViewport({
+      width: 900,
+      height: 749,
+      lineColumns: 90,
+      chromeWidth: 20,
+      chromeHeight: 90,
+    });
+
+    const loading = store.enableDebug();
+    await vi.advanceTimersByTimeAsync(16);
+    await loading;
+
+    expect(bridge.applyProjectConfiguration).toHaveBeenCalledOnce();
+    expect(bridge.applyProjectConfiguration).toHaveBeenLastCalledWith(configuration.entries, {
+      width: 20,
+      height: 90,
+    });
+
+    viewportHeight = 717;
+    await store.projectViewport({
+      width: 900,
+      height: 717,
+      lineColumns: 90,
+      chromeWidth: 20,
+      chromeHeight: 122,
+    });
+
+    expect(bridge.applyProjectConfiguration).toHaveBeenCalledTimes(2);
+    expect(bridge.applyProjectConfiguration).toHaveBeenCalledWith(configuration.entries, {
+      width: 20,
+      height: 122,
     });
   });
 

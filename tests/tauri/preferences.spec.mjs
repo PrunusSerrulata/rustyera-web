@@ -275,7 +275,7 @@ preferences("Tauri client preferences", () => {
     assert.equal(resetMetrics.fontSize, "20px");
     assert.equal(resetMetrics.lineHeight, "20px");
 
-    const viewportBeforeRestart = await gameViewportSize();
+    const requestedViewport = { width: 900, height: 500 };
     await $("button=文件").click();
     await $("button=项目设置…").click();
     const projectSettingsAfterFlow = await $(
@@ -283,8 +283,12 @@ preferences("Tauri client preferences", () => {
     );
     await projectSettingsAfterFlow.waitForDisplayed();
     await projectSettingsAfterFlow.$("button=显示").click();
-    await projectSettingsAfterFlow.$("button=使用当前主视口大小").click();
+    await projectSettingsAfterFlow.$("#setting-WindowX").setValue(String(requestedViewport.width));
+    await projectSettingsAfterFlow.$("#setting-WindowY").setValue(String(requestedViewport.height));
+    const beforeConfiguredRestartAttempt = (await snapshot()).startupTelemetry?.attemptId;
+    assert.equal(typeof beforeConfiguredRestartAttempt, "number");
     await projectSettingsAfterFlow.$("button=应用并重启").click();
+    await projectSettingsAfterFlow.waitForDisplayed({ reverse: true });
     await waitForRuntimeProgress({
       browser,
       snapshot,
@@ -295,25 +299,86 @@ preferences("Tauri client preferences", () => {
         const actionCount = await browser.execute(
           () => document.querySelectorAll(".interaction-assist-action").length,
         );
+        const viewport = await gameViewportSize();
         return (
           nextState?.projectOpen &&
           nextState.phase === "waiting_input" &&
           nextState.canInteract &&
-          actionCount > 0
+          nextState.startupTelemetry?.outcome === "success" &&
+          nextState.startupTelemetry.attemptId > beforeConfiguredRestartAttempt &&
+          actionCount > 0 &&
+          Math.abs(viewport.width - requestedViewport.width) <= 1 &&
+          Math.abs(viewport.height - requestedViewport.height) <= 1
         );
       },
     });
-    const viewportAfterRestart = await gameViewportSize();
-    console.log(JSON.stringify({ viewportBeforeRestart, viewportAfterRestart }));
+    const viewportAfterConfiguredRestart = await gameViewportSize();
+    console.log(JSON.stringify({ requestedViewport, viewportAfterConfiguredRestart }));
     assertWithin(
-      Math.abs(viewportAfterRestart.width - viewportBeforeRestart.width),
+      Math.abs(viewportAfterConfiguredRestart.width - requestedViewport.width),
       1,
-      "restored game viewport width must match the saved width",
+      "configured game viewport width must be applied without chrome drift",
     );
     assertWithin(
-      Math.abs(viewportAfterRestart.height - viewportBeforeRestart.height),
+      Math.abs(viewportAfterConfiguredRestart.height - requestedViewport.height),
       1,
-      "restored game viewport height must match the saved height",
+      "configured game viewport height must include the settled interaction-assist row",
+    );
+
+    await $("button=文件").click();
+    await $("button=项目设置…").click();
+    const restoredProjectSettings = await $(
+      ".dialog-panel[aria-label='RustyEra Tauri · 项目设置']",
+    );
+    await restoredProjectSettings.waitForDisplayed();
+    await restoredProjectSettings.$("button=显示").click();
+    await restoredProjectSettings.$("button=使用当前主视口大小").click();
+    assert.equal(
+      await restoredProjectSettings.$("#setting-WindowX").getValue(),
+      String(requestedViewport.width),
+    );
+    assert.equal(
+      await restoredProjectSettings.$("#setting-WindowY").getValue(),
+      String(requestedViewport.height),
+    );
+    const beforeRoundTripAttempt = (await snapshot()).startupTelemetry?.attemptId;
+    assert.equal(typeof beforeRoundTripAttempt, "number");
+    await restoredProjectSettings.$("button=应用并重启").click();
+    await restoredProjectSettings.waitForDisplayed({ reverse: true });
+    await waitForRuntimeProgress({
+      browser,
+      snapshot,
+      label: "project did not return after saving the restored viewport size",
+      totalTimeout: PROJECT_TIMEOUT,
+      stallTimeout: PROJECT_TIMEOUT,
+      accept: async (nextState) => {
+        const actionCount = await browser.execute(
+          () => document.querySelectorAll(".interaction-assist-action").length,
+        );
+        const viewport = await gameViewportSize();
+        return (
+          nextState?.projectOpen &&
+          nextState.phase === "waiting_input" &&
+          nextState.canInteract &&
+          nextState.startupTelemetry?.outcome === "success" &&
+          nextState.startupTelemetry.attemptId > beforeRoundTripAttempt &&
+          actionCount > 0 &&
+          Math.abs(viewport.width - requestedViewport.width) <= 1 &&
+          Math.abs(viewport.height - requestedViewport.height) <= 1
+        );
+      },
+    });
+    const viewportAfterRoundTrip = await gameViewportSize();
+    console.log(JSON.stringify({ requestedViewport, viewportAfterRoundTrip }));
+    assertWithin(
+      Math.abs(viewportAfterRoundTrip.width - requestedViewport.width),
+      1,
+      "round-tripped game viewport width must remain stable",
+    );
+    assertWithin(
+      Math.abs(viewportAfterRoundTrip.height - requestedViewport.height),
+      1,
+      "round-tripped game viewport height must remain stable",
     );
   });
 });
@@ -322,7 +387,14 @@ async function gameViewportSize() {
   return browser.execute(() => {
     const viewport = document.querySelector(".game-viewport");
     if (!(viewport instanceof HTMLElement)) throw new Error("game viewport is not available");
-    return { width: viewport.clientWidth, height: viewport.clientHeight };
+    const assistance = document.querySelector(".interaction-assist-slot");
+    return {
+      width: viewport.clientWidth,
+      height: viewport.clientHeight,
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      assistanceHeight: assistance instanceof HTMLElement ? assistance.clientHeight : null,
+    };
   });
 }
 

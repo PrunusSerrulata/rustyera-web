@@ -43,10 +43,7 @@ import type {
 } from "@/core/types";
 import { defaultProjectPreferences } from "@/core/types";
 import { saveSlotName } from "@/platform/browserProjectUtilities";
-import {
-  PERFORMANCE_AUDIT_ENABLED,
-  recordPerformanceTiming,
-} from "@/testing/performanceAudit";
+import { PERFORMANCE_AUDIT_ENABLED, recordPerformanceTiming } from "@/testing/performanceAudit";
 
 type HostProjectOpenMetrics = Omit<ProjectOpenMetrics, "submittedAtMs" | "projectFonts">;
 type HostProjectFontSource = { relativePath: string; contentHash: number[]; byteLength: number };
@@ -213,8 +210,7 @@ export class TauriBridge implements FrontendBridge {
       }
       const decodeStartedAt = PERFORMANCE_AUDIT_ENABLED ? performance.now() : undefined;
       const decoded = decodeIpcResponse<PumpBatch>(response);
-      if (PERFORMANCE_AUDIT_ENABLED)
-        recordPerformanceTiming("decode", "pump", decodeStartedAt);
+      if (PERFORMANCE_AUDIT_ENABLED) recordPerformanceTiming("decode", "pump", decodeStartedAt);
       return decoded;
     } finally {
       this.refreshMemorySnapshot();
@@ -482,10 +478,22 @@ export class TauriBridge implements FrontendBridge {
     if (!maximized && (await window.isMaximized())) await window.unmaximize();
     const width = integer("WindowX");
     const height = integer("WindowY");
-    if (width != null && height != null && width > 0 && height > 0)
+    if (width != null && height != null && width > 0 && height > 0) {
+      const [nativeInnerSize, scaleFactor] = await Promise.all([
+        window.innerSize(),
+        window.scaleFactor(),
+      ]);
+      const hostingInset = {
+        width: Math.max(0, nativeInnerSize.width / scaleFactor - globalThis.window.innerWidth),
+        height: Math.max(0, nativeInnerSize.height / scaleFactor - globalThis.window.innerHeight),
+      };
       await window.setSize(
-        new LogicalSize(width + viewportChrome.width, height + viewportChrome.height),
+        new LogicalSize(
+          width + viewportChrome.width + hostingInset.width,
+          height + viewportChrome.height + hostingInset.height,
+        ),
       );
+    }
     if (maximized) await window.maximize();
   }
 

@@ -3,6 +3,7 @@ import { reactive } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const activate = vi.hoisted(() => vi.fn());
+const clientViewportChromeChanged = vi.hoisted(() => vi.fn());
 const store = reactive({
   bridgeKind: "browser" as "browser" | "tauri",
   effectivePreferences: { interactionAssistMode: "on" as "off" | "on" | "auto" },
@@ -24,6 +25,7 @@ const store = reactive({
   },
   canInteract: true,
   activate,
+  clientViewportChromeChanged,
 });
 
 vi.mock("@/stores/runtime", () => ({ useRuntimeStore: () => store }));
@@ -171,6 +173,26 @@ describe("interaction assist panel", () => {
 
     expect(wrapper.get("section").attributes("aria-hidden")).toBe("true");
     expect(wrapper.findAll(".interaction-assist-action")).toHaveLength(0);
+  });
+
+  it("remeasures Tauri window chrome when the assistance row becomes visible", async () => {
+    store.bridgeKind = "tauri";
+    store.effectivePreferences.interactionAssistMode = "auto";
+    const area = document.createElement("div");
+    area.className = "game-area";
+    document.body.append(area);
+    const wrapper = mount(InteractionAssistPanel, { attachTo: area });
+    await wrapper.vm.$nextTick();
+    clientViewportChromeChanged.mockClear();
+
+    store.effectivePreferences.interactionAssistMode = "on";
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.get(".interaction-assist-slot").classes()).not.toContain(
+      "interaction-assist-hidden",
+    );
+    expect(clientViewportChromeChanged).toHaveBeenCalled();
   });
 
   it("does not consume the game area when the remaining viewport is too short", async () => {
