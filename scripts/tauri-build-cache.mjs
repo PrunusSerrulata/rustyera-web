@@ -10,6 +10,7 @@ const execute = promisify(execFile);
 const reusableSpecs = new Set([
   "project-load-failure.spec.mjs",
   "native-input.spec.mjs",
+  "preferences.spec.mjs",
   "cache-settings.spec.mjs",
   "snake-service-oracle.spec.mjs",
   "snake-service-lifecycle.spec.mjs",
