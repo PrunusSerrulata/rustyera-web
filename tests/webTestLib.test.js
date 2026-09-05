@@ -132,6 +132,8 @@ describe("web game test scenario", () => {
     });
     expect(measureAnimationPerformance(audit)).toMatchObject({
       frames: 4,
+      averageIntervalMs: 28,
+      medianIntervalMs: 28,
       maximumIntervalMs: 28,
       revisionStep: "2",
       revisionStepConstant: true,

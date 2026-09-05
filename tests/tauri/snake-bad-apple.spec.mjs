@@ -15,7 +15,7 @@ enabled("Tauri snake TW Bad Apple", () => {
     await browser.execute(() =>
       window.__RUSTYERA_TEST__.configure({
         start: { type: "new_game", seed: 123456 },
-        clock: "2026-01-01T00:00:00Z",
+        clock: null,
       }),
     );
     await clickTauriTestElement(browser, await browser.$(".welcome .primary"));
@@ -44,13 +44,23 @@ enabled("Tauri snake TW Bad Apple", () => {
     await browser.execute((button) => {
       window.setTimeout(() => button.click(), 100);
     }, demo);
-    await waitForMonitorFrames(120, 10_000);
+    await browser.waitUntil(
+      async () => (await snapshot())?.audioProvider?.["sound:0"]?.positionMs >= 17_000,
+      {
+        timeout: 25_000,
+        interval: 50,
+        timeoutMsg: "Bad Apple did not remain observable through 17 seconds of audio playback",
+      },
+    );
     const captured = await browser.execute(() => {
       const frame = document.querySelector(".game-line.multiline-text-frame");
       const bounds = frame?.getBoundingClientRect();
       const style = frame instanceof HTMLElement ? getComputedStyle(frame) : undefined;
+      const summary = window.__RUSTYERA_TEST__.snapshotSummary();
       return {
         telemetry: window.__RUSTYERA_TEST__.frontendPerformanceAudit(),
+        audioPositionMs: summary.audioProvider?.["sound:0"]?.positionMs,
+        audioState: summary.audioProvider?.["sound:0"]?.state,
         frameVisible:
           frame instanceof HTMLElement &&
           style?.display !== "none" &&
@@ -81,7 +91,22 @@ enabled("Tauri snake TW Bad Apple", () => {
         longTasks: telemetry.longTasks,
       }),
     );
-    assert.ok(measurement.frames >= 120, `expected at least 120 frames, got ${measurement.frames}`);
+    assert.ok(
+      captured.audioPositionMs >= 17_000,
+      `expected at least 17 seconds of Bad Apple playback, got ${captured.audioPositionMs} ms`,
+    );
+    assert.ok(measurement.frames >= 450, `expected at least 450 frames, got ${measurement.frames}`);
+    assert.equal(captured.audioState, "playing", "Bad Apple audio must play during the animation");
+    assert.ok(
+      Number.isFinite(captured.audioPositionMs) && captured.audioPositionMs > 0,
+      `Bad Apple audio position was invalid: ${captured.audioPositionMs}`,
+    );
+    const audioMillisecondsPerFrame =
+      captured.audioPositionMs / Math.max(1, measurement.frames - 1);
+    assert.ok(
+      audioMillisecondsPerFrame >= 28 && audioMillisecondsPerFrame <= 40,
+      `animation cadence diverged from the 33 ms script timeline: ${audioMillisecondsPerFrame} ms/frame`,
+    );
     assert.equal(measurement.revisionStepConstant, true, "animation revisions skipped a frame");
     assert.equal(
       measurement.domSynchronizedFrames,
@@ -89,7 +114,14 @@ enabled("Tauri snake TW Bad Apple", () => {
       "animation frames did not all reach the DOM",
     );
     assert.equal(captured.frameVisible, true, "Bad Apple character frame must be visible");
-    console.log(JSON.stringify({ type: "tauri-bad-apple-performance", metrics: measurement }));
+    console.log(
+      JSON.stringify({
+        type: "tauri-bad-apple-performance",
+        metrics: measurement,
+        audioPositionMs: captured.audioPositionMs,
+        audioMillisecondsPerFrame,
+      }),
+    );
 
     await performViewportLeftClick(exitPoint);
     await browser.waitUntil(
@@ -116,19 +148,6 @@ async function demoButton() {
 
 async function snapshot() {
   return browser.execute(() => window.__RUSTYERA_TEST__.snapshotSummary());
-}
-
-async function waitForMonitorFrames(minimumFrames, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const runtime = globalThis.__RUSTYERA_TAURI_MONITOR_OBSERVATION__?.runtime;
-    if (runtime?.fault) throw new Error(JSON.stringify(runtime.fault));
-    if (runtime?.serviceEvidence?.failure)
-      throw new Error(`runtime observation failed: ${runtime.serviceEvidence.failure}`);
-    if (runtime?.performanceAudit?.publishedPresentationFrames >= minimumFrames) return;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(`Bad Apple did not publish ${minimumFrames} frames`);
 }
 
 async function performViewportLeftClick(point) {

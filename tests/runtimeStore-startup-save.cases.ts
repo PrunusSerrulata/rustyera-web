@@ -307,6 +307,11 @@ describe("runtime store startup-save", () => {
       ],
     });
     const titleReturn = deferred<PumpBatch>();
+    const advanceAccepted = deferred<number>();
+    bridge.submitRuntime.mockImplementation(async (message) => {
+      if (message.type === "advance_time") return advanceAccepted.promise;
+      return 1;
+    });
     bridge.pump.mockImplementation(async () => {
       if (advanceTimeCalls().length === 0) return emptyBatch();
       return titleReturn.promise;
@@ -320,15 +325,26 @@ describe("runtime store startup-save", () => {
     await store.enableDebug();
     store.prompt = "2";
     await store.submitText();
-    await advanceUntil(() => advanceTimeCalls().length > 0);
+    await advanceUntil(() =>
+      bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) => (message as { type?: string }).type === "service_response",
+      ),
+    );
 
     const responses = bridge.submitRuntime.mock.calls.filter(
       ([message]: unknown[]) => (message as { type?: string }).type === "service_response",
     );
     expect(responses).toHaveLength(1);
+    const submittedTypes = bridge.submitRuntime.mock.calls.map(
+      ([message]: unknown[]) => (message as { type?: string }).type,
+    );
+    expect(submittedTypes.indexOf("advance_time")).toBeLessThan(
+      submittedTypes.indexOf("service_response"),
+    );
     expect(store.phase).toBe("running");
     expect(plainLine(store.presentation.lines[0])).toBe("bad apple frame 1");
     expect(advanceTimeCalls()).toHaveLength(1);
+    advanceAccepted.resolve(1);
 
     const nextTitleWait = {
       ...titleWait,

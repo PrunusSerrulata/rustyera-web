@@ -3592,12 +3592,25 @@ export const useRuntimeStore = defineStore("runtime", () => {
         "invalid_request",
         "device pump watermark exceeds submitted events",
       );
+    // Snake Emuera starts a positive AWAIT sleep only after DoEvents returns. Synchronize the
+    // runtime clock at the equivalent acknowledgement boundary before the service response, so
+    // frame construction and frontend projection time cannot be deducted from the requested wait.
+    const throughEventSequence = deviceEventSequence;
+    const acknowledgedAtNs = sampleMonotonicTime();
+    // Enqueue the clock sample without awaiting its transport acknowledgement. Worker messages
+    // are FIFO and TauriBridge serializes runtime submissions, so the following service response
+    // is ordered after this sample while both are queued in the same JavaScript turn. Awaiting here
+    // would let a physical event task run between them, making the pump watermark stale.
+    void send({ type: "advance_time", value: { monotonic_time_ns: acknowledgedAtNs } }).catch(
+      (error) => log("warning", `设备泵时钟同步失败：${String(error)}`),
+    );
+    testEnvironment.recordTimeAdvance(acknowledgedAtNs);
     // A positive snake AWAIT starts only after this acknowledgement. Its duration is retained by
     // core rather than exposed in the device-pump ABI, so keep sampling frontend time until core
     // leaves waiting_external. AWAIT 0 may receive one harmless sample before its phase update.
     devicePumpTimeAdvancePending = true;
     devicePumpInputCaptureActive = true;
-    return deviceEventSequence;
+    return throughEventSequence;
   }
 
   async function signalMessageSkip(): Promise<void> {

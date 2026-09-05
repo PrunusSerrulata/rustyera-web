@@ -16,6 +16,7 @@
     {
       "type": "measure_animation_performance",
       "minimum_frames": 30,
+      "minimum_median_interval_ms": 27,
       "timeout_ms": 30000
     },
     {

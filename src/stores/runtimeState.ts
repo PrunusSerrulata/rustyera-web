@@ -196,7 +196,8 @@ export interface RuntimeTestConfiguration {
     seed?: number | string | bigint;
     bytes?: Uint8Array;
   };
-  clock?: string;
+  /** ISO timestamp for deterministic time, or null to exercise the live system clock. */
+  clock?: string | null;
   monotonicStartNs?: number;
 }
 

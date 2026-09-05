@@ -1084,7 +1084,21 @@ export async function runAction(page, action) {
         ),
     );
     const audit = await page.evaluate(() => window.__RUSTYERA_TEST__.frontendPerformanceAudit());
-    return { query: { animation_performance: measureAnimationPerformance(audit) } };
+    const measurement = measureAnimationPerformance(audit);
+    const minimumMedianIntervalMs = Number(action.minimum_median_interval_ms ?? 0);
+    if (!Number.isFinite(minimumMedianIntervalMs) || minimumMedianIntervalMs < 0)
+      throw new Error(
+        "measure_animation_performance minimum_median_interval_ms must be nonnegative",
+      );
+    if (
+      minimumMedianIntervalMs > 0 &&
+      (measurement.medianIntervalMs == null ||
+        measurement.medianIntervalMs < minimumMedianIntervalMs)
+    )
+      throw new Error(
+        `animation median frame interval ${measurement.medianIntervalMs} ms was below ${minimumMedianIntervalMs} ms`,
+      );
+    return { query: { animation_performance: measurement } };
   }
   if (action.type === "wait_runtime_observation") {
     const timeoutMs = Number(action.timeout_ms ?? 30_000);
@@ -1783,6 +1797,13 @@ export function measureAnimationPerformance(audit) {
     .map((sample, index) => sample.startedAtMs - publishes[index].startedAtMs);
   const revisions = publishes.map((sample) => BigInt(sample.detail?.presentationRevision));
   const revisionSteps = revisions.slice(1).map((revision, index) => revision - revisions[index]);
+  const sortedIntervals = [...intervals].sort((left, right) => left - right);
+  const middle = Math.floor(sortedIntervals.length / 2);
+  const medianIntervalMs = sortedIntervals.length
+    ? sortedIntervals.length % 2 === 0
+      ? (sortedIntervals[middle - 1] + sortedIntervals[middle]) / 2
+      : sortedIntervals[middle]
+    : null;
   const mutatedRevisions = new Set(
     audit.timings
       .filter((sample) => sample.phase === "dom_mutation")
@@ -1793,6 +1814,10 @@ export function measureAnimationPerformance(audit) {
   );
   return {
     frames: publishes.length,
+    averageIntervalMs: intervals.length
+      ? intervals.reduce((total, interval) => total + interval, 0) / intervals.length
+      : null,
+    medianIntervalMs,
     maximumIntervalMs: intervals.length ? Math.max(...intervals) : null,
     revisionStep: revisionSteps.length ? String(revisionSteps[0]) : null,
     revisionStepConstant:

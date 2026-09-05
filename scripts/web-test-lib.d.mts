@@ -28,6 +28,8 @@ export function measureAnimationPerformance(audit: {
   }>;
 }): {
   frames: number;
+  averageIntervalMs: number | null;
+  medianIntervalMs: number | null;
   maximumIntervalMs: number | null;
   revisionStep: string | null;
   revisionStepConstant: boolean;

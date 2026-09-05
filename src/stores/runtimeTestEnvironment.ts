@@ -5,12 +5,13 @@ export class RuntimeTestEnvironment {
   private lastTimeAdvanceNs: number | undefined;
 
   configure(
-    clock: string | undefined,
+    clock: string | null | undefined,
     seed: number | bigint | string | undefined,
     startNs?: number,
   ) {
-    this.clock = clock ? new Date(clock) : new Date("2026-01-01T00:00:00Z");
-    if (Number.isNaN(this.clock.getTime())) throw new Error("测试 clock 不是有效日期");
+    this.clock = clock === null ? undefined : new Date(clock ?? "2026-01-01T00:00:00Z");
+    if (this.clock && Number.isNaN(this.clock.getTime()))
+      throw new Error("测试 clock 不是有效日期");
     this.entropyState = BigInt(seed ?? 1) || 1n;
     this.monotonicOrigin = {
       frontendMs: performance.now(),
@@ -38,6 +39,10 @@ export class RuntimeTestEnvironment {
     if (this.lastTimeAdvanceNs != null && now - this.lastTimeAdvanceNs < intervalNs) return false;
     this.lastTimeAdvanceNs = now;
     return true;
+  }
+
+  recordTimeAdvance(now: number): void {
+    this.lastTimeAdvanceNs = now;
   }
 
   resetTimeAdvance(): void {
