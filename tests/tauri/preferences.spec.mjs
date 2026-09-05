@@ -12,6 +12,8 @@ const INITIAL_FLOW_LABELS = [
   "初次游玩",
   "從最初開始",
   "从最初开始",
+  "開始遊戲",
+  "开始游戏",
 ];
 const preferences = process.env.VITE_RUSTYERA_TAURI_PREFERENCES ? describe : describe.skip;
 
