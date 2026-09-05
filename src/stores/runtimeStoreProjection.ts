@@ -161,6 +161,8 @@ function projectRuntimeStore(context: Record<string, any>) {
     saveClientPreferences: context.saveClientPreferences,
     shutdown: context.shutdown,
     projectViewport: context.projectViewport,
+    clientViewportChromeChanged: context.clientViewportChromeChanged,
+    clientWindowGeometrySnapshot: context.clientWindowGeometrySnapshot,
     configureTestRun: context.configureTestRun,
     restoreState: context.restoreState,
     testTransferState: context.testTransferState,

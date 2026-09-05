@@ -8,6 +8,7 @@ import type { Pinia } from "pinia";
 
 import { observedLineText } from "@/testing/presentationText";
 import { hex } from "@/platform/browserProjectFilesystem";
+import { currentGameViewportMeasurement } from "@/platform/viewportMeasurement";
 import type { RuntimeTestConfiguration } from "@/stores/runtime";
 import { useRuntimeStore } from "@/stores/runtime";
 
@@ -73,6 +74,15 @@ export function installWebTestControl(pinia: Pinia): void {
       status: store.status,
       projectOpen: store.projectOpen,
       projectLoading: store.projectLoading,
+      viewport: {
+        observed: store.viewportMeasurement,
+        current: currentGameViewportMeasurement(),
+        innerWidth: window.innerWidth,
+        innerHeight: window.innerHeight,
+        assistanceHeight:
+          document.querySelector<HTMLElement>(".interaction-assist-slot")?.clientHeight ?? null,
+        windowGeometry: store.clientWindowGeometrySnapshot(),
+      },
       startupTelemetry: store.startupTelemetry,
       memory: store.liveMemoryCounters(),
       canInteract: store.canInteract,

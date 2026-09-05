@@ -23,7 +23,24 @@ import {
 import type { RuntimeStartKind } from "@/stores/runtimeState";
 
 export function createRuntimeStoreActions5(context: any) {
-  let clientConfigurationAwaitingStableViewport = false;
+  let pendingClientConfiguration:
+    | {
+        lifecycleGeneration: number;
+        sessionGeneration: number;
+        settling: boolean;
+      }
+    | undefined;
+  let appliedClientWindowGeometry:
+    | {
+        lifecycleGeneration: number;
+        sessionGeneration: number;
+        configurationIdentity: string;
+        chromeWidth: number;
+        chromeHeight: number;
+      }
+    | undefined;
+  let clientConfigurationApplication: Promise<void> | undefined;
+  let clientViewportChromeGeneration = 0;
   async function restoreSnapshot(): Promise<void> {
     if (context.diagnosisExporting.value) return;
     const bytes = await context.runtimeImport.pickSnapshot();
@@ -477,22 +494,182 @@ export function createRuntimeStoreActions5(context: any) {
 
   async function applyEffectiveClientConfiguration(): Promise<void> {
     if (!context.projectConfiguration.value) {
-      clientConfigurationAwaitingStableViewport = false;
+      finishPendingClientConfiguration();
+      appliedClientWindowGeometry = undefined;
       return;
     }
-    if (context.bridge.kind === "tauri" && !context.runtimeViewport.measurement.value) {
-      clientConfigurationAwaitingStableViewport = true;
+    if (context.bridge.kind !== "tauri") {
+      finishPendingClientConfiguration();
+      appliedClientWindowGeometry = undefined;
+      await applyClientConfiguration();
       return;
     }
-    clientConfigurationAwaitingStableViewport = false;
-    try {
-      await context.bridge.applyProjectConfiguration(
-        context.configurationEntries.value,
-        context.runtimeViewport.chrome(),
-      );
-    } catch (error) {
-      context.log("warning", `客户端项目配置应用失败：${String(error)}`);
+
+    const hasWindowGeometry = context.configurationEntries.value.some((entry: any) =>
+      ["WindowMaximixed", "WindowX", "WindowY"].includes(entry.code),
+    );
+    const measurement = currentGameViewportMeasurement();
+    if (hasWindowGeometry && (context.projectLoading.value || !measurement)) {
+      deferClientConfiguration();
+      return;
     }
+    finishPendingClientConfiguration();
+    await applyClientConfiguration(measurement ?? context.runtimeViewport.measurement.value);
+  }
+
+  async function applyClientConfiguration(
+    measurement = context.runtimeViewport.measurement.value,
+  ): Promise<void> {
+    if (clientConfigurationApplication) await clientConfigurationApplication;
+    const lifecycleGeneration = context.lifecycleGeneration;
+    const sessionGeneration = context.runtimeSessionObservationGeneration;
+    const configurationIdentity = clientWindowGeometryIdentity();
+    const chrome = context.runtimeViewport.chrome(measurement);
+    let succeeded = false;
+    const application = (async () => {
+      try {
+        await context.bridge.applyProjectConfiguration(context.configurationEntries.value, chrome);
+        succeeded = true;
+      } catch (error) {
+        context.log("warning", `客户端项目配置应用失败：${String(error)}`);
+      }
+    })();
+    clientConfigurationApplication = application;
+    await application;
+    if (clientConfigurationApplication === application) clientConfigurationApplication = undefined;
+    if (
+      succeeded &&
+      context.bridge.kind === "tauri" &&
+      configurationIdentity != null &&
+      lifecycleGeneration === context.lifecycleGeneration &&
+      sessionGeneration === context.runtimeSessionObservationGeneration &&
+      configurationIdentity === clientWindowGeometryIdentity()
+    )
+      appliedClientWindowGeometry = {
+        lifecycleGeneration,
+        sessionGeneration,
+        configurationIdentity,
+        chromeWidth: chrome.width,
+        chromeHeight: chrome.height,
+      };
+  }
+
+  function clientWindowGeometryIdentity(): string | undefined {
+    const values = context.configurationEntries.value
+      .filter((entry: any) => ["WindowMaximixed", "WindowX", "WindowY"].includes(entry.code))
+      .map((entry: any) => [entry.code, entry.client_effective_value]);
+    return values.length > 0 ? JSON.stringify(values) : undefined;
+  }
+
+  function clientWindowIsMaximized(): boolean {
+    const value = context.configurationEntries.value
+      .find((entry: any) => entry.code === "WindowMaximixed")
+      ?.client_effective_value?.toUpperCase();
+    return value === "YES" || value === "TRUE" || value === "1";
+  }
+
+  async function reconcileClientWindowGeometry(
+    measurement: ReturnType<typeof currentGameViewportMeasurement>,
+  ): Promise<void> {
+    if (
+      context.bridge.kind !== "tauri" ||
+      pendingClientConfiguration ||
+      context.projectLoading.value ||
+      context.currentPresentation().inputWait == null ||
+      clientWindowIsMaximized()
+    )
+      return;
+    const configurationIdentity = clientWindowGeometryIdentity();
+    if (!configurationIdentity) return;
+    if (clientConfigurationApplication) await clientConfigurationApplication;
+    const current = currentGameViewportMeasurement() ?? measurement;
+    if (!current) return;
+    const chrome = context.runtimeViewport.chrome(current);
+    const applied = appliedClientWindowGeometry;
+    if (
+      applied &&
+      applied.lifecycleGeneration === context.lifecycleGeneration &&
+      applied.sessionGeneration === context.runtimeSessionObservationGeneration &&
+      applied.configurationIdentity === configurationIdentity &&
+      applied.chromeWidth === chrome.width &&
+      applied.chromeHeight === chrome.height
+    )
+      return;
+    await applyClientConfiguration(current);
+  }
+
+  async function clientViewportChromeChanged(): Promise<void> {
+    if (context.bridge.kind !== "tauri") return;
+    clientViewportChromeGeneration += 1;
+    appliedClientWindowGeometry = undefined;
+    await reconcileClientWindowGeometry(currentGameViewportMeasurement());
+  }
+
+  function clientWindowGeometrySnapshot(): Record<string, unknown> {
+    return {
+      chromeGeneration: clientViewportChromeGeneration,
+      pending: pendingClientConfiguration ? { ...pendingClientConfiguration } : null,
+      applied: appliedClientWindowGeometry ? { ...appliedClientWindowGeometry } : null,
+      applying: clientConfigurationApplication != null,
+      configurationIdentity: clientWindowGeometryIdentity() ?? null,
+      maximized: clientWindowIsMaximized(),
+    };
+  }
+
+  function deferClientConfiguration(): void {
+    const current = pendingClientConfiguration;
+    if (
+      current &&
+      current.lifecycleGeneration === context.lifecycleGeneration &&
+      current.sessionGeneration === context.runtimeSessionObservationGeneration
+    )
+      return;
+    finishPendingClientConfiguration();
+    pendingClientConfiguration = {
+      lifecycleGeneration: context.lifecycleGeneration,
+      sessionGeneration: context.runtimeSessionObservationGeneration,
+      settling: false,
+    };
+  }
+
+  function finishPendingClientConfiguration(pending = pendingClientConfiguration): void {
+    if (!pending) return;
+    if (pendingClientConfiguration === pending) pendingClientConfiguration = undefined;
+  }
+
+  async function applyPendingClientConfiguration(): Promise<void> {
+    const pending = pendingClientConfiguration;
+    if (!pending || pending.settling) return;
+    const isCurrent = () =>
+      pending.lifecycleGeneration === context.lifecycleGeneration &&
+      pending.sessionGeneration === context.runtimeSessionObservationGeneration;
+    if (!isCurrent()) {
+      finishPendingClientConfiguration(pending);
+      return;
+    }
+    if (context.currentPresentation().inputWait == null) return;
+
+    pending.settling = true;
+    const chromeGeneration = clientViewportChromeGeneration;
+    let measurement: ReturnType<typeof currentGameViewportMeasurement> = undefined;
+    // The input wait and interaction-assist row render together. Capture the DOM after that
+    // layout instead of trusting the shared projection measurement: a projection barrier may
+    // intentionally defer that observation, while native window sizing must still use it now.
+    await context.runtimeViewport.settle(async () => {
+      measurement = currentGameViewportMeasurement();
+    });
+    if (!isCurrent() || pendingClientConfiguration !== pending) {
+      finishPendingClientConfiguration(pending);
+      return;
+    }
+    if (!measurement) {
+      pending.settling = false;
+      return;
+    }
+    pendingClientConfiguration = undefined;
+    await applyClientConfiguration(measurement);
+    if (chromeGeneration !== clientViewportChromeGeneration)
+      await reconcileClientWindowGeometry(currentGameViewportMeasurement());
   }
 
   async function saveClientPreferences(
@@ -510,6 +687,8 @@ export function createRuntimeStoreActions5(context: any) {
     const environmentIdentity = context.viewportEnvironmentIdentity();
     if (context.projectionObservationBarriers.size > 0 && measurement != null) {
       context.deferredViewportProjection = { measurement: { ...measurement }, layoutIdentity };
+      await applyPendingClientConfiguration();
+      await reconcileClientWindowGeometry(measurement);
       return;
     }
     await context.runtimeViewport.observe(
@@ -522,12 +701,9 @@ export function createRuntimeStoreActions5(context: any) {
     );
     if (measurement) {
       context.viewportLayoutIdentityAtProjection = layoutIdentity;
-      if (
-        clientConfigurationAwaitingStableViewport &&
-        context.currentPresentation().inputWait != null
-      )
-        await applyEffectiveClientConfiguration();
     }
+    await applyPendingClientConfiguration();
+    await reconcileClientWindowGeometry(measurement);
   }
 
   async function flushDeferredViewportProjection(batchSequence: number): Promise<void> {
@@ -576,6 +752,8 @@ export function createRuntimeStoreActions5(context: any) {
     continueLoadedProject,
     refreshProjectPreferences,
     applyEffectiveClientConfiguration,
+    clientViewportChromeChanged,
+    clientWindowGeometrySnapshot,
     saveClientPreferences,
     projectViewport,
     flushDeferredViewportProjection,

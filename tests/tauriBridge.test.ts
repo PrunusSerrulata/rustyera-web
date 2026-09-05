@@ -14,6 +14,8 @@ const currentWindow = vi.hoisted(() => ({
   isMaximized: vi.fn(),
   maximize: vi.fn(),
   unmaximize: vi.fn(),
+  innerSize: vi.fn(),
+  scaleFactor: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
@@ -45,6 +47,11 @@ describe("Tauri project restart", () => {
     currentWindow.isMaximized.mockResolvedValue(false);
     currentWindow.maximize.mockResolvedValue(undefined);
     currentWindow.unmaximize.mockResolvedValue(undefined);
+    currentWindow.innerSize.mockResolvedValue({
+      width: window.innerWidth,
+      height: window.innerHeight,
+    });
+    currentWindow.scaleFactor.mockResolvedValue(1);
     streamDiagnosisArchiveInWorker.mockReset();
   });
 
@@ -703,6 +710,37 @@ describe("Tauri project restart", () => {
     );
     expect(currentWindow.setPosition).not.toHaveBeenCalled();
     expect(currentWindow.maximize).not.toHaveBeenCalled();
+  });
+
+  it("includes the native-to-WebView hosting inset in the requested inner size", async () => {
+    const entry = (code: string, value: string) => ({
+      code,
+      japanese: "",
+      english: code,
+      value,
+      kind: "integer" as const,
+      allowed: [],
+      fixed: false,
+      applicability: 8,
+      default_value: value,
+      effective_value: value,
+      preference_eligible: true,
+      client_effective_value: value,
+      application: "hot" as const,
+    });
+    vi.stubGlobal("innerWidth", 900);
+    vi.stubGlobal("innerHeight", 617);
+    currentWindow.innerSize.mockResolvedValueOnce({ width: 1800, height: 1298 });
+    currentWindow.scaleFactor.mockResolvedValueOnce(2);
+
+    await new TauriBridge().applyProjectConfiguration(
+      [entry("WindowX", "900"), entry("WindowY", "500")],
+      { width: 0, height: 117 },
+    );
+
+    expect(currentWindow.setSize).toHaveBeenCalledWith(
+      expect.objectContaining({ width: 900, height: 649 }),
+    );
   });
 
   it("does not send an unnecessary unmaximize command for an already normal window", async () => {

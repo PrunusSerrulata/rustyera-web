@@ -464,10 +464,22 @@ export class TauriBridge implements FrontendBridge {
     if (!maximized && (await window.isMaximized())) await window.unmaximize();
     const width = integer("WindowX");
     const height = integer("WindowY");
-    if (width != null && height != null && width > 0 && height > 0)
+    if (width != null && height != null && width > 0 && height > 0) {
+      const [nativeInnerSize, scaleFactor] = await Promise.all([
+        window.innerSize(),
+        window.scaleFactor(),
+      ]);
+      const hostingInset = {
+        width: Math.max(0, nativeInnerSize.width / scaleFactor - globalThis.window.innerWidth),
+        height: Math.max(0, nativeInnerSize.height / scaleFactor - globalThis.window.innerHeight),
+      };
       await window.setSize(
-        new LogicalSize(width + viewportChrome.width, height + viewportChrome.height),
+        new LogicalSize(
+          width + viewportChrome.width + hostingInset.width,
+          height + viewportChrome.height + hostingInset.height,
+        ),
       );
+    }
     if (maximized) await window.maximize();
   }
 
