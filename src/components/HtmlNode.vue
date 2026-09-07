@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject } from "vue";
+import { computed, inject, type CSSProperties } from "vue";
 
 import { htmlMeasurementProjectionKey } from "@/components/htmlMeasurementProjection";
 import { htmlMeasurementSegments } from "@/core/htmlMeasurement";
@@ -144,7 +144,16 @@ const fontStyle = computed(() => {
     textRendering: semantic.render_intent?.renderer === "skia" ? "optimizeLegibility" : undefined,
   };
 });
-const layeredDivisionStyle = computed(() => {
+const elementStyle = computed(() => {
+  const semantic = props.node.semantic;
+  if (semantic?.type === "paragraph") {
+    const alignment = String(semantic.alignment ?? "").toLowerCase();
+    return ["left", "center", "right"].includes(alignment) ? { textAlign: alignment } : null;
+  }
+  if (semantic?.type === "no_break") return { whiteSpace: "nowrap" };
+  return null;
+});
+const layeredDivisionStyle = computed<CSSProperties | null>(() => {
   const semantic = props.node.semantic;
   const display = semantic?.display ?? (semantic?.relative === true ? "relative" : undefined);
   if (semantic?.type !== "division" || display == null) return null;
@@ -162,6 +171,8 @@ const layeredDivisionStyle = computed(() => {
       height == null ? undefined : `${Math.max(0, Math.abs(height) - marginTop - marginBottom)}px`,
     zIndex: sceneDepthRank(semantic.depth),
     backgroundColor: semantic.color == null ? undefined : htmlColor(semantic.color),
+    whiteSpace: "normal",
+    overflowWrap: "anywhere",
     ...boxModel.style,
   };
 });
@@ -437,7 +448,7 @@ const trailingTextChildIndex = computed(() =>
       'html-node-positioned': lockedPositionStyle,
       'html-positioned-media': lockedPositionStyle && hasPositionedMedia,
     }"
-    :style="[fontStyle, lockedPositionStyle]"
+    :style="[fontStyle, elementStyle, lockedPositionStyle]"
     :data-era-tooltip="tooltipTitle"
     :data-html-renderer="node.semantic?.render_intent?.renderer"
     :data-html-edging="node.semantic?.render_intent?.edging"

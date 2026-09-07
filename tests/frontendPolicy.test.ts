@@ -351,6 +351,56 @@ describe("frontend host and image-line policy", () => {
     );
   });
 
+  it("projects paragraph alignment and wrapping inside fixed Era HTML divisions", () => {
+    const wrapper = mount(HtmlNode, {
+      props: {
+        node: {
+          type: "element",
+          kind: "division",
+          semantic: {
+            type: "division",
+            x: { unit: "pixels", value: 0 },
+            y: { unit: "pixels", value: 0 },
+            width: { unit: "pixels", value: 120 },
+            height: { unit: "pixels", value: 80 },
+            depth: 0,
+            relative: true,
+            box_model: {},
+          },
+          children: [
+            {
+              type: "element",
+              kind: "paragraph",
+              semantic: { type: "paragraph", alignment: "right" },
+              children: [{ type: "text", text: "wrap me" }],
+            },
+            {
+              type: "element",
+              kind: "paragraph",
+              semantic: { type: "paragraph", alignment: "center" },
+              children: [
+                {
+                  type: "element",
+                  kind: "no_break",
+                  semantic: { type: "no_break" },
+                  children: [{ type: "text", text: "keep together" }],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    const divisionStyle = wrapper.get(".html-division-visual").attributes("style");
+    expect(divisionStyle).toContain("white-space: normal");
+    expect(divisionStyle).toContain("overflow-wrap: anywhere");
+    const paragraphs = wrapper.findAll("p");
+    expect(paragraphs[0]?.attributes("style")).toContain("text-align: right");
+    expect(paragraphs[1]?.attributes("style")).toContain("text-align: center");
+    expect(paragraphs[1]?.get("span").attributes("style")).toContain("white-space: nowrap");
+  });
+
   it("layers simple relative Era HTML divisions without advancing the row", () => {
     const division = mount(HtmlNode, {
       props: {
