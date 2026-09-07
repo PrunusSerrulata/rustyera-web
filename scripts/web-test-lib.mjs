@@ -1674,17 +1674,7 @@ export async function runAction(page, action) {
     assertLayout(actual, action.expect ?? {});
     return { query: { layout: actual }, semanticInput: action.semantic_input };
   } else if (action.type === "assert_canvas_pixels") {
-    const actual = await queryCanvasPixels(locator);
-    const expected = { ...(action.expect ?? {}) };
-    if (expected.nontransparent_at_least != null) {
-      const minimum = Number(expected.nontransparent_at_least);
-      if (actual.nontransparent < minimum)
-        throw new Error(
-          `assertion failed at canvas_pixels.nontransparent: expected at least ${minimum}, got ${actual.nontransparent}`,
-        );
-      delete expected.nontransparent_at_least;
-    }
-    assertSubset(actual, expected);
+    const actual = await waitForCanvasPixels(page, locator, action.expect ?? {}, action.timeout_ms);
     return { query: { canvas_pixels: actual }, semanticInput: action.semantic_input };
   } else if (action.type === "query_media_replay") {
     const actual = await page.evaluate(
@@ -1830,6 +1820,39 @@ export function measureAnimationPerformance(audit) {
     timedOutPaintCheckpoints: paints.filter((sample) => sample.detail?.timedOut === true).length,
     maximumPaintMs: paints.length ? Math.max(...paints.map((sample) => sample.elapsedMs)) : null,
   };
+}
+
+async function waitForCanvasPixels(page, locator, expectation, requestedTimeout) {
+  const timeout = requestedTimeout == null ? 0 : Number(requestedTimeout);
+  if (!Number.isSafeInteger(timeout) || timeout < 0)
+    throw new Error("assert_canvas_pixels timeout_ms must be a non-negative safe integer");
+  const deadline = Date.now() + timeout;
+  let failure;
+  for (;;) {
+    const actual = await queryCanvasPixels(locator);
+    try {
+      assertCanvasPixels(actual, expectation);
+      return actual;
+    } catch (error) {
+      failure = error;
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw failure;
+    await page.waitForTimeout(Math.min(16, remaining));
+  }
+}
+
+function assertCanvasPixels(actual, expectation) {
+  const expected = { ...expectation };
+  if (expected.nontransparent_at_least != null) {
+    const minimum = Number(expected.nontransparent_at_least);
+    if (actual.nontransparent < minimum)
+      throw new Error(
+        `assertion failed at canvas_pixels.nontransparent: expected at least ${minimum}, got ${actual.nontransparent}`,
+      );
+    delete expected.nontransparent_at_least;
+  }
+  assertSubset(actual, expected);
 }
 
 function hex(bytes) {

@@ -220,7 +220,9 @@ An action has `type`:
   label or container.
 - `assert_canvas_pixels`: `locator` plus an `expect` subset such as `count`, `width`, `height`, or
   `nontransparent_at_least`. Use it to prove that a generated canvas contains rendered pixels, not
-  merely that an empty canvas element has layout dimensions.
+  merely that an empty canvas element has layout dimensions. Set `timeout_ms` to a non-negative
+  bounded wait when the expected pixels are committed asynchronously; the runner polls until the
+  complete expectation matches and does not use a fixed settle delay.
 - `query_media_replay`: `resource_name`, optional `expect` subset. Returns the test-only, read-only
   sprite and canvas replay graph for diagnosing a generated image without mutating Pinia or runtime
   state.
