@@ -614,6 +614,65 @@ describe("Era sprite images", () => {
     expect(canvas.attributes("displayheight")).toBe("108");
   });
 
+  it.each([true, false])(
+    "switches canvas-backed HTML sprites while the painted image is hovered (line slot: %s)",
+    async (lineSlot) => {
+      store.presentation.resources.sprites = [
+        {
+          name: "portrait",
+          revision: 6,
+          size: [100, 100],
+          frames: [],
+          canvas_id: 42,
+          canvas_revision: 7,
+        },
+        {
+          name: "portrait_hover",
+          revision: 9,
+          size: [100, 100],
+          frames: [],
+          canvas_id: 43,
+          canvas_revision: 10,
+        },
+      ];
+      store.presentation.resources.canvases = [
+        { canvas_id: 42, revision: 7, size: { width: 100, height: 100 }, commands: [] },
+        { canvas_id: 43, revision: 10, size: { width: 100, height: 100 }, commands: [] },
+      ];
+      const wrapper = mount(MediaImage, {
+        props: {
+          lineSlot,
+          placement: {
+            resource_id: "portrait",
+            hover_resource_id: "portrait_hover",
+            width: 0,
+            height: 21_000,
+            depth: 0,
+            opacity: { numerator: 1, denominator: 1 },
+            revision: 6,
+            hover_revision: 9,
+            requested_width: { unit: "pixels", value: 100 },
+            requested_height: { unit: "pixels", value: 100 },
+          },
+        },
+        global: { stubs: { CanvasReplay: canvasReplayStub } },
+      });
+
+      const visual = wrapper.get(lineSlot ? ".media-visual" : ".media-image");
+      expect(visual.get(".canvas-replay-test").attributes("data-revision")).toBe("7");
+
+      await visual.trigger("mouseenter");
+      await nextTick();
+      expect(visual.classes()).toContain("media-hovered");
+      expect(visual.get(".canvas-replay-test").attributes("data-revision")).toBe("10");
+
+      await visual.trigger("mouseleave");
+      await nextTick();
+      expect(visual.classes()).not.toContain("media-hovered");
+      expect(visual.get(".canvas-replay-test").attributes("data-revision")).toBe("7");
+    },
+  );
+
   it("renders a selected scene animation frame backed by a replay canvas", () => {
     store.presentation.resources.sprites = [
       {

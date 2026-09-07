@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/canvas-hover-project",
+  "mode": "fixed",
+  "seed": 123456,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [
+    {
+      "type": "assert_canvas_pixels",
+      "locator": { "css": ".media-visual canvas.canvas-replay" },
+      "expect": { "count": 1, "width": 2, "height": 2, "nontransparent": 0 },
+      "timeout_ms": 5000
+    },
+    {
+      "type": "hover",
+      "locator": { "css": ".media-visual" }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".media-visual.media-hovered" },
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "assert_canvas_pixels",
+      "locator": { "css": ".media-visual.media-hovered canvas.canvas-replay" },
+      "expect": { "count": 1, "width": 2, "height": 2, "nontransparent_at_least": 4 },
+      "timeout_ms": 5000
+    },
+    {
+      "type": "hover",
+      "locator": { "css": ".prompt-bar input" }
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".media-visual.media-hovered" },
+      "expect": { "count": 0 }
+    },
+    {
+      "type": "assert_canvas_pixels",
+      "locator": { "css": ".media-visual canvas.canvas-replay" },
+      "expect": { "count": 1, "width": 2, "height": 2, "nontransparent": 0 },
+      "timeout_ms": 5000
+    }
+  ],
+  "goal": {
+    "output_contains": ["CANVAS_HOVER_READY"],
+    "wait_kind": "integer_value"
+  },
+  "limits": {
+    "max_steps": 12,
+    "timeout_seconds": 120
+  }
+}
