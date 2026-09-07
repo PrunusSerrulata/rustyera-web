@@ -813,6 +813,78 @@ describe("web game test scenario", () => {
       }),
     );
   });
+
+  it("waits for a generated canvas to present the expected pixels", async () => {
+    const transparent = new Uint8ClampedArray(4 * 4 * 4);
+    const opaque = transparent.slice();
+    opaque[3] = 255;
+    let presented = false;
+    const canvas = {
+      tagName: "CANVAS",
+      width: 4,
+      height: 4,
+      getContext: () => ({
+        getImageData: () => ({ data: presented ? opaque : transparent }),
+      }),
+    };
+    const evaluate = vi.fn((callback, count) => {
+      const OriginalCanvas = globalThis.HTMLCanvasElement;
+      Object.setPrototypeOf(canvas, OriginalCanvas.prototype);
+      const result = callback(canvas, count);
+      presented = true;
+      return result;
+    });
+    const locator = {
+      count: vi.fn().mockResolvedValue(1),
+      first: vi.fn(() => ({ evaluate })),
+    };
+    const page = { locator: vi.fn(() => locator), waitForTimeout: vi.fn() };
+
+    await expect(
+      runAction(page, {
+        type: "assert_canvas_pixels",
+        locator: { css: ".canvas-replay" },
+        expect: { nontransparent_at_least: 1 },
+        timeout_ms: 100,
+      }),
+    ).resolves.toMatchObject({ query: { canvas_pixels: { nontransparent: 1 } } });
+    expect(evaluate).toHaveBeenCalledTimes(2);
+    expect(page.waitForTimeout).toHaveBeenCalledOnce();
+  });
+
+  it("fails when a generated canvas does not present the expected pixels in time", async () => {
+    const canvas = {
+      tagName: "CANVAS",
+      width: 1,
+      height: 1,
+      getContext: () => ({ getImageData: () => ({ data: new Uint8ClampedArray(4) }) }),
+    };
+    const locator = {
+      count: vi.fn().mockResolvedValue(1),
+      first: vi.fn(() => ({
+        evaluate: vi.fn((callback, count) => {
+          const OriginalCanvas = globalThis.HTMLCanvasElement;
+          Object.setPrototypeOf(canvas, OriginalCanvas.prototype);
+          return callback(canvas, count);
+        }),
+      })),
+    };
+    const page = {
+      locator: vi.fn(() => locator),
+      waitForTimeout: vi.fn(
+        (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+      ),
+    };
+
+    await expect(
+      runAction(page, {
+        type: "assert_canvas_pixels",
+        locator: { css: ".canvas-replay" },
+        expect: { nontransparent_at_least: 1 },
+        timeout_ms: 1,
+      }),
+    ).rejects.toThrow("expected at least 1, got 0");
+  });
 });
 
 describe("snake service scenarios", () => {
