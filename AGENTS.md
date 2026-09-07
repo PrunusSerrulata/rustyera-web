@@ -34,25 +34,23 @@
 - `Cargo.toml`、`Cargo.lock`：Rust workspace 和锁定依赖。
 - `rustyera-core.rev`：所有 core Git 依赖共同绑定的 revision。
 
-## 蛇版兼容开发
+## 蛇版兼容
 
-- 使用 `feature/snake-compatibility` 分支及专用 worktree，`../rustyera-core` 必须是同组
-  core worktree；开工核对分支和工作树，不修改原 master 工作区。位置、共享输入和
-  构建/会话隔离要求遵循主工作区规范。
-- 开工或续做前必须读取同组 core 的[改造思路](../rustyera-core/docs/snake-compatibility/SNAKE_EMUERA_MIGRATION_PLAN.md)
+- 开工或续做前必须读取 core 的[改造思路](../rustyera-core/docs/snake-compatibility/SNAKE_EMUERA_MIGRATION_PLAN.md)
   和[分批次实施记录](../rustyera-core/docs/snake-compatibility/SNAKE_EMUERA_IMPLEMENTATION_LOG.md)，
   核对当前及上游批次依赖；实施前细化 Browser/Tauri 方案，收尾/暂停时把实际改动、
   验收证据、commit、未完成项和恢复入口写回对应批次，范围或依赖变化同步更新改造思路。
 - 原版 profile 为 `emuera.em`，蛇版为 `emuera.skia.snake`。能力经 runtime 协商，
   Vue 只投影规范化状态；SQL、资源、pointer、测量和音频观察须维护命名空间及
   revision/epoch 边界，不能通过私有 Pinia/DOM 状态补做 core 语义或伪造能力成功。
-- 构建前确认 Cargo patch 指向本组 core，target 位于本组；优先使用 `npm run cargo:local`
-  与 `npm run build:wasm` 保持锁文件。本地覆盖不替代发布绑定：需要更新 core 时仍须
+- 构建前确认 core Git 依赖、`rustyera-core.rev` 与锁文件绑定一致；本地联调时确认
+  外层 Cargo patch 指向当前 core 源码，并优先使用 `npm run cargo:local` 与
+  `npm run build:wasm` 保持锁文件。本地覆盖不替代发布绑定：需要更新 core 时仍须
   同步完整 `rustyera-core.rev`、所有 Git rev 与 `Cargo.lock` 并通过既有检查。
-- Browser 的 `public/wasm` 和 Tauri binary 都须在本 worktree 重建，记录实际 core SHA，
-  不共享原目录的 node_modules、bundle、target 或测试输出。独立选定端口和浏览器配置，
-  Tauri 的 devUrl/启动端口必须一致；原生会话与另一个 worktree 冲突时串行，不抢占会话。
-- 本工作区已核验的 Chromium 可执行文件为
+- Browser 的 `public/wasm` 和 Tauri binary 都须由当前源码重建，记录实际 core SHA；不得
+  复用来源或输入不一致的 bundle、target 或测试输出。并行任务须隔离端口、浏览器配置和
+  原生会话；Tauri 的 devUrl/启动端口必须一致。
+- 当前已核验的 Chromium 可执行文件为
   `rustyera-web/.playwright-browsers/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell`
   （Chrome for Testing 151.0.7922.34）。`npm run test:game` 必须通过
   `--chromium-executable` 显式复用该文件，同时继续隔离 profile、端口和测试输出；路径失效
