@@ -1,9 +1,6 @@
 /* global document */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  applyBackgroundDomInput,
-  hoverTauriTestElement,
-} from "../scripts/dom-test-input.mjs";
+import { applyBackgroundDomInput, hoverTauriTestElement } from "../scripts/dom-test-input.mjs";
 
 afterEach(() => {
   vi.unstubAllEnvs();

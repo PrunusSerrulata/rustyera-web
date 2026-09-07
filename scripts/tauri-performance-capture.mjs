@@ -21,7 +21,8 @@ if (command === "freeze") {
   const output = option("--output");
   const coreOutput = option("--core-output");
   rejectUnknown(new Set(["--candidate", "--output", "--core-output"]));
-  if (candidate === output) throw new Error("freeze output must not overwrite the reviewed candidate");
+  if (candidate === output)
+    throw new Error("freeze output must not overwrite the reviewed candidate");
   if (new Set([candidate, output]).has(coreOutput))
     throw new Error("Core companion output must be a distinct file");
   await assertMissing(output);

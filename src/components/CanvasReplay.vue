@@ -12,10 +12,7 @@ import { htmlMeasurementProjectionKey } from "@/components/htmlMeasurementProjec
 import { RuntimeServiceError } from "@/core/runtimeServiceProtocol";
 import { replayIntegerKey } from "@/core/replayResources";
 import { useRuntimeStore } from "@/stores/runtime";
-import {
-  PERFORMANCE_AUDIT_ENABLED,
-  recordPerformanceTiming,
-} from "@/testing/performanceAudit";
+import { PERFORMANCE_AUDIT_ENABLED, recordPerformanceTiming } from "@/testing/performanceAudit";
 
 const props = defineProps<{
   replay: CanvasReplayData;

@@ -9,7 +9,8 @@ import {
   summarizeRuns,
 } from "../../scripts/tauri-performance-trace.mjs";
 
-const enabled = process.env.VITE_RUSTYERA_TAURI_SNAKE_RUNTIME_PERFORMANCE === "1" ? describe : describe.skip;
+const enabled =
+  process.env.VITE_RUSTYERA_TAURI_SNAKE_RUNTIME_PERFORMANCE === "1" ? describe : describe.skip;
 const tracePath = process.env.RUSTYERA_TAURI_PERF_TRACE;
 
 enabled("Tauri snake runtime performance audit", () => {
@@ -21,35 +22,67 @@ enabled("Tauri snake runtime performance audit", () => {
       const candidatePath = process.env.RUSTYERA_TAURI_PERF_CANDIDATE;
       const actionInboxPath = process.env.RUSTYERA_TAURI_PERF_ACTIONS;
       const projectDigest = process.env.RUSTYERA_TAURI_PERF_PROJECT_DIGEST;
-      assert.ok(candidatePath && actionInboxPath && projectDigest, "capture runner omitted its isolated files or digest");
+      assert.ok(
+        candidatePath && actionInboxPath && projectDigest,
+        "capture runner omitted its isolated files or digest",
+      );
       const candidate = await runPerformanceTraceCapture(browser, {
         templatePath: tracePath,
         candidatePath,
         actionInboxPath,
         projectDigest,
-        onObservation: (observation) => emit({ type: "tauri-performance-capture-observation", observation }),
+        onObservation: (observation) =>
+          emit({ type: "tauri-performance-capture-observation", observation }),
       });
-      emit({ type: "tauri-performance-capture-complete", candidatePath, steps: candidate.steps.length });
+      emit({
+        type: "tauri-performance-capture-complete",
+        candidatePath,
+        steps: candidate.steps.length,
+      });
       return;
     }
     const trace = await readPerformanceTrace(tracePath);
     const calibration = await calibrate();
     if (process.env.RUSTYERA_TAURI_PERF_PHASE === "calibration") {
-      emit({ type: "tauri-performance-calibration", mode: process.env.RUSTYERA_TAURI_PERF_WINDOW_MODE, calibration });
+      emit({
+        type: "tauri-performance-calibration",
+        mode: process.env.RUSTYERA_TAURI_PERF_WINDOW_MODE,
+        calibration,
+      });
       return;
     }
 
     await startRun(trace);
     const runs = [];
     await profilerCheckpoint();
-    runs.push(await replayPerformanceTrace(browser, trace, ({ path: pathId, step }) =>
-      emit({ type: "tauri-performance-step", run: 0, path: pathId, step }),
-    ));
+    runs.push(
+      await replayPerformanceTrace(browser, trace, ({ path: pathId, step }) =>
+        emit({ type: "tauri-performance-step", run: 0, path: pathId, step }),
+      ),
+    );
     const telemetry = await browser.execute(() => window.__RUSTYERA_TEST__.performanceAudit());
-    assert.equal(telemetry.frontend.epoch, telemetry.frontend.timings[0]?.epoch ?? telemetry.frontend.epoch);
-    assert.equal(telemetry.native.epoch, telemetry.native.pumps[0]?.epoch ?? telemetry.native.epoch);
-    for (const phase of ["loading", "transport", "invoke", "decode", "store_batch", "presentation", "dom_flush", "next_paint"])
-      assert.ok(telemetry.frontend.timings.some((sample) => sample.phase === phase), `${phase} telemetry is empty`);
+    assert.equal(
+      telemetry.frontend.epoch,
+      telemetry.frontend.timings[0]?.epoch ?? telemetry.frontend.epoch,
+    );
+    assert.equal(
+      telemetry.native.epoch,
+      telemetry.native.pumps[0]?.epoch ?? telemetry.native.epoch,
+    );
+    for (const phase of [
+      "loading",
+      "transport",
+      "invoke",
+      "decode",
+      "store_batch",
+      "presentation",
+      "dom_flush",
+      "next_paint",
+    ])
+      assert.ok(
+        telemetry.frontend.timings.some((sample) => sample.phase === phase),
+        `${phase} telemetry is empty`,
+      );
     emitPerformanceSamples(telemetry);
     emit({
       type: "tauri-snake-runtime-performance",
@@ -75,7 +108,9 @@ enabled("Tauri snake runtime performance audit", () => {
 
 async function calibrate() {
   await waitForControl();
-  const calibration = await browser.execute(() => window.__RUSTYERA_TEST__.calibratePerformanceFrames(100));
+  const calibration = await browser.execute(() =>
+    window.__RUSTYERA_TEST__.calibratePerformanceFrames(100),
+  );
   assert.equal(calibration.requestedFrames, 100);
   assert.ok(calibration.observedFrames >= 0 && calibration.observedFrames <= 100);
   return calibration;
@@ -108,7 +143,10 @@ async function profilerCheckpoint() {
   if (!checkpoint || !resume) return;
   await writeFile(
     checkpoint,
-    JSON.stringify({ pid: Number(process.env.RUSTYERA_TAURI_PERF_ROOT_PID), round: process.env.RUSTYERA_TAURI_PERF_ROUND }),
+    JSON.stringify({
+      pid: Number(process.env.RUSTYERA_TAURI_PERF_ROOT_PID),
+      round: process.env.RUSTYERA_TAURI_PERF_ROUND,
+    }),
     { flag: "wx" },
   );
   emit({ type: "tauri-performance-checkpoint", checkpoint });
@@ -121,7 +159,11 @@ async function profilerCheckpoint() {
         return false;
       }
     },
-    { timeout: 120_000, interval: 50, timeoutMsg: "performance profiler did not release checkpoint" },
+    {
+      timeout: 120_000,
+      interval: 50,
+      timeoutMsg: "performance profiler did not release checkpoint",
+    },
   );
 }
 

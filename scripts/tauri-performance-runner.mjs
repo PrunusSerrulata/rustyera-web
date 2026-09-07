@@ -48,7 +48,9 @@ await writeEvidence("calibration.json", { identity, ...calibrationEvidence, cali
 const warmup = await runAudit("warmup", calibration.selectedMode);
 const baselineRuns = [];
 for (let index = 0; index < 5; index += 1)
-  baselineRuns.push(await runAudit(`baseline-${index + 1}`, calibration.selectedMode, [], "baseline"));
+  baselineRuns.push(
+    await runAudit(`baseline-${index + 1}`, calibration.selectedMode, [], "baseline"),
+  );
 const baseline = {
   runs: baselineRuns,
   summary: summarizeRuns(baselineRuns.flatMap((entry) => entry.result?.runs ?? [])),
@@ -64,7 +66,10 @@ const allocation = await runAudit("allocation", calibration.selectedMode, [
   "malloc_history",
 ]);
 const baselineMedian = Number(
-  Object.values(baseline.summary.byPath).reduce((total, sample) => total + Number(sample.p50 ?? 0), 0),
+  Object.values(baseline.summary.byPath).reduce(
+    (total, sample) => total + Number(sample.p50 ?? 0),
+    0,
+  ),
 );
 for (const profile of [cpu, allocation]) {
   const profileMedian = Number(
@@ -89,10 +94,16 @@ await writeEvidence("audit-summary.json", {
   cpu,
   allocation,
 });
-const evidenceFiles = (await readdir(output)).filter((name) => name !== "evidence-manifest.json").sort();
+const evidenceFiles = (await readdir(output))
+  .filter((name) => name !== "evidence-manifest.json")
+  .sort();
 await writeEvidence(
   "evidence-manifest.json",
-  Object.fromEntries(await Promise.all(evidenceFiles.map(async (name) => [name, await sha256(path.join(output, name))]))),
+  Object.fromEntries(
+    await Promise.all(
+      evidenceFiles.map(async (name) => [name, await sha256(path.join(output, name))]),
+    ),
+  ),
 );
 
 async function runAudit(round, mode, profilers = [], measuredRound = round) {
@@ -121,28 +132,49 @@ async function runAudit(round, mode, profilers = [], measuredRound = round) {
     "tests/tauri/snake-runtime-performance.spec.mjs",
     ...performanceWindowArguments(mode),
   ];
-  const child = spawn(process.execPath, args, { cwd: repository, env: environment, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, args, {
+    cwd: repository,
+    env: environment,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let stdout = "";
   let stderr = "";
-  child.stdout.on("data", (chunk) => { stdout += chunk; process.stdout.write(chunk); });
-  child.stderr.on("data", (chunk) => { stderr += chunk; process.stderr.write(chunk); });
-  const profilerTask = profilers.length ? attachProfilers(checkpoint, resume, profilers) : Promise.resolve([]);
-  const exitCode = await deadlinePromise(new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", resolve);
-  }), () => child.kill("SIGTERM"), `waiting for ${round}/${mode}`);
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+    process.stdout.write(chunk);
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+    process.stderr.write(chunk);
+  });
+  const profilerTask = profilers.length
+    ? attachProfilers(checkpoint, resume, profilers)
+    : Promise.resolve([]);
+  const exitCode = await deadlinePromise(
+    new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", resolve);
+    }),
+    () => child.kill("SIGTERM"),
+    `waiting for ${round}/${mode}`,
+  );
   const profiles = await profilerTask;
   await writeEvidence(`${round}-${mode}.stdout.txt`, stdout);
   await writeEvidence(`${round}-${mode}.stderr.txt`, stderr);
   if (exitCode !== 0) throw new Error(`${round}/${mode} performance child exited ${exitCode}`);
   buildPrepared = true;
   const records = stdout.split(/\r?\n/).flatMap((line) => {
-    try { return [JSON.parse(line)]; } catch { return []; }
+    try {
+      return [JSON.parse(line)];
+    } catch {
+      return [];
+    }
   });
   return {
     round,
     mode,
-    calibration: records.findLast((record) => record.type === "tauri-performance-calibration")?.calibration,
+    calibration: records.findLast((record) => record.type === "tauri-performance-calibration")
+      ?.calibration,
     result: records.findLast((record) => record.type === "tauri-snake-runtime-performance"),
     telemetrySegments: summarizeTelemetrySegments(records),
     profiles,
@@ -176,9 +208,7 @@ async function calibrateWindow(mode) {
 
 function summarizeTelemetrySegments(records) {
   return summarizeTelemetrySamples(
-    records.filter(
-      (record) => record.type === "tauri-performance-sample",
-    ),
+    records.filter((record) => record.type === "tauri-performance-sample"),
   );
 }
 
@@ -202,8 +232,7 @@ function performanceSamplesFromResult(result) {
 function summarizeTelemetrySamples(samples) {
   const measured = samples.filter(
     (record) =>
-      ["loading", "runtime"].includes(record.segment) &&
-      Number.isFinite(record.elapsedMs),
+      ["loading", "runtime"].includes(record.segment) && Number.isFinite(record.elapsedMs),
   );
   return Object.fromEntries(
     ["loading", "runtime"].map((segment) => {
@@ -231,11 +260,17 @@ function summarizeTelemetrySamples(samples) {
 
 async function attachProfilers(checkpoint, resume, profilers) {
   for (;;) {
-    try { await access(checkpoint); break; } catch { await new Promise((resolve) => setTimeout(resolve, 50)); }
+    try {
+      await access(checkpoint);
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     requireRemainingBudget(`waiting for profiler checkpoint ${path.basename(checkpoint)}`);
   }
   const { pid } = JSON.parse(await readFile(checkpoint, "utf8"));
-  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("profiler checkpoint omitted exact Tauri PID");
+  if (!Number.isSafeInteger(pid) || pid <= 0)
+    throw new Error("profiler checkpoint omitted exact Tauri PID");
   const profiles = [];
   const processTree = await capturePerformanceProcessTree(pid);
   for (const profiler of profilers) {
@@ -258,12 +293,30 @@ async function attachProfilers(checkpoint, resume, profilers) {
 }
 
 function profilerCommand(profiler, pid, destination) {
-  if (process.platform !== "darwin") throw new Error("native audit profilers currently require macOS");
-  if (profiler === "sample") return { executable: "/usr/bin/sample", arguments: [String(pid), "10", "1", "-file", destination], capture: false };
-  if (profiler === "heap") return { executable: "/usr/bin/heap", arguments: ["-addresses", "all", String(pid)], capture: true };
-  if (profiler === "vmmap") return { executable: "/usr/bin/vmmap", arguments: ["-summary", String(pid)], capture: true };
-  if (profiler === "leaks") return { executable: "/usr/bin/leaks", arguments: [String(pid)], capture: true };
-  if (profiler === "malloc_history") return { executable: "/usr/bin/malloc_history", arguments: [String(pid), "-allBySize"], capture: true };
+  if (process.platform !== "darwin")
+    throw new Error("native audit profilers currently require macOS");
+  if (profiler === "sample")
+    return {
+      executable: "/usr/bin/sample",
+      arguments: [String(pid), "10", "1", "-file", destination],
+      capture: false,
+    };
+  if (profiler === "heap")
+    return {
+      executable: "/usr/bin/heap",
+      arguments: ["-addresses", "all", String(pid)],
+      capture: true,
+    };
+  if (profiler === "vmmap")
+    return { executable: "/usr/bin/vmmap", arguments: ["-summary", String(pid)], capture: true };
+  if (profiler === "leaks")
+    return { executable: "/usr/bin/leaks", arguments: [String(pid)], capture: true };
+  if (profiler === "malloc_history")
+    return {
+      executable: "/usr/bin/malloc_history",
+      arguments: [String(pid), "-allBySize"],
+      capture: true,
+    };
   throw new Error(`unknown profiler ${profiler}`);
 }
 
@@ -274,33 +327,43 @@ async function writeEvidence(name, value) {
   return { destination, sha256: await sha256(destination) };
 }
 async function sha256(file) {
-  return createHash("sha256").update(await readFile(file)).digest("hex");
+  return createHash("sha256")
+    .update(await readFile(file))
+    .digest("hex");
 }
 async function spawnExit(executable, args) {
   let child;
-  return deadlinePromise(new Promise((resolve, reject) => {
-    child = spawn(executable, args, { stdio: "inherit" });
-    child.once("error", reject);
-    child.once("exit", resolve);
-  }), () => child?.kill("SIGTERM"), executable);
+  return deadlinePromise(
+    new Promise((resolve, reject) => {
+      child = spawn(executable, args, { stdio: "inherit" });
+      child.once("error", reject);
+      child.once("exit", resolve);
+    }),
+    () => child?.kill("SIGTERM"),
+    executable,
+  );
 }
 async function spawnCapture(executable, args, destination) {
   let child;
-  return deadlinePromise(new Promise((resolve, reject) => {
-    child = spawn(executable, args, { stdio: ["ignore", "pipe", "pipe"] });
-    const chunks = [];
-    child.stdout.on("data", (chunk) => chunks.push(chunk));
-    child.stderr.on("data", (chunk) => chunks.push(chunk));
-    child.once("error", reject);
-    child.once("exit", async (code) => {
-      try {
-        await writeFile(destination, Buffer.concat(chunks));
-        resolve(code);
-      } catch (error) {
-        reject(error);
-      }
-    });
-  }), () => child?.kill("SIGTERM"), executable);
+  return deadlinePromise(
+    new Promise((resolve, reject) => {
+      child = spawn(executable, args, { stdio: ["ignore", "pipe", "pipe"] });
+      const chunks = [];
+      child.stdout.on("data", (chunk) => chunks.push(chunk));
+      child.stderr.on("data", (chunk) => chunks.push(chunk));
+      child.once("error", reject);
+      child.once("exit", async (code) => {
+        try {
+          await writeFile(destination, Buffer.concat(chunks));
+          resolve(code);
+        } catch (error) {
+          reject(error);
+        }
+      });
+    }),
+    () => child?.kill("SIGTERM"),
+    executable,
+  );
 }
 function requireRemainingBudget(stage) {
   if (Date.now() >= auditDeadline)
@@ -309,10 +372,15 @@ function requireRemainingBudget(stage) {
 function deadlinePromise(operation, terminate, stage) {
   requireRemainingBudget(stage);
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      terminate();
-      reject(new Error(`Tauri performance audit exceeded its shared 60-minute budget while ${stage}`));
-    }, Math.max(1, auditDeadline - Date.now()));
+    const timer = setTimeout(
+      () => {
+        terminate();
+        reject(
+          new Error(`Tauri performance audit exceeded its shared 60-minute budget while ${stage}`),
+        );
+      },
+      Math.max(1, auditDeadline - Date.now()),
+    );
     operation.then(
       (value) => {
         clearTimeout(timer);
@@ -326,7 +394,7 @@ function deadlinePromise(operation, terminate, stage) {
   });
 }
 function option(name) {
-  const indexes = arguments_.flatMap((value, index) => value === name ? [index] : []);
+  const indexes = arguments_.flatMap((value, index) => (value === name ? [index] : []));
   if (indexes.length !== 1) throw new Error(`${name} must be specified exactly once`);
   const value = arguments_[indexes[0] + 1];
   if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
@@ -334,7 +402,8 @@ function option(name) {
 }
 function rejectUnknown(args, options) {
   for (let index = 0; index < args.length; index += 2) {
-    if (!options.has(args[index])) throw new Error(`unsupported performance runner option ${args[index]}`);
+    if (!options.has(args[index]))
+      throw new Error(`unsupported performance runner option ${args[index]}`);
     if (args[index + 1] == null) throw new Error(`${args[index]} requires a value`);
   }
 }

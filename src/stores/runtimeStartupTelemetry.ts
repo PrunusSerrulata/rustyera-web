@@ -2,10 +2,7 @@ import { ref } from "vue";
 
 import type { ProjectOpenMetrics, ProjectProgress, ProjectProgressStage } from "@/core/types";
 import { STARTUP_DURATION_BY_STAGE, type StartupTelemetry } from "@/stores/runtimeState";
-import {
-  PERFORMANCE_AUDIT_ENABLED,
-  recordPerformanceElapsed,
-} from "@/testing/performanceAudit";
+import { PERFORMANCE_AUDIT_ENABLED, recordPerformanceElapsed } from "@/testing/performanceAudit";
 
 export class RuntimeStartupTelemetryState {
   // Compatibility projection used by loading UI and cache assertions. Performance samples are
