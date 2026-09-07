@@ -11,6 +11,52 @@ import {
 } from "./webTestLib.testHarness";
 
 describe("web game test scenario", () => {
+  it("observes timed input transitions without copying the wire ledger", async () => {
+    let current = { canInteract: false, wait: null };
+    vi.stubGlobal("window", {
+      __RUSTYERA_TEST__: {
+        snapshotSummary: () => current,
+        snapshot: () => {
+          throw new Error("timed input must not materialize the full wire ledger");
+        },
+        waitForStableObservation: vi.fn(async (_timeout, summary) => {
+          expect(summary).toBe(true);
+          return current;
+        }),
+      },
+    });
+    const page = {
+      evaluate: (callback) => callback(),
+      waitForFunction: async (callback, previousWaitId) => {
+        current = {
+          canInteract: true,
+          wait: {
+            wait_id: previousWaitId == null ? "283" : "284",
+            deadline_ns: "69532300000",
+            kind: "string_value",
+            viewport_policy: "preserve_user_viewport",
+          },
+        };
+        expect(callback(previousWaitId)).toBe(true);
+      },
+    };
+    try {
+      await expect(runAction(page, { type: "wait_timed_input_change" })).resolves.toEqual({
+        query: {
+          timed_input: {
+            previous_wait_id: "283",
+            next_wait_id: "284",
+            previous_kind: "string_value",
+            next_kind: "string_value",
+            viewport_policy: "preserve_user_viewport",
+          },
+        },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("waits for a timed input to advance without submitting an input", async () => {
     const pending = { canInteract: false, wait: null };
     const before = {

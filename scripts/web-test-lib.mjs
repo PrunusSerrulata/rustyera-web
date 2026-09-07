@@ -505,18 +505,18 @@ export async function runAction(page, action) {
     throw new Error(`void wait budget exhausted after ${maximum} attempts`);
   }
   if (action.type === "wait_timed_input_change") {
-    let before = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    let before = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshotSummary());
     if (before.wait?.deadline_ns == null) {
       await page.waitForFunction(() => {
         const current = window.__RUSTYERA_TEST__.snapshotSummary();
         return current.fault != null || (current.canInteract && current.wait?.deadline_ns != null);
       });
-      before = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+      before = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshotSummary());
     }
     if (before.wait?.deadline_ns == null)
       throw new Error("wait_timed_input_change requires an active timed input wait");
     await waitForAutomaticWaitChange(page, before.wait.wait_id);
-    const after = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    const after = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshotSummary());
     return {
       query: {
         timed_input: {
