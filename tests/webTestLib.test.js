@@ -2366,7 +2366,7 @@ describe("web game test scenario", () => {
     const page = {
       locator: vi.fn(() => locator),
       waitForTimeout: vi.fn(
-        (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+        (milliseconds) => new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds)),
       ),
     };
 
