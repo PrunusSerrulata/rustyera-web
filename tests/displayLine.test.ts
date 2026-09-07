@@ -77,30 +77,51 @@ describe("display line rendering", () => {
       },
     });
 
-    const spans = wrapper.findAll("span.text-layout");
+    // Keep this as a large rendering regression without allocating thousands of
+    // DOMWrapper objects just to inspect native span attributes. Under a busy full
+    // Vitest run those test-only wrappers can dominate the test runtime.
+    const root = wrapper.element as Element;
+    const spans = root.querySelectorAll<HTMLElement>("span.text-layout");
+    const firstSpans = Array.from({ length: 6 }, (_, index) => spans.item(index));
+    const firstSpan = spans.item(0);
     expect(spans).toHaveLength(runs.length);
-    expect(wrapper.findAllComponents(TextRunGroup)).toHaveLength(1);
-    expect(wrapper.findAllComponents(RunRenderer)).toHaveLength(0);
-    expect(spans.slice(0, 6).map((span) => span.text())).toEqual(["0", "1", "2", "3", "4", "5"]);
-    expect(spans.slice(0, 6).map((span) => span.attributes("data-columns"))).toEqual([
-      "1",
-      "2",
-      "3",
-      "1",
-      "2",
-      "3",
-    ]);
-    expect(spans[0].attributes("style")).toContain(
+    expect(firstSpans.map((span) => span.textContent)).toEqual(["0", "1", "2", "3", "4", "5"]);
+    expect(firstSpans.map((span) => span.dataset.columns)).toEqual(["1", "2", "3", "1", "2", "3"]);
+    expect(firstSpan.getAttribute("style")).toContain(
       "color: var(--game-interaction-foreground, rgba(18, 52, 86, 1))",
     );
-    expect((spans[0].element as HTMLElement).style.backgroundColor).toBe("rgb(1, 2, 3)");
-    expect(spans[0].attributes("style")).toContain("font-weight: bold");
-    expect(spans[0].attributes("style")).toContain("font-style: italic");
-    expect(spans[0].attributes("style")).toContain("text-decoration: underline line-through");
-    expect(spans[0].attributes("style")).toContain("font-family: Runtime Font, var(--game-font)");
-    expect(spans[0].attributes("style")).toContain("font-size: 18px");
-    expect(spans[0].attributes("style")).toContain("width: 1ch");
-    expect(spans[0].attributes("style")).toContain("vertical-align: top");
+    expect(firstSpan.style.backgroundColor).toBe("rgb(1, 2, 3)");
+    expect(firstSpan.getAttribute("style")).toContain("font-weight: bold");
+    expect(firstSpan.getAttribute("style")).toContain("font-style: italic");
+    expect(firstSpan.getAttribute("style")).toContain("text-decoration: underline line-through");
+    expect(firstSpan.getAttribute("style")).toContain(
+      "font-family: Runtime Font, var(--game-font)",
+    );
+    expect(firstSpan.getAttribute("style")).toContain("font-size: 18px");
+    expect(firstSpan.getAttribute("style")).toContain("width: 1ch");
+    expect(firstSpan.getAttribute("style")).toContain("vertical-align: top");
+  });
+
+  it("groups consecutive text runs without per-run Vue components", () => {
+    const wrapper = mount(DisplayLine, {
+      props: {
+        viewportColumns: 80,
+        line: {
+          line_id: 1,
+          temporary: false,
+          logical_line_start: true,
+          line_end: true,
+          alignment: "left",
+          runs: [
+            { type: "text", text: "left", style: textStyle() },
+            { type: "text_layout", text: "right", columns: 5, style: textStyle() },
+          ],
+        },
+      },
+    });
+
+    expect(wrapper.findAllComponents(TextRunGroup)).toHaveLength(1);
+    expect(wrapper.findAllComponents(RunRenderer)).toHaveLength(0);
   });
 
   it("reacts to text replacement and font override preferences without mutating runs", async () => {
