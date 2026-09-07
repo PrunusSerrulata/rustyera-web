@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 
 const runtimeTextPolicy = vi.hoisted(() => ({ replaceFullWidthSpaces: false }));
 const reactiveRuntimeTextPolicy = reactive(runtimeTextPolicy);
+const htmlSprites = reactive<any[]>([]);
 
 vi.mock("@/stores/runtime", () => ({
   useRuntimeStore: () => ({
@@ -18,7 +19,7 @@ vi.mock("@/stores/runtime", () => ({
     gameLineHeightPx: 18,
     presentation: {
       settings: { line_height: 18_000 },
-      resources: { sprites: [], canvases: [] },
+      resources: { sprites: htmlSprites, canvases: [] },
     },
     get replaceFullWidthSpaces() {
       return reactiveRuntimeTextPolicy.replaceFullWidthSpaces;
@@ -718,6 +719,38 @@ describe("frontend host and image-line policy", () => {
       requested_y: { unit: "font_height_hundredths", value: -3000 },
       color_matrix: { type: "fixed" },
     });
+  });
+
+  it("projects independent base and hover sprite revisions from Era HTML", () => {
+    htmlSprites.splice(
+      0,
+      htmlSprites.length,
+      { name: "portrait", revision: 6 },
+      { name: "portrait_hover", revision: 9 },
+    );
+    const wrapper = mount(HtmlNode, {
+      props: {
+        node: {
+          type: "element",
+          kind: "image",
+          children: [],
+          semantic: {
+            type: "image",
+            source: "portrait",
+            hover_source: "portrait_hover",
+          },
+        },
+      },
+      global: { stubs: { MediaImage: true } },
+    });
+
+    expect(wrapper.getComponent({ name: "MediaImage" }).props("placement")).toMatchObject({
+      resource_id: "portrait",
+      hover_resource_id: "portrait_hover",
+      revision: 6,
+      hover_revision: 9,
+    });
+    htmlSprites.splice(0);
   });
 
   it("locks positioned HTML buttons to Emuera font-relative horizontal coordinates", () => {

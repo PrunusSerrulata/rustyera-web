@@ -527,6 +527,45 @@ describe("Era sprite images", () => {
     expect(wrapper.get("img").attributes("src")).toBe("blob:base.webp");
   });
 
+  it("uses the hover sprite's own revision", async () => {
+    store.presentation.resources.sprites = [
+      {
+        name: "portrait",
+        revision: 6,
+        size: [100, 100],
+        frames: [{ resource_id: "base.webp", source_rectangle: [0, 0, 100, 100] }],
+      },
+      {
+        name: "portrait_hover",
+        revision: 9,
+        size: [100, 100],
+        frames: [{ resource_id: "hover.webp", source_rectangle: [0, 0, 100, 100] }],
+      },
+    ];
+    const wrapper = mount(MediaImage, {
+      props: {
+        placement: {
+          resource_id: "portrait",
+          hover_resource_id: "portrait_hover",
+          width: 0,
+          height: 100_000,
+          depth: 0,
+          opacity: { numerator: 1, denominator: 1 },
+          revision: 6,
+          hover_revision: 9,
+          requested_height: { unit: "pixels", value: 100 },
+        },
+      },
+    });
+    await flushPromises();
+
+    await wrapper.get(".media-visual").trigger("mouseenter");
+    await flushPromises();
+
+    expect(resourceUrl).toHaveBeenLastCalledWith({}, "hover.webp", 9, 0);
+    expect(wrapper.get("img").attributes("src")).toBe("blob:era-image");
+  });
+
   it("applies the requested line slot, dimensions, and ypos to canvas-backed sprites", async () => {
     store.presentation.resources.sprites = [
       {
