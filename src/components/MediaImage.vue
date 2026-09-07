@@ -414,11 +414,15 @@ onBeforeUnmount(() => {
     <span
       class="media-visual"
       :class="{
+        'media-hovered': hovered,
         'media-bottom-anchored': bottomAnchored,
         'media-sprite': !canvasReplay && sprite && frame,
         'media-canvas-handoff': !canvasReplay,
       }"
       :style="positionedVisualStyle"
+      @mouseenter="startHover"
+      @mousemove="startHover"
+      @mouseleave="stopHover"
     >
       <CanvasReplay
         :replay="retainedCanvasReplay"
@@ -484,10 +488,13 @@ onBeforeUnmount(() => {
     v-else-if="retainedCanvasReplay"
     class="media-image"
     :class="{
+      'media-hovered': hovered,
       'media-sprite': !canvasReplay && sprite && frame,
       'media-canvas-handoff': !canvasReplay,
     }"
     :style="frame ? spriteStyle : directStyle"
+    @mouseenter="startHover"
+    @mouseleave="stopHover"
   >
     <CanvasReplay
       :replay="retainedCanvasReplay"
