@@ -610,7 +610,7 @@ describe("browser game runner progress policy", () => {
   });
 
   it("samples animation state without cloning the complete runtime evidence ledger", () => {
-    const runner = readFileSync(resolve("scripts/web-test-lib.mjs"), "utf8");
+    const runner = readFileSync(resolve("scripts/web-test-query.mjs"), "utf8");
     const sampleQueries = runner.slice(
       runner.indexOf("async function sampleQueries"),
       runner.indexOf("export function assertSampleExpectations"),

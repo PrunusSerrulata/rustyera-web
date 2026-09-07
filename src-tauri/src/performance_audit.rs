@@ -153,16 +153,12 @@ pub(super) fn configure_window<R: Runtime>(
             let monitors = window.available_monitors()?;
             let right = monitors
                 .iter()
-                .map(|monitor| {
-                    i64::from(monitor.position().x) + i64::from(monitor.size().width)
-                })
+                .map(|monitor| i64::from(monitor.position().x) + i64::from(monitor.size().width))
                 .max()
                 .ok_or("performance audit requires at least one monitor")?;
             let bottom = monitors
                 .iter()
-                .map(|monitor| {
-                    i64::from(monitor.position().y) + i64::from(monitor.size().height)
-                })
+                .map(|monitor| i64::from(monitor.position().y) + i64::from(monitor.size().height))
                 .max()
                 .ok_or("performance audit requires at least one monitor")?;
             let x = i32::try_from(right.saturating_add(2_048))?;

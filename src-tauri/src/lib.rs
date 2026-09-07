@@ -47,9 +47,7 @@ use crate::ipc::{
     encode_value as encode_ipc_value,
 };
 #[cfg(feature = "performance-audit")]
-use crate::ipc::{
-    encode_pump_response_with_len, encode_submitted_pump_response_with_len,
-};
+use crate::ipc::{encode_pump_response_with_len, encode_submitted_pump_response_with_len};
 use crate::project::{ProjectFontSource, ProjectHost, ProjectReloadScope, ProjectReloadTargets};
 use crate::services::native_service;
 use crate::storage::{StorageHost, TraditionalSaveSlot};
@@ -216,16 +214,14 @@ async fn submit_runtime_and_pump(
             let serialize_started = Instant::now();
             let (response, response_bytes) =
                 encode_submitted_pump_response_with_len(message_id, &batch)?;
-            state
-                .performance_audit
-                .record(
-                    "submit_runtime_and_pump",
-                    request_decode_ms,
-                    native_drive_ms,
-                    serialize_started.elapsed().as_secs_f64() * 1000.0,
-                    response_bytes,
-                    &batch,
-                );
+            state.performance_audit.record(
+                "submit_runtime_and_pump",
+                request_decode_ms,
+                native_drive_ms,
+                serialize_started.elapsed().as_secs_f64() * 1000.0,
+                response_bytes,
+                &batch,
+            );
             Ok(response)
         }
         #[cfg(not(feature = "performance-audit"))]
@@ -353,16 +349,14 @@ async fn pump(state: State<'_, AppState>) -> Result<tauri::ipc::Response, String
             let native_drive_ms = drive_started.elapsed().as_secs_f64() * 1000.0;
             let serialize_started = Instant::now();
             let (response, response_bytes) = encode_pump_response_with_len(&batch)?;
-            state
-                .performance_audit
-                .record(
-                    "pump",
-                    0.0,
-                    native_drive_ms,
-                    serialize_started.elapsed().as_secs_f64() * 1000.0,
-                    response_bytes,
-                    &batch,
-                );
+            state.performance_audit.record(
+                "pump",
+                0.0,
+                native_drive_ms,
+                serialize_started.elapsed().as_secs_f64() * 1000.0,
+                response_bytes,
+                &batch,
+            );
             Ok(response)
         }
         #[cfg(not(feature = "performance-audit"))]
@@ -951,23 +945,9 @@ fn lock_error<T>(error: std::sync::PoisonError<T>) -> String {
     format!("frontend state lock was poisoned: {error}")
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-/// Start the native application host.
-///
-/// # Panics
-///
-/// Panics when Tauri cannot initialize or run its application event loop.
-pub fn run() {
-    let builder = tauri::Builder::default();
-    #[cfg(feature = "webdriver")]
-    let builder = builder
-        .plugin(tauri_plugin_wdio::init())
-        .plugin(tauri_plugin_wdio_webdriver::init());
-    let builder = builder
-        .plugin(tauri_plugin_dialog::init())
-        .manage(AppState::default());
-    #[cfg(feature = "performance-audit")]
-    let builder = builder
+#[cfg(feature = "performance-audit")]
+fn install_runtime_commands(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    builder
         .setup(performance_audit::configure_window)
         .invoke_handler(tauri::generate_handler![
             create_session,
@@ -1012,9 +992,12 @@ pub fn run() {
             export::write_compiled_cache_chunk,
             export::cancel_compiled_cache_export,
             export::read_import,
-        ]);
-    #[cfg(not(feature = "performance-audit"))]
-    let builder = builder.invoke_handler(tauri::generate_handler![
+        ])
+}
+
+#[cfg(not(feature = "performance-audit"))]
+fn install_runtime_commands(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    builder.invoke_handler(tauri::generate_handler![
         create_session,
         destroy_session,
         submit_runtime,
@@ -1055,7 +1038,25 @@ pub fn run() {
         export::write_compiled_cache_chunk,
         export::cancel_compiled_cache_export,
         export::read_import,
-    ]);
+    ])
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Start the native application host.
+///
+/// # Panics
+///
+/// Panics when Tauri cannot initialize or run its application event loop.
+pub fn run() {
+    let builder = tauri::Builder::default();
+    #[cfg(feature = "webdriver")]
+    let builder = builder
+        .plugin(tauri_plugin_wdio::init())
+        .plugin(tauri_plugin_wdio_webdriver::init());
+    let builder = builder
+        .plugin(tauri_plugin_dialog::init())
+        .manage(AppState::default());
+    let builder = install_runtime_commands(builder);
     builder
         .run(tauri::generate_context!())
         .expect("error while running RustyEra web frontend");

@@ -167,9 +167,7 @@ export function createRuntimeStoreActions6(context: any) {
     const acknowledgedAtNs = context.sampleMonotonicTime();
     void context
       .send({ type: "advance_time", value: { monotonic_time_ns: acknowledgedAtNs } })
-      .catch((error: unknown) =>
-        context.log("warning", `设备泵时钟同步失败：${String(error)}`),
-      );
+      .catch((error: unknown) => context.log("warning", `设备泵时钟同步失败：${String(error)}`));
     context.testEnvironment.recordTimeAdvance(acknowledgedAtNs);
     // A positive snake AWAIT starts only after this acknowledgement. Its duration is retained by
     // core rather than exposed in the device-pump ABI, so keep sampling frontend time until core
