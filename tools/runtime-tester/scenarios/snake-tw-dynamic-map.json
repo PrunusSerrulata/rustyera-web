@@ -3,11 +3,15 @@
   "project": "../../../../games/eratw-sub-modding",
   "mode": "fixed",
   "compiled_cache": false,
+  "summary_observations": true,
+  "seed": 123456,
   "start": {
-    "type": "traditional_save",
-    "path": "../../../../games/eratw-sub-modding/sav/save1000.sav"
+    "type": "new_game"
   },
   "actions": [
+    { "type": "input", "value": 1 },
+    { "type": "input", "value": 1000 },
+    { "type": "input", "value": 0 },
     { "type": "input", "value": 120 },
     {
       "type": "sample_queries",
