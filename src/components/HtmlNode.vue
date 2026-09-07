@@ -73,6 +73,7 @@ const imagePlacement = computed(() =>
         depth: 0,
         opacity: { numerator: 1, denominator: 1 },
         revision: htmlImageRevision(props.node.semantic.source),
+        hover_revision: htmlImageRevision(props.node.semantic.hover_source),
         requested_width: props.node.semantic.width,
         requested_height: props.node.semantic.height,
         requested_y: props.node.semantic.y,

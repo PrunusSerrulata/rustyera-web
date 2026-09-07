@@ -55,6 +55,12 @@ const activeResourceId = computed(() =>
     ? props.placement.hover_resource_id
     : props.placement.resource_id,
 );
+const activeRevision = computed(() => {
+  if (props.spriteRevision != null) return props.spriteRevision;
+  return hovered.value && props.placement.hover_resource_id
+    ? (props.placement.hover_revision ?? props.placement.revision)
+    : props.placement.revision;
+});
 const colorMatrix = computed(() => fixedColorMatrixFilter(props.placement.color_matrix));
 const colorFilterId = `media-color-${useId().replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 const colorFilter = computed(() => (colorMatrix.value ? `url(#${colorFilterId})` : undefined));
@@ -75,7 +81,7 @@ interface MediaSpriteReplay extends RevisionedSpriteReplay {
 
 const sprite = computed(() => {
   if (!props.resolveSprite) return undefined;
-  const revision = props.spriteRevision ?? props.placement.revision;
+  const revision = activeRevision.value;
   if (revision == null) return undefined;
   return resolveSpriteReplay<MediaSpriteReplay>(
     store.presentation.resources.sprites as MediaSpriteReplay[] | undefined,
@@ -112,7 +118,7 @@ const resourceIdentity = computed(() =>
       activeResourceId.value,
       frame.value?.resource_id ?? activeResourceId.value,
       frame.value?.source_rectangle ?? null,
-      props.placement.revision,
+      activeRevision.value,
     ],
     (_key, value) => (typeof value === "bigint" ? value.toString() : value),
   ),
@@ -158,7 +164,7 @@ watchEffect((onCleanup) => {
   }
   let active = true;
   if (measurement) {
-    const lease = measurement.acquireImage(resourceId, props.placement.revision);
+    const lease = measurement.acquireImage(resourceId, activeRevision.value);
     measurement.track(
       lease.ready.then((value) => {
         measurement.assertCurrent();
@@ -180,7 +186,7 @@ watchEffect((onCleanup) => {
   const lease = acquireResourceUrl(
     platformBridge(),
     resourceId,
-    props.placement.revision,
+    activeRevision.value,
     Number(store.projectResourceGeneration ?? 0),
   );
   void lease.url
