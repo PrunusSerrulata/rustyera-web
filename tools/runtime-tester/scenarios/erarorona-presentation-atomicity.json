@@ -2,6 +2,7 @@
   "schema_version": 1,
   "project": "../../../../games/erarorona",
   "mode": "fixed",
+  "summary_observations": true,
   "compiled_cache": true,
   "start": {
     "type": "traditional_save",
@@ -48,7 +49,8 @@
     },
     {
       "type": "reveal_text",
-      "text": "[  0] 调教"
+      "text": "[  0] 调教",
+      "from_end": true
     },
     {
       "type": "assert_dom",

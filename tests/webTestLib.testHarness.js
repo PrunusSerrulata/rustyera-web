@@ -14,6 +14,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   assertAtomicPresentationTransition,
+  assertAnimationPerformance,
+  measureAnimationPerformance,
+  assertSampleExpectations,
   browserProjectProgressErrors,
   packagedProjectProgressErrors,
   compactTraceEvent,
@@ -48,6 +51,8 @@ export {
   TraceWriter,
   access,
   assertAtomicPresentationTransition,
+  assertAnimationPerformance,
+  assertSampleExpectations,
   blake3,
   browserProjectProgressErrors,
   compactTraceEvent,
@@ -63,6 +68,7 @@ export {
   it,
   loadScenario,
   mkdir,
+  measureAnimationPerformance,
   mkdtemp,
   nativeFirefoxCapabilities,
   packagedProjectProgressErrors,

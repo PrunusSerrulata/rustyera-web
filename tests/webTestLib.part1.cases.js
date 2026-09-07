@@ -2,6 +2,8 @@ import {
   SNAKE_DATA_MARKERS,
   TraceWriter,
   assertAtomicPresentationTransition,
+  assertAnimationPerformance,
+  assertSampleExpectations,
   compactTraceEvent,
   describe,
   expect,
@@ -13,6 +15,7 @@ import {
   it,
   loadScenario,
   mkdtemp,
+  measureAnimationPerformance,
   nativeFirefoxCapabilities,
   path,
   readFile,
@@ -28,6 +31,147 @@ import {
 } from "./webTestLib.testHarness";
 
 describe("web game test scenario", () => {
+  it("requires every animation frame to publish and synchronize within the script cadence", () => {
+    const revisions = [10, 12, 14, 16];
+    const publishes = revisions.map((revision, index) => ({
+      phase: "presentation",
+      operation: "publish",
+      startedAtMs: index * 28,
+      elapsedMs: 1,
+      detail: { presentationRevision: String(revision) },
+    }));
+    const mutations = revisions.map((revision, index) => ({
+      phase: "dom_mutation",
+      operation: "observer_callback",
+      startedAtMs: index * 28 + 1,
+      elapsedMs: 0,
+      detail: { presentationRevision: String(revision) },
+    }));
+    const paint = {
+      phase: "next_paint",
+      operation: "presentation",
+      startedAtMs: 0,
+      elapsedMs: 20,
+      detail: { timedOut: false },
+    };
+    const audit = { timingSamplesDropped: 0, timings: [...publishes, ...mutations, paint] };
+    const limits = { minimumFrames: 4, maximumFrameIntervalMs: 33, maximumPaintMs: 33 };
+
+    expect(assertAnimationPerformance(audit, limits)).toMatchObject({
+      frames: 4,
+      maximumIntervalMs: 28,
+      revisionStep: "2",
+      domSynchronizedFrames: 4,
+    });
+    expect(measureAnimationPerformance(audit)).toMatchObject({
+      frames: 4,
+      averageIntervalMs: 28,
+      medianIntervalMs: 28,
+      maximumIntervalMs: 28,
+      revisionStep: "2",
+      revisionStepConstant: true,
+      domSynchronizedFrames: 4,
+    });
+    expect(() =>
+      assertAnimationPerformance(
+        {
+          ...audit,
+          timings: [
+            publishes[0],
+            { ...publishes[1], startedAtMs: 34 },
+            { ...publishes[2], startedAtMs: 62 },
+            { ...publishes[3], startedAtMs: 90 },
+            ...mutations,
+            paint,
+          ],
+        },
+        limits,
+      ),
+    ).toThrow("frame interval");
+    expect(() =>
+      assertAnimationPerformance(
+        {
+          ...audit,
+          timings: [
+            publishes[0],
+            publishes[1],
+            { ...publishes[2], detail: { presentationRevision: "15" } },
+            publishes[3],
+            ...mutations,
+            paint,
+          ],
+        },
+        limits,
+      ),
+    ).toThrow("skipped a frame");
+    expect(() =>
+      assertAnimationPerformance(
+        { ...audit, timings: [...publishes, ...mutations.slice(0, -1), paint] },
+        limits,
+      ),
+    ).toThrow("did not reach the DOM");
+    expect(() =>
+      assertAnimationPerformance(
+        {
+          ...audit,
+          timings: [...publishes, ...mutations, { ...paint, detail: { timedOut: true } }],
+        },
+        limits,
+      ),
+    ).toThrow("paint checkpoint timed out");
+  });
+
+  it("waits for a stable real-client observation without a fixed sleep", async () => {
+    const stable = { phase: "waiting_input", canInteract: true };
+    const page = { evaluate: vi.fn().mockResolvedValue(stable) };
+
+    await expect(
+      runAction(page, { type: "wait_stable_observation", timeout_ms: 12_000 }),
+    ).resolves.toEqual({ state: stable });
+    expect(page.evaluate).toHaveBeenCalledWith(expect.any(Function), 12_000);
+  });
+
+  it("bounds sampled projection time and intervals between animated changes", () => {
+    const sample = (at, duration, revision, signature) => ({
+      runtime: {
+        sampled_at_ms: at,
+        sample_duration_ms: duration,
+        presentation_revision: revision,
+      },
+      map: { content_signature: signature },
+    });
+    const samples = [
+      sample(0, 20, 1, "a"),
+      sample(250, 30, 2, "b"),
+      sample(500, 25, 3, "c"),
+      sample(750, 35, 4, "d"),
+    ];
+    const expected = {
+      maximum_sample_duration_ms: 50,
+      maximum_change_interval_ms: {
+        "runtime.presentation_revision": 300,
+        "map.content_signature": 300,
+      },
+    };
+
+    expect(() => assertSampleExpectations(samples, expected)).not.toThrow();
+    expect(() =>
+      assertSampleExpectations(
+        samples.map((entry) => ({ ...entry, map: { content_signature: "still" } })),
+        expected,
+      ),
+    ).toThrow("maximum_change_interval_ms.map.content_signature");
+    expect(() =>
+      assertSampleExpectations(
+        [
+          { ...samples[0], runtime: { ...samples[0].runtime, sample_duration_ms: 75 } },
+          ...samples.slice(1),
+        ],
+        expected,
+      ),
+    ).toThrow("maximum_sample_duration_ms");
+  });
+
   it("finishes export cancellation when background cache generation resumes", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "rustyera-export-cancel-"));
     const evidencePath = path.join(root, "evidence.json");
@@ -467,28 +611,61 @@ describe("web game test scenario", () => {
 
   it("accepts only the starting and completed presentation revisions across painted frames", () => {
     const samples = [
-      { revision: "10", waitId: "4", outputTail: ["command"] },
-      { revision: "10", waitId: "4", outputTail: ["command"] },
-      { revision: "14", waitId: "5", outputTail: ["complete"] },
+      {
+        revision: "10",
+        historyRevision: "10",
+        waitId: "4",
+        canInteract: true,
+        outputTail: ["command"],
+      },
+      {
+        revision: "10",
+        historyRevision: "10",
+        waitId: null,
+        canInteract: false,
+        outputTail: ["command"],
+      },
+      {
+        revision: "14",
+        historyRevision: "14",
+        waitId: "5",
+        canInteract: true,
+        outputTail: ["complete"],
+      },
     ];
+    const completed = { revision: "14", historyRevision: "14" };
 
-    expect(assertAtomicPresentationTransition(samples, "14")).toMatchObject({
+    expect(assertAtomicPresentationTransition(samples, completed)).toMatchObject({
       startRevision: "10",
       endRevision: "14",
       paintedRevisions: ["10", "14"],
     });
     expect(() =>
       assertAtomicPresentationTransition(
-        [samples[0], { revision: "12", waitId: null, outputTail: ["incomplete"] }, samples[2]],
-        "14",
+        [
+          samples[0],
+          samples[1],
+          {
+            revision: "12",
+            historyRevision: "12",
+            waitId: null,
+            canInteract: false,
+            outputTail: ["incomplete"],
+          },
+          samples[2],
+        ],
+        completed,
       ),
-    ).toThrow("painted intermediate revisions");
-    expect(() => assertAtomicPresentationTransition(samples.slice(0, 2), "14")).toThrow(
+    ).toThrow("painted intermediate history revisions");
+    expect(() => assertAtomicPresentationTransition(samples.slice(0, 2), completed)).toThrow(
       "did not paint completed revision",
     );
-    expect(() => assertAtomicPresentationTransition(samples.slice(0, 2), "10")).toThrow(
-      "did not advance",
-    );
+    expect(() =>
+      assertAtomicPresentationTransition(samples.slice(0, 2), {
+        revision: "10",
+        historyRevision: "10",
+      }),
+    ).toThrow("did not advance");
   });
 
   it.each(["\n", "\r\n"])("injects the save flow using the fixture's %j newline", (newline) => {

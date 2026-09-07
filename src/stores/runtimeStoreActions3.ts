@@ -11,12 +11,16 @@ import {
 import { yieldToPaint } from "@/platform/mainThread";
 import { TIME_ADVANCE_INTERVAL_NS, GAME_RUNNING_STATUS } from "@/stores/runtimeState";
 import type { RuntimeInputIntent, RuntimeStartKind } from "@/stores/runtimeState";
+import { nfFrameRecoveryNs } from "@/stores/runtimeTimedViewport";
 
 type PendingRuntimeStart =
   | { type: "new_game"; seed?: number | bigint }
   | { type: Exclude<RuntimeStartKind, "new_game">; bytes: Uint8Array };
 
 export function createRuntimeStoreActions3(context: any) {
+  let presentedTimedViewportWait: { waitId: string; earliestAdvanceNs: number } | undefined;
+  let lastTimedViewportAdvanceNs: number | undefined;
+
   async function submitText(): Promise<void> {
     const wait = context.currentPresentation().inputWait;
     if (!wait || !context.canInteract.value) return;
@@ -128,20 +132,43 @@ export function createRuntimeStoreActions3(context: any) {
   async function advanceTimedWait(): Promise<void> {
     if (context.diagnosisExporting.value) return;
     const wait = context.currentPresentation().inputWait;
+    const preservesTimedViewport =
+      wait?.deadline_ns != null && wait.viewport_policy === "preserve_user_viewport";
+    if (wait != null && !preservesTimedViewport) {
+      resetTimedViewportRecovery();
+    }
     const advancingDevicePump = context.devicePumpTimeAdvancePending;
+    if (wait?.deadline_ns == null && !advancingDevicePump) return;
     if (
-      (wait?.deadline_ns == null && !advancingDevicePump) ||
-      context.pendingGameInput.value != null ||
-      context.pendingInputUndo.value != null
+      !advancingDevicePump &&
+      (context.pendingGameInput.value != null || context.pendingInputUndo.value != null)
     )
       return;
+    if (context.deviceTextInputActive) await context.observeDeviceTextBox();
     const now = sampleMonotonicTime();
+    if (preservesTimedViewport && !advancingDevicePump) {
+      const waitId = String(wait.wait_id);
+      if (presentedTimedViewportWait?.waitId !== waitId) {
+        const elapsedSinceAdvance =
+          lastTimedViewportAdvanceNs == null ? undefined : now - lastTimedViewportAdvanceNs;
+        const recoveryNs = nfFrameRecoveryNs(elapsedSinceAdvance);
+        presentedTimedViewportWait = { waitId, earliestAdvanceNs: now + recoveryNs };
+        return;
+      }
+      if (now < presentedTimedViewportWait.earliestAdvanceNs) return;
+    }
     if (!context.testEnvironment.shouldAdvanceTime(now, TIME_ADVANCE_INTERVAL_NS)) return;
     await context.send({ type: "advance_time", value: { monotonic_time_ns: now } });
+    if (preservesTimedViewport) lastTimedViewportAdvanceNs = now;
   }
 
   function sampleMonotonicTime(): number {
     return context.testEnvironment.sampleMonotonic();
+  }
+
+  function resetTimedViewportRecovery(): void {
+    presentedTimedViewportWait = undefined;
+    lastTimedViewportAdvanceNs = undefined;
   }
 
   async function undo(): Promise<void> {
@@ -365,6 +392,7 @@ export function createRuntimeStoreActions3(context: any) {
     context.resetDeviceInputState(false);
     context.runtimeEpoch.value = 0;
     context.testEnvironment.resetTimeAdvance();
+    resetTimedViewportRecovery();
     context.runtimeConfiguration.reset();
     context.runtimeClientPreferences.reset();
     context.projectPreferences.value = defaultProjectPreferences();
@@ -500,6 +528,7 @@ export function createRuntimeStoreActions3(context: any) {
     settlePendingGameInput,
     advanceTimedWait,
     sampleMonotonicTime,
+    resetTimedViewportRecovery,
     undo,
     restart,
     restartSession,

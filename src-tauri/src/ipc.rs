@@ -25,6 +25,16 @@ pub(crate) fn encode_pump_response(value: &PumpBatch) -> Result<Response, String
     Ok(Response::new(bytes))
 }
 
+#[cfg(feature = "performance-audit")]
+pub(crate) fn encode_pump_response_with_len(
+    value: &PumpBatch,
+) -> Result<(Response, usize), String> {
+    let bytes = serde_json::to_vec(&SafePump(value))
+        .map_err(|error| format!("cannot encode binary IPC response: {error}"))?;
+    let byte_len = bytes.len();
+    Ok((Response::new(bytes), byte_len))
+}
+
 pub(crate) fn encode_submitted_pump_response(
     message_id: u64,
     value: &PumpBatch,
@@ -32,6 +42,17 @@ pub(crate) fn encode_submitted_pump_response(
     let bytes = serde_json::to_vec(&SafeSubmittedPump { message_id, value })
         .map_err(|error| format!("cannot encode binary IPC response: {error}"))?;
     Ok(Response::new(bytes))
+}
+
+#[cfg(feature = "performance-audit")]
+pub(crate) fn encode_submitted_pump_response_with_len(
+    message_id: u64,
+    value: &PumpBatch,
+) -> Result<(Response, usize), String> {
+    let bytes = serde_json::to_vec(&SafeSubmittedPump { message_id, value })
+        .map_err(|error| format!("cannot encode binary IPC response: {error}"))?;
+    let byte_len = bytes.len();
+    Ok((Response::new(bytes), byte_len))
 }
 
 struct SafeSubmittedPump<'a> {

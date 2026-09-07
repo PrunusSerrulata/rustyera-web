@@ -76,4 +76,40 @@ describe("runtime log memory bounds", () => {
       state.notifications.reduce((sum, entry) => sum + entry.message.length * 2, 0),
     ).toBeLessThanOrEqual(32);
   });
+
+  it("preserves distinct structured warnings while deduplicating stale projection noise", () => {
+    const state = new RuntimeLogState(100);
+    const atMapLine = (offset: number) =>
+      `ERB/COLOREDMAPS/DRAW_COLOREDMAP.ERB:148:3: [runtime.html.nonstandard_crossed_closing_tag] normalized bytes ${offset}`;
+
+    state.record("warning", atMapLine(10), true);
+    state.record("warning", atMapLine(20), true);
+    state.record(
+      "warning",
+      "ERB/OTHER.ERB:9:1: [runtime.html.nonstandard_crossed_closing_tag] another location",
+      true,
+    );
+    state.record(
+      "debug",
+      "command rejected [StaleRequest]: projection observation does not match the canonical presentation",
+      true,
+    );
+    state.record(
+      "debug",
+      "command rejected [StaleRequest]: projection observation does not match the canonical presentation",
+      true,
+    );
+
+    expect(state.entries.map((entry) => entry.message)).toEqual([
+      atMapLine(10),
+      atMapLine(20),
+      "ERB/OTHER.ERB:9:1: [runtime.html.nonstandard_crossed_closing_tag] another location",
+      "command rejected [StaleRequest]: projection observation does not match the canonical presentation",
+    ]);
+    expect(state.notifications).toHaveLength(3);
+
+    state.clear();
+    state.record("warning", atMapLine(30), true);
+    expect(state.entries.map((entry) => entry.message)).toEqual([atMapLine(30)]);
+  });
 });

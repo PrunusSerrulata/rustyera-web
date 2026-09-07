@@ -11,6 +11,14 @@ import { hex } from "@/platform/browserProjectFilesystem";
 import { currentGameViewportMeasurement } from "@/platform/viewportMeasurement";
 import type { RuntimeTestConfiguration } from "@/stores/runtime";
 import { useRuntimeStore } from "@/stores/runtime";
+import {
+  calibratePerformanceFrames,
+  installPerformanceAuditObservers,
+  performanceAuditEnabled,
+  performanceAuditProgress,
+  performanceAuditSnapshot,
+  resetPerformanceAudit,
+} from "@/testing/performanceAudit";
 
 export interface WebTestControl {
   configure(configuration: RuntimeTestConfiguration): void;
@@ -30,6 +38,13 @@ export interface WebTestControl {
   replaceProjectSource(relativePath: string, expected: string, replacement: string): Promise<void>;
   reloadProject(scope: "all" | "folder" | "script", path?: string): Promise<void>;
   exportDiagnosis(): Promise<void>;
+  calibratePerformanceFrames(frameCount?: number): Promise<Record<string, unknown>>;
+  performanceAudit(): Promise<Record<string, unknown>>;
+  resetPerformanceAudit(): Promise<{ frontendEpoch: number; nativeEpoch: number }>;
+  frontendPerformanceAudit(): Record<string, unknown>;
+  frontendPerformanceAuditProgress(): Record<string, number>;
+  resetFrontendPerformanceAudit(): { frontendEpoch: number };
+  performanceCheckpoint(watches: string[]): Promise<Record<string, unknown>>;
 }
 
 export function isStableObservationCandidate(
@@ -53,11 +68,21 @@ export function stableObservationSignature(snapshot: Record<string, unknown>): s
   // Servicing the background pump does not change an otherwise ready input boundary.
   // This affects only action settling; the complete-snapshot watchdog keeps this field.
   delete observed.cooperativeBackgroundWorkRevision;
+  if (observed.audioProvider && typeof observed.audioProvider === "object")
+    observed.audioProvider = Object.fromEntries(
+      Object.entries(observed.audioProvider).map(([channel, state]) => [
+        channel,
+        state && typeof state === "object"
+          ? { ...(state as Record<string, unknown>), positionMs: 0 }
+          : state,
+      ]),
+    );
   return JSON.stringify(observed);
 }
 
 export function installWebTestControl(pinia: Pinia): void {
   const store = useRuntimeStore(pinia);
+  installPerformanceAuditObservers();
   const createSnapshot = (summary: boolean): Record<string, unknown> =>
     serialize({
       bridgeKind: store.bridgeKind,
@@ -84,6 +109,7 @@ export function installWebTestControl(pinia: Pinia): void {
         windowGeometry: store.clientWindowGeometrySnapshot(),
       },
       startupTelemetry: store.startupTelemetry,
+      performanceAudit: performanceAuditEnabled() ? performanceAuditProgress() : undefined,
       memory: store.liveMemoryCounters(),
       canInteract: store.canInteract,
       wait: store.presentation.inputWait,
@@ -160,6 +186,159 @@ export function installWebTestControl(pinia: Pinia): void {
     reloadProject: (scope, path) =>
       store.reloadProject(scope === "all" ? { type: "all" } : { type: scope, path: path ?? "" }),
     exportDiagnosis: () => store.exportDiagnosis(),
+    calibratePerformanceFrames,
+    frontendPerformanceAudit() {
+      if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
+      return serialize(performanceAuditSnapshot());
+    },
+    frontendPerformanceAuditProgress() {
+      if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
+      return performanceAuditProgress();
+    },
+    resetFrontendPerformanceAudit() {
+      if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
+      return { frontendEpoch: resetPerformanceAudit() };
+    },
+    async resetPerformanceAudit() {
+      if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
+      const frontendEpoch = resetPerformanceAudit();
+      const { invoke } = await import("@tauri-apps/api/core");
+      const nativeEpoch = await invoke<number>("performance_audit_reset");
+      return { frontendEpoch, nativeEpoch };
+    },
+    async performanceAudit() {
+      if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
+      const { invoke } = await import("@tauri-apps/api/core");
+      const resources = store.presentation.resources as Record<string, unknown>;
+      const lines = store.presentation.lines as Array<{ runs?: unknown[] }>;
+      const native = await invoke<{
+        schemaVersion: number;
+        epoch: number;
+        dropped: number;
+        pumps: Array<{
+          epoch: number;
+          sequence: number;
+          operation: string;
+          requestDecodeMs: number;
+          nativeDriveMs: number;
+          jsonSerializeMs: number;
+        }>;
+      }>("performance_audit_telemetry");
+      const frontend = performanceAuditSnapshot() as {
+        schemaVersion: number;
+        epoch: number;
+        nextSequence: number;
+        timingSamplesDropped: number;
+        timings: Array<{
+          epoch: number;
+          sequence: number;
+          phase: string;
+          operation: string;
+          elapsedMs: number;
+          startedAtMs: number;
+          detail?: Record<string, unknown>;
+        }>;
+        segments: Record<string, { timingSamples: number }>;
+      };
+      if (native.epoch !== frontend.epoch)
+        throw new Error(
+          `performance audit epoch mismatch: frontend=${frontend.epoch} native=${native.epoch}`,
+        );
+      if (native.dropped !== 0)
+        throw new Error(`performance audit native telemetry dropped ${native.dropped} samples`);
+      if (frontend.timingSamplesDropped !== 0)
+        throw new Error(
+          `performance audit frontend telemetry dropped ${frontend.timingSamplesDropped} samples`,
+        );
+      const invokes = frontend.timings.filter((sample) => sample.phase === "invoke");
+      if (invokes.length !== native.pumps.length)
+        throw new Error(
+          `performance audit invoke/native sample mismatch: frontend=${invokes.length} native=${native.pumps.length}`,
+        );
+      for (const [index, pump] of native.pumps.entries()) {
+        const invokeSample = invokes[index];
+        if (
+          !invokeSample ||
+          invokeSample.operation !== pump.operation ||
+          pump.epoch !== native.epoch ||
+          pump.sequence !== index
+        )
+          throw new Error(
+            `performance audit invoke/native ordering mismatch at ${index}: ${JSON.stringify({ invokeSample, pump })}`,
+          );
+        frontend.timings.push({
+          epoch: frontend.epoch,
+          sequence: frontend.nextSequence++,
+          phase: "transport",
+          operation: pump.operation,
+          elapsedMs: Math.max(
+            0,
+            invokeSample.elapsedMs -
+              pump.requestDecodeMs -
+              pump.nativeDriveMs -
+              pump.jsonSerializeMs,
+          ),
+          startedAtMs: invokeSample.startedAtMs,
+          detail: { derived: true, nativeEpoch: pump.epoch, nativeSequence: pump.sequence },
+        });
+      }
+      frontend.segments = {
+        loading: {
+          timingSamples: frontend.timings.filter((sample) => sample.phase === "loading").length,
+        },
+        runtime: {
+          timingSamples: frontend.timings.filter((sample) => sample.phase !== "loading").length,
+        },
+      };
+      return serialize({
+        frontend,
+        native,
+        state: {
+          domNodes: document.querySelectorAll("*").length,
+          lineCount: lines.length,
+          runCount: lines.reduce((total, line) => total + (line.runs?.length ?? 0), 0),
+          historyRevision: store.presentation.historyRevision,
+          sceneLayers: store.presentation.scene?.layers?.length ?? 0,
+          sprites: Array.isArray(resources.sprites) ? resources.sprites.length : 0,
+          canvases: Array.isArray(resources.canvases) ? resources.canvases.length : 0,
+        },
+      });
+    },
+    async performanceCheckpoint(watches) {
+      if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
+      const wait = store.presentation.inputWait as
+        { kind?: string; wait_id?: unknown; generation?: unknown } | undefined;
+      const variables = await store.inspectTypedWatches(watches);
+      const protocol = store.testRuntimeEvidence() as { records?: unknown[] };
+      return serialize({
+        runtimeEpoch: store.runtimeEpoch,
+        phase: store.phase,
+        wait: wait
+          ? { kind: wait.kind, waitId: wait.wait_id ?? null, generation: wait.generation ?? null }
+          : null,
+        output: store.presentation.lines.map(observedLineText),
+        scene: store.presentation.scene,
+        resources: store.presentation.resources,
+        variables,
+        service: store.testRuntimeEvidenceSummary(),
+        storage: store.testRuntimeEvidence(["storage_request", "storage_response"]),
+        transfer: store.testTransferState(),
+        saveTransfer: {
+          mode: store.traditionalSaveDialogMode,
+          busy: store.traditionalSaveTransferBusy,
+          error: store.traditionalSaveTransferError,
+          overwriteSlot: store.traditionalSaveOverwriteSlot,
+        },
+        coreProjection: coreCheckpointProjection(protocol.records ?? [], {
+          phase: store.phase,
+          wait: store.presentation.inputWait,
+          lines: store.presentation.lines,
+          resources: store.presentation.resources,
+          scene: store.presentation.scene,
+          variables,
+        }),
+      });
+    },
     async takeDownload(timeoutMs = 30_000) {
       const deadline = performance.now() + timeoutMs;
       while (performance.now() < deadline) {
@@ -361,4 +540,191 @@ function serialize(value: unknown): any {
   if (value && typeof value === "object")
     return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, serialize(child)]));
   return value;
+}
+
+function coreSerialize(value: unknown): any {
+  if (typeof value === "bigint") {
+    if (value < BigInt(Number.MIN_SAFE_INTEGER) || value > BigInt(Number.MAX_SAFE_INTEGER))
+      throw new Error(`Core companion integer exceeds the exact JSON range: ${value}`);
+    return Number(value);
+  }
+  if (value instanceof Uint8Array) return [...value];
+  if (Array.isArray(value)) return value.map(coreSerialize);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, coreSerialize(child)]),
+    );
+  return value;
+}
+
+function coreProtocolActions(records: unknown[]): unknown[] {
+  const services = new Map<string, { kind: unknown; operation: unknown }>();
+  const storage = new Map<string, { namespace: unknown; relativePath: unknown }>();
+  const actions: unknown[] = [];
+  for (const record of records as Array<{
+    direction?: string;
+    message?: { type?: string; value?: Record<string, any> };
+  }>) {
+    const message = record.message;
+    const value = message?.value;
+    const requestId = String(value?.request_id ?? "");
+    if (record.direction === "receive" && message?.type === "service_request")
+      services.set(requestId, { kind: value?.kind, operation: value?.operation });
+    else if (record.direction === "receive" && message?.type === "storage_request")
+      storage.set(requestId, {
+        namespace: value?.namespace,
+        relativePath: value?.relative_path,
+      });
+    else if (record.direction === "send" && message?.type === "input")
+      actions.push({
+        kind: "input",
+        intent: value?.intent,
+        messageSkip: value?.message_skip ?? false,
+      });
+    else if (record.direction === "send" && message?.type === "service_response") {
+      const service = services.get(requestId);
+      if (!service) throw new Error(`Core companion cannot resolve service request ${requestId}`);
+      actions.push({ kind: "service_response", service, result: value?.result });
+    } else if (record.direction === "send" && message?.type === "storage_response") {
+      const request = storage.get(requestId);
+      if (!request) throw new Error(`Core companion cannot resolve storage request ${requestId}`);
+      actions.push({ kind: "storage_response", storage: request, result: value?.result });
+    }
+  }
+  return actions;
+}
+
+function coreCheckpointProjection(
+  records: unknown[],
+  presentation: Record<string, unknown>,
+): Record<string, unknown> {
+  const typed = records as Array<{
+    channel?: string;
+    direction?: string;
+    message?: { type?: string; value?: Record<string, any> };
+  }>;
+  const actionTypes = new Set(["start", "input", "service_response", "storage_response"]);
+  const boundaries: number[] = [];
+  for (const [index, record] of typed.entries())
+    if (record.direction === "send" && actionTypes.has(record.message?.type ?? ""))
+      boundaries.push(index);
+  const boundary = boundaries.at(-1) ?? -1;
+  const precedingBoundary = boundaries.at(-2) ?? -1;
+  const afterBoundary = typed.slice(boundary + 1);
+  // submit_runtime_and_pump records the fused response before its submitted message id is known.
+  // If no runtime output follows the latest action record, use the bounded preceding window.
+  const checkpointRecords = afterBoundary.some(
+    (record) => record.direction === "receive" && (record.channel ?? "runtime") === "runtime",
+  )
+    ? afterBoundary
+    : typed.slice(precedingBoundary + 1, boundary);
+  const services: unknown[] = [];
+  const storage: unknown[] = [];
+  const otherOutboundTags: number[] = [];
+  for (const record of checkpointRecords) {
+    if (record.direction !== "receive" || (record.channel ?? "runtime") !== "runtime") continue;
+    const message = record.message;
+    const value = message?.value;
+    if (message?.type === "service_request")
+      services.push({
+        kind: value?.kind,
+        operation: value?.operation,
+        operationVersion: value?.operation_version,
+        payload: value?.payload,
+      });
+    else if (message?.type === "storage_request")
+      storage.push({
+        namespace: value?.namespace,
+        relativePath: value?.relative_path,
+        operation: value?.operation,
+      });
+    else if (message?.type) otherOutboundTags.push(runtimeMessageTag(message.type));
+  }
+  return coreSerialize({
+    normalizedState: { ...presentation, services, storage, otherOutboundTags },
+    protocolActions: coreProtocolActions(records),
+    setupMessages: capturedCoreSetupMessages(typed),
+  });
+}
+
+export function capturedCoreSetupMessages(
+  records: Array<{
+    channel?: string;
+    direction?: string;
+    message?: { type?: string; value?: Record<string, any> };
+  }>,
+): unknown[] {
+  const runtime = records.filter((record) => (record.channel ?? "runtime") === "runtime");
+  const serverHello = runtime.findIndex(
+    (record) => record.direction === "receive" && record.message?.type === "server_hello",
+  );
+  if (serverHello < 0)
+    throw new Error("Core companion capture did not observe the real server_hello boundary");
+  const manifest = runtime.findIndex(
+    (record, index) =>
+      index > serverHello &&
+      record.direction === "send" &&
+      record.message?.type === "project_manifest",
+  );
+  if (manifest < 0)
+    throw new Error("Core companion capture did not observe project_manifest after server_hello");
+  const start = runtime.findIndex(
+    (record, index) =>
+      index > manifest && record.direction === "send" && record.message?.type === "start",
+  );
+  if (start < 0)
+    throw new Error("Core companion capture did not observe start after project_manifest");
+
+  const lifecycleSubmissions = runtime
+    .slice(manifest + 1, start)
+    .filter((record) => record.direction === "send" && record.message?.type != null);
+  if (lifecycleSubmissions.length !== 1 || lifecycleSubmissions[0].message?.type !== "project_load")
+    throw new Error(
+      "Core companion cannot place messages submitted after project_manifest and before start; expected only project_load",
+    );
+
+  const setup = runtime
+    .slice(serverHello + 1, manifest)
+    .filter((record) => record.direction === "send" && record.message?.type != null);
+  const lifecycleTypes = new Set(["client_hello", "project_manifest", "project_load", "start"]);
+  const invalid = setup.find((record) => lifecycleTypes.has(record.message?.type ?? ""));
+  if (invalid)
+    throw new Error(
+      `Core companion setup contains reserved lifecycle message ${invalid.message?.type ?? "unknown"}`,
+    );
+  return setup.map((record) => record.message);
+}
+
+function runtimeMessageTag(type: string): number {
+  const tags: Record<string, number> = {
+    server_hello: 1,
+    version_rejected: 2,
+    project_load_report: 11,
+    project_analysis_request: 13,
+    key_macro_state_changed: 17,
+    state_changed: 21,
+    exit_requested: 22,
+    configuration_update_prepared: 25,
+    configuration_update_committed: 27,
+    client_preferences_applied: 29,
+    wait_changed: 32,
+    projection_state: 36,
+    input_undo_state_changed: 38,
+    presentation_snapshot: 40,
+    presentation_delta: 41,
+    effect_batch: 42,
+    state_export_ready: 61,
+    state_import_accepted: 63,
+    state_import_ready: 66,
+    state_export_chunk: 68,
+    shutdown_ready: 91,
+    fault: 92,
+    acknowledge: 93,
+    runtime_resynchronized: 96,
+    diagnostic: 97,
+    log: 98,
+  };
+  const tag = tags[type];
+  if (tag == null) throw new Error(`Core companion cannot map runtime message tag ${type}`);
+  return tag;
 }

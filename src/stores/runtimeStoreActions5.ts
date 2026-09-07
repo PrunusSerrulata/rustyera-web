@@ -462,10 +462,7 @@ export function createRuntimeStoreActions5(context: any) {
     context.startupTelemetryState.completeFrontendReadiness();
     if (["running", "waiting_input", "waiting_external"].includes(context.phase.value)) {
       const telemetry = context.startupTelemetry.value;
-      if (telemetry?.outcome === "loading") {
-        telemetry.milestones.firstGamePhaseMs ??= context.startupTelemetryState.elapsedMs();
-        telemetry.outcome = "success";
-      }
+      if (telemetry?.outcome === "loading") context.startupTelemetryState.completeFirstGamePhase();
       context.finishProjectLoad();
       context.baseStatus.value = GAME_RUNNING_STATUS;
       if (!context.runtimeManifestSparse) context.scheduleCompiledCacheExport(1000);
@@ -682,10 +679,15 @@ export function createRuntimeStoreActions5(context: any) {
   async function projectViewport(
     measurement = currentGameViewportMeasurement(),
     layoutIdentity = context.viewportLayoutIdentity,
+    allowDuringPresentationBarrier = false,
   ): Promise<void> {
     context.viewportLayoutIdentity = layoutIdentity;
     const environmentIdentity = context.viewportEnvironmentIdentity();
-    if (context.projectionObservationBarriers.size > 0 && measurement != null) {
+    if (
+      !allowDuringPresentationBarrier &&
+      context.projectionObservationBarriers.size > 0 &&
+      measurement != null
+    ) {
       context.deferredViewportProjection = { measurement: { ...measurement }, layoutIdentity };
       await applyPendingClientConfiguration();
       await reconcileClientWindowGeometry(measurement);

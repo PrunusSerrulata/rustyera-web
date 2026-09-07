@@ -193,7 +193,8 @@ describe("frontend host and image-line policy", () => {
 
   it("does not enable project-specific Tauri specs during the default suite", () => {
     const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
-    expect(runner).not.toMatch(/VITE_RUSTYERA_TAURI_[A-Z_]+:[\s\S]*?\?\s*"1"\s*:\s*"0"/);
+    expect(runner).toContain('environmentFlag === specProfile?.environmentFlag ? "1" : ""');
+    expect(runner).not.toContain('environmentFlag === specProfile?.environmentFlag ? "1" : "0"');
   });
 
   it("selects native fetch before loading the Tauri WebDriver service", () => {

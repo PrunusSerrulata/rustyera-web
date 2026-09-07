@@ -27,7 +27,7 @@ import {
   htmlBoxRowLayoutsForRange,
   positionedMediaRightBoundariesForRange,
 } from "@/core/htmlBoxLayout";
-import { htmlImageLayerOffsets } from "@/core/htmlImageLayerLayout";
+import { htmlImageLayerOffsetsForRange } from "@/core/htmlImageLayerLayout";
 import { usesConfiguredLineHeight } from "@/core/lineLayout";
 import { compactSceneDepthRanks, sceneDepthKey, sceneDepthRankKey } from "@/core/sceneStacking";
 import type {
@@ -69,29 +69,30 @@ let bottomFollowRevision = 0;
 let followingBottom = false;
 let preserveNfViewport = false;
 let nfUserScrolled = false;
-const keyedLines = new Map<number, { id: string; key: string; mediaLayout?: string }>();
+let nfViewportEpoch = 0;
+let nfInitialFollowPending = false;
+let multilineAnimationVisible = false;
+let releaseMultilineAnimationRange: (() => void) | undefined;
+const keyedLines = new Map<
+  number,
+  { id: string; key: string; nfViewportEpoch?: number; mediaLayout?: string }
+>();
 type RangeExtractor = (range: Range) => number[];
 const baseRangeExtractor = shallowRef<RangeExtractor>(defaultRangeExtractor);
 const activeRangeExtractor = shallowRef<RangeExtractor>(defaultRangeExtractor);
 const geometryRangeLeases = new Map<number, number>();
 const geometryAbort = new AbortController();
 
-const sceneDepthRanks = computed(() =>
-  compactSceneDepthRanks([
-    ...store.presentation.scene.layers.map((layer) => layer.depth),
-    ...presentationHtmlDepths(),
-  ]),
-);
-provide(sceneDepthRankKey, (depth) => sceneDepthRanks.value.get(sceneDepthKey(depth)) ?? 0);
-
 watch(
   () => store.runtimeEpoch,
   (runtimeEpoch) => {
+    resetMultilineAnimationViewport();
     const epoch = String(runtimeEpoch);
     if (epoch !== keyedRuntimeEpoch) {
       keyedLines.clear();
       preserveNfViewport = false;
       nfUserScrolled = false;
+      nfInitialFollowPending = false;
     }
     keyedRuntimeEpoch = epoch;
   },
@@ -102,15 +103,21 @@ watch(
   () => store.presentation.inputWait,
   async (wait) => {
     if (wait == null) return;
+    resetMultilineAnimationViewport();
     const preserve =
       wait.viewport_policy === "preserve_user_viewport" || wait.viewport_policy === 1;
     if (preserve) {
-      if (!preserveNfViewport) nfUserScrolled = !isAtBottom();
+      if (!preserveNfViewport) {
+        nfUserScrolled = !isAtBottom();
+        nfViewportEpoch += 1;
+        nfInitialFollowPending = true;
+      }
       preserveNfViewport = true;
       return;
     }
     preserveNfViewport = false;
     nfUserScrolled = false;
+    nfInitialFollowPending = false;
     bottomFollowRevision += 1;
     const revision = bottomFollowRevision;
     followingBottom = true;
@@ -126,17 +133,27 @@ watch(
   },
   // Apply the policy before the pre-flush history watcher observes a snapshot
   // that publishes both a new tail and its NF wait in one reactive commit.
-  { flush: "sync" },
+  { immediate: true, flush: "sync" },
 );
 
 function lineRenderKey(index: number): string {
-  // Appending history must not invalidate every measured row. Reuse an index key only for media
-  // frames with identical geometry; this preserves a generated animation's mounted canvas while
-  // ensuring ordinary replacement rows never inherit the previous screen's measured height.
+  // Appending history must not invalidate every measured row. NF animations replace their entire
+  // frame on every timer tick, including HTML map rows and controls. Retaining the prior frame's
+  // row nodes lets Vue patch the changed glyphs in place and keeps a physical click target mounted
+  // across pointer-down/up. The first NF frame and ordinary replacement rows still receive fresh
+  // keys so they cannot inherit measurements from another screen.
   const line = store.presentation.lines[index];
   const id = String(line?.line_id ?? index);
   const cached = keyedLines.get(index);
-  if (cached?.id === id) return cached.key;
+  if (preserveNfViewport) {
+    const key =
+      cached?.nfViewportEpoch === nfViewportEpoch
+        ? cached.key
+        : `${keyedRuntimeEpoch}:nf:${nfViewportEpoch}:${id}`;
+    keyedLines.set(index, { id, key, nfViewportEpoch });
+    return key;
+  }
+  if (cached?.id === id && cached.nfViewportEpoch == null) return cached.key;
   const mediaLayout = mediaLayoutIdentity(line);
   const key =
     mediaLayout != null && mediaLayout === cached?.mediaLayout
@@ -241,6 +258,31 @@ const items = computed(() =>
     return current.every(valid) ? current : current.filter(valid);
   })(),
 );
+watch(
+  () => store.presentation.revision,
+  async () => {
+    if (store.presentation.inputWait != null || multilineAnimationVisible) return;
+    const index = multilineTextFrameIndex(store.presentation.lines);
+    if (index < 0) return;
+    multilineAnimationVisible = true;
+    bottomFollowRevision += 1;
+    releaseMultilineAnimationRange = acquireGeometryRange(index);
+    await nextTick();
+    if (store.presentation.inputWait != null) return;
+    virtualizer.value.scrollToIndex(index, { align: "start" });
+    await nextAnimationFrame();
+    if (store.presentation.inputWait != null) return;
+    virtualizer.value.scrollToIndex(index, { align: "start" });
+  },
+  { flush: "post" },
+);
+const sceneDepthRanks = computed(() =>
+  compactSceneDepthRanks([
+    ...store.presentation.scene.layers.map((layer) => layer.depth),
+    ...visiblePresentationHtmlDepths(),
+  ]),
+);
+provide(sceneDepthRankKey, (depth) => sceneDepthRanks.value.get(sceneDepthKey(depth)) ?? 0);
 const visibleBoxRowLayouts = computed(() => {
   const visibleItems = items.value;
   if (visibleItems.length === 0) return new Map();
@@ -264,9 +306,16 @@ const visiblePositionedMediaRightBoundaries = computed(() => {
     },
   );
 });
-const imageLayerOffsets = computed(() =>
-  htmlImageLayerOffsets(store.presentation.lines, store.gameLineHeightPx),
-);
+const imageLayerOffsets = computed(() => {
+  const visibleItems = items.value;
+  if (visibleItems.length === 0) return new Map<number, number>();
+  return htmlImageLayerOffsetsForRange(
+    store.presentation.lines,
+    store.gameLineHeightPx,
+    visibleItems[0].index,
+    visibleItems.at(-1)?.index ?? visibleItems[0].index,
+  );
+});
 const measuredHistoryHeight = computed(() => {
   // Reading the virtual items keeps this projection in step with row measurements.
   void items.value;
@@ -287,7 +336,7 @@ const sceneLineTops = computed(() => {
   return tops;
 });
 
-function presentationHtmlDepths(): unknown[] {
+function visiblePresentationHtmlDepths(): unknown[] {
   const depths: unknown[] = [];
   const visitNode = (node: unknown): void => {
     if (!node || typeof node !== "object") return;
@@ -310,7 +359,10 @@ function presentationHtmlDepths(): unknown[] {
       for (const node of value.document?.nodes ?? []) visitNode(node);
     for (const child of value.runs ?? value.content ?? []) visitRun(child);
   };
-  for (const line of store.presentation.lines) for (const run of line.runs) visitRun(run);
+  for (const item of items.value) {
+    const line = store.presentation.lines[item.index];
+    for (const run of line?.runs ?? []) visitRun(run);
+  }
   for (const document of store.presentation.htmlIsland)
     for (const node of document?.nodes ?? []) visitNode(node);
   return depths;
@@ -322,13 +374,17 @@ let followAfterRender = false;
 watch(
   bottomFollowSource,
   ([historyRevision], [previousHistoryRevision]) => {
-    // Equal-length dynamic-map refreshes replace the tail with new line IDs without
-    // counting as new history. Keep following them only when the old frame was at bottom;
-    // an intentionally scrolled-back viewport must remain untouched.
+    // NF map frames can replace the tail while also advancing the history revision. Follow only
+    // when entering the NF viewport epoch; subsequent animation frames preserve the same pixel
+    // offset even if the runtime reports each replacement as a history change.
     if (preserveNfViewport) nfUserScrolled = !isAtBottom();
-    const shouldFollow =
-      !(preserveNfViewport && nfUserScrolled) &&
-      (historyRevision !== previousHistoryRevision || followingBottom || isAtBottom());
+    const historyChanged = historyRevision !== previousHistoryRevision;
+    const shouldFollow = multilineAnimationVisible
+      ? false
+      : preserveNfViewport
+        ? !nfUserScrolled && nfInitialFollowPending
+        : historyChanged || followingBottom || isAtBottom();
+    if (preserveNfViewport) nfInitialFollowPending = false;
     bottomFollowRevision += 1;
     followAfterRender = shouldFollow;
     if (shouldFollow) selectTerminalRange();
@@ -440,6 +496,40 @@ function goBottom(): void {
 
 function nextAnimationFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+function hasMultilineTextFrame(line: PresentationLine): boolean {
+  let newlineCount = 0;
+  const visitHtml = (node: any): boolean => {
+    if (node.type === "text") return countNewlines(String(node.text ?? ""));
+    if (node.type !== "element") return false;
+    if (node.kind === "break" && ++newlineCount >= 8) return true;
+    return (node.children ?? []).some(visitHtml);
+  };
+  const countNewlines = (text: string): boolean => {
+    for (const character of text) if (character === "\n" && ++newlineCount >= 8) return true;
+    return false;
+  };
+  const visitRun = (run: DisplayRun): boolean => {
+    if (run.type === "text" || run.type === "text_layout") return countNewlines(run.text);
+    if (run.type === "button") return run.runs.some(visitRun);
+    if (run.type === "column_cell") return run.content.some(visitRun);
+    if (run.type === "html_document") return (run.document?.nodes ?? []).some(visitHtml);
+    return false;
+  };
+  return line.runs.some(visitRun);
+}
+
+function resetMultilineAnimationViewport(): void {
+  multilineAnimationVisible = false;
+  releaseMultilineAnimationRange?.();
+  releaseMultilineAnimationRange = undefined;
+}
+
+function multilineTextFrameIndex(lines: PresentationLine[]): number {
+  for (let index = lines.length - 1; index >= 0; index -= 1)
+    if (hasMultilineTextFrame(lines[index])) return index;
+  return -1;
 }
 
 function lineMinimumHeight(line: any): string | undefined {
@@ -671,7 +761,10 @@ watch(viewportLayoutIdentity, () => scheduleViewportSynchronization());
           class="game-line"
           :class="[
             `align-${store.presentation.lines[item.index].alignment}`,
-            { 'html-image-layer-line': imageLayerOffsets.has(item.index) },
+            {
+              'html-image-layer-line': imageLayerOffsets.has(item.index),
+              'multiline-text-frame': hasMultilineTextFrame(store.presentation.lines[item.index]),
+            },
           ]"
           :data-index="item.index"
           :data-line-id="String(store.presentation.lines[item.index].line_id)"

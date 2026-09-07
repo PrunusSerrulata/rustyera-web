@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eratw-sub-modding",
+  "mode": "fixed",
+  "seed": 123456,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "[2] DEMO", "exact": true },
+      "advances_game": true,
+      "observe": false,
+      "semantic_input": 2
+    },
+    { "type": "reset_frontend_performance_audit" },
+    {
+      "type": "measure_animation_performance",
+      "minimum_frames": 30,
+      "minimum_median_interval_ms": 27,
+      "timeout_ms": 30000
+    },
+    {
+      "type": "assert_dom",
+      "locator": { "css": ".game-line.multiline-text-frame" },
+      "fields": ["count", "visible"],
+      "expect": { "count": 1, "visible": true }
+    },
+    {
+      "type": "click",
+      "locator": { "css": ".game-viewport" },
+      "button": "left",
+      "advances_game": true,
+      "observe": false
+    },
+    { "type": "wait_runtime_observation", "timeout_ms": 30000 },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "button", "name": "[2] DEMO", "exact": true },
+      "fields": ["count", "visible", "enabled"],
+      "expect": { "count": 1, "visible": true, "enabled": true }
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "phase": "waiting_input",
+        "canInteract": true,
+        "fault": null,
+        "audioProvider": {
+          "sound:0": {
+            "state": "stopped",
+            "resourceId": null,
+            "durationMs": 0,
+            "positionMs": 0
+          }
+        }
+      }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "[2] DEMO", "exact": true },
+      "advances_game": true,
+      "observe": false,
+      "semantic_input": 2
+    },
+    { "type": "reset_frontend_performance_audit" },
+    {
+      "type": "measure_animation_performance",
+      "minimum_frames": 5,
+      "timeout_ms": 10000
+    },
+    {
+      "type": "press",
+      "locator": { "css": ".game-viewport" },
+      "key": "Enter",
+      "advances_game": true,
+      "observe": false
+    },
+    { "type": "wait_runtime_observation", "timeout_ms": 30000 },
+    {
+      "type": "assert_state",
+      "expect": {
+        "phase": "waiting_input",
+        "canInteract": true,
+        "fault": null,
+        "audioProvider": { "sound:0": { "state": "stopped", "resourceId": null } }
+      }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "[2] DEMO", "exact": true },
+      "advances_game": true,
+      "observe": false,
+      "semantic_input": 2
+    },
+    { "type": "reset_frontend_performance_audit" },
+    {
+      "type": "measure_animation_performance",
+      "minimum_frames": 5,
+      "timeout_ms": 10000
+    },
+    {
+      "type": "press",
+      "locator": { "css": ".game-viewport" },
+      "key": "Escape",
+      "advances_game": true,
+      "observe": false
+    },
+    { "type": "wait_runtime_observation", "timeout_ms": 30000 },
+    {
+      "type": "assert_state",
+      "expect": {
+        "phase": "waiting_input",
+        "canInteract": true,
+        "fault": null,
+        "audioProvider": { "sound:0": { "state": "stopped", "resourceId": null } }
+      }
+    },
+    {
+      "type": "click",
+      "locator": { "role": "button", "name": "[2] DEMO", "exact": true },
+      "advances_game": true,
+      "observe": false,
+      "semantic_input": 2
+    },
+    { "type": "reset_frontend_performance_audit" },
+    {
+      "type": "measure_animation_performance",
+      "minimum_frames": 5,
+      "timeout_ms": 10000
+    },
+    {
+      "type": "press",
+      "locator": { "css": ".game-viewport" },
+      "key": "a",
+      "advances_game": true,
+      "observe": false
+    },
+    { "type": "wait_runtime_observation", "timeout_ms": 30000 },
+    {
+      "type": "assert_dom",
+      "locator": { "role": "button", "name": "[2] DEMO", "exact": true },
+      "fields": ["count", "visible", "enabled"],
+      "expect": { "count": 1, "visible": true, "enabled": true }
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "phase": "waiting_input",
+        "canInteract": true,
+        "fault": null,
+        "audioProvider": {
+          "sound:0": {
+            "state": "stopped",
+            "resourceId": null,
+            "durationMs": 0,
+            "positionMs": 0
+          }
+        }
+      }
+    }
+  ],
+  "goal": {},
+  "limits": { "max_steps": 20, "timeout_seconds": 180 }
+}

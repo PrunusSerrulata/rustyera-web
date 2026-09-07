@@ -1,4 +1,6 @@
 import {
+  DisplayLine,
+  GameViewport,
   afterEach,
   beforeEach,
   continueFromViewport,
@@ -6,6 +8,7 @@ import {
   dispatchTouch,
   expect,
   it,
+  mount,
   mountViewport,
   naturalMeasureElement,
   nextTick,
@@ -175,6 +178,97 @@ describe("game viewport", () => {
     await nextTick();
 
     expect(virtualOptions.value.value.getItemKey(1)).toBe("1:2");
+    wrapper.unmount();
+  });
+
+  it("reuses NF row keys within one viewport epoch without crossing boundaries", async () => {
+    store.presentation.inputWait = { viewport_policy: "preserve_user_viewport" };
+    store.presentation.lines = [
+      { line_id: 1, alignment: "left", runs: [], text_background_eligible: false },
+    ];
+    const wrapper = mountViewport();
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:nf:1:1");
+
+    let runReads = 0;
+    store.presentation.lines = [
+      {
+        line_id: 2,
+        alignment: "left",
+        get runs() {
+          runReads += 1;
+          return [
+            {
+              type: "html_document",
+              document: { nodes: [{ type: "text", text: "map html" }] },
+            },
+          ];
+        },
+        text_background_eligible: false,
+      },
+    ];
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:nf:1:1");
+    expect(runReads).toBe(0);
+
+    store.presentation.historyRevision += 1;
+    store.presentation.lines = [
+      { line_id: 3, alignment: "left", runs: [], text_background_eligible: false },
+    ];
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:nf:1:1");
+
+    store.presentation.inputWait = { viewport_policy: "follow_output" };
+    store.presentation.lines = [
+      {
+        line_id: 4,
+        alignment: "left",
+        runs: [{ type: "button", runs: [{ type: "text", text: "ordinary" }] }],
+        text_background_eligible: false,
+      },
+    ];
+    await nextTick();
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:4");
+
+    store.presentation.inputWait = { viewport_policy: "preserve_user_viewport" };
+    await nextTick();
+    store.presentation.lines = [
+      { line_id: 4, alignment: "left", runs: [], text_background_eligible: false },
+    ];
+    expect(virtualOptions.value.value.getItemKey(0)).toBe("1:nf:2:4");
+    wrapper.unmount();
+  });
+
+  it("keeps an NF button mounted while updating its line and text", async () => {
+    virtualState.useOptionsRange = true;
+    store.presentation.inputWait = { viewport_policy: "preserve_user_viewport" };
+    store.presentation.lines = [
+      {
+        line_id: 1,
+        alignment: "left",
+        runs: [{ type: "button", runs: [{ type: "text", text: "frame 1" }] }],
+        text_background_eligible: false,
+      },
+    ];
+    const wrapper = mount(GameViewport, {
+      global: { stubs: { SceneCompositor: false, GameTooltip: true } },
+    });
+    const row = wrapper.get(".game-line").element;
+    const button = wrapper.get(".game-button").element;
+
+    store.presentation.lines = [
+      {
+        line_id: 2,
+        alignment: "left",
+        runs: [{ type: "button", runs: [{ type: "text", text: "frame 2" }] }],
+        text_background_eligible: false,
+      },
+    ];
+    store.presentation.revision += 1;
+    store.presentation.historyRevision += 1;
+    await nextTick();
+
+    expect(wrapper.get(".game-line").element).toBe(row);
+    expect(wrapper.get(".game-button").element).toBe(button);
+    expect(wrapper.get(".game-button").text()).toBe("frame 2");
+    expect(wrapper.getComponent(DisplayLine).props("line").line_id).toBe(2);
     wrapper.unmount();
   });
 

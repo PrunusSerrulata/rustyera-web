@@ -12,6 +12,7 @@ import {
 
 describe("web game test scenario", () => {
   it("waits for a timed input to advance without submitting an input", async () => {
+    const pending = { canInteract: false, wait: null };
     const before = {
       wait: {
         wait_id: "283",
@@ -28,7 +29,7 @@ describe("web game test scenario", () => {
         viewport_policy: "preserve_user_viewport",
       },
     };
-    const snapshots = [before, after];
+    const snapshots = [pending, before, after];
     const page = {
       evaluate: vi.fn(async (callback) => {
         if (String(callback).includes("waitForStableObservation")) return undefined;
@@ -48,7 +49,8 @@ describe("web game test scenario", () => {
         },
       },
     });
-    expect(page.waitForFunction).toHaveBeenCalledWith(expect.any(Function), "283");
+    expect(page.waitForFunction).toHaveBeenNthCalledWith(1, expect.any(Function));
+    expect(page.waitForFunction).toHaveBeenNthCalledWith(2, expect.any(Function), "283");
   });
 
   it("scrolls a focused production viewport with real keyboard input", async () => {

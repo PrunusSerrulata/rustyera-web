@@ -18,22 +18,17 @@ export interface BrowserStorageResource {
   open(): Promise<Blob | Uint8Array>;
 }
 
-function boundedPath(path: string): string {
-  const normalized = safePath(path);
-  if (new TextEncoder().encode(normalized).length > maximumPathBytes || normalized.includes("\0"))
-    throw new DOMException("资源路径超过限额或无效", "DataError");
-  return normalized;
+export type BrowserStorageResourceIndex = ReadonlyMap<string, BrowserStorageResource>;
+
+function isBrowserStorageResourceIndex(
+  resources: readonly BrowserStorageResource[] | BrowserStorageResourceIndex,
+): resources is BrowserStorageResourceIndex {
+  return resources instanceof Map;
 }
 
-export async function operateBrowserResourceStorage(
+export function indexBrowserStorageResources(
   resources: readonly BrowserStorageResource[],
-  relativePath: string,
-  operation: any,
-  profile: StoragePatternProfile,
-): Promise<any> {
-  if (["write", "delete"].includes(operation.type))
-    throw new DOMException("Resource 存储只读", "NoModificationAllowedError");
-  const relative = boundedPath(relativePath);
+): BrowserStorageResourceIndex {
   const index = new Map<string, BrowserStorageResource>();
   let manifestPathBytes = 0;
   for (const resource of resources) {
@@ -45,6 +40,28 @@ export async function operateBrowserResourceStorage(
     if (index.has(key)) throw new DOMException("资源清单包含重复规范路径", "DataError");
     index.set(key, { ...resource, path });
   }
+  return index;
+}
+
+function boundedPath(path: string): string {
+  const normalized = safePath(path);
+  if (new TextEncoder().encode(normalized).length > maximumPathBytes || normalized.includes("\0"))
+    throw new DOMException("资源路径超过限额或无效", "DataError");
+  return normalized;
+}
+
+export async function operateBrowserResourceStorage(
+  resources: readonly BrowserStorageResource[] | BrowserStorageResourceIndex,
+  relativePath: string,
+  operation: any,
+  profile: StoragePatternProfile,
+): Promise<any> {
+  if (["write", "delete"].includes(operation.type))
+    throw new DOMException("Resource 存储只读", "NoModificationAllowedError");
+  const relative = boundedPath(relativePath);
+  const index = isBrowserStorageResourceIndex(resources)
+    ? resources
+    : indexBrowserStorageResources(resources);
   if (operation.type === "list") {
     const matches = storagePattern(operation.pattern, profile);
     const prefix = relative ? `${relative.toLowerCase()}/` : "";

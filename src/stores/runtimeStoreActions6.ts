@@ -30,6 +30,9 @@ export function createRuntimeStoreActions6(context: any) {
     context.deviceGeneration += 1;
     context.deviceEventSequence = 0;
     context.devicePumpTimeAdvancePending = false;
+    context.devicePumpInputCaptureActive = false;
+    context.deviceTextInputActive = false;
+    context.deviceTextObservationTail = Promise.resolve();
     context.deviceSubmissionFailure = undefined;
     context.deviceSynchronizationPending = true;
     if (!clearPhysicalState) return;
@@ -149,6 +152,7 @@ export function createRuntimeStoreActions6(context: any) {
     // a timing approximation.
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
     await awaitDeviceSubmissions();
+    await context.deviceTextObservationTail;
     if (
       generation !== context.deviceGeneration ||
       !sameServiceInteger(epoch, context.runtimeEpoch.value)
@@ -159,11 +163,20 @@ export function createRuntimeStoreActions6(context: any) {
         "invalid_request",
         "device pump watermark exceeds submitted events",
       );
+    const throughEventSequence = context.deviceEventSequence;
+    const acknowledgedAtNs = context.sampleMonotonicTime();
+    void context
+      .send({ type: "advance_time", value: { monotonic_time_ns: acknowledgedAtNs } })
+      .catch((error: unknown) =>
+        context.log("warning", `设备泵时钟同步失败：${String(error)}`),
+      );
+    context.testEnvironment.recordTimeAdvance(acknowledgedAtNs);
     // A positive snake AWAIT starts only after this acknowledgement. Its duration is retained by
     // core rather than exposed in the device-pump ABI, so keep sampling frontend time until core
     // leaves waiting_external. AWAIT 0 may receive one harmless sample before its phase update.
     context.devicePumpTimeAdvancePending = true;
-    return context.deviceEventSequence;
+    context.devicePumpInputCaptureActive = true;
+    return throughEventSequence;
   }
 
   async function signalMessageSkip(): Promise<void> {
@@ -218,8 +231,7 @@ export function createRuntimeStoreActions6(context: any) {
       message.type === "start" &&
       telemetry?.outcome === "loading" &&
       telemetry.milestones.startSubmittedMs == null;
-    if (startupStart)
-      telemetry.milestones.startSubmittedMs = context.startupTelemetryState.elapsedMs();
+    if (startupStart) context.startupTelemetryState.markStartSubmitted();
     const transported = transportValue(message);
     const observedMessage = context.testEvidence.prepareMessage(transported);
     if (
@@ -392,7 +404,32 @@ export function createRuntimeStoreActions6(context: any) {
     ) {
       event.preventDefault();
       void context.submitIntent({ type: "any_key", value: event.key || "\n" }, false);
+    } else if (
+      !event.defaultPrevented &&
+      !event.repeat &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      context.devicePumpInputCaptureActive &&
+      !context.canInteract.value
+    ) {
+      event.preventDefault();
+      signalDeviceTextInput(event.key.length === 1 ? event.key : " ");
     }
+  }
+
+  function signalDeviceTextInput(text: string): void {
+    context.prompt.value += text;
+    context.deviceTextInputActive = true;
+  }
+
+  function observeDeviceTextBox(): Promise<void> {
+    context.deviceTextObservationTail = context.deviceTextObservationTail
+      .then(() => context.projectViewport(undefined, context.viewportLayoutIdentity, true))
+      .catch((error: unknown) =>
+        context.log("warning", `设备文本状态提交失败：${String(error)}`, true, "none"),
+      );
+    return context.deviceTextObservationTail;
   }
 
   function isModifierKey(key: string): boolean {
@@ -436,6 +473,8 @@ export function createRuntimeStoreActions6(context: any) {
   function onMouseDown(event: MouseEvent): void {
     const code = mouseCode(event.button);
     if (code == null) return;
+    if (context.devicePumpInputCaptureActive && !context.canInteract.value)
+      signalDeviceTextInput(" ");
     void observePhysicalDeviceState(
       "mouse",
       code,
@@ -500,6 +539,7 @@ export function createRuntimeStoreActions6(context: any) {
     keyboardToggle,
     mouseCode,
     onMouseDown,
+    observeDeviceTextBox,
     onMouseUp,
     liveMemoryCounters,
   };

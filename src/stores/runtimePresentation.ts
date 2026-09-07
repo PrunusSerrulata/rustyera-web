@@ -6,6 +6,11 @@ import {
   emptyPresentation,
   type PresentationState,
 } from "@/core/presentation";
+import {
+  PERFORMANCE_AUDIT_ENABLED,
+  recordPerformanceTiming,
+  recordPublishedPresentationRevision,
+} from "@/testing/performanceAudit";
 
 export class RuntimePresentationProjection {
   readonly presentation = reactive(emptyPresentation());
@@ -39,6 +44,10 @@ export class RuntimePresentationProjection {
     this.stagedForInputTransition = true;
   }
 
+  cancelInputTransition(): void {
+    if (this.stagedForInputTransition) this.discard();
+  }
+
   closeInputWait(): void {
     this.beginInputTransition();
     this.current().inputWait = null;
@@ -50,6 +59,10 @@ export class RuntimePresentationProjection {
     if (stagedRevision !== expectedRevision) {
       throw new Error(`立即展示 revision 不匹配：期望 ${expectedRevision}，当前 ${stagedRevision}`);
     }
+    return this.publishForObservationBarrier();
+  }
+
+  publishForObservationBarrier(): boolean {
     if (!this.stagedPresentation) return false;
     const continueInputTransition = this.stagedForInputTransition;
     const published = this.publish();
@@ -64,13 +77,16 @@ export class RuntimePresentationProjection {
   shouldPublish(runtimeState: string): boolean {
     return (
       this.stagedReady ||
-      (this.stagedCanFlushWhenIdle &&
-        this.stagedPresentation != null &&
-        !["more_work", "output_ready"].includes(runtimeState))
+      (this.stagedPresentation != null &&
+        (["stopped", "faulted"].includes(runtimeState) ||
+          (!this.stagedForInputTransition &&
+            this.stagedCanFlushWhenIdle &&
+            runtimeState === "idle")))
     );
   }
 
   publish(): boolean {
+    const startedAt = PERFORMANCE_AUDIT_ENABLED ? performance.now() : undefined;
     const staged = this.stagedPresentation;
     if (!staged) return false;
     // Redraw-disabled map refreshes can delete and recreate their tail across separate deltas.
@@ -81,10 +97,17 @@ export class RuntimePresentationProjection {
     }
     Object.assign(this.presentation, staged);
     this.discard();
+    if (PERFORMANCE_AUDIT_ENABLED) {
+      recordPublishedPresentationRevision(this.presentation.revision);
+      recordPerformanceTiming("presentation", "publish", startedAt, {
+        presentationRevision: String(this.presentation.revision),
+      });
+    }
     return true;
   }
 
   projectSnapshot(snapshot: any): boolean {
+    const startedAt = PERFORMANCE_AUDIT_ENABLED ? performance.now() : undefined;
     markSnapshotPayloadsRaw(snapshot);
     const next = this.clone(this.current());
     applySnapshot(next, snapshot);
@@ -94,14 +117,21 @@ export class RuntimePresentationProjection {
       this.stagedCanFlushWhenIdle = false;
       this.stagedForInputTransition = false;
       this.staged.value = true;
+      if (PERFORMANCE_AUDIT_ENABLED)
+        recordPerformanceTiming("presentation", "snapshot_stage", startedAt);
       return false;
     }
     this.discard();
     Object.assign(this.presentation, next);
+    if (PERFORMANCE_AUDIT_ENABLED) {
+      recordPublishedPresentationRevision(this.presentation.revision);
+      recordPerformanceTiming("presentation", "snapshot_publish", startedAt);
+    }
     return true;
   }
 
   projectDelta(delta: any): boolean {
+    const startedAt = PERFORMANCE_AUDIT_ENABLED ? performance.now() : undefined;
     markDeltaPayloadsRaw(delta);
     const operations = delta.operations ?? [];
     const disablesRedraw = operations.some(
@@ -138,12 +168,20 @@ export class RuntimePresentationProjection {
     const target = shouldStage ? this.stage() : this.presentation;
     if (target === this.stagedPresentation) this.prepareStagedLines(operations);
     applyDelta(target, delta);
-    if (target !== this.stagedPresentation) return true;
+    if (target !== this.stagedPresentation) {
+      if (PERFORMANCE_AUDIT_ENABLED) {
+        recordPublishedPresentationRevision(this.presentation.revision);
+        recordPerformanceTiming("presentation", "delta_publish", startedAt);
+      }
+      return true;
+    }
     if (disablesRedraw || target.redraw?.enabled === false) this.stagedCanFlushWhenIdle = false;
     else if (startsTransientReplacement) this.stagedCanFlushWhenIdle = true;
     if (opensInputWait || (completesFrame && !this.stagedForInputTransition)) {
       this.stagedReady = true;
     }
+    if (PERFORMANCE_AUDIT_ENABLED)
+      recordPerformanceTiming("presentation", "delta_stage", startedAt);
     return false;
   }
 

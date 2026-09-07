@@ -260,6 +260,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   let deviceEventSequence = 0;
   let deviceGeneration = 0;
   let devicePumpTimeAdvancePending = false;
+  let devicePumpInputCaptureActive = false;
+  let deviceTextInputActive = false;
+  let deviceTextObservationTail: Promise<void> = Promise.resolve();
   const testAudioPlayback = new Map<string, { starts: number; active: number }>();
   const audio = new AudioEngine(
     bridge,
@@ -361,6 +364,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     send,
     sampleMonotonic: () => testEnvironment.sampleMonotonic(),
     phase: () => phase.value,
+    beginPresentationTransition: () => presentationProjection.beginInputTransition(),
+    cancelPresentationTransition: () => presentationProjection.cancelInputTransition(),
     signalMessageSkip,
     logWarning: (message) =>
       log("warning", message, true, isNonNotifiedInputWarning(message) ? "none" : "all"),
@@ -578,6 +583,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
   function resetViewportProjectionBarriers(): void {
     return runtimeStoreActions.resetViewportProjectionBarriers();
   }
+  function resetTimedViewportRecovery(): void {
+    return runtimeStoreActions.resetTimedViewportRecovery();
+  }
   async function advanceTimedWait(): Promise<void> {
     return runtimeStoreActions.advanceTimedWait();
   }
@@ -684,6 +692,24 @@ export const useRuntimeStore = defineStore("runtime", () => {
     },
     set devicePumpTimeAdvancePending(value) {
       devicePumpTimeAdvancePending = value;
+    },
+    get devicePumpInputCaptureActive() {
+      return devicePumpInputCaptureActive;
+    },
+    set devicePumpInputCaptureActive(value) {
+      devicePumpInputCaptureActive = value;
+    },
+    get deviceTextInputActive() {
+      return deviceTextInputActive;
+    },
+    set deviceTextInputActive(value) {
+      deviceTextInputActive = value;
+    },
+    get deviceTextObservationTail() {
+      return deviceTextObservationTail;
+    },
+    set deviceTextObservationTail(value) {
+      deviceTextObservationTail = value;
     },
     get deviceSubmissionFailure() {
       return deviceSubmissionFailure;
@@ -801,6 +827,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     readTestTypedWatches,
     replaceFullWidthSpaces,
     requestSystemFonts,
+    resetTimedViewportRecovery,
     retiredFullManifestCommandIds,
     get runtimeBatchSequence() {
       return runtimeBatchSequence;

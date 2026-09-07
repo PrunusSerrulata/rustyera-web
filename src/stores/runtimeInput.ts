@@ -21,6 +21,8 @@ interface RuntimeInputContext {
   send(message: RuntimeMessage): Promise<number | bigint>;
   sampleMonotonic(): number;
   phase(): string;
+  beginPresentationTransition(): void;
+  cancelPresentationTransition(): void;
   logWarning(message: string): void;
   signalMessageSkip(): Promise<void>;
 }
@@ -49,11 +51,13 @@ export class RuntimeInputState {
       staleRetries: 0,
       previousRetiredInteractionSequence,
     };
+    this.context.beginPresentationTransition();
     try {
       const messageId = await this.sendInput(wait, intent, messageSkip);
       if (this.pending.value?.waitIdentity === waitIdentity)
         this.pending.value.messageId = String(messageId);
     } catch (error) {
+      this.context.cancelPresentationTransition();
       if (this.pending.value?.waitIdentity === waitIdentity) {
         if (!inputMayHaveBeenAccepted(error))
           restoreButtonBoundary(
@@ -129,10 +133,12 @@ export class RuntimeInputState {
     pending.retryPending = false;
     pending.retryError = undefined;
     pending.staleRetries += 1;
+    this.context.beginPresentationTransition();
     try {
       const messageId = await this.sendInput(wait, pending.intent, pending.messageSkip);
       if (this.pending.value === pending) pending.messageId = String(messageId);
     } catch (error) {
+      this.context.cancelPresentationTransition();
       if (this.pending.value === pending) this.pending.value = undefined;
       throw error;
     }

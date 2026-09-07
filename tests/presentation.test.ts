@@ -401,6 +401,113 @@ describe("presentation projection", () => {
     expect(hasEnabledButton(state, { epoch: 3, id: 5_000 })).toBe(false);
   });
 
+  it("validates only changed delta lines without revisiting accumulated history", () => {
+    const state = emptyPresentation();
+    const line = (lineId: number, id: number) => ({
+      line_id: lineId,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs: [
+        {
+          type: "button",
+          runs: [{ type: "text", text: String(id), style: {} }],
+          token: { epoch: 3, id },
+          enabled: true,
+          generation: 0,
+        },
+      ],
+    });
+    applySnapshot(state, {
+      revision: 1,
+      title: "long history",
+      history: {
+        logical_lines: Array.from({ length: 5_000 }, (_, index) => line(index, index + 1)),
+      },
+    });
+    for (const old of state.lines)
+      Object.defineProperty(old, "runs", {
+        get() {
+          throw new Error("delta validation must not revisit old history");
+        },
+      });
+
+    applyDelta(state, {
+      base_revision: 1,
+      new_revision: 2,
+      operations: [{ type: "append_line", line: line(5_000, 5_001) }],
+    });
+
+    expect(state.revision).toBe(2);
+    expect(hasEnabledButton(state, { epoch: 3, id: 5_001 })).toBe(true);
+  });
+
+  it("rejects an invalid changed line without committing the delta", () => {
+    const state = emptyPresentation();
+
+    expect(() =>
+      applyDelta(state, {
+        base_revision: 0,
+        new_revision: 1,
+        operations: [
+          {
+            type: "append_line",
+            line: {
+              line_id: 1,
+              temporary: false,
+              logical_line_start: true,
+              line_end: true,
+              alignment: "left",
+              runs: [
+                {
+                  type: "button",
+                  runs: [],
+                  token: { epoch: 1, id: "invalid" },
+                  enabled: true,
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    ).toThrow("interaction identity is not a unsigned 64-bit integer");
+    expect(state).toMatchObject({ revision: 0, lines: [] });
+  });
+
+  it("validates only changed lines that survive the complete delta", () => {
+    const state = emptyPresentation();
+
+    expect(() =>
+      applyDelta(state, {
+        base_revision: 0,
+        new_revision: 1,
+        operations: [
+          {
+            type: "append_line",
+            line: {
+              line_id: 1,
+              temporary: false,
+              logical_line_start: true,
+              line_end: true,
+              alignment: "left",
+              runs: [
+                {
+                  type: "button",
+                  runs: [],
+                  token: { epoch: 1, id: "invalid but removed" },
+                  enabled: true,
+                },
+              ],
+            },
+          },
+          { type: "delete_lines", count: 1 },
+        ],
+      }),
+    ).not.toThrow();
+    expect(state).toMatchObject({ revision: 1, lines: [] });
+  });
+
   it("validates, retires, restores, and generation-filters HTML island interactions", () => {
     const state = emptyPresentation();
     const island = (id: number, generation: number) => [

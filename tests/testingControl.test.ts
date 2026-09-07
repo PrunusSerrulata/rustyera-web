@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  capturedCoreSetupMessages,
   inputReplaySummary,
   isStableObservationCandidate,
   stableObservationSignature,
@@ -18,6 +19,40 @@ import {
 import { blake3 } from "@noble/hashes/blake3.js";
 
 describe("runtime evidence observations", () => {
+  it("captures only replayable setup messages between server hello and project manifest", () => {
+    const preference = {
+      type: "apply_client_preferences",
+      value: { configuration: { skip_display: false } },
+    };
+    expect(
+      capturedCoreSetupMessages([
+        { direction: "send", channel: "runtime", message: { type: "client_hello" } },
+        { direction: "receive", channel: "runtime", message: { type: "server_hello" } },
+        { direction: "send", channel: "runtime", message: preference },
+        { direction: "send", channel: "runtime", message: { type: "project_manifest" } },
+        { direction: "send", channel: "runtime", message: { type: "project_load" } },
+        { direction: "receive", channel: "runtime", message: { type: "project_load_report" } },
+        { direction: "send", channel: "runtime", message: { type: "start" } },
+      ]),
+    ).toEqual([preference]);
+  });
+
+  it("rejects messages that Core perf-run cannot replay between manifest and start", () => {
+    expect(() =>
+      capturedCoreSetupMessages([
+        { direction: "receive", channel: "runtime", message: { type: "server_hello" } },
+        { direction: "send", channel: "runtime", message: { type: "project_manifest" } },
+        { direction: "send", channel: "runtime", message: { type: "project_load" } },
+        {
+          direction: "send",
+          channel: "runtime",
+          message: { type: "apply_client_preferences" },
+        },
+        { direction: "send", channel: "runtime", message: { type: "start" } },
+      ]),
+    ).toThrow("expected only project_load");
+  });
+
   it("filters protocol records before parsing unrelated large payloads", () => {
     const evidence = new RuntimeEvidence(true);
     evidence.sent(
@@ -41,6 +76,30 @@ describe("runtime evidence observations", () => {
       message: { type: "projection_observation" },
     });
     expect((evidence.snapshot() as any).records).toHaveLength(2);
+  });
+
+  it("applies the runner protocol filter while records are captured", () => {
+    window.__RUSTYERA_TEST_PROTOCOL_TYPES__ = ["wait_changed"];
+    const evidence = new RuntimeEvidence(true);
+    evidence.receive({
+      channel: "runtime",
+      epoch: 1n,
+      sequence: 1n,
+      messageId: 1n,
+      message: { type: "diagnostic", value: { message: "x".repeat(1000) } },
+    });
+    evidence.receive({
+      channel: "runtime",
+      epoch: 1n,
+      sequence: 2n,
+      messageId: 2n,
+      message: { type: "wait_changed", value: { wait: null } },
+    });
+
+    expect(evidence.snapshot()).toMatchObject({
+      bytes: expect.any(Number),
+      records: [{ index: 0, message: { type: "wait_changed" } }],
+    });
   });
 
   it("retains a large failed compile report without copying it into periodic summaries", () => {
@@ -68,6 +127,7 @@ describe("runtime evidence observations", () => {
 
   afterEach(() => {
     delete window.__RUSTYERA_POINTER_OBSERVATION__;
+    delete window.__RUSTYERA_TEST_PROTOCOL_TYPES__;
   });
 
   it("freezes independent DOM samples at the query boundary without changing wire indices", () => {
@@ -699,6 +759,17 @@ describe("Web test observation boundaries", () => {
     const signature = stableObservationSignature(state);
     expect(stableObservationSignature({ ...state, cooperativeBackgroundWorkRevision: 9 })).toBe(
       signature,
+    );
+    expect(
+      stableObservationSignature({
+        ...state,
+        audioProvider: { bgm: { state: "playing", positionMs: 1234 } },
+      }),
+    ).toBe(
+      stableObservationSignature({
+        ...state,
+        audioProvider: { bgm: { state: "playing", positionMs: 5678 } },
+      }),
     );
     for (const change of [
       { wait: { wait_id: "9" } },

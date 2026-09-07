@@ -24,6 +24,7 @@ const reusableSpecs = new Set([
   "snake-profile.spec.mjs",
   "snake-save-menu.spec.mjs",
   "full-project-export.spec.mjs",
+  "snake-runtime-performance.spec.mjs",
 ]);
 
 // These specs choose directories through the existing test-only picker configuration.
@@ -162,6 +163,12 @@ export function compiledBuildInputs(inputs) {
           ![
             "scripts/tauri-test.mjs",
             "scripts/tauri-test-support.mjs",
+            "scripts/tauri-performance-audit.mjs",
+            "scripts/tauri-performance-audit.d.mts",
+            "scripts/tauri-performance-capture.mjs",
+            "scripts/tauri-performance-runner.mjs",
+            "scripts/tauri-performance-trace.mjs",
+            "scripts/tauri-performance-trace.d.mts",
             "scripts/tauri-build-cache.mjs",
             "scripts/snake-service-lifecycle-test-support.mjs",
             "scripts/snake-service-lifecycle-races.mjs",

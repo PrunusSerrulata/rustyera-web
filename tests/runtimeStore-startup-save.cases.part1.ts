@@ -1,18 +1,28 @@
 import { bridge } from "./runtimeStoreTestSupport";
 import { describe, expect, it, vi } from "vitest";
+import type { PumpBatch } from "@/core/types";
 import {
   installRuntimeStoreTestHarness,
   advanceUntil,
+  deferred,
   emptyBatch,
   encodeServicePayload,
   flushMicrotasks,
   mockProjectSelection,
+  plainLine,
   runningBrowserStore,
   stubRunningAudioContext,
   useRuntimeStore,
   runtimeEvent,
   stateExportReadyEvent,
 } from "./runtimeStoreTestSupport";
+
+function advanceTimeCalls() {
+  return bridge.submitRuntime.mock.calls.filter(
+    ([message]: unknown[]) => (message as { type?: string }).type === "advance_time",
+  );
+}
+
 describe("runtime store startup-save", () => {
   installRuntimeStoreTestHarness();
 
@@ -84,6 +94,377 @@ describe("runtime store startup-save", () => {
         (call) => (call as unknown as [{ type?: string }])[0]?.type === "advance_time",
       ),
     ).toHaveLength(1);
+  });
+
+  it("presents a short NF frame before advancing an already-overdue timeout", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    const wait = {
+      kind: "string_value",
+      wait_id: 18,
+      submission_token: { epoch: 2, id: 5 },
+      deadline_ns: 2_000_000,
+      viewport_policy: "preserve_user_viewport",
+    };
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        state: "output_ready",
+        events: [
+          runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          runtimeEvent("wait_changed", { type: "opened", value: wait }),
+        ],
+      })
+      .mockResolvedValue(emptyBatch());
+    const store = useRuntimeStore();
+    store.configureTestRun({
+      start: { type: "new_game", seed: 42 },
+      monotonicStartNs: 1_000_000,
+    });
+
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(store.canInteract).toBe(true);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        (call) => (call as unknown as [{ type?: string }])[0]?.type === "advance_time",
+      ),
+    ).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(16);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        (call) => (call as unknown as [{ type?: string }])[0]?.type === "advance_time",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      name: "frontend and runtime clocks have different origins",
+      monotonicStartNs: 2_000_000_000,
+      deadlineNs: 1_000_000_000n,
+    },
+    {
+      name: "the runtime deadline exceeds JavaScript's safe integer range",
+      monotonicStartNs: 1_000_000,
+      deadlineNs: 9_007_199_254_740_993n,
+    },
+  ])("keeps an NF wait interactive before the runtime closes it: $name", async (clock) => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    const line = (lineId: number, text: string) => ({
+      line_id: lineId,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs: [{ type: "text", text, style: {} }],
+    });
+    const wait = {
+      kind: "string_value",
+      wait_id: 19,
+      submission_token: { epoch: 2, id: 6 },
+      deadline_ns: clock.deadlineNs,
+      viewport_policy: "preserve_user_viewport",
+    };
+    const nextWait = {
+      ...wait,
+      wait_id: 20,
+      submission_token: { epoch: 2, id: 7 },
+    };
+    const completedFrame = deferred<PumpBatch>();
+    const nextFrame: PumpBatch = {
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("presentation_delta", {
+          base_revision: 2,
+          new_revision: 3,
+          operations: [
+            { type: "append_line", line: line(2, "frame 2") },
+            { type: "set_input_wait", input_wait: nextWait },
+          ],
+        }),
+        runtimeEvent("wait_changed", { type: "opened", value: nextWait }),
+      ],
+    };
+    bridge.pump
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        state: "output_ready",
+        events: [
+          runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          runtimeEvent("presentation_snapshot", {
+            revision: 1,
+            history: { logical_lines: [line(1, "frame 1")] },
+            input_wait: wait,
+            redraw: { enabled: true },
+          }),
+          runtimeEvent("wait_changed", { type: "opened", value: wait }),
+        ],
+      })
+      .mockResolvedValueOnce(emptyBatch())
+      .mockResolvedValueOnce(emptyBatch())
+      .mockResolvedValueOnce(emptyBatch())
+      .mockResolvedValueOnce({
+        ...emptyBatch(),
+        events: [
+          runtimeEvent("wait_changed", { type: "closed", value: null }),
+          runtimeEvent("presentation_delta", {
+            base_revision: 1,
+            new_revision: 2,
+            operations: [{ type: "delete_lines", count: 1 }],
+          }),
+        ],
+      })
+      .mockImplementationOnce(() => completedFrame.promise)
+      .mockResolvedValue(emptyBatch());
+    const store = useRuntimeStore();
+    store.configureTestRun({
+      start: { type: "new_game", seed: 42 },
+      monotonicStartNs: clock.monotonicStartNs,
+    });
+
+    await store.enableDebug();
+    await vi.advanceTimersByTimeAsync(32);
+    expect(advanceTimeCalls()).toHaveLength(1);
+    expect(store.canInteract).toBe(true);
+    expect(store.promptPlaceholder).toBe("输入内容；Enter 提交");
+    expect(plainLine(store.presentation.lines[0])).toBe("frame 1");
+
+    await advanceUntil(
+      () => !store.canInteract && plainLine(store.presentation.lines[0]) === "frame 1",
+    );
+    expect(store.canInteract).toBe(false);
+    expect(plainLine(store.presentation.lines[0])).toBe("frame 1");
+
+    completedFrame.resolve(nextFrame);
+    await flushMicrotasks();
+    expect(store.canInteract).toBe(true);
+    expect(plainLine(store.presentation.lines[0])).toBe("frame 2");
+  });
+
+  it("publishes and advances snake AWAIT after a title selection remains pending", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    const line = (lineId: number, text: string) => ({
+      line_id: lineId,
+      temporary: false,
+      logical_line_start: true,
+      line_end: true,
+      alignment: "left",
+      runs: [{ type: "text", text, style: {} }],
+    });
+    const titleWait = {
+      kind: "integer_value",
+      wait_id: 17,
+      submission_token: { epoch: 2, id: 4 },
+      deadline_ns: null,
+    };
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+        runtimeEvent("presentation_snapshot", {
+          revision: 1,
+          history: { logical_lines: [line(1, "[2] DEMO")] },
+          input_wait: titleWait,
+          redraw: { enabled: true },
+        }),
+        runtimeEvent("wait_changed", { type: "opened", value: titleWait }),
+      ],
+    });
+    bridge.pump.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("state_changed", { phase: "running", epoch: 2 }),
+        runtimeEvent("wait_changed", { type: "closed", value: null }),
+        runtimeEvent("presentation_delta", {
+          base_revision: 1,
+          new_revision: 2,
+          operations: [
+            { type: "delete_lines", count: 1 },
+            { type: "append_line", line: line(2, "bad apple frame 1") },
+          ],
+        }),
+        runtimeEvent(
+          "service_request",
+          {
+            request_id: 7,
+            kind: "input_state",
+            operation: "device_pump",
+            operation_version: { major: 1, minor: 0 },
+            payload: [
+              ...encodeServicePayload(
+                new Map<number, unknown>([
+                  [0, 2],
+                  [1, 0],
+                ]),
+              ),
+            ],
+          },
+          41,
+          2,
+        ),
+      ],
+    });
+    const titleReturn = deferred<PumpBatch>();
+    const advanceAccepted = deferred<number>();
+    bridge.submitRuntime.mockImplementation(async (message) => {
+      if (message.type === "advance_time") return advanceAccepted.promise;
+      return 1;
+    });
+    bridge.pump.mockImplementation(async () => {
+      if (advanceTimeCalls().length === 0) return emptyBatch();
+      return titleReturn.promise;
+    });
+    const store = useRuntimeStore();
+    store.configureTestRun({ start: { type: "new_game", seed: 42 }, monotonicStartNs: 1_000_000 });
+
+    await store.enableDebug();
+    store.prompt = "2";
+    await store.submitText();
+    await advanceUntil(() =>
+      bridge.submitRuntime.mock.calls.some(
+        ([message]: unknown[]) => (message as { type?: string }).type === "service_response",
+      ),
+    );
+
+    const submittedTypes = bridge.submitRuntime.mock.calls.map(
+      ([message]: unknown[]) => (message as { type?: string }).type,
+    );
+    expect(submittedTypes.indexOf("advance_time")).toBeLessThan(
+      submittedTypes.indexOf("service_response"),
+    );
+    expect(store.phase).toBe("running");
+    expect(plainLine(store.presentation.lines[0])).toBe("bad apple frame 1");
+    expect(advanceTimeCalls()).toHaveLength(1);
+    advanceAccepted.resolve(1);
+
+    const nextTitleWait = {
+      ...titleWait,
+      wait_id: 18,
+      submission_token: { epoch: 2, id: 5 },
+    };
+    titleReturn.resolve({
+      ...emptyBatch(),
+      vmInstructions: 1,
+      events: [
+        runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+        runtimeEvent("presentation_delta", {
+          base_revision: 2,
+          new_revision: 3,
+          operations: [
+            { type: "delete_lines", count: 1 },
+            { type: "append_line", line: line(3, "[2] DEMO") },
+            { type: "set_input_wait", input_wait: nextTitleWait },
+          ],
+        }),
+        runtimeEvent("wait_changed", { type: "opened", value: nextTitleWait }),
+      ],
+    });
+    await advanceUntil(() => store.canInteract && store.presentation.revision === 3);
+    expect(plainLine(store.presentation.lines[0])).toBe("[2] DEMO");
+    await vi.advanceTimersByTimeAsync(64);
+    expect(advanceTimeCalls()).toHaveLength(1);
+  });
+
+  it("publishes and advances snake AWAIT after the title timeout without pending input", async () => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent("state_changed", { phase: "waiting_external", epoch: 2 }),
+        runtimeEvent("presentation_snapshot", {
+          revision: 2,
+          history: {
+            logical_lines: [
+              {
+                line_id: 2,
+                temporary: false,
+                logical_line_start: true,
+                line_end: true,
+                alignment: "left",
+                runs: [{ type: "text", text: "bad apple frame 1", style: {} }],
+              },
+            ],
+          },
+          input_wait: null,
+          redraw: { enabled: false },
+        }),
+        runtimeEvent(
+          "service_request",
+          {
+            request_id: 7,
+            kind: "input_state",
+            operation: "device_pump",
+            operation_version: { major: 1, minor: 0 },
+            payload: [
+              ...encodeServicePayload(
+                new Map<number, unknown>([
+                  [0, 2],
+                  [1, 0],
+                ]),
+              ),
+            ],
+          },
+          41,
+          2,
+        ),
+      ],
+    });
+    const nextTitleWait = {
+      kind: "integer_value",
+      wait_id: 18,
+      submission_token: { epoch: 2, id: 5 },
+      deadline_ns: null,
+    };
+    let returnedToTitle = false;
+    let observedFirstFrame = false;
+    bridge.pump.mockImplementation(async () => {
+      if (advanceTimeCalls().length === 0 || returnedToTitle) return emptyBatch();
+      observedFirstFrame = plainLine(store.presentation.lines[0]) === "bad apple frame 1";
+      returnedToTitle = true;
+      return {
+        ...emptyBatch(),
+        vmInstructions: 1,
+        events: [
+          runtimeEvent("state_changed", { phase: "waiting_input", epoch: 2 }),
+          runtimeEvent("presentation_delta", {
+            base_revision: 2,
+            new_revision: 3,
+            operations: [
+              { type: "delete_lines", count: 1 },
+              {
+                type: "append_line",
+                line: {
+                  line_id: 3,
+                  temporary: false,
+                  logical_line_start: true,
+                  line_end: true,
+                  alignment: "left",
+                  runs: [{ type: "text", text: "[2] DEMO", style: {} }],
+                },
+              },
+              { type: "set_input_wait", input_wait: nextTitleWait },
+            ],
+          }),
+          runtimeEvent("wait_changed", { type: "opened", value: nextTitleWait }),
+        ],
+      };
+    });
+    const store = useRuntimeStore();
+    store.configureTestRun({ start: { type: "new_game", seed: 42 }, monotonicStartNs: 1_000_000 });
+
+    await store.enableDebug();
+    await advanceUntil(() => returnedToTitle && store.canInteract);
+    expect(store.phase).toBe("waiting_input");
+    expect(plainLine(store.presentation.lines[0])).toBe("[2] DEMO");
+    expect(observedFirstFrame).toBe(true);
+    expect(
+      bridge.submitRuntime.mock.calls.filter(
+        ([message]: unknown[]) => (message as { type?: string }).type === "service_response",
+      ),
+    ).toHaveLength(1);
+    expect(advanceTimeCalls()).toHaveLength(1);
   });
 
   it("advances snake AWAIT time after acknowledging its device pump", async () => {

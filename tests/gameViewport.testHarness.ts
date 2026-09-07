@@ -1,5 +1,6 @@
 import {
   flushPromises as flushVuePromises,
+  mount as mountComponent,
   shallowMount as shallowMountComponent,
 } from "@vue/test-utils";
 
@@ -141,6 +142,7 @@ import GameViewportImplementation from "@/components/GameViewport.vue";
 const DisplayLine = DisplayLineImplementation;
 const GameViewport = GameViewportImplementation;
 const flushPromises = flushVuePromises;
+const mount = mountComponent;
 const shallowMount = shallowMountComponent;
 const nextTick = nextVueTick;
 const reactive = makeReactive;
@@ -181,6 +183,7 @@ export {
   flushPromises,
   it,
   measure,
+  mount,
   mountViewport,
   naturalMeasureElement,
   nextTick,

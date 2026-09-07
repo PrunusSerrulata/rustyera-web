@@ -1,6 +1,11 @@
-import { ref } from "vue";
+import { nextTick, ref } from "vue";
 
 import type { FrontendBridge, PumpBatch, SubmittedPumpBatch } from "@/core/types";
+import {
+  PERFORMANCE_AUDIT_ENABLED,
+  recordPerformanceTiming,
+  scheduleNextPaintMeasurement,
+} from "@/testing/performanceAudit";
 
 const MAXIMUM_CONTIGUOUS_COMPUTE_PUMPS = 8;
 
@@ -92,13 +97,22 @@ export class RuntimePumpCoordinator {
       const batch = await operation();
       this.#observeBackgroundWork(batch);
       this.#handlingBatch = true;
+      const batchStartedAt = PERFORMANCE_AUDIT_ENABLED ? performance.now() : undefined;
       try {
         await this.callbacks.handleBatch(batch);
       } finally {
+        if (PERFORMANCE_AUDIT_ENABLED) {
+          recordPerformanceTiming("store_batch", "handle_batch", batchStartedAt, () => ({
+            events: batch.events.length,
+          }));
+          await nextTick();
+          recordPerformanceTiming("dom_flush", "vue_next_tick", batchStartedAt, () => ({
+            events: batch.events.length,
+          }));
+          scheduleNextPaintMeasurement(batchStartedAt);
+        }
         this.#handlingBatch = false;
       }
-      if (import.meta.env.VITE_RUSTYERA_TEST === "1")
-        performance.mark("rustyera:settlement-batch-handled");
       this.schedule(hasPendingWork(batch) ? 0 : 16);
       return batch;
     } catch (error) {
@@ -123,9 +137,20 @@ export class RuntimePumpCoordinator {
         batch = await this.bridge.pump();
         this.#observeBackgroundWork(batch);
         this.#handlingBatch = true;
+        const batchStartedAt = PERFORMANCE_AUDIT_ENABLED ? performance.now() : undefined;
         try {
           await this.callbacks.handleBatch(batch);
         } finally {
+          if (PERFORMANCE_AUDIT_ENABLED) {
+            recordPerformanceTiming("store_batch", "handle_batch", batchStartedAt, () => ({
+              events: batch.events.length,
+            }));
+            await nextTick();
+            recordPerformanceTiming("dom_flush", "vue_next_tick", batchStartedAt, () => ({
+              events: batch.events.length,
+            }));
+            scheduleNextPaintMeasurement(batchStartedAt);
+          }
           this.#handlingBatch = false;
         }
         pumps += 1;

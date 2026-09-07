@@ -12,6 +12,7 @@ import { htmlMeasurementProjectionKey } from "@/components/htmlMeasurementProjec
 import { RuntimeServiceError } from "@/core/runtimeServiceProtocol";
 import { replayIntegerKey } from "@/core/replayResources";
 import { useRuntimeStore } from "@/stores/runtime";
+import { PERFORMANCE_AUDIT_ENABLED, recordPerformanceTiming } from "@/testing/performanceAudit";
 
 const props = defineProps<{
   replay: CanvasReplayData;
@@ -83,6 +84,7 @@ async function drainRenders(): Promise<void> {
         continue;
       }
       try {
+        const replayStartedAt = PERFORMANCE_AUDIT_ENABLED ? performance.now() : undefined;
         releaseTarget = budget.reserve(width, height);
         if (!active()) throw new Error("canvas replay was cancelled");
         target.width = width;
@@ -97,6 +99,12 @@ async function drainRenders(): Promise<void> {
         );
         if (measurement) await measurement.wait(replayTask);
         else await replayTask;
+        if (PERFORMANCE_AUDIT_ENABLED)
+          recordPerformanceTiming("canvas_replay", "replay", replayStartedAt, () => ({
+            commands: request.replay.commands?.length ?? 0,
+            height,
+            width,
+          }));
       } catch (error) {
         target.width = 0;
         target.height = 0;

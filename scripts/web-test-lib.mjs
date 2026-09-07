@@ -24,7 +24,7 @@ import {
 
 export * from "./web-test-browser.mjs";
 export * from "./web-test-project.mjs";
-export { resolveLocator } from "./web-test-query.mjs";
+export { assertSampleExpectations, resolveLocator } from "./web-test-query.mjs";
 export {
   goalStatus,
   observationFromSnapshot,
@@ -40,30 +40,46 @@ export {
   ReferenceProcess,
 } from "./web-test-reference.mjs";
 
-export function assertAtomicPresentationTransition(samples, completedRevision) {
+export function assertAtomicPresentationTransition(samples, completedPresentation) {
   if (!Array.isArray(samples) || samples.length < 2)
     throw new Error("atomic presentation probe did not capture a painted transition");
-  const startRevision = String(samples[0].revision);
-  const endRevision = String(completedRevision);
+  const lockedIndex = samples.findIndex((sample) => sample.canInteract === false);
+  if (lockedIndex <= 0)
+    throw new Error("atomic presentation probe did not capture the input transition boundary");
+  const endRevision = String(completedPresentation.revision);
+  const endHistoryRevision = String(completedPresentation.historyRevision);
+  const completedIndex = samples.findIndex(
+    (sample, index) =>
+      index >= lockedIndex &&
+      String(sample.revision) === endRevision &&
+      String(sample.historyRevision) === endHistoryRevision,
+  );
+  if (completedIndex < lockedIndex)
+    throw new Error(`atomic presentation probe did not paint completed revision ${endRevision}`);
+  const transitionSamples = samples.slice(lockedIndex - 1, completedIndex + 1);
+  const startRevision = String(transitionSamples[0].revision);
+  const startHistoryRevision = String(transitionSamples[0].historyRevision);
   if (startRevision === endRevision)
     throw new Error(`atomic presentation transition did not advance from ${startRevision}`);
-  const intermediate = samples.filter((sample) => {
-    const revision = String(sample.revision);
-    return revision !== startRevision && revision !== endRevision;
+  const intermediate = transitionSamples.filter((sample) => {
+    const revision = String(sample.historyRevision);
+    return revision !== startHistoryRevision && revision !== endHistoryRevision;
   });
   if (intermediate.length > 0) {
     throw new Error(
-      `presentation transition painted intermediate revisions: ${JSON.stringify({ startRevision, endRevision, intermediate })}`,
+      `presentation transition painted intermediate history revisions: ${JSON.stringify({ startHistoryRevision, endHistoryRevision, intermediate })}`,
     );
-  }
-  if (!samples.some((sample) => String(sample.revision) === endRevision)) {
-    throw new Error(`atomic presentation probe did not paint completed revision ${endRevision}`);
   }
   return {
     startRevision,
     endRevision,
-    paintedRevisions: [...new Set(samples.map((sample) => String(sample.revision)))],
-    samples,
+    startHistoryRevision,
+    endHistoryRevision,
+    paintedRevisions: [...new Set(transitionSamples.map((sample) => String(sample.revision)))],
+    paintedHistoryRevisions: [
+      ...new Set(transitionSamples.map((sample) => String(sample.historyRevision))),
+    ],
+    samples: transitionSamples,
   };
 }
 
@@ -74,9 +90,10 @@ async function startAtomicPresentationProbe(page) {
     let frame;
     let stopped = false;
     const capture = () => {
-      const snapshot = window.__RUSTYERA_TEST__.snapshot();
+      const snapshot = window.__RUSTYERA_TEST__.snapshotSummary();
       const sample = {
         revision: String(snapshot.presentationRevision),
+        historyRevision: String(snapshot.historyRevision),
         waitId: snapshot.wait?.wait_id == null ? null : String(snapshot.wait.wait_id),
         canInteract: snapshot.canInteract,
         outputCount: snapshot.output.length,
@@ -119,6 +136,98 @@ async function stopAtomicPresentationProbe(page) {
 export async function runAction(page, action) {
   if (action.type === "cancel_project_export")
     return cancelProjectExportDuringTransfer(page, action);
+  if (action.type === "reset_frontend_performance_audit") {
+    const state = await page.evaluate(() =>
+      window.__RUSTYERA_TEST__.resetFrontendPerformanceAudit(),
+    );
+    return { query: { performance_audit: state } };
+  }
+  if (action.type === "assert_animation_performance") {
+    const minimumFrames = Number(action.minimum_frames ?? 120);
+    const timeoutMs = Number(action.timeout_ms ?? 30_000);
+    if (!Number.isSafeInteger(minimumFrames) || minimumFrames < 3)
+      throw new Error("assert_animation_performance minimum_frames must be at least 3");
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+      throw new Error("assert_animation_performance timeout_ms must be positive");
+    await page.waitForFunction(
+      (minimum) =>
+        window.__RUSTYERA_TEST__.frontendPerformanceAuditProgress().publishedPresentationFrames >=
+        minimum,
+      minimumFrames,
+      { timeout: timeoutMs },
+    );
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
+        ),
+    );
+    const audit = await page.evaluate(() => window.__RUSTYERA_TEST__.frontendPerformanceAudit());
+    return {
+      query: {
+        animation_performance: assertAnimationPerformance(audit, {
+          minimumFrames,
+          maximumFrameIntervalMs: Number(action.maximum_frame_interval_ms ?? 33),
+          maximumPaintMs: Number(action.maximum_paint_ms ?? 33),
+        }),
+      },
+    };
+  }
+  if (action.type === "measure_animation_performance") {
+    const minimumFrames = Number(action.minimum_frames ?? 30);
+    const timeoutMs = Number(action.timeout_ms ?? 30_000);
+    if (!Number.isSafeInteger(minimumFrames) || minimumFrames < 3)
+      throw new Error("measure_animation_performance minimum_frames must be at least 3");
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+      throw new Error("measure_animation_performance timeout_ms must be positive");
+    await page.waitForFunction(
+      (minimum) =>
+        window.__RUSTYERA_TEST__.frontendPerformanceAuditProgress().publishedPresentationFrames >=
+        minimum,
+      minimumFrames,
+      { timeout: timeoutMs },
+    );
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
+        ),
+    );
+    const audit = await page.evaluate(() => window.__RUSTYERA_TEST__.frontendPerformanceAudit());
+    const measurement = measureAnimationPerformance(audit);
+    const minimumMedianIntervalMs = Number(action.minimum_median_interval_ms ?? 0);
+    if (!Number.isFinite(minimumMedianIntervalMs) || minimumMedianIntervalMs < 0)
+      throw new Error(
+        "measure_animation_performance minimum_median_interval_ms must be nonnegative",
+      );
+    if (
+      minimumMedianIntervalMs > 0 &&
+      (measurement.medianIntervalMs == null ||
+        measurement.medianIntervalMs < minimumMedianIntervalMs)
+    )
+      throw new Error(
+        `animation median frame interval ${measurement.medianIntervalMs} ms was below ${minimumMedianIntervalMs} ms`,
+      );
+    return { query: { animation_performance: measurement } };
+  }
+  if (action.type === "wait_runtime_observation") {
+    const timeoutMs = Number(action.timeout_ms ?? 30_000);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+      throw new Error("wait_runtime_observation timeout_ms must be positive");
+    return {
+      query: { runtime_observation: await waitForRuntimeObservation(page, timeoutMs, true) },
+    };
+  }
+  if (action.type === "wait_stable_observation") {
+    const timeoutMs = Number(action.timeout_ms ?? 30_000);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+      throw new Error("wait_stable_observation timeout_ms must be positive");
+    const state = await page.evaluate(
+      (timeout) => window.__RUSTYERA_TEST__.waitForStableObservation(timeout, true),
+      timeoutMs,
+    );
+    return { state };
+  }
   if (action.type === "save_download") {
     assert.ok(typeof action.path === "string" && path.isAbsolute(action.path));
     assert.ok(typeof action.name_suffix === "string" && action.name_suffix.length > 0);
@@ -396,7 +505,14 @@ export async function runAction(page, action) {
     throw new Error(`void wait budget exhausted after ${maximum} attempts`);
   }
   if (action.type === "wait_timed_input_change") {
-    const before = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    let before = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    if (before.wait?.deadline_ns == null) {
+      await page.waitForFunction(() => {
+        const current = window.__RUSTYERA_TEST__.snapshotSummary();
+        return current.fault != null || (current.canInteract && current.wait?.deadline_ns != null);
+      });
+      before = await page.evaluate(() => window.__RUSTYERA_TEST__.snapshot());
+    }
     if (before.wait?.deadline_ns == null)
       throw new Error("wait_timed_input_change requires an active timed input wait");
     await waitForAutomaticWaitChange(page, before.wait.wait_id);
@@ -516,29 +632,39 @@ export async function runAction(page, action) {
   if (action.type === "reveal_text") {
     const expected = String(action.text ?? "");
     if (!expected) throw new Error("reveal_text requires text");
-    const revealed = await page.evaluate(async (text) => {
-      const viewport = document.querySelector(".game-viewport");
-      if (!(viewport instanceof globalThis.HTMLElement)) return false;
-      const settle = () =>
-        new Promise((resolve) =>
-          window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
-        );
-      const step = Math.max(1, Math.floor(viewport.clientHeight / 2));
-      viewport.scrollTop = 0;
-      for (let position = 0; position <= viewport.scrollHeight + step; position += step) {
-        await settle();
-        const target = [...document.querySelectorAll(".game-line")].find((line) =>
-          line.textContent?.includes(text),
-        );
-        if (target instanceof globalThis.HTMLElement) {
-          target.scrollIntoView({ block: "center" });
+    const revealed = await page.evaluate(
+      async ({ text, fromEnd }) => {
+        const viewport = document.querySelector(".game-viewport");
+        if (!(viewport instanceof globalThis.HTMLElement)) return false;
+        const settle = () =>
+          new Promise((resolve) =>
+            window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
+          );
+        const step = Math.max(1, Math.floor(viewport.clientHeight / 2));
+        const findTarget = () => {
+          const lines = [...document.querySelectorAll(".game-line")];
+          if (fromEnd) lines.reverse();
+          return lines.find((line) => line.textContent?.includes(text));
+        };
+        viewport.scrollTop = fromEnd ? viewport.scrollHeight : 0;
+        for (
+          let position = viewport.scrollTop;
+          fromEnd ? position >= -step : position <= viewport.scrollHeight + step;
+          position += fromEnd ? -step : step
+        ) {
           await settle();
-          return true;
+          const target = findTarget();
+          if (target instanceof globalThis.HTMLElement) {
+            target.scrollIntoView({ block: "center" });
+            await settle();
+            return true;
+          }
+          viewport.scrollTop = position + (fromEnd ? -step : step);
         }
-        viewport.scrollTop = position + step;
-      }
-      return false;
-    }, expected);
+        return false;
+      },
+      { text: expected, fromEnd: action.from_end === true },
+    );
     if (!revealed) throw new Error(`reveal_text could not find ${JSON.stringify(expected)}`);
     return { query: { revealed_text: expected } };
   }
@@ -602,7 +728,7 @@ export async function runAction(page, action) {
       ? await page.evaluate(() => window.__RUSTYERA_TEST__.snapshotSummary().wait?.wait_id)
       : undefined;
     let transitionSamples;
-    let completedRevision;
+    let completedPresentation;
     if (action.expect_atomic_presentation === true) {
       if (!runtimeInput)
         throw new Error("expect_atomic_presentation requires a runtime input button");
@@ -617,9 +743,13 @@ export async function runAction(page, action) {
           return snapshot.fault != null || snapshot.wait?.wait_id !== waitId;
         }, beforeWaitId);
       if (action.expect_atomic_presentation === true)
-        completedRevision = await page.evaluate(async () => {
+        completedPresentation = await page.evaluate(async () => {
           await window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true);
-          return String(window.__RUSTYERA_TEST__.snapshot().presentationRevision);
+          const snapshot = window.__RUSTYERA_TEST__.snapshotSummary();
+          return {
+            revision: String(snapshot.presentationRevision),
+            historyRevision: String(snapshot.historyRevision),
+          };
         });
     } finally {
       if (action.expect_atomic_presentation === true)
@@ -631,7 +761,7 @@ export async function runAction(page, action) {
         query: {
           presentation_transition: assertAtomicPresentationTransition(
             transitionSamples,
-            completedRevision,
+            completedPresentation,
           ),
         },
         semanticInput: action.semantic_input,
@@ -683,6 +813,120 @@ export async function runAction(page, action) {
     return { state };
   } else throw new Error(`unknown action type ${action.type}`);
   return { semanticInput: action.semantic_input };
+}
+
+export function assertAnimationPerformance(
+  audit,
+  { minimumFrames, maximumFrameIntervalMs, maximumPaintMs },
+) {
+  if (!Number.isFinite(maximumFrameIntervalMs) || maximumFrameIntervalMs <= 0)
+    throw new Error("animation maximum frame interval must be positive");
+  if (!Number.isFinite(maximumPaintMs) || maximumPaintMs <= 0)
+    throw new Error("animation maximum paint latency must be positive");
+  if (audit.timingSamplesDropped !== 0)
+    throw new Error(`animation telemetry dropped ${audit.timingSamplesDropped} timing samples`);
+  const publishes = audit.timings.filter(
+    (sample) => sample.phase === "presentation" && sample.operation === "publish",
+  );
+  if (publishes.length < minimumFrames)
+    throw new Error(`animation published ${publishes.length} frames, expected ${minimumFrames}`);
+  const intervals = publishes
+    .slice(1)
+    .map((sample, index) => sample.startedAtMs - publishes[index].startedAtMs);
+  const maximumIntervalMs = Math.max(...intervals);
+  if (
+    intervals.some(
+      (interval) =>
+        !Number.isFinite(interval) || interval <= 0 || interval > maximumFrameIntervalMs,
+    )
+  )
+    throw new Error(
+      `animation frame interval ${maximumIntervalMs} ms exceeded ${maximumFrameIntervalMs} ms`,
+    );
+  const revisions = publishes.map((sample) => BigInt(sample.detail?.presentationRevision));
+  const revisionSteps = revisions.slice(1).map((revision, index) => revision - revisions[index]);
+  const expectedRevisionStep = revisionSteps[0];
+  if (expectedRevisionStep <= 0n || revisionSteps.some((step) => step !== expectedRevisionStep))
+    throw new Error(
+      `animation presentation revisions skipped a frame: ${revisions.map(String).join(",")}`,
+    );
+  const mutatedRevisions = new Set(
+    audit.timings
+      .filter((sample) => sample.phase === "dom_mutation")
+      .map((sample) => String(sample.detail?.presentationRevision)),
+  );
+  const missingDomRevisions = revisions.filter(
+    (revision) => !mutatedRevisions.has(String(revision)),
+  );
+  if (missingDomRevisions.length)
+    throw new Error(
+      `animation frames did not reach the DOM: ${missingDomRevisions.map(String).join(",")}`,
+    );
+  const paints = audit.timings.filter(
+    (sample) => sample.phase === "next_paint" && sample.operation === "presentation",
+  );
+  if (!paints.length) throw new Error("animation produced no paint checkpoints");
+  if (paints.find((sample) => sample.detail?.timedOut === true))
+    throw new Error("animation paint checkpoint timed out");
+  const maximumObservedPaintMs = Math.max(0, ...paints.map((sample) => sample.elapsedMs));
+  if (maximumObservedPaintMs > maximumPaintMs)
+    throw new Error(
+      `animation paint latency ${maximumObservedPaintMs} ms exceeded ${maximumPaintMs} ms`,
+    );
+  return {
+    frames: publishes.length,
+    maximumIntervalMs,
+    revisionStep: String(expectedRevisionStep),
+    domSynchronizedFrames: publishes.length,
+    paintCheckpoints: paints.length,
+    maximumPaintMs: maximumObservedPaintMs,
+  };
+}
+
+export function measureAnimationPerformance(audit) {
+  if (audit.timingSamplesDropped !== 0)
+    throw new Error(`animation telemetry dropped ${audit.timingSamplesDropped} timing samples`);
+  const publishes = audit.timings.filter(
+    (sample) => sample.phase === "presentation" && sample.operation === "publish",
+  );
+  const intervals = publishes
+    .slice(1)
+    .map((sample, index) => sample.startedAtMs - publishes[index].startedAtMs);
+  const revisions = publishes.map((sample) => BigInt(sample.detail?.presentationRevision));
+  const revisionSteps = revisions.slice(1).map((revision, index) => revision - revisions[index]);
+  const sortedIntervals = [...intervals].sort((left, right) => left - right);
+  const middle = Math.floor(sortedIntervals.length / 2);
+  const medianIntervalMs = sortedIntervals.length
+    ? sortedIntervals.length % 2 === 0
+      ? (sortedIntervals[middle - 1] + sortedIntervals[middle]) / 2
+      : sortedIntervals[middle]
+    : null;
+  const mutatedRevisions = new Set(
+    audit.timings
+      .filter((sample) => sample.phase === "dom_mutation")
+      .map((sample) => String(sample.detail?.presentationRevision)),
+  );
+  const paints = audit.timings.filter(
+    (sample) => sample.phase === "next_paint" && sample.operation === "presentation",
+  );
+  return {
+    frames: publishes.length,
+    averageIntervalMs: intervals.length
+      ? intervals.reduce((total, interval) => total + interval, 0) / intervals.length
+      : null,
+    medianIntervalMs,
+    maximumIntervalMs: intervals.length ? Math.max(...intervals) : null,
+    revisionStep: revisionSteps.length ? String(revisionSteps[0]) : null,
+    revisionStepConstant:
+      revisionSteps.length > 0 &&
+      revisionSteps[0] > 0n &&
+      revisionSteps.every((step) => step === revisionSteps[0]),
+    domSynchronizedFrames: revisions.filter((revision) => mutatedRevisions.has(String(revision)))
+      .length,
+    paintCheckpoints: paints.length,
+    timedOutPaintCheckpoints: paints.filter((sample) => sample.detail?.timedOut === true).length,
+    maximumPaintMs: paints.length ? Math.max(...paints.map((sample) => sample.elapsedMs)) : null,
+  };
 }
 
 async function waitForCanvasPixels(page, locator, expectation, requestedTimeout) {

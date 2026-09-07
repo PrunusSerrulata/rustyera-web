@@ -373,9 +373,14 @@ export function createRuntimeStoreActions1(context: any) {
         continue;
       }
       if (event.channel === "runtime" && event.message.type === "service_request") {
+        const request = (event.message as RuntimeMessage).value;
+        if (request.kind === "input_state" && request.operation === "device_pump") {
+          const published = context.presentationProjection.publishForObservationBarrier();
+          context.batchMediaDirty = published || context.batchMediaDirty;
+        }
         // Service decoding must not block later cancellation or epoch changes in this batch.
         void context.handleService(
-          (event.message as RuntimeMessage).value,
+          request,
           event.correlationId,
           event.epoch ?? context.runtimeEpoch.value,
         );
@@ -397,6 +402,14 @@ export function createRuntimeStoreActions1(context: any) {
     if (context.presentationProjection.shouldPublish(batch.state))
       context.batchMediaDirty = context.presentationProjection.publish() || context.batchMediaDirty;
     if (context.batchMediaDirty) await context.synchronizeMedia();
+    if (context.presentation.inputWait != null) {
+      context.devicePumpInputCaptureActive = false;
+      if (context.deviceTextInputActive) {
+        context.deviceTextInputActive = false;
+        context.prompt.value = "";
+        await context.observeDeviceTextBox();
+      }
+    }
     if (context.debugRequests.grantRefreshNeeded) {
       context.debugRequests.grantRefreshNeeded = false;
       await context.requestDebugGrant();
@@ -467,10 +480,7 @@ export function createRuntimeStoreActions1(context: any) {
       context.startupTelemetry.value.milestones.firstGamePhaseMs == null &&
       ["running", "waiting_input", "waiting_external"].includes(value.phase)
     ) {
-      context.startupTelemetry.value.milestones.firstGamePhaseMs =
-        context.startupTelemetryState.elapsedMs();
-      context.startupTelemetry.value.outcome = "success";
-      context.startupTelemetryState.startMessageId = undefined;
+      context.startupTelemetryState.completeFirstGamePhase();
       // Host-side work such as font registration may finish after Runtime has already
       // entered the game. The first game phase is the authoritative load boundary.
       context.finishProjectLoad();

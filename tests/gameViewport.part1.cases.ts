@@ -114,6 +114,7 @@ describe("game viewport", () => {
   });
 
   it("shares one compact depth order across scene, line HTML, text zero, and island HTML", () => {
+    virtualState.items = [{ index: 0, key: "1:1", start: 0 }];
     store.presentation.scene = { revision: 1, layers: [{ depth: 3 }] } as any;
     store.presentation.lines[0].runs = [
       {
@@ -380,6 +381,58 @@ describe("game viewport", () => {
     await flushPromises();
     expect(scrollToIndex).toHaveBeenCalled();
     expect(scrollTop).toBe(200);
+    wrapper.unmount();
+  });
+
+  it("cancels bottom following when rapid equal-length NF frames replace the map", async () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    const wrapper = mountViewport();
+    const viewport = wrapper.get<HTMLElement>("main").element;
+    let scrollTop = 50;
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 50 },
+      scrollHeight: { configurable: true, value: 100 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+    scrollToIndex.mockClear();
+    callbacks.length = 0;
+
+    store.presentation.inputWait = { viewport_policy: "preserve_user_viewport" };
+    store.presentation.lines = [
+      { line_id: 2, alignment: "left", runs: [], text_background_eligible: false },
+    ];
+    store.presentation.historyRevision += 1;
+    await nextTick();
+
+    expect(scrollToIndex).toHaveBeenCalledOnce();
+    expect(virtualOptions.value.value.rangeExtractor).not.toBe(defaultRangeExtractor);
+
+    store.presentation.lines = [
+      { line_id: 3, alignment: "left", runs: [], text_background_eligible: false },
+    ];
+    store.presentation.historyRevision += 1;
+    await nextTick();
+    store.presentation.lines = [
+      { line_id: 4, alignment: "left", runs: [], text_background_eligible: false },
+    ];
+    store.presentation.historyRevision += 1;
+    await nextTick();
+
+    for (const callback of callbacks.splice(0)) callback(0);
+    await flushPromises();
+    expect(scrollToIndex).toHaveBeenCalledOnce();
+    expect(scrollTop).toBe(50);
+    expect(virtualOptions.value.value.rangeExtractor).toBe(defaultRangeExtractor);
     wrapper.unmount();
   });
 

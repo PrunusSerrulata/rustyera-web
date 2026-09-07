@@ -17,6 +17,8 @@ declare global {
   interface Window {
     /** Test-runner-owned, read-only DOM observation; never a source of runtime values. */
     __RUSTYERA_POINTER_OBSERVATION__?: () => unknown;
+    /** Test-runner-owned capture filter; runtime behavior never reads this value. */
+    __RUSTYERA_TEST_PROTOCOL_TYPES__?: string[];
   }
 }
 
@@ -45,7 +47,7 @@ export class RuntimeEvidence {
 
   receive(event: WebEvent, sessionGeneration = 0): void {
     this.exportEvidence?.receive(event, sessionGeneration);
-    if (this.selectedTypes && !this.selectedTypes.has(event.message.type)) return;
+    if (!this.acceptsMessageType(event.message.type)) return;
     this.record({
       direction: "receive",
       ...event,
@@ -71,6 +73,7 @@ export class RuntimeEvidence {
         this.failure ??= "unserializable_observation";
       return prepared;
     }
+    if (!this.acceptsMessageType(entry.type)) return message;
     if (this.failure !== null) return message;
     if (entry.type === "state_import_chunk" || entry.type === "state_export_chunk")
       return {
@@ -161,7 +164,7 @@ export class RuntimeEvidence {
   ): void {
     this.exportEvidence?.sent(channel, message, messageId, epoch, correlationId, sessionGeneration);
     const type = (message as { type?: string } | null)?.type;
-    if (this.selectedTypes && !this.selectedTypes.has(type ?? "")) return;
+    if (!this.acceptsMessageType(type)) return;
     this.record({
       direction: "send",
       channel,
@@ -227,6 +230,13 @@ export class RuntimeEvidence {
       overflow: this.failure !== null,
       failure: this.failure,
     };
+  }
+
+  private acceptsMessageType(type: string | undefined): boolean {
+    if (this.selectedTypes) return this.selectedTypes.has(type ?? "");
+    const selectedTypes =
+      typeof window === "undefined" ? undefined : window.__RUSTYERA_TEST_PROTOCOL_TYPES__;
+    return !selectedTypes || selectedTypes.includes(type ?? "");
   }
 
   private record(value: unknown, destination = this.records): void {

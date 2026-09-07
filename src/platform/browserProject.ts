@@ -15,8 +15,10 @@ import {
 } from "@/platform/browserProjectUtilities";
 import { dispatchBrowserStorage } from "@/platform/browserProjectStorage";
 import {
+  indexBrowserStorageResources,
   maximumResourceReadBytes,
   type BrowserStorageResource,
+  type BrowserStorageResourceIndex,
 } from "@/platform/browserResourceStorage";
 import { isPackagedProjectFontPath, type ProjectFontSource } from "@/platform/projectFonts";
 import type { ScannedFile } from "@/platform/browserProjectScanner";
@@ -98,6 +100,10 @@ export interface BrowserProjectScanMetrics {
 
 export class BrowserProject extends BrowserProjectBase {
   private pendingReload?: PendingBrowserReload;
+  private resourceStorageCache?: {
+    manifest: BrowserManifest | undefined;
+    index: BrowserStorageResourceIndex;
+  };
 
   async projectReloadTargets(): Promise<ProjectReloadTargets> {
     if (this.embeddedManifest()) return { folders: [], scripts: [] };
@@ -392,7 +398,9 @@ export class BrowserProject extends BrowserProjectBase {
     }
   }
 
-  private storageResources(): BrowserStorageResource[] {
+  private storageResources(): BrowserStorageResourceIndex {
+    if (this.resourceStorageCache && this.resourceStorageCache.manifest === this.manifestValue)
+      return this.resourceStorageCache.index;
     const canonical = new Set<string>();
     const resources: BrowserStorageResource[] = [];
     for (const file of this.manifestValue?.files ?? []) {
@@ -434,6 +442,8 @@ export class BrowserProject extends BrowserProjectBase {
         },
       });
     }
-    return resources;
+    const index = indexBrowserStorageResources(resources);
+    this.resourceStorageCache = { manifest: this.manifestValue, index };
+    return index;
   }
 }

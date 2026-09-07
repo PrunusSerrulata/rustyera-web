@@ -15,6 +15,8 @@ mod export;
 mod image_metadata;
 mod ipc;
 mod memory;
+#[cfg(feature = "performance-audit")]
+mod performance_audit;
 mod preferences;
 mod project;
 mod services;
@@ -44,6 +46,10 @@ use crate::ipc::{
     encode_submitted_pump_response as encode_submitted_ipc_response,
     encode_value as encode_ipc_value,
 };
+#[cfg(feature = "performance-audit")]
+use crate::ipc::{
+    encode_pump_response_with_len, encode_submitted_pump_response_with_len,
+};
 use crate::project::{ProjectFontSource, ProjectHost, ProjectReloadScope, ProjectReloadTargets};
 use crate::services::native_service;
 use crate::storage::{StorageHost, TraditionalSaveSlot};
@@ -58,6 +64,8 @@ struct AppState {
     export_writer: Arc<Mutex<Option<AtomicFileWriter>>>,
     full_project_cancelled: Arc<AtomicBool>,
     full_manifest_spool: Arc<Mutex<Option<NativeManifestSpool>>>,
+    #[cfg(feature = "performance-audit")]
+    performance_audit: performance_audit::PerformanceAuditTelemetry,
 }
 
 struct NativeManifestSpool {
@@ -118,7 +126,13 @@ async fn create_session(
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         retire_runtime_state(&state)?;
+        #[cfg(feature = "performance-audit")]
+        let core_client = era_web_bridge::performance_audit_client(options.clone());
         let mut session = WebSession::new(options)?;
+        #[cfg(feature = "performance-audit")]
+        state
+            .performance_audit
+            .capture_session_identity(core_client, Vec::new())?;
         let progress_app = app.clone();
         session.set_project_progress_reporter(Some(ProjectProgressReporter::new(
             move |progress| {
@@ -176,11 +190,17 @@ async fn submit_runtime_and_pump(
 ) -> Result<tauri::ipc::Response, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(feature = "performance-audit")]
+        let decode_started = Instant::now();
         let message = decode_ipc_value::<RuntimeMessage>(message)?;
         if !matches!(&message, RuntimeMessage::Input(input) if input.message_skip) {
             return Err("submit_runtime_and_pump requires a message-skip input".to_owned());
         }
         let correlation_id = correlation_id.map(decode_ipc_value).transpose()?;
+        #[cfg(feature = "performance-audit")]
+        let request_decode_ms = decode_started.elapsed().as_secs_f64() * 1000.0;
+        #[cfg(feature = "performance-audit")]
+        let drive_started = Instant::now();
         let mut session_guard = state.session.lock().map_err(lock_error)?;
         let session = session_guard
             .as_mut()
@@ -190,6 +210,25 @@ async fn submit_runtime_and_pump(
         let project_guard = state.project.lock().map_err(lock_error)?;
         let batch =
             pump_message_skip_session(session, storage_guard.as_mut(), project_guard.as_ref())?;
+        #[cfg(feature = "performance-audit")]
+        {
+            let native_drive_ms = drive_started.elapsed().as_secs_f64() * 1000.0;
+            let serialize_started = Instant::now();
+            let (response, response_bytes) =
+                encode_submitted_pump_response_with_len(message_id, &batch)?;
+            state
+                .performance_audit
+                .record(
+                    "submit_runtime_and_pump",
+                    request_decode_ms,
+                    native_drive_ms,
+                    serialize_started.elapsed().as_secs_f64() * 1000.0,
+                    response_bytes,
+                    &batch,
+                );
+            Ok(response)
+        }
+        #[cfg(not(feature = "performance-audit"))]
         encode_submitted_ipc_response(message_id, &batch)
     })
     .await
@@ -300,6 +339,8 @@ async fn submit_debug(
 async fn pump(state: State<'_, AppState>) -> Result<tauri::ipc::Response, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(feature = "performance-audit")]
+        let drive_started = Instant::now();
         let mut session_guard = state.session.lock().map_err(lock_error)?;
         let session = session_guard
             .as_mut()
@@ -307,6 +348,24 @@ async fn pump(state: State<'_, AppState>) -> Result<tauri::ipc::Response, String
         let mut storage_guard = state.storage.lock().map_err(lock_error)?;
         let project_guard = state.project.lock().map_err(lock_error)?;
         let batch = pump_frontend_session(session, storage_guard.as_mut(), project_guard.as_ref())?;
+        #[cfg(feature = "performance-audit")]
+        {
+            let native_drive_ms = drive_started.elapsed().as_secs_f64() * 1000.0;
+            let serialize_started = Instant::now();
+            let (response, response_bytes) = encode_pump_response_with_len(&batch)?;
+            state
+                .performance_audit
+                .record(
+                    "pump",
+                    0.0,
+                    native_drive_ms,
+                    serialize_started.elapsed().as_secs_f64() * 1000.0,
+                    response_bytes,
+                    &batch,
+                );
+            Ok(response)
+        }
+        #[cfg(not(feature = "performance-audit"))]
         encode_ipc_response(&batch)
     })
     .await
@@ -823,6 +882,20 @@ fn list_fonts() -> Vec<String> {
     families
 }
 
+#[cfg(feature = "performance-audit")]
+#[tauri::command]
+fn performance_audit_telemetry(
+    state: State<'_, AppState>,
+) -> Result<performance_audit::NativeTelemetrySnapshot, String> {
+    state.performance_audit.snapshot()
+}
+
+#[cfg(feature = "performance-audit")]
+#[tauri::command]
+fn performance_audit_reset(state: State<'_, AppState>) -> Result<u64, String> {
+    state.performance_audit.reset()
+}
+
 fn with_session<T>(
     state: &AppState,
     operation: impl FnOnce(&mut WebSession) -> Result<T, String>,
@@ -890,9 +963,12 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_wdio::init())
         .plugin(tauri_plugin_wdio_webdriver::init());
-    builder
+    let builder = builder
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState::default())
+        .manage(AppState::default());
+    #[cfg(feature = "performance-audit")]
+    let builder = builder
+        .setup(performance_audit::configure_window)
         .invoke_handler(tauri::generate_handler![
             create_session,
             destroy_session,
@@ -922,6 +998,8 @@ pub fn run() {
             traditional_save_inspect,
             traditional_save_write,
             list_fonts,
+            performance_audit_telemetry,
+            performance_audit_reset,
             memory::memory_snapshot,
             preferences::load_preferences,
             preferences::save_preferences,
@@ -934,7 +1012,51 @@ pub fn run() {
             export::write_compiled_cache_chunk,
             export::cancel_compiled_cache_export,
             export::read_import,
-        ])
+        ]);
+    #[cfg(not(feature = "performance-audit"))]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        create_session,
+        destroy_session,
+        submit_runtime,
+        submit_runtime_and_pump,
+        stage_full_project_manifest,
+        inspect_project_file_identity,
+        read_full_project_manifest_chunk,
+        release_full_project_manifest,
+        submit_debug,
+        pump,
+        open_project,
+        open_project_file,
+        submit_project_source,
+        project_reload_targets,
+        prepare_project_reload_baseline,
+        reload_project,
+        finalize_project_reload,
+        read_resource,
+        read_resource_prefix,
+        project_font_sources,
+        read_project_font,
+        write_project_configuration,
+        storage_request,
+        traditional_save_list_slots,
+        traditional_save_read,
+        traditional_save_inspect,
+        traditional_save_write,
+        list_fonts,
+        memory::memory_snapshot,
+        preferences::load_preferences,
+        preferences::save_preferences,
+        preferences::load_project_preferences,
+        preferences::save_project_preferences,
+        export::write_export,
+        export::write_export_chunk,
+        export::cancel_export,
+        cancel_full_project_export,
+        export::write_compiled_cache_chunk,
+        export::cancel_compiled_cache_export,
+        export::read_import,
+    ]);
+    builder
         .run(tauri::generate_context!())
         .expect("error while running RustyEra web frontend");
 }

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "traceDigest": null,
+  "scenario": "snake-tw-runtime-four-paths",
+  "projectDigest": null,
+  "profile": "emuera.skia.snake",
+  "captureRequired": true,
+  "seed": 123456,
+  "clock": "2026-01-01T00:00:00.000Z",
+  "coverage": {
+    "loading": {},
+    "steady-runtime": {},
+    "map-nf-sql": {},
+    "save-load": {}
+  },
+  "core": {
+    "projectDigest": null,
+    "captureIdentityDigest": null,
+    "client": null,
+    "setupMessages": null,
+    "steps": []
+  },
+  "steps": []
+}

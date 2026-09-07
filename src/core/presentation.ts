@@ -114,34 +114,11 @@ export function defaultTooltipSettings(): TooltipSettings {
 }
 
 export function applyDelta(state: PresentationState, delta: any): void {
-  const candidate = clonePresentation(state);
   const clonedDelta = cloneProtocol(delta);
-  applyDeltaCandidate(candidate, clonedDelta);
-  validatePresentationCandidate(candidate);
-  preserveDeltaLineContainer(state, candidate, clonedDelta.operations);
-  Object.assign(state, candidate);
-}
-
-function preserveDeltaLineContainer(
-  state: PresentationState,
-  candidate: PresentationState,
-  operations: any[],
-): void {
-  const replacesContainer = operations.some(
-    (operation) =>
-      operation.type === "clear" ||
-      (operation.type === "trim_lines" && Number(operation.count) > 0),
-  );
-  if (replacesContainer) return;
-  const mutatesLines = operations.some((operation) =>
-    ["append_line", "delete_lines", "replace_line"].includes(operation.type),
-  );
-  if (mutatesLines) {
-    state.lines.length = candidate.lines.length;
-    for (let index = 0; index < candidate.lines.length; index += 1)
-      state.lines[index] = candidate.lines[index];
-  }
-  candidate.lines = state.lines;
+  validatePresentationDelta(state, clonedDelta);
+  // Validation covers every operation that can fail before the live projection is touched.
+  // Commit directly so a one-line animation delta does not copy the complete history first.
+  applyDeltaCandidate(state, clonedDelta);
 }
 
 function applyDeltaCandidate(state: PresentationState, delta: any): void {
@@ -157,7 +134,7 @@ function applyDeltaCandidate(state: PresentationState, delta: any): void {
   if (!Array.isArray(delta.operations))
     throw new Error("presentation delta operations are invalid");
   const previousLineCount = state.lines.length;
-  let previousSceneSequences = collectSceneSequences(state.scene);
+  let previousSceneSequences: Map<string, number> | undefined;
   let existingLineChanged = false;
   let pendingPrefixTrim = 0;
   const flushPrefixTrim = () => {
@@ -189,6 +166,7 @@ function applyDeltaCandidate(state: PresentationState, delta: any): void {
         state.title = operation.title;
         break;
       case "apply_scene_delta":
+        previousSceneSequences ??= collectSceneSequences(state.scene);
         state.scene = applySceneDelta(state.scene, operation.delta);
         assignSceneSequences(state, state.scene, previousSceneSequences);
         previousSceneSequences = collectSceneSequences(state.scene);
@@ -283,6 +261,149 @@ function validatePresentationCandidate(state: PresentationState): void {
   visitPresentationInteractions(state, ({ interaction }) => validateInteraction(interaction));
   for (const line of state.lines) validateColorMatricesInRuns(line.runs);
   for (const document of state.htmlIsland) validateColorMatricesInNodes(document?.nodes ?? []);
+}
+
+function validatePresentationDelta(state: PresentationState, delta: any): void {
+  const baseRevision = serviceInteger(delta.base_revision, "presentation delta base revision");
+  const newRevision = serviceInteger(delta.new_revision, "presentation delta revision");
+  if (!sameServiceInteger(baseRevision, state.revision))
+    throw new Error(`展示 revision 不连续：${state.revision} → ${delta.base_revision}`);
+  if (BigInt(newRevision) <= BigInt(baseRevision))
+    throw new Error("presentation revision is not monotonic");
+  if (newRevision > BigInt(Number.MAX_SAFE_INTEGER))
+    throw new Error("presentation revision exceeds the frontend exact range");
+  if (!Array.isArray(delta.operations))
+    throw new Error("presentation delta operations are invalid");
+
+  const lines = new DeltaLineView(state.lines);
+  let scene = state.scene;
+  let htmlIsland: any[] | undefined;
+  for (const operation of delta.operations) {
+    switch (operation.type) {
+      case "append_line":
+        lines.append(operation.line);
+        break;
+      case "delete_lines":
+        lines.deleteTail(serviceInteger(operation.count, "deleted presentation line count"));
+        break;
+      case "clear":
+        lines.clear();
+        break;
+      case "apply_scene_delta":
+        scene = applySceneDelta(scene, operation.delta);
+        break;
+      case "set_audio":
+        parseAudioStates(operation.audio);
+        break;
+      case "replace_line":
+        lines.replace(operation.line_id, operation.line);
+        break;
+      case "set_html_island":
+        htmlIsland = operation.html_island;
+        break;
+      case "trim_lines":
+        lines.trimPrefix(serviceInteger(operation.count, "trimmed presentation line count"));
+        break;
+      case "set_title":
+      case "set_input_wait":
+      case "set_settings":
+      case "set_tooltip":
+      case "set_resources":
+      case "set_redraw":
+      case "set_button_generation":
+        break;
+      default:
+        throw new Error(`unknown presentation operation: ${String(operation.type)}`);
+    }
+  }
+  for (const line of lines.changedLines()) validatePresentationLine(line);
+  if (htmlIsland !== undefined) validatePresentationHtmlIsland(htmlIsland);
+  if (scene !== state.scene)
+    visitScene(scene, ({ interaction }) => validateInteraction(interaction));
+}
+
+/** Minimal line topology used only for atomic delta preflight. It references untouched history
+ * instead of cloning it, and retains only appended or replaced lines that survive the full delta. */
+class DeltaLineView {
+  private start = 0;
+  private end: number;
+  private readonly appended: DisplayLine[] = [];
+  private readonly replacements = new Map<number, DisplayLine>();
+
+  constructor(private readonly base: readonly DisplayLine[]) {
+    this.end = base.length;
+  }
+
+  append(line: DisplayLine): void {
+    this.appended.push(line);
+  }
+
+  deleteTail(count: number | bigint): void {
+    let remaining = Math.min(Number(count), this.length());
+    const appendedCount = Math.min(remaining, this.appended.length);
+    if (appendedCount > 0)
+      this.appended.splice(this.appended.length - appendedCount, appendedCount);
+    remaining -= appendedCount;
+    if (remaining > 0) {
+      this.end -= remaining;
+      for (const index of this.replacements.keys())
+        if (index >= this.end) this.replacements.delete(index);
+    }
+  }
+
+  clear(): void {
+    this.start = 0;
+    this.end = 0;
+    this.appended.length = 0;
+    this.replacements.clear();
+  }
+
+  replace(lineId: unknown, line: DisplayLine): void {
+    for (let index = this.appended.length - 1; index >= 0; index -= 1) {
+      if (!sameServiceInteger(this.appended[index]?.line_id, lineId)) continue;
+      this.appended[index] = line;
+      return;
+    }
+    for (let index = this.end - 1; index >= this.start; index -= 1) {
+      const current = this.replacements.get(index) ?? this.base[index];
+      if (!sameServiceInteger(current?.line_id, lineId)) continue;
+      this.replacements.set(index, line);
+      return;
+    }
+  }
+
+  trimPrefix(count: number | bigint): void {
+    let remaining = Math.min(Number(count), this.length());
+    const baseCount = Math.min(remaining, this.end - this.start);
+    this.start += baseCount;
+    remaining -= baseCount;
+    for (const index of this.replacements.keys())
+      if (index < this.start) this.replacements.delete(index);
+    if (remaining > 0) this.appended.splice(0, remaining);
+  }
+
+  changedLines(): Iterable<DisplayLine> {
+    return [...this.replacements.values(), ...this.appended];
+  }
+
+  private length(): number {
+    return this.end - this.start + this.appended.length;
+  }
+}
+
+function validatePresentationLine(line: DisplayLine): void {
+  visitRuns(line.runs, `line:${String(line.line_id)}`, ({ interaction }) =>
+    validateInteraction(interaction),
+  );
+  validateColorMatricesInRuns(line.runs);
+}
+
+function validatePresentationHtmlIsland(documents: any[]): void {
+  for (const [index, document] of documents.entries()) {
+    const nodes = document?.nodes ?? [];
+    visitHtmlNodes(nodes, `island:${index}`, ({ interaction }) => validateInteraction(interaction));
+    validateColorMatricesInNodes(nodes);
+  }
 }
 
 function validateInteraction(interaction: any): void {

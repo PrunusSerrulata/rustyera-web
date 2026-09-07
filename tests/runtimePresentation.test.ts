@@ -272,6 +272,31 @@ describe("runtime presentation staging", () => {
     expect(projection.current().revision).toBe(2);
   });
 
+  it("stages output when input submission precedes the closed-wait event", () => {
+    const projection = new RuntimePresentationProjection();
+    projection.projectSnapshot({
+      revision: 1,
+      title: "command menu",
+      history: { logical_lines: [line(1, true)] },
+      input_wait: { wait_id: 10 },
+      redraw: { enabled: true },
+    });
+
+    projection.beginInputTransition();
+    projection.projectDelta({
+      base_revision: 1,
+      new_revision: 2,
+      operations: [{ type: "append_line", line: line(2) }],
+    });
+
+    expect(projection.presentation.revision).toBe(1);
+    expect(projection.current().revision).toBe(2);
+    expect(projection.shouldPublish("idle")).toBe(false);
+    expect(projection.shouldPublish("stopped")).toBe(true);
+    projection.cancelInputTransition();
+    expect(projection.current().revision).toBe(1);
+  });
+
   it("publishes a requested present-now revision and keeps staging the input transition", () => {
     const projection = new RuntimePresentationProjection();
     projection.projectSnapshot({
@@ -304,6 +329,31 @@ describe("runtime presentation staging", () => {
     expect(projection.staged.value).toBe(true);
     expect(projection.current().revision).toBe(3);
     expect(() => projection.publishForPresentNow(4)).toThrow("立即展示 revision 不匹配");
+  });
+
+  it("publishes a staged input transition at a device observation barrier", () => {
+    const projection = new RuntimePresentationProjection();
+    projection.projectSnapshot({
+      revision: 1,
+      title: "command menu",
+      history: { logical_lines: [line(1, true)] },
+      input_wait: { wait_id: 10 },
+      redraw: { enabled: true },
+    });
+    projection.closeInputWait();
+    projection.projectDelta({
+      base_revision: 1,
+      new_revision: 2,
+      operations: [
+        { type: "append_line", line: line(2) },
+        { type: "set_redraw", redraw: { enabled: true } },
+      ],
+    });
+
+    expect(projection.presentation.revision).toBe(1);
+    expect(projection.publishForObservationBarrier()).toBe(true);
+    expect(projection.presentation.revision).toBe(2);
+    expect(projection.staged.value).toBe(false);
   });
 
   it("finishes a latent present-now transition when the next wait opens separately", () => {

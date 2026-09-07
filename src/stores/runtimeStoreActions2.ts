@@ -45,9 +45,7 @@ export function createRuntimeStoreActions2(context: any) {
           break;
         }
         context.startupTelemetryState.finishProgressStage();
-        if (context.startupTelemetry.value)
-          context.startupTelemetry.value.milestones.runtimeValidationReportedMs =
-            context.startupTelemetryState.elapsedMs();
+        context.startupTelemetryState.markRuntimeValidationReported();
         const diagnostics = value.diagnostics ?? [];
         const runtimeAcceptedCompiledCache = diagnostics.some(
           (diagnostic: any) => diagnostic.code === "runtime.compiled_cache_hit",
@@ -314,6 +312,7 @@ export function createRuntimeStoreActions2(context: any) {
         )
           break;
         if (rejectedInput && !willRetryInput) {
+          context.presentationProjection.cancelInputTransition();
           context.runtimeInput.rejectInput(rejectedInput, willRetryInput);
         }
         context.runtimeInput.rejectUndo(correlation);
@@ -464,6 +463,7 @@ export function createRuntimeStoreActions2(context: any) {
     if (BigInt(epoch) < BigInt(context.runtimeEpoch.value)) return false;
     if (!sameServiceInteger(epoch, context.runtimeEpoch.value)) {
       context.resetViewportProjectionBarriers();
+      context.resetTimedViewportRecovery();
       context.pointerObservation.clear();
       context.htmlMeasurements.clear();
       context.resetDeviceInputState(false);
