@@ -414,10 +414,9 @@ describe("snake data client test support", () => {
 });
 
 describe("snake service client prompt submission", () => {
-  it("observes actual native prompt text and focus before moving the pointer", async () => {
+  it("observes actual native prompt text and DOM target before moving the pointer", async () => {
     document.body.innerHTML = '<form class="prompt-bar"><input></form>';
     const element = document.querySelector("input");
-    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const input = { waitForEnabled: vi.fn(), setValue: vi.fn() };
     const browser = {
       execute: async (read) => read(),
@@ -438,7 +437,6 @@ describe("snake service client prompt submission", () => {
       };
       await expect(setLifecyclePrompt(browser, input, "2")).rejects.toThrow('actual={"value":""');
     } finally {
-      focused.mockRestore();
       document.body.innerHTML = "";
     }
   });
