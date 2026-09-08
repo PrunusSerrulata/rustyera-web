@@ -38,53 +38,31 @@ describe("Tauri end-to-end test support", () => {
     };
   }
 
-  it("establishes native foreground through the current handle before observing document focus", async () => {
-    const visible = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    const events = [];
-    const browser = foregroundBrowser(events, false);
-    try {
-      await expect(focusCurrentTauriWindow(browser)).resolves.toBe("current-native-window");
-      expect(events).toEqual([
-        "get-window",
-        "switch:current-native-window",
-        "wait-foreground",
-        "observe-document",
-      ]);
-      expect(browser.waitUntil).toHaveBeenCalledWith(
-        expect.any(Function),
-        expect.objectContaining({
-          timeout: 3_000,
-          interval: 50,
-        }),
-      );
-    } finally {
-      visible.mockRestore();
-      focused.mockRestore();
-    }
-  });
-
-  it.each(["rejected", "hidden", "unfocused"])(
-    "rejects %s native foreground without retrying window commands",
-    async (reason) => {
-      const visible = vi
-        .spyOn(document, "visibilityState", "get")
-        .mockReturnValue(reason === "hidden" ? "hidden" : "visible");
-      const focused = vi.spyOn(document, "hasFocus").mockReturnValue(reason !== "unfocused");
-      const browser = foregroundBrowser([], reason === "rejected");
+  it.each(["visible", "hidden"])(
+    "selects the native context while the document is %s and unfocused",
+    async (visibility) => {
+      const visible = vi.spyOn(document, "visibilityState", "get").mockReturnValue(visibility);
+      const focused = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+      const events = [];
+      const browser = foregroundBrowser(events, false);
       try {
-        await expect(focusCurrentTauriWindow(browser)).rejects.toThrow(
-          reason === "rejected" ? "native window rejected" : "visible and focused",
-        );
-        expect(browser.getWindowHandle).toHaveBeenCalledOnce();
-        expect(browser.switchToWindow).toHaveBeenCalledOnce();
-        expect(browser.waitUntil).toHaveBeenCalledTimes(reason === "rejected" ? 0 : 1);
+        await expect(focusCurrentTauriWindow(browser)).resolves.toBe("current-native-window");
+        expect(events).toEqual(["get-window", "switch:current-native-window"]);
+        expect(browser.execute).not.toHaveBeenCalled();
+        expect(browser.waitUntil).not.toHaveBeenCalled();
       } finally {
         visible.mockRestore();
         focused.mockRestore();
       }
     },
   );
+
+  it("preserves a failed native context switch without retrying", async () => {
+    const browser = foregroundBrowser([], true);
+    await expect(focusCurrentTauriWindow(browser)).rejects.toThrow("native window rejected");
+    expect(browser.switchToWindow).toHaveBeenCalledOnce();
+    expect(browser.waitUntil).not.toHaveBeenCalled();
+  });
 
   it.each([
     ["win32", "era-web-tauri.exe"],

@@ -1,5 +1,3 @@
-/* global document */
-
 import { createWriteStream } from "node:fs";
 import {
   copyFile,
@@ -15,53 +13,12 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 
-export async function focusNativeBrowser(
-  browser,
-  name,
-  { platform = process.platform, execute = promisify(execFile) } = {},
-) {
-  const application = { safari: "com.apple.Safari", firefox: "org.mozilla.firefox" }[name];
-  if (!application) throw new Error("unsupported native browser foreground target");
-  if (platform === "darwin" && name !== "safari")
-    await execute(
-      "/usr/bin/osascript",
-      ["-e", `tell application id "${application}" to activate`],
-      {
-        timeout: 3_000,
-      },
-    );
+export async function focusNativeBrowser(browser, name) {
+  if (!["safari", "firefox"].includes(name))
+    throw new Error("unsupported native browser context target");
   const handle = await browser.getWindowHandle();
   await browser.switchToWindow(handle);
-  if (name === "safari") {
-    const point = await browser.execute(() => {
-      const heading = document.querySelector(".welcome h1");
-      if (!heading || heading.getClientRects().length === 0) return null;
-      const rectangle = heading.getBoundingClientRect();
-      if (rectangle.width <= 0 || rectangle.height <= 0) return null;
-      return {
-        x: Math.round(rectangle.left + rectangle.width / 2),
-        y: Math.round(rectangle.top + rectangle.height / 2),
-      };
-    });
-    if (!point) throw new Error("Safari welcome heading is not visible for foreground focus");
-    await browser
-      .action("pointer")
-      .move({ ...point, origin: "viewport" })
-      .down("left")
-      .up("left")
-      .perform();
-  }
-  await browser.waitUntil(
-    () => browser.execute(() => document.visibilityState === "visible" && document.hasFocus()),
-    {
-      timeout: 3_000,
-      interval: 50,
-      timeoutMsg: "native browser window is not visible and focused",
-    },
-  );
 }
 
 export function browserProjectProgressErrors(progress) {

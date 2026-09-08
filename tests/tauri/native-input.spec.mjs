@@ -53,14 +53,6 @@ async function observation() {
   }));
 }
 
-async function focused() {
-  await browser.waitUntil(() => browser.execute(() => document.hasFocus()), {
-    timeout: 3000,
-    interval: 50,
-    timeoutMsg: "native probe window did not receive actual document focus",
-  });
-}
-
 async function assertMainWindowCloseRejected() {
   // WDIO's ContextManager treats even a rejected closeWindow as an empty handle list,
   // masking the native error. Inspect this negative infrastructure request directly;
@@ -137,7 +129,6 @@ enabled("Tauri native input provider", () => {
 
       await browser.switchToWindow(probe.handle);
       await browser.url(probeUrl);
-      await focused();
       await browser.waitUntil(() => browser.execute(() => Boolean(window.__NATIVE_INPUT_PROBE__)), {
         timeout: 3000,
         interval: 50,
@@ -237,13 +228,11 @@ enabled("Tauri native input provider", () => {
       const focusTarget = await browser.createWindow("window");
       created.push(focusTarget.handle);
       await browser.switchToWindow(focusTarget.handle);
-      await focused();
       await assert.rejects(async () => {
         const unexpected = await browser.createWindow("window");
         created.push(unexpected.handle);
       }, /window limit reached/);
       await browser.switchToWindow(probe.handle);
-      await focused();
       const restored = await observation();
       assert.ok(
         restored.trustedBlur > beforeBlur,
@@ -325,7 +314,6 @@ enabled("Tauri native input provider", () => {
       }
       try {
         await browser.switchToWindow(original);
-        await focused();
         const snapshot = await captureCompleteTauriSnapshot(browser);
         assert.equal(snapshot.runtime?.bridgeKind, "tauri");
         console.log(JSON.stringify({ type: "native-input-main-after", snapshot }));

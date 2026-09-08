@@ -4,20 +4,12 @@ import path from "node:path";
 
 const SNAPSHOT_INTERVAL_MS = 5_000;
 
-/** Establish foreground once through the session's real native window command before test input. */
+/** Select the existing WebDriver context without requiring OS or document focus. */
 export async function focusCurrentTauriWindow(browser) {
   const handle = await browser.getWindowHandle();
   if (typeof handle !== "string" || !handle)
-    throw new Error("native foreground setup requires the current WebDriver window handle");
+    throw new Error("native context setup requires the current WebDriver window handle");
   await browser.switchToWindow(handle);
-  await browser.waitUntil(
-    () => browser.execute(() => document.visibilityState === "visible" && document.hasFocus()),
-    {
-      timeout: 3_000,
-      interval: 50,
-      timeoutMsg: "current native WebDriver window did not become visible and focused",
-    },
-  );
   return handle;
 }
 

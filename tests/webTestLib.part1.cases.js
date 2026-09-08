@@ -367,109 +367,37 @@ describe("web game test scenario", () => {
     expect(snapshotSummary).not.toHaveBeenCalled();
   });
 
-  it("focuses Safari through its WebDriver automation window", async () => {
-    const calls = [];
-    const execute = vi.fn(async (...args) => calls.push(["activate", ...args]));
-    const pointer = {
-      move: (options) => {
-        calls.push(["move", options]);
-        return pointer;
-      },
-      down: (button) => {
-        calls.push(["down", button]);
-        return pointer;
-      },
-      up: (button) => {
-        calls.push(["up", button]);
-        return pointer;
-      },
-      perform: async () => calls.push(["perform"]),
-    };
-    const browser = {
-      getWindowHandle: async () => {
-        calls.push(["handle"]);
-        return "automation";
-      },
-      switchToWindow: async (handle) => calls.push(["switch", handle]),
-      action: (kind) => {
-        calls.push(["action", kind]);
-        return pointer;
-      },
-      execute: async (read) => {
-        const source = String(read);
-        if (source.includes("querySelector")) return { x: 640, y: 450 };
-        return runInNewContext(`(${read})()`, {
-          document: { visibilityState: "visible", hasFocus: () => true },
-        });
-      },
-      waitUntil: async (read, options) => {
-        calls.push(["observe", options.timeout, options.interval]);
-        expect(await read()).toBe(true);
-      },
-    };
-    await focusNativeBrowser(browser, "safari", { platform: "darwin", execute });
-    expect(calls).toEqual([
-      ["handle"],
-      ["switch", "automation"],
-      ["action", "pointer"],
-      ["move", { x: 640, y: 450, origin: "viewport" }],
-      ["down", "left"],
-      ["up", "left"],
-      ["perform"],
-      ["observe", 3_000, 50],
-    ]);
-    expect(execute).not.toHaveBeenCalled();
-    execute.mockClear();
-    await focusNativeBrowser(browser, "firefox", { platform: "linux", execute });
-    expect(execute).not.toHaveBeenCalled();
-  });
-
-  it.each(["activation", "switch", "hidden", "unfocused", "unsupported"])(
-    "rejects a failed %s foreground prerequisite without retrying input",
-    async (failure) => {
-      const execute = vi.fn(async () => {
-        if (failure === "activation") throw new Error("activation");
-      });
+  it.each(["safari", "firefox"])(
+    "selects %s without OS activation or document focus assertions",
+    async (name) => {
       const browser = {
-        getWindowHandle: async () => "automation",
-        switchToWindow: async () => {
-          if (failure === "switch") throw new Error("switch");
-        },
-        action: () => {
-          const pointer = {
-            move: () => pointer,
-            down: () => pointer,
-            up: () => pointer,
-            perform: async () => {},
-          };
-          return pointer;
-        },
-        execute: async (read) =>
-          String(read).includes("querySelector")
-            ? { x: 640, y: 450 }
-            : runInNewContext(`(${read})()`, {
-                document: {
-                  visibilityState: failure === "hidden" ? "hidden" : "visible",
-                  hasFocus: () => failure !== "unfocused",
-                },
-              }),
-        waitUntil: async (read, options) => {
-          if (!(await read())) throw new Error(options.timeoutMsg);
-        },
+        getWindowHandle: vi.fn(async () => "automation"),
+        switchToWindow: vi.fn(async () => {}),
+        execute: vi.fn(() => {
+          throw new Error("document is locked");
+        }),
+        waitUntil: vi.fn(),
+        action: vi.fn(),
       };
-      await expect(
-        focusNativeBrowser(
-          browser,
-          failure === "unsupported" ? "unknown" : failure === "activation" ? "firefox" : "safari",
-          {
-            platform: "darwin",
-            execute,
-          },
-        ),
-      ).rejects.toThrow();
-      expect(execute.mock.calls.length).toBeLessThanOrEqual(1);
+      await focusNativeBrowser(browser, name);
+      expect(browser.switchToWindow).toHaveBeenCalledWith("automation");
+      expect(browser.execute).not.toHaveBeenCalled();
+      expect(browser.waitUntil).not.toHaveBeenCalled();
+      expect(browser.action).not.toHaveBeenCalled();
     },
   );
+
+  it("rejects unsupported browser contexts and failed context switches", async () => {
+    const browser = {
+      getWindowHandle: vi.fn(async () => "automation"),
+      switchToWindow: vi.fn(async () => {
+        throw new Error("switch");
+      }),
+    };
+    await expect(focusNativeBrowser(browser, "unknown")).rejects.toThrow("unsupported");
+    expect(browser.getWindowHandle).not.toHaveBeenCalled();
+    await expect(focusNativeBrowser(browser, "safari")).rejects.toThrow("switch");
+  });
 
   it("rejects a missing remote directory before storage traversal starts", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "rustyera-remote-directory-"));

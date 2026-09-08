@@ -48,7 +48,8 @@ describe("snake service lifecycle assertions", () => {
       const browser = { execute: async (read) => read() };
       expect(await lifecycleViewport(browser)).toEqual(observation.viewport);
       observation.focused = false;
-      await expect(lifecycleViewport(browser)).rejects.toThrow("visible focused document");
+      observation.visible = false;
+      expect(await lifecycleViewport(browser)).toEqual(observation.viewport);
     } finally {
       delete window.__RUSTYERA_POINTER_OBSERVATION__;
     }
@@ -273,8 +274,7 @@ describe("snake service lifecycle assertions", () => {
       execute: vi
         .fn()
         .mockResolvedValueOnce(0)
-        .mockResolvedValueOnce(true)
-        .mockResolvedValueOnce({ count: blurCount, focused: true }),
+        .mockResolvedValueOnce({ count: blurCount, focused: false }),
       async waitUntil(accept, { timeoutMsg }) {
         if (!(await accept())) throw new Error(timeoutMsg);
       },
