@@ -233,7 +233,7 @@ export async function runBrowserCompatibility(argv) {
       },
     });
     if (!backgroundDom && (browserName === "safari" || snakeServiceLifecycle)) {
-      compatibilityStage = "establishing native browser foreground";
+      compatibilityStage = "selecting the native browser WebDriver context";
       await focusNativeBrowser(browser, browserName);
     }
     compatibilityStage = "waiting for frontend test control";
