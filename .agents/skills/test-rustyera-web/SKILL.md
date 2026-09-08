@@ -5,6 +5,26 @@ description: Drive rustyera-web through its real Vue UI and WASM worker in Chrom
 
 # Test RustyEra Web
 
+## Test delegation: execution and collection only
+
+The primary agent owns every planning, selection, interpretation, diagnosis, and next-action decision
+in this skill, except the explicitly authorized in-game choices described below. Before delegation, provide a complete executable
+command or a primary-authored script with its complete invocation: working directory, executable,
+all required environment variables and arguments, inputs/outputs, ordering, timeouts, watchdog,
+deadline, result collection, and stop/cleanup steps. Resolve every placeholder before dispatch.
+
+The test subagent must execute those commands unchanged and collect the specified raw results only.
+It must never guess missing information, choose tests or game inputs, adjust configuration, diagnose
+or repair failures, decide to rebuild/retry, or declare acceptance. Report incomplete or ambiguous
+instructions and execution errors to the primary agent; wait for a new complete command while
+following only the already specified monitoring, stop, and cleanup instructions.
+
+The sole exception is choosing in-game actions when the user explicitly requests autonomous play
+and the primary agent confirms that the phase's prerequisites are met. The primary still supplies
+complete launch commands, action interfaces, boundaries, monitoring and exit instructions. This
+exception never permits autonomous decisions about test procedures, tools, environment, parameters,
+retries, diagnosis or recovery.
+
 Use `npm run test:game` for deterministic Chromium/WASM coverage,
 `npm run test:browser-compat` for native Firefox and macOS-only Safari WASM coverage, and
 `npm run test:tauri` for native-client coverage. Do not replace these runners with direct Pinia
