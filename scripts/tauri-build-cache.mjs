@@ -5,8 +5,12 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir, release as osRelease } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { cargoCommandIdentity, nativeSqlFeatureEnabled } from "./cargo-command-identity.mjs";
+export { cargoFeatureIdentity, nativeSqlFeatureEnabled } from "./cargo-command-identity.mjs";
 
 const execute = promisify(execFile);
+
 const reusableSpecs = new Set([
   "project-load-failure.spec.mjs",
   "native-input.spec.mjs",
@@ -35,7 +39,13 @@ export function reusableBuildEnvironment(environment, specName, state, enabled) 
     throw new Error("--reuse-build requires a supported snake/native-input spec without --state");
   const result = { ...environment };
   for (const name of Object.keys(result)) {
-    if (name.startsWith("VITE_RUSTYERA_TAURI_")) delete result[name];
+    if (
+      name.startsWith("VITE_RUSTYERA_TAURI_") ||
+      name.startsWith("RUSTYERA_TAURI_PERF_") ||
+      name === "RUSTYERA_SERVICE_CAPTURE_SOURCE_PROJECT" ||
+      name === "RUSTYERA_TAURI_STATE_EXPORT_PATH"
+    )
+      delete result[name];
   }
   return {
     ...result,
@@ -68,14 +78,17 @@ export async function fileIdentity(filename) {
   }
 }
 
-async function sourceIdentity(root, core = false) {
+async function sourceIdentity(root, core = false, nativeSql = false) {
   const { stdout } = await execute("git", ["ls-files", "-co", "--exclude-standard", "-z"], {
     cwd: root,
     maxBuffer: 8 * 1024 * 1024,
   });
   const files = [...new Set(stdout.split("\0").filter(Boolean))].filter((name) =>
     core
-      ? /^(crates\/|Cargo\.|rust-toolchain)/.test(name)
+      ? (/^(crates\/|Cargo\.|rust-toolchain)/.test(name) &&
+          (nativeSql || !name.startsWith("crates/era-sql-provider/"))) ||
+        (nativeSql &&
+          /^tools\/sqlite-native\/(build\.mjs$|source\/(manifest\.json|sqlite3\.[ch])$)/.test(name))
       : !name.includes("/") || /^(src\/|src-tauri\/|crates\/|scripts\/|public\/)/.test(name),
   );
   const identities = [];
@@ -117,9 +130,37 @@ export async function buildContract({ repository, binary, args, environment, pro
   // Both the publish pin and the actual patched source are inputs. Build scripts and
   // shared core crates must invalidate the executable even with an unchanged pin.
   const core = path.resolve(repository, "../rustyera-core");
+  // Cache inspection must never compile SQLite. Prebuild it explicitly before
+  // entering the official Tauri workflow so pre/post contracts stay identical.
+  const identity = cargoCommandIdentity(args, environment);
+  const { target: targetArgument, wasmBuild, featureIdentity } = identity;
+  if (wasmBuild) {
+    environment = { ...environment };
+    for (const name of Object.keys(environment))
+      if (
+        /^(SQLITE3_|LIBSQLITE3_|RUSTYERA_SQLITE_)/.test(name) ||
+        name === "RUSTYERA_NATIVE_SQL_PROVIDER"
+      )
+        delete environment[name];
+  }
+  const nativeSql =
+    !wasmBuild &&
+    identity.buildsNative &&
+    (nativeSqlFeatureEnabled(featureIdentity) || environment.RUSTYERA_NATIVE_SQL_PROVIDER === "1");
+  let nativeSqlite;
+  if (nativeSql) {
+    const { prepareNativeSqlite } = await import(
+      pathToFileURL(path.join(core, "tools/sqlite-native/build.mjs")).href
+    );
+    nativeSqlite = await prepareNativeSqlite({
+      target: targetArgument,
+      environment,
+      cacheOnly: true,
+    });
+  }
   const [webSources, coreSources, compiler, cargo] = await Promise.all([
     sourceIdentity(repository),
-    sourceIdentity(core, true),
+    sourceIdentity(core, true, nativeSql),
     execute("rustc", ["-vV"], { cwd: repository, env: environment }),
     execute("cargo", ["-V"], { cwd: repository, env: environment }),
   ]);
@@ -128,10 +169,12 @@ export async function buildContract({ repository, binary, args, environment, pro
     repository,
     binary,
     args,
+    featureIdentity,
     provider: provider ?? null,
     platform: [process.platform, process.arch, osRelease(), process.version, process.execPath],
     compiler: compiler.stdout,
     cargo: cargo.stdout,
+    ...(nativeSql ? { nativeSqlite } : {}),
     environment: Object.fromEntries(
       Object.entries(environment)
         .filter(
@@ -161,11 +204,13 @@ export function compiledBuildInputs(inputs) {
       webSources: inputs.webSources?.filter(
         ([name]) =>
           ![
+            "AGENTS.md",
             "scripts/tauri-test.mjs",
             "scripts/tauri-test-support.mjs",
             "scripts/tauri-performance-audit.mjs",
             "scripts/tauri-performance-audit.d.mts",
             "scripts/tauri-performance-capture.mjs",
+            "scripts/tauri-performance-timing-evidence.mjs",
             "scripts/tauri-performance-runner.mjs",
             "scripts/tauri-performance-trace.mjs",
             "scripts/tauri-performance-trace.d.mts",

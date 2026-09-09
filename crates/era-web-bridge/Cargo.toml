@@ -6,6 +6,7 @@ license.workspace = true
 
 [features]
 performance-audit = []
+vm-instruction-profile = ["performance-audit", "era-runtime/vm-instruction-profile", "erabasic-vm/vm-instruction-profile"]
 
 [dependencies]
 blake3.workspace = true

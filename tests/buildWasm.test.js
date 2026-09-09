@@ -15,6 +15,10 @@ async function fixture() {
   await mkdir(scripts);
   await copyFile(sourceBuildScript, path.join(scripts, "build-wasm.mjs"));
   await copyFile(sourceCargoWrapper, path.join(scripts, "cargo-local.mjs"));
+  await copyFile(
+    path.join(path.dirname(sourceCargoWrapper), "cargo-command-identity.mjs"),
+    path.join(scripts, "cargo-command-identity.mjs"),
+  );
   await writeFile(path.join(root, "Cargo.lock"), remoteLock);
 
   const fakeWasmPack = path.join(root, "build");

@@ -195,6 +195,7 @@ fn batch(
 ) -> PumpBatch {
     PumpBatch {
         state,
+        immediate_work: state == WebDriveState::MoreWork,
         vm_instructions,
         runtime_transitions,
         cooperative_background_work: false,
@@ -275,9 +276,22 @@ impl NativePumpDriver for FakeNativePumpDriver {
             .unwrap_or_else(|| Err("unexpected extra native pump".to_owned()))
     }
 
-    fn submit_completion(&mut self, completion: NativeCompletion) -> Result<(), String> {
-        self.submitted.push(completion);
-        Ok(())
+    fn sql_provider_lifecycle(&self) -> (SqlProviderHandleV1, Option<SqlProviderHandleV1>) {
+        (
+            SqlProviderHandleV1 {
+                service_epoch: 1,
+                id: self.pump_calls as u64,
+            },
+            (self.pump_calls == 2).then_some(SqlProviderHandleV1 {
+                service_epoch: 2,
+                id: 99,
+            }),
+        )
+    }
+
+    fn submit_completion(&mut self, completion: &NativeCompletion) -> Result<u64, String> {
+        self.submitted.push(completion.clone());
+        Ok(1000 + self.submitted.len() as u64)
     }
 }
 

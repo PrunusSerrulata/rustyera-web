@@ -1,7 +1,8 @@
 use era_protocol::{ProtocolBytes, ProtocolVersion, decode_canonical, encode_canonical};
 use era_runtime_protocol::{
     DECODE_CANVAS_IMAGE_OPERATION, DecodeCanvasImageRequest, DecodeCanvasImageResponse,
-    ServiceKind, ServiceRequest, ServiceResult,
+    FrontendInput, InputIntent, InteractionToken, ServiceKind, ServiceRequest, ServiceResponse,
+    ServiceResult,
 };
 use std::collections::BTreeMap;
 
@@ -10,6 +11,62 @@ use crate::export::{
     cancel_compiled_cache_export_inner, write_atomic_file_chunk, write_compiled_cache_chunk_inner,
 };
 use crate::preferences::{Preferences, default_preferences};
+
+#[cfg(feature = "performance-audit")]
+#[test]
+fn instruction_profile_command_reports_feature_and_unconstructed_vm() {
+    let state = AppState::default();
+    #[cfg(feature = "vm-instruction-profile")]
+    {
+        assert!(instruction_profile_for_state(&state).is_err());
+        *state.session.lock().unwrap() =
+            Some(WebSession::new(WebSessionOptions::default()).unwrap());
+        assert_eq!(
+            instruction_profile_for_state(&state).unwrap(),
+            serde_json::Value::Null
+        );
+    }
+    #[cfg(not(feature = "vm-instruction-profile"))]
+    assert_eq!(
+        instruction_profile_for_state(&state).unwrap_err(),
+        "VM instruction profiling is not compiled into this build"
+    );
+}
+
+#[test]
+fn submitted_pump_mode_keeps_service_responses_bounded() {
+    let response = RuntimeMessage::ServiceResponse(ServiceResponse {
+        request_id: 7,
+        result: ServiceResult::Ready {
+            payload: ProtocolBytes::new(Vec::new()),
+        },
+    });
+    assert_eq!(
+        submitted_pump_mode(&response),
+        Ok(SubmittedPumpMode::Frontend)
+    );
+
+    let skipped = RuntimeMessage::Input(FrontendInput {
+        wait_id: 1,
+        token: InteractionToken { epoch: 2, id: 3 },
+        monotonic_time_ns: 4,
+        intent: InputIntent::Enter,
+        message_skip: true,
+    });
+    assert_eq!(
+        submitted_pump_mode(&skipped),
+        Ok(SubmittedPumpMode::UntilBlocked)
+    );
+
+    let ordinary = RuntimeMessage::Input(FrontendInput {
+        wait_id: 1,
+        token: InteractionToken { epoch: 2, id: 3 },
+        monotonic_time_ns: 4,
+        intent: InputIntent::Enter,
+        message_skip: false,
+    });
+    assert!(submitted_pump_mode(&ordinary).is_err());
+}
 
 #[test]
 fn retiring_native_owners_drops_project_before_runtime_session() {

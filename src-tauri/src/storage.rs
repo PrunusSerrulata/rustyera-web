@@ -15,10 +15,14 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use tauri::ipc::Response;
 
+mod execution;
 mod listing;
 #[cfg(any(test, feature = "webdriver"))]
 mod observation;
 pub(crate) mod path;
+
+pub(crate) use execution::StorageExecution;
+use execution::{checked, checkpoint, publish};
 
 use path::{
     ResolvedReadPath, change_token, conflict, ensure_inside, exists_checked, frontend_error,
@@ -291,10 +295,29 @@ impl StorageHost {
         request: StorageRequest,
         project: Option<&crate::project::ProjectHost>,
     ) -> StorageResponse {
+        self.handle_with_execution(request, project, None)
+    }
+
+    #[cfg(any(test, feature = "native-sql"))]
+    pub(crate) fn handle_sql_with_project(
+        &mut self,
+        request: StorageRequest,
+        project: Option<&crate::project::ProjectHost>,
+        execution: &StorageExecution,
+    ) -> StorageResponse {
+        self.handle_with_execution(request, project, Some(execution))
+    }
+
+    fn handle_with_execution(
+        &mut self,
+        request: StorageRequest,
+        project: Option<&crate::project::ProjectHost>,
+        execution: Option<&StorageExecution>,
+    ) -> StorageResponse {
         #[cfg(any(test, feature = "webdriver"))]
         let observation =
             observation::Pending::begin(&request, &self.project_root, &self.save_root);
-        let response = self.handle_project_request(request, project);
+        let response = self.handle_project_request(request, project, execution);
         #[cfg(any(test, feature = "webdriver"))]
         if let Some(observation) = observation {
             observation.finish(&response);
@@ -306,6 +329,7 @@ impl StorageHost {
         &mut self,
         request: StorageRequest,
         project: Option<&crate::project::ProjectHost>,
+        execution: Option<&StorageExecution>,
     ) -> StorageResponse {
         if request.namespace == StorageNamespace::Resource {
             let result = if matches!(
@@ -328,11 +352,13 @@ impl StorageHost {
                         )
                     })
                     .and_then(|project| {
-                        project.resource_storage(
-                            &request.relative_path,
-                            request.operation,
-                            self.profile,
-                        )
+                        checked(execution, || {
+                            project.resource_storage(
+                                &request.relative_path,
+                                request.operation,
+                                self.profile,
+                            )
+                        })
                     })
                     .unwrap_or_else(|error| StorageResult::Error {
                         error: frontend_error(&error),
@@ -341,6 +367,14 @@ impl StorageHost {
             return StorageResponse {
                 request_id: request.request_id,
                 result,
+            };
+        }
+        if let Err(error) = checkpoint(execution) {
+            return StorageResponse {
+                request_id: request.request_id,
+                result: StorageResult::Error {
+                    error: frontend_error(&error),
+                },
             };
         }
         if request.idempotency_key.len() > MAXIMUM_RELATIVE_PATH_BYTES {
@@ -364,7 +398,12 @@ impl StorageHost {
             StorageOperation::Write { .. } | StorageOperation::Delete { .. }
         );
         let result = self
-            .operate(request.namespace, &request.relative_path, request.operation)
+            .operate(
+                request.namespace,
+                &request.relative_path,
+                request.operation,
+                execution,
+            )
             .unwrap_or_else(|error| StorageResult::Error {
                 error: frontend_error(&error),
             });
@@ -413,6 +452,7 @@ impl StorageHost {
         namespace: StorageNamespace,
         relative_path: &str,
         operation: StorageOperation,
+        execution: Option<&StorageExecution>,
     ) -> Result<StorageResult, std::io::Error> {
         if relative_path.len() > MAXIMUM_RELATIVE_PATH_BYTES {
             return Err(budget_exceeded("storage relative path"));
@@ -424,10 +464,14 @@ impl StorageHost {
                 | StorageOperation::Stat
                 | StorageOperation::ReadRange { .. }
         ) {
-            self.resolve_for_read(namespace, relative_path)?
+            checked(execution, || {
+                self.resolve_for_read(namespace, relative_path)
+            })?
         } else {
             let root = self.namespace_root(namespace);
-            let path = self.resolve_namespace_path(namespace, &root, relative_path)?;
+            let path = checked(execution, || {
+                self.resolve_namespace_path(namespace, &root, relative_path)
+            })?;
             ResolvedReadPath {
                 root,
                 path,
@@ -438,7 +482,7 @@ impl StorageHost {
         let path = resolved.path.as_path();
         match operation {
             StorageOperation::Read => {
-                let (data, revision) = read_bounded_with_revision(path)?;
+                let (data, revision) = read_bounded_with_revision(path, execution)?;
                 Ok(StorageResult::Read {
                     data: ProtocolBytes::new(data),
                     revision: Some(revision),
@@ -449,35 +493,47 @@ impl StorageHost {
                 atomic_replace,
                 precondition,
             } => {
-                verify_precondition_bounded(path, &precondition)?;
+                verify_precondition_bounded(path, &precondition, execution)?;
+                // Compute before publication so a successful write is never
+                // reclassified by cancellation during response hashing.
+                let revision = revision_checked(data.as_slice(), execution)?;
                 let parent = path.parent().ok_or_else(invalid_path)?;
-                fs::create_dir_all(parent)?;
-                ensure_inside(root, parent)?;
+                checked(execution, || fs::create_dir_all(parent))?;
+                checked(execution, || ensure_inside(root, parent))?;
                 if atomic_replace {
-                    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-                    temporary.write_all(data.as_slice())?;
-                    temporary.as_file().sync_all()?;
-                    temporary.persist(path).map_err(|error| error.error)?;
+                    let mut temporary =
+                        checked(execution, || tempfile::NamedTempFile::new_in(parent))?;
+                    for chunk in data.as_slice().chunks(HASH_BUFFER_BYTES) {
+                        checked(execution, || temporary.write_all(chunk))?;
+                    }
+                    checked(execution, || temporary.as_file().sync_all())?;
+                    publish(execution, || {
+                        temporary.persist(path).map_err(|error| error.error)
+                    })?;
                 } else {
-                    fs::write(path, data.as_slice())?;
+                    // This compound write can truncate before it returns. Once
+                    // entered, retain its actual result even if cancelled.
+                    publish(execution, || fs::write(path, data.as_slice()))?;
                 }
                 Ok(StorageResult::Written {
-                    revision: Some(revision(data.as_slice())),
+                    revision: Some(revision),
                 })
             }
-            StorageOperation::List { pattern, recursive } => listing::list_storage(
-                &resolved,
-                pattern.as_deref(),
-                recursive,
-                self.normalize_data_paths && namespace == StorageNamespace::Data,
-            ),
+            StorageOperation::List { pattern, recursive } => checked(execution, || {
+                listing::list_storage(
+                    &resolved,
+                    pattern.as_deref(),
+                    recursive,
+                    self.normalize_data_paths && namespace == StorageNamespace::Data,
+                )
+            }),
             StorageOperation::Delete { precondition } => {
-                verify_precondition_bounded(path, &precondition)?;
-                fs::remove_file(path)?;
+                verify_precondition_bounded(path, &precondition, execution)?;
+                publish(execution, || fs::remove_file(path))?;
                 Ok(StorageResult::Deleted)
             }
             StorageOperation::Stat => {
-                let (byte_length, revision) = stream_revision(path)?;
+                let (byte_length, revision) = stream_revision(path, execution)?;
                 Ok(StorageResult::Metadata(StorageMetadata {
                     byte_length,
                     revision: Some(revision),
@@ -491,17 +547,17 @@ impl StorageHost {
                 if maximum_bytes == 0 || maximum_bytes > MAXIMUM_RANGE_READ_BYTES {
                     return Err(budget_exceeded("storage range read"));
                 }
-                let before = fs::metadata(path)?;
+                let before = checked(execution, || fs::metadata(path))?;
                 let token = change_token(&before);
                 if expected.as_ref().is_some_and(|value| value != &token) {
                     return Err(conflict("storage file changed before range read"));
                 }
-                let mut file = File::open(path)?;
-                file.seek(SeekFrom::Start(offset))?;
+                let mut file = checked(execution, || File::open(path))?;
+                checked(execution, || file.seek(SeekFrom::Start(offset)))?;
                 let mut data = vec![0; maximum_bytes as usize];
-                let length = file.read(&mut data)?;
+                let length = checked(execution, || file.read(&mut data))?;
                 data.truncate(length);
-                let after = fs::metadata(path)?;
+                let after = checked(execution, || fs::metadata(path))?;
                 if token != change_token(&after) {
                     return Err(conflict("storage file changed during range read"));
                 }
@@ -610,39 +666,69 @@ pub(crate) fn account_list_entry(
     }
 }
 
-fn read_bounded_with_revision(path: &Path) -> Result<(Vec<u8>, String), std::io::Error> {
-    let announced = fs::metadata(path)?.len();
+fn read_bounded_with_revision(
+    path: &Path,
+    execution: Option<&StorageExecution>,
+) -> Result<(Vec<u8>, String), std::io::Error> {
+    let announced = checked(execution, || fs::metadata(path))?.len();
     if announced > MAXIMUM_FULL_READ_BYTES as u64 {
         return Err(budget_exceeded("storage full read"));
     }
     let capacity = usize::try_from(announced).unwrap_or(MAXIMUM_FULL_READ_BYTES);
     let mut data = Vec::with_capacity(capacity);
-    File::open(path)?
-        .take((MAXIMUM_FULL_READ_BYTES as u64).saturating_add(1))
-        .read_to_end(&mut data)?;
+    let mut file = checked(execution, || File::open(path))?
+        .take((MAXIMUM_FULL_READ_BYTES as u64).saturating_add(1));
+    let mut buffer = vec![0; HASH_BUFFER_BYTES];
+    loop {
+        let length = checked(execution, || file.read(&mut buffer))?;
+        if length == 0 {
+            break;
+        }
+        data.extend_from_slice(&buffer[..length]);
+        #[cfg(test)]
+        execution::read_chunk(execution);
+    }
     if data.len() > MAXIMUM_FULL_READ_BYTES {
         return Err(budget_exceeded("storage full read"));
     }
-    let digest = revision(&data);
+    let digest = revision_checked(&data, execution)?;
     Ok((data, digest))
 }
 
-fn stream_revision(path: &Path) -> Result<(u64, String), std::io::Error> {
-    let mut file = File::open(path)?;
-    let before = file.metadata()?;
+fn revision_checked(data: &[u8], execution: Option<&StorageExecution>) -> std::io::Result<String> {
+    if execution.is_none() {
+        return Ok(revision(data));
+    }
+    let mut hasher = blake3::Hasher::new();
+    for chunk in data.chunks(HASH_BUFFER_BYTES) {
+        checkpoint(execution)?;
+        hasher.update(chunk);
+    }
+    checkpoint(execution)?;
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn stream_revision(
+    path: &Path,
+    execution: Option<&StorageExecution>,
+) -> Result<(u64, String), std::io::Error> {
+    let mut file = checked(execution, || File::open(path))?;
+    let before = checked(execution, || file.metadata())?;
     let token = change_token(&before);
     let mut hasher = blake3::Hasher::new();
     let mut buffer = vec![0_u8; HASH_BUFFER_BYTES];
     let mut byte_length = 0_u64;
     loop {
-        let length = file.read(&mut buffer)?;
+        let length = checked(execution, || file.read(&mut buffer))?;
         if length == 0 {
             break;
         }
         hasher.update(&buffer[..length]);
         byte_length = byte_length.saturating_add(length as u64);
+        #[cfg(test)]
+        execution::read_chunk(execution);
     }
-    let after = file.metadata()?;
+    let after = checked(execution, || file.metadata())?;
     if token != change_token(&after) || byte_length != after.len() {
         return Err(conflict("storage file changed while hashing metadata"));
     }
@@ -652,13 +738,15 @@ fn stream_revision(path: &Path) -> Result<(u64, String), std::io::Error> {
 fn verify_precondition_bounded(
     path: &Path,
     precondition: &StoragePrecondition,
+    execution: Option<&StorageExecution>,
 ) -> Result<(), std::io::Error> {
+    checkpoint(execution)?;
     match precondition {
         StoragePrecondition::Any => Ok(()),
-        StoragePrecondition::Missing if !path.try_exists()? => Ok(()),
+        StoragePrecondition::Missing if !checked(execution, || path.try_exists())? => Ok(()),
         StoragePrecondition::Missing => Err(conflict("storage precondition did not hold")),
         StoragePrecondition::Revision(expected) => {
-            let (_, current) = stream_revision(path).map_err(|error| {
+            let (_, current) = stream_revision(path, execution).map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     conflict("storage precondition did not hold")
                 } else {

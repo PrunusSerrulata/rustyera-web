@@ -11,7 +11,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { cargoCommandIdentity, nativeSqlFeatureEnabled } from "./cargo-command-identity.mjs";
 
 const workspace = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const lockfile = resolve(workspace, "Cargo.lock");
@@ -24,6 +25,37 @@ const args = process.argv.slice(2);
 if (args.length === 0) {
   console.error("用法: npm run cargo:local -- <cargo 参数>");
   process.exit(2);
+}
+
+// wasm-pack's --target names a JS packaging mode, not a Rust target. Never pass
+// native library locations to that build, even when inherited from a Tauri shell.
+const identity = cargoCommandIdentity(args, process.env, cargo);
+const { target: targetArgument, wasmBuild } = identity;
+const environment = { ...process.env };
+if (wasmBuild) {
+  for (const name of Object.keys(environment))
+    if (
+      name.startsWith("SQLITE3_") ||
+      name.startsWith("LIBSQLITE3_") ||
+      name.startsWith("RUSTYERA_SQLITE_") ||
+      name === "RUSTYERA_NATIVE_SQL_PROVIDER"
+    )
+      delete environment[name];
+} else if (
+  (nativeSqlFeatureEnabled(identity.featureIdentity) ||
+    environment.RUSTYERA_NATIVE_SQL_PROVIDER === "1") &&
+  identity.buildsNative
+) {
+  const { prepareNativeSqlite } = await import(
+    pathToFileURL(resolve(workspace, "../rustyera-core/tools/sqlite-native/build.mjs")).href
+  );
+  const sqlite = await prepareNativeSqlite({
+    target: targetArgument,
+    environment,
+    cacheOnly: environment.RUSTYERA_SQLITE_NATIVE_CACHE_ONLY === "1",
+  });
+  // libsqlite3-sys reads these before the parent crate's build script can run.
+  Object.assign(environment, sqlite.environment);
 }
 
 function processIsAlive(pid) {
@@ -78,7 +110,7 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 }
 
 try {
-  child = spawn(cargo, args, { cwd: workspace, env: process.env, stdio: "inherit" });
+  child = spawn(cargo, args, { cwd: workspace, env: environment, stdio: "inherit" });
   const result = await new Promise((resolveResult) => {
     child.once("error", (error) => resolveResult({ error }));
     child.once("exit", (code, signal) => resolveResult({ code, signal }));

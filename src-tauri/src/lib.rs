@@ -15,6 +15,10 @@ mod export;
 mod image_metadata;
 mod ipc;
 mod memory;
+#[cfg(feature = "native-sql")]
+mod native_host;
+#[cfg(feature = "native-sql")]
+mod native_sql;
 #[cfg(feature = "performance-audit")]
 mod performance_audit;
 mod preferences;
@@ -40,15 +44,16 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State, ipc::Response};
 
 use crate::export::AtomicFileWriter;
+#[cfg(not(feature = "performance-audit"))]
+use crate::ipc::encode_submitted_pump_response as encode_submitted_ipc_response;
 use crate::ipc::{
     decode_bytes as decode_ipc_bytes, decode_value as decode_ipc_value,
-    encode_pump_response as encode_ipc_response,
-    encode_submitted_pump_response as encode_submitted_ipc_response,
-    encode_value as encode_ipc_value,
+    encode_pump_response as encode_ipc_response, encode_value as encode_ipc_value,
 };
 #[cfg(feature = "performance-audit")]
 use crate::ipc::{encode_pump_response_with_len, encode_submitted_pump_response_with_len};
 use crate::project::{ProjectFontSource, ProjectHost, ProjectReloadScope, ProjectReloadTargets};
+#[cfg(any(test, not(feature = "native-sql")))]
 use crate::services::native_service;
 use crate::storage::{StorageHost, TraditionalSaveSlot};
 
@@ -58,6 +63,8 @@ struct AppState {
     project: Arc<Mutex<Option<ProjectHost>>>,
     project_preferences: Arc<Mutex<Option<preferences::ProjectPreferenceLocation>>>,
     storage: Arc<Mutex<Option<StorageHost>>>,
+    #[cfg(feature = "native-sql")]
+    sql: Arc<native_sql::NativeSqlSession>,
     cache_writer: Arc<Mutex<Option<AtomicFileWriter>>>,
     export_writer: Arc<Mutex<Option<AtomicFileWriter>>>,
     full_project_cancelled: Arc<AtomicBool>,
@@ -180,6 +187,22 @@ const FRONTEND_DRIVE_BUDGET: RuntimeDriveBudget = RuntimeDriveBudget {
 const MESSAGE_SKIP_MAXIMUM_OBSERVABLE_BATCHES: usize = 128;
 const NATIVE_PUMP_MAXIMUM_EXTERNAL_REQUESTS: usize = 1024;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SubmittedPumpMode {
+    UntilBlocked,
+    Frontend,
+}
+
+fn submitted_pump_mode(message: &RuntimeMessage) -> Result<SubmittedPumpMode, String> {
+    match message {
+        RuntimeMessage::Input(input) if input.message_skip => Ok(SubmittedPumpMode::UntilBlocked),
+        RuntimeMessage::ServiceResponse(_) => Ok(SubmittedPumpMode::Frontend),
+        _ => Err(
+            "submit_runtime_and_pump requires message-skip input or a service response".to_owned(),
+        ),
+    }
+}
+
 #[tauri::command]
 async fn submit_runtime_and_pump(
     state: State<'_, AppState>,
@@ -191,9 +214,7 @@ async fn submit_runtime_and_pump(
         #[cfg(feature = "performance-audit")]
         let decode_started = Instant::now();
         let message = decode_ipc_value::<RuntimeMessage>(message)?;
-        if !matches!(&message, RuntimeMessage::Input(input) if input.message_skip) {
-            return Err("submit_runtime_and_pump requires a message-skip input".to_owned());
-        }
+        let pump_mode = submitted_pump_mode(&message)?;
         let correlation_id = correlation_id.map(decode_ipc_value).transpose()?;
         #[cfg(feature = "performance-audit")]
         let request_decode_ms = decode_started.elapsed().as_secs_f64() * 1000.0;
@@ -206,8 +227,20 @@ async fn submit_runtime_and_pump(
         let message_id = session.submit_runtime(&message, correlation_id)?;
         let mut storage_guard = state.storage.lock().map_err(lock_error)?;
         let project_guard = state.project.lock().map_err(lock_error)?;
-        let batch =
-            pump_message_skip_session(session, storage_guard.as_mut(), project_guard.as_ref())?;
+        let batch = match pump_mode {
+            SubmittedPumpMode::UntilBlocked => pump_message_skip_session(
+                &state,
+                session,
+                storage_guard.as_mut(),
+                project_guard.as_ref(),
+            )?,
+            SubmittedPumpMode::Frontend => pump_frontend_session(
+                &state,
+                session,
+                storage_guard.as_mut(),
+                project_guard.as_ref(),
+            )?,
+        };
         #[cfg(feature = "performance-audit")]
         {
             let native_drive_ms = drive_started.elapsed().as_secs_f64() * 1000.0;
@@ -343,7 +376,12 @@ async fn pump(state: State<'_, AppState>) -> Result<tauri::ipc::Response, String
             .ok_or_else(|| "runtime session has not been created".to_owned())?;
         let mut storage_guard = state.storage.lock().map_err(lock_error)?;
         let project_guard = state.project.lock().map_err(lock_error)?;
-        let batch = pump_frontend_session(session, storage_guard.as_mut(), project_guard.as_ref())?;
+        let batch = pump_frontend_session(
+            &state,
+            session,
+            storage_guard.as_mut(),
+            project_guard.as_ref(),
+        )?;
         #[cfg(feature = "performance-audit")]
         {
             let native_drive_ms = drive_started.elapsed().as_secs_f64() * 1000.0;
@@ -367,11 +405,32 @@ async fn pump(state: State<'_, AppState>) -> Result<tauri::ipc::Response, String
 }
 
 fn pump_frontend_session(
+    state: &AppState,
     session: &mut WebSession,
     storage: Option<&mut StorageHost>,
     project: Option<&ProjectHost>,
 ) -> Result<era_web_bridge::PumpBatch, String> {
+    #[cfg(not(feature = "native-sql"))]
+    let _ = state;
     if let Some(storage) = storage {
+        #[cfg(feature = "native-sql")]
+        {
+            let mut sql = state.sql.host.lock().map_err(lock_error)?;
+            let mut host = native_host::NativeHost {
+                storage,
+                project,
+                sql: &mut sql,
+                #[cfg(feature = "performance-audit")]
+                telemetry: &state.performance_audit,
+            };
+            session.pump_with_native_handler(
+                FRONTEND_DRIVE_BUDGET,
+                FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
+                NATIVE_PUMP_MAXIMUM_EXTERNAL_REQUESTS,
+                &mut host,
+            )
+        }
+        #[cfg(not(feature = "native-sql"))]
         session.pump_with_native_host(
             FRONTEND_DRIVE_BUDGET,
             FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
@@ -385,11 +444,33 @@ fn pump_frontend_session(
 }
 
 fn pump_message_skip_session(
+    state: &AppState,
     session: &mut WebSession,
     storage: Option<&mut StorageHost>,
     project: Option<&ProjectHost>,
 ) -> Result<era_web_bridge::PumpBatch, String> {
+    #[cfg(not(feature = "native-sql"))]
+    let _ = state;
     if let Some(storage) = storage {
+        #[cfg(feature = "native-sql")]
+        {
+            let mut sql = state.sql.host.lock().map_err(lock_error)?;
+            let mut host = native_host::NativeHost {
+                storage,
+                project,
+                sql: &mut sql,
+                #[cfg(feature = "performance-audit")]
+                telemetry: &state.performance_audit,
+            };
+            session.pump_with_native_handler_until_blocked(
+                FRONTEND_DRIVE_BUDGET,
+                FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
+                MESSAGE_SKIP_MAXIMUM_OBSERVABLE_BATCHES,
+                NATIVE_PUMP_MAXIMUM_EXTERNAL_REQUESTS,
+                &mut host,
+            )
+        }
+        #[cfg(not(feature = "native-sql"))]
         session.pump_with_native_host_until_blocked(
             FRONTEND_DRIVE_BUDGET,
             FRONTEND_PUMP_MAXIMUM_QUIET_SLICES,
@@ -878,10 +959,49 @@ fn list_fonts() -> Vec<String> {
 
 #[cfg(feature = "performance-audit")]
 #[tauri::command]
+fn performance_audit_instruction_profile(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    instruction_profile_for_state(&state)
+}
+
+#[cfg(feature = "performance-audit")]
+fn instruction_profile_for_state(state: &AppState) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "vm-instruction-profile")]
+    {
+        with_session(state, |session| {
+            serde_json::to_value(session.instruction_profile_snapshot())
+                .map_err(|error| error.to_string())
+        })
+    }
+    #[cfg(not(feature = "vm-instruction-profile"))]
+    {
+        let _ = state;
+        Err("VM instruction profiling is not compiled into this build".into())
+    }
+}
+
+#[cfg(feature = "performance-audit")]
+#[tauri::command]
 fn performance_audit_telemetry(
     state: State<'_, AppState>,
 ) -> Result<performance_audit::NativeTelemetrySnapshot, String> {
     state.performance_audit.snapshot()
+}
+
+#[cfg(feature = "performance-audit")]
+#[tauri::command]
+fn performance_audit_take(
+    state: State<'_, AppState>,
+    limit: usize,
+    include_identity: bool,
+    evidence_only: Option<bool>,
+) -> Result<performance_audit::NativeTelemetrySnapshot, String> {
+    if evidence_only == Some(true) {
+        state.performance_audit.take_evidence(limit)
+    } else {
+        state.performance_audit.take(limit, include_identity)
+    }
 }
 
 #[cfg(feature = "performance-audit")]
@@ -902,12 +1022,16 @@ fn with_session<T>(
 }
 
 fn retire_runtime_state(state: &AppState) -> Result<(), String> {
+    #[cfg(feature = "native-sql")]
+    state.sql.cancel();
     let session = state.session.lock().map_err(lock_error)?.take();
     drop(session);
     retire_project_state(state)
 }
 
 fn retire_project_state(state: &AppState) -> Result<(), String> {
+    #[cfg(feature = "native-sql")]
+    state.sql.cancel();
     state.full_project_cancelled.store(true, Ordering::Relaxed);
     let spool = state.full_manifest_spool.lock().map_err(lock_error)?.take();
     drop(spool);
@@ -919,6 +1043,8 @@ fn retire_project_state(state: &AppState) -> Result<(), String> {
     drop(storage);
     let project = state.project.lock().map_err(lock_error)?.take();
     drop(project);
+    #[cfg(feature = "native-sql")]
+    state.sql.host.lock().map_err(lock_error)?.shutdown()?;
     let preferences = state.project_preferences.lock().map_err(lock_error)?.take();
     drop(preferences);
     Ok(())
@@ -979,6 +1105,8 @@ fn install_runtime_commands(builder: tauri::Builder<tauri::Wry>) -> tauri::Build
             traditional_save_write,
             list_fonts,
             performance_audit_telemetry,
+            performance_audit_instruction_profile,
+            performance_audit_take,
             performance_audit_reset,
             memory::memory_snapshot,
             preferences::load_preferences,

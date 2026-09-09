@@ -5,8 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [features]
+native-sql = ["dep:era-sql-provider"]
 webdriver = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
-performance-audit = ["webdriver", "era-web-bridge/performance-audit"]
+performance-audit = ["webdriver", "era-web-bridge/performance-audit", "dep:minicbor"]
+vm-instruction-profile = ["performance-audit", "era-web-bridge/vm-instruction-profile"]
 
 [build-dependencies]
 tauri-build = { version = "2.5.3", features = [] }
@@ -18,11 +20,13 @@ era-protocol.workspace = true
 era-debug-protocol.workspace = true
 era-runtime.workspace = true
 era-runtime-protocol.workspace = true
+era-sql-provider = { workspace = true, optional = true }
 era-web-bridge = { path = "../crates/era-web-bridge" }
 encoding_rs = "0.8.35"
 fontdb = "0.22.0"
 glob = "0.3.3"
 mimalloc = "0.1.52"
+minicbor = { workspace = true, optional = true }
 schemars = "=1.2.1"
 serde.workspace = true
 serde_json.workspace = true

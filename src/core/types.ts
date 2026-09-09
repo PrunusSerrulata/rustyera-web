@@ -14,6 +14,8 @@ export interface WebEvent {
 
 export interface PumpBatch {
   state: "idle" | "more_work" | "output_ready" | "stopped" | "faulted";
+  /** Runnable core work, excluding output delivery and blocked service requests. */
+  immediateWork?: boolean;
   vmInstructions: number | bigint;
   runtimeTransitions: number;
   cooperativeBackgroundWork?: boolean;
@@ -237,7 +239,8 @@ export interface FrontendBridge {
   readonly traditionalSaves?: TraditionalSaveAccess;
   createSession(options: SessionOptions): Promise<PumpBatch>;
   submitRuntime(message: RuntimeMessage, correlationId?: number | bigint): Promise<number | bigint>;
-  /** Native fast path that submits an input and drives bounded work in the same host call. */
+  /** Native fast path that submits message-skip input or a service response and drives bounded
+   * work in the same host call. */
   submitRuntimeAndPump?(
     message: RuntimeMessage,
     correlationId?: number | bigint,

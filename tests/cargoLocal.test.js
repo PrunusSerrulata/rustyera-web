@@ -13,6 +13,10 @@ async function fixture() {
   const scripts = path.join(root, "scripts");
   await mkdir(scripts);
   await copyFile(sourceWrapper, path.join(scripts, "cargo-local.mjs"));
+  await copyFile(
+    path.join(path.dirname(sourceWrapper), "cargo-command-identity.mjs"),
+    path.join(scripts, "cargo-command-identity.mjs"),
+  );
   await writeFile(path.join(root, "Cargo.lock"), remoteLock);
   const fakeCargo = path.join(root, "fake-cargo.mjs");
   await writeFile(

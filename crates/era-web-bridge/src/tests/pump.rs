@@ -2,6 +2,524 @@ use super::*;
 use era_protocol::VersionRange;
 use era_runtime_protocol::ServiceKind;
 
+// Keep the pre-r35 closure contract cases exercising the unified implementation.
+fn extract_native_events(
+    events: Vec<WebEvent>,
+    allowance: usize,
+    storage: impl FnMut(StorageRequest) -> StorageResponse,
+    service: impl FnMut(ServiceRequest) -> Option<ServiceResponse>,
+) -> Result<(Vec<WebEvent>, Vec<NativeCompletion>), String> {
+    let mut driver = FakeNativePumpDriver::new([]);
+    let visible = process_native_events(
+        events,
+        &mut driver,
+        &mut VecDeque::new(),
+        &mut ClosureNativeHost { storage, service },
+        &mut 0,
+        allowance,
+        &mut || false,
+    )?;
+    Ok((visible, driver.submitted))
+}
+
+fn drive_native_until_blocked(
+    driver: &mut impl NativePumpDriver,
+    maximum_batches: usize,
+    maximum_external_requests: usize,
+    storage: impl FnMut(StorageRequest) -> StorageResponse,
+    service: impl FnMut(ServiceRequest) -> Option<ServiceResponse>,
+) -> Result<PumpBatch, String> {
+    drive_native_handler(
+        driver,
+        &mut VecDeque::new(),
+        NativePumpLimits {
+            maximum_quiet_slices: 1,
+            maximum_batches,
+            maximum_external_requests,
+            until_blocked: true,
+        },
+        &mut ClosureNativeHost { storage, service },
+        &mut || false,
+    )
+}
+
+#[derive(Default)]
+struct OwnedNativeHost {
+    calls: Vec<u64>,
+    lifecycles: Vec<(SqlProviderHandleV1, Option<SqlProviderHandleV1>)>,
+    expire_after_service: Option<std::rc::Rc<std::cell::Cell<bool>>>,
+    expire_after_sync: Option<std::rc::Rc<std::cell::Cell<bool>>>,
+    #[cfg(feature = "performance-audit")]
+    completions: Vec<NativeCompletionEvidence>,
+    #[cfg(feature = "performance-audit")]
+    audit_failure: bool,
+}
+
+impl NativeHostHandler for OwnedNativeHost {
+    fn handle_storage(&mut self, request: StorageRequest) -> StorageResponse {
+        self.calls.push(request.request_id);
+        missing_storage_response(&request)
+    }
+
+    fn handle_service(&mut self, request: ServiceRequest) -> Option<ServiceResponse> {
+        self.calls.push(request.request_id);
+        if let Some(expired) = &self.expire_after_service {
+            expired.set(true);
+        }
+        Some(ServiceResponse {
+            request_id: request.request_id,
+            result: era_runtime_protocol::ServiceResult::Ready {
+                payload: ProtocolBytes::default(),
+            },
+        })
+    }
+
+    fn owns_service(&self, request: &ServiceRequest) -> bool {
+        request.kind == ServiceKind::Sql
+    }
+
+    fn sync_sql_providers(
+        &mut self,
+        live: SqlProviderHandleV1,
+        candidate: Option<SqlProviderHandleV1>,
+    ) -> Result<(), String> {
+        self.lifecycles.push((live, candidate));
+        if let Some(expired) = &self.expire_after_sync {
+            expired.set(true);
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "performance-audit")]
+    fn record_completion(&mut self, completion: NativeCompletionEvidence) -> Result<(), String> {
+        self.completions.push(completion);
+        if self.audit_failure {
+            return Err("sticky capture invalid".into());
+        }
+        Ok(())
+    }
+}
+
+fn owned_service_event(id: u64) -> WebEvent {
+    let mut event = storage_event(id);
+    event.message = serde_json::to_value(RuntimeMessage::ServiceRequest(ServiceRequest {
+        request_id: id,
+        kind: ServiceKind::Sql,
+        operation: era_runtime_protocol::SQL_OPERATION.into(),
+        operation_version: era_runtime_protocol::SQL_OPERATION_VERSION,
+        payload: ProtocolBytes::default(),
+        deadline_ns: None,
+    }))
+    .unwrap();
+    event
+}
+
+fn native_limits(external: usize) -> NativePumpLimits {
+    NativePumpLimits {
+        maximum_quiet_slices: 1,
+        maximum_batches: 16,
+        maximum_external_requests: external,
+        until_blocked: true,
+    }
+}
+
+#[test]
+fn deferred_owned_requests_preserve_terminal_state_on_resume() {
+    for state in [WebDriveState::Stopped, WebDriveState::Faulted] {
+        let mut driver =
+            FakeNativePumpDriver::new([batch(state, 1, 1, vec![owned_service_event(1)])]);
+        let mut host = OwnedNativeHost::default();
+        let mut pending = VecDeque::new();
+        let initial = drive_native_handler(
+            &mut driver,
+            &mut pending,
+            native_limits(0),
+            &mut host,
+            &mut || false,
+        )
+        .unwrap();
+        assert_eq!(initial.state, state);
+        assert!(!initial.immediate_work);
+        let resumed = drive_native_handler(
+            &mut driver,
+            &mut pending,
+            native_limits(1),
+            &mut host,
+            &mut || false,
+        )
+        .unwrap();
+        assert_eq!(resumed.state, state);
+        assert!(!resumed.immediate_work);
+        assert!(pending.is_empty());
+        assert_eq!(host.calls, [1]);
+        assert_eq!(driver.pump_calls, 1);
+    }
+}
+
+#[test]
+fn unified_native_owner_handles_storage_and_service_with_one_mutable_borrow() {
+    let mut driver = FakeNativePumpDriver::new([
+        batch(
+            WebDriveState::OutputReady,
+            1,
+            1,
+            vec![storage_event(1), owned_service_event(2)],
+        ),
+        batch(WebDriveState::Idle, 1, 1, vec![]),
+    ]);
+    let mut host = OwnedNativeHost::default();
+    let result = drive_native_handler(
+        &mut driver,
+        &mut VecDeque::new(),
+        native_limits(8),
+        &mut host,
+        &mut || false,
+    )
+    .unwrap();
+    assert_eq!(host.calls, [1, 2]);
+    assert_eq!(host.lifecycles.len(), 2);
+    assert_eq!(result.state, WebDriveState::Idle);
+    assert!(!result.immediate_work);
+    assert!(result.events.is_empty());
+}
+
+#[test]
+fn owned_services_stay_pending_at_zero_and_exact_caps_and_resume_in_order() {
+    for allowance in [0, 1] {
+        let mut driver = FakeNativePumpDriver::new([
+            batch(
+                WebDriveState::OutputReady,
+                1,
+                1,
+                vec![
+                    test_event("before"),
+                    owned_service_event(1),
+                    test_event("middle"),
+                    owned_service_event(2),
+                    test_event("after"),
+                ],
+            ),
+            batch(WebDriveState::Idle, 1, 1, vec![]),
+        ]);
+        let mut host = OwnedNativeHost::default();
+        let mut pending = VecDeque::new();
+        let result = drive_native_handler(
+            &mut driver,
+            &mut pending,
+            native_limits(allowance),
+            &mut host,
+            &mut || false,
+        )
+        .unwrap();
+        assert_eq!(host.calls.len(), allowance);
+        assert_eq!(pending.len(), 2 - allowance);
+        assert_eq!(event_types(&result.events), ["before", "middle", "after"]);
+        assert_eq!(result.state, WebDriveState::MoreWork);
+        assert!(result.immediate_work);
+        assert_eq!(driver.pump_calls, 1);
+        let resumed = drive_native_handler(
+            &mut driver,
+            &mut pending,
+            native_limits(8),
+            &mut host,
+            &mut || false,
+        )
+        .unwrap();
+        assert_eq!(host.calls, [1, 2]);
+        assert!(pending.is_empty());
+        assert_eq!(resumed.state, WebDriveState::Idle);
+        assert!(!resumed.immediate_work);
+        #[cfg(feature = "performance-audit")]
+        {
+            assert_eq!(host.completions.len(), 2);
+            for (index, completion) in host.completions.iter().enumerate() {
+                assert_eq!(
+                    serde_json::to_value(&completion.request.message).unwrap(),
+                    owned_service_event(index as u64 + 1).message
+                );
+                assert_eq!(completion.response_message_id, 1001 + index as u64);
+            }
+        }
+    }
+}
+
+#[test]
+fn owned_service_deadline_yields_after_completion_without_cancelling_or_leaking() {
+    let expired = std::rc::Rc::new(std::cell::Cell::new(false));
+    let mut host = OwnedNativeHost {
+        expire_after_service: Some(expired.clone()),
+        ..OwnedNativeHost::default()
+    };
+    let mut driver = FakeNativePumpDriver::new([
+        batch(
+            WebDriveState::OutputReady,
+            1,
+            1,
+            vec![
+                owned_service_event(1),
+                test_event("middle"),
+                owned_service_event(2),
+            ],
+        ),
+        batch(WebDriveState::Idle, 1, 1, vec![]),
+    ]);
+    let mut pending = VecDeque::new();
+    let result = drive_native_handler(
+        &mut driver,
+        &mut pending,
+        native_limits(8),
+        &mut host,
+        &mut || expired.get(),
+    )
+    .unwrap();
+    assert_eq!(host.calls, [1]);
+    assert_eq!(driver.submitted.len(), 1);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(event_types(&result.events), ["middle"]);
+    assert_eq!(result.state, WebDriveState::MoreWork);
+    assert!(result.immediate_work);
+    assert_eq!(driver.pump_calls, 1);
+    host.expire_after_service = None;
+    expired.set(false);
+    let resumed = drive_native_handler(
+        &mut driver,
+        &mut pending,
+        native_limits(8),
+        &mut host,
+        &mut || expired.get(),
+    )
+    .unwrap();
+    assert_eq!(host.calls, [1, 2]);
+    assert!(pending.is_empty());
+    assert_eq!(resumed.state, WebDriveState::Idle);
+}
+
+#[test]
+fn lifecycle_sync_runs_after_every_actual_quiet_drive_without_sql_requests() {
+    let mut driver = FakeNativePumpDriver::new([
+        batch(WebDriveState::MoreWork, 1, 1, vec![]),
+        batch(WebDriveState::MoreWork, 1, 1, vec![]),
+        batch(WebDriveState::Idle, 1, 1, vec![]),
+    ]);
+    let mut host = OwnedNativeHost::default();
+    let mut limits = native_limits(8);
+    limits.maximum_quiet_slices = 16;
+    let result = drive_native_handler(
+        &mut driver,
+        &mut VecDeque::new(),
+        limits,
+        &mut host,
+        &mut || false,
+    )
+    .unwrap();
+    assert_eq!(
+        host.lifecycles
+            .iter()
+            .map(|(live, _)| live.id)
+            .collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    assert_eq!(result.state, WebDriveState::Idle);
+    assert_eq!(driver.pump_calls, 3);
+    assert_eq!(host.lifecycles[0].1, None);
+    assert_eq!(
+        host.lifecycles[1].1,
+        Some(SqlProviderHandleV1 {
+            service_epoch: 2,
+            id: 99
+        })
+    );
+    assert_eq!(host.lifecycles[2].1, None);
+}
+
+#[test]
+fn quiet_deadline_stops_before_the_next_actual_drive() {
+    let expired = std::rc::Rc::new(std::cell::Cell::new(false));
+    let mut host = OwnedNativeHost {
+        expire_after_sync: Some(expired.clone()),
+        ..OwnedNativeHost::default()
+    };
+    let mut driver = FakeNativePumpDriver::new([batch(WebDriveState::MoreWork, 7, 1, vec![])]);
+    let mut limits = native_limits(8);
+    limits.maximum_quiet_slices = 16;
+    let result = drive_native_handler(
+        &mut driver,
+        &mut VecDeque::new(),
+        limits,
+        &mut host,
+        &mut || expired.get(),
+    )
+    .unwrap();
+    assert_eq!(driver.pump_calls, 1);
+    assert_eq!(result.vm_instructions, 7);
+    assert_eq!(result.state, WebDriveState::MoreWork);
+    assert!(result.immediate_work);
+}
+
+#[test]
+fn public_native_handler_uses_the_actual_runtime_lifecycle() {
+    let mut session = WebSession::new(WebSessionOptions::default()).unwrap();
+    let mut host = OwnedNativeHost::default();
+    session
+        .pump_with_native_handler(RuntimeDriveBudget::default(), 1, 8, &mut host)
+        .unwrap();
+    assert!(session.is_negotiated());
+    assert_eq!(
+        host.lifecycles.last().copied(),
+        Some(session.runtime.sql_provider_lifecycle())
+    );
+    session
+        .pump_with_native_handler_until_blocked(RuntimeDriveBudget::default(), 1, 1, 8, &mut host)
+        .unwrap();
+    assert_eq!(host.lifecycles.len(), 2);
+}
+
+#[test]
+fn pending_owned_queue_is_bounded_and_zero_allowance_never_drives_again() {
+    let events = (0..MAXIMUM_PENDING_NATIVE_REQUESTS as u64)
+        .map(owned_service_event)
+        .collect();
+    let mut driver = FakeNativePumpDriver::new([batch(WebDriveState::OutputReady, 1, 1, events)]);
+    let mut host = OwnedNativeHost::default();
+    let mut pending = VecDeque::new();
+    drive_native_handler(
+        &mut driver,
+        &mut pending,
+        native_limits(0),
+        &mut host,
+        &mut || false,
+    )
+    .unwrap();
+    let result = drive_native_handler(
+        &mut driver,
+        &mut pending,
+        native_limits(0),
+        &mut host,
+        &mut || false,
+    )
+    .unwrap();
+    assert_eq!(pending.len(), MAXIMUM_PENDING_NATIVE_REQUESTS);
+    assert_eq!(driver.pump_calls, 1);
+    assert!(host.calls.is_empty());
+    assert!(result.events.is_empty());
+    assert!(result.immediate_work);
+}
+
+#[cfg(feature = "performance-audit")]
+#[test]
+fn audit_completion_preserves_original_envelope_and_actual_submit_id() {
+    let mut session = negotiated_web_session();
+    let expected_id = session.next_message_id;
+    let request = owned_service_event(71);
+    let expected_request = serde_json::to_value(&request).unwrap();
+    let mut host = OwnedNativeHost::default();
+    let response = RuntimeMessage::ServiceResponse(ServiceResponse {
+        request_id: 71,
+        result: era_runtime_protocol::ServiceResult::Ready {
+            payload: ProtocolBytes::default(),
+        },
+    });
+    submit_native_completion(
+        &mut WebSessionNativePumpDriver {
+            session: &mut session,
+            budget: RuntimeDriveBudget::default(),
+        },
+        &mut host,
+        NativeCompletion {
+            message: response.clone(),
+            correlation_id: request.correlation_id,
+            evidence: NativeRequestEvidence::new(
+                &request,
+                RuntimeMessage::deserialize(&request.message).unwrap(),
+            ),
+        },
+    )
+    .unwrap();
+    assert_eq!(session.next_message_id, expected_id + 1);
+    assert_eq!(host.completions.len(), 1);
+    let completion = &host.completions[0];
+    assert_eq!(
+        serde_json::to_value(&completion.request.message).unwrap(),
+        expected_request["message"]
+    );
+    assert_eq!(
+        completion.request.message_id,
+        expected_request["messageId"].as_u64().unwrap()
+    );
+    assert_eq!(
+        completion.request.sequence,
+        expected_request["sequence"].as_u64().unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&completion.response).unwrap(),
+        serde_json::to_value(response).unwrap()
+    );
+    assert_eq!(completion.response_message_id, expected_id);
+}
+
+#[cfg(feature = "performance-audit")]
+#[test]
+fn post_submit_audit_failure_preserves_completed_batch_without_retrying_write() {
+    let mut driver = FakeNativePumpDriver::new([
+        batch(
+            WebDriveState::OutputReady,
+            1,
+            1,
+            vec![test_event("before"), storage_event(1), test_event("after")],
+        ),
+        batch(WebDriveState::Idle, 1, 1, vec![]),
+    ]);
+    let mut host = OwnedNativeHost {
+        audit_failure: true,
+        ..OwnedNativeHost::default()
+    };
+    let result = drive_native_handler(
+        &mut driver,
+        &mut VecDeque::new(),
+        native_limits(8),
+        &mut host,
+        &mut || false,
+    )
+    .unwrap();
+    assert_eq!(event_types(&result.events), ["before", "after"]);
+    assert_eq!(result.state, WebDriveState::Idle);
+    assert_eq!(host.calls, [1]);
+    assert_eq!(host.completions.len(), 1);
+    assert!(host.audit_failure);
+}
+
+#[cfg(feature = "performance-audit")]
+#[test]
+fn audit_callback_is_not_called_when_actual_submit_fails() {
+    let mut session = negotiated_web_session();
+    session.wire_limits.maximum_envelope_bytes = 1;
+    let mut host = OwnedNativeHost::default();
+    let result = submit_native_completion(
+        &mut WebSessionNativePumpDriver {
+            session: &mut session,
+            budget: RuntimeDriveBudget::default(),
+        },
+        &mut host,
+        NativeCompletion {
+            message: RuntimeMessage::StorageResponse(missing_storage_response(&StorageRequest {
+                request_id: 1,
+                namespace: era_runtime_protocol::StorageNamespace::Save,
+                relative_path: "fixture".into(),
+                operation: era_runtime_protocol::StorageOperation::Read,
+                idempotency_key: String::new(),
+                deadline_ns: None,
+            })),
+            correlation_id: Some(11),
+            evidence: NativeRequestEvidence::new(
+                &storage_event(1),
+                RuntimeMessage::deserialize(&storage_event(1).message).unwrap(),
+            ),
+        },
+    );
+    assert!(result.is_err());
+    assert!(host.completions.is_empty());
+}
+
 #[test]
 fn session_negotiates_and_projects_server_hello() {
     let mut session = WebSession::new(WebSessionOptions::default()).unwrap();
@@ -77,7 +595,6 @@ fn client_advertises_canvas_image_decode() {
             era_runtime_protocol::GET_LINE_GEOMETRY_OPERATION,
             1,
         ),
-        (ServiceKind::Sql, era_runtime_protocol::SQL_OPERATION, 1),
         (
             ServiceKind::Audio,
             era_runtime_protocol::AUDIO_OBSERVATION_OPERATION,
@@ -99,6 +616,16 @@ fn client_advertises_canvas_image_decode() {
             VersionRange::exact(era_protocol::ProtocolVersion::new(major, 0))
         );
     }
+    let sql = hello
+        .capabilities
+        .services
+        .iter()
+        .find(|capability| {
+            capability.kind == ServiceKind::Sql
+                && capability.operation == era_runtime_protocol::SQL_OPERATION
+        })
+        .expect("SQL service capability");
+    assert_eq!(sql.versions, era_runtime_protocol::SQL_OPERATION_VERSIONS);
     assert!(
         !hello
             .capabilities
@@ -249,6 +776,7 @@ fn native_storage_pump_preserves_visible_event_order_across_rounds() {
     merge_pump_batch(&mut saturated, batch(WebDriveState::Idle, 1, 1, Vec::new()));
     let saturated = saturated.unwrap();
     assert_eq!(saturated.vm_instructions, u64::MAX);
+    assert!(!saturated.immediate_work);
     assert_eq!(saturated.runtime_transitions, u32::MAX);
 }
 
@@ -289,6 +817,7 @@ fn bounded_native_driver_applies_one_global_external_cap_and_keeps_event_order()
 
     assert_eq!(driver.pump_calls, 2);
     assert_eq!(host_calls, 2);
+    assert!(combined.immediate_work);
     assert_eq!(driver.submitted_request_ids(), [1, 2]);
     assert_eq!(
         event_types(&combined.events),
@@ -324,6 +853,27 @@ fn bounded_native_driver_submits_completion_then_continues_to_blocked_state() {
     assert_eq!(combined.vm_instructions, 30);
     assert_eq!(combined.runtime_transitions, 3);
     assert_eq!(combined.state, WebDriveState::Idle);
+    assert!(!combined.immediate_work);
+}
+
+#[test]
+fn bounded_native_driver_marks_queued_completion_at_batch_cap() {
+    let mut driver = FakeNativePumpDriver::new([batch(
+        WebDriveState::OutputReady,
+        1,
+        1,
+        vec![storage_event(1)],
+    )]);
+    let result = drive_native_until_blocked(
+        &mut driver,
+        1,
+        16,
+        |request| missing_storage_response(&request),
+        |_| None,
+    )
+    .unwrap();
+    assert_eq!(result.state, WebDriveState::MoreWork);
+    assert!(result.immediate_work);
 }
 
 #[test]
@@ -347,6 +897,7 @@ fn bounded_native_driver_yields_immediately_for_cooperative_work() {
     assert_eq!(driver.pump_calls, 1);
     assert_eq!(driver.submitted_request_ids(), [1]);
     assert!(combined.cooperative_background_work);
+    assert!(combined.immediate_work);
     assert_eq!(combined.state, WebDriveState::MoreWork);
 }
 
@@ -371,6 +922,7 @@ fn bounded_native_driver_never_overwrites_terminal_state_after_completion() {
 
             assert_eq!(driver.submitted_request_ids(), [1], "trigger={trigger}");
             assert_eq!(combined.state, state, "trigger={trigger}");
+            assert!(!combined.immediate_work, "trigger={trigger}");
         }
     }
 }

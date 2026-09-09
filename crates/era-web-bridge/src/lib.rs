@@ -15,7 +15,8 @@ use era_runtime_protocol::{
     ConfigurationClientProfile, ExternalResource, FileCategory, FilePayload,
     ProjectCompatibilityResolved, ProjectIdentity, ProjectLoadRequest, ProjectManifest,
     ResolveProjectCompatibility, RuntimeLimits, RuntimeMessage, SequenceAcknowledgement,
-    ServerHello, ServiceRequest, ServiceResponse, StorageRequest, StorageResponse, SubmittedFile,
+    ServerHello, ServiceRequest, ServiceResponse, SqlProviderHandleV1, StorageRequest,
+    StorageResponse, SubmittedFile,
 };
 use erabasic_vm::VmConfig;
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,92 @@ const DEFAULT_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAXIMUM_TRANSFER_BYTES: u64 = 1024 * 1024 * 1024;
 const DEBUG_SCOPE_ALL: u64 = (1 << 10) - 1;
 pub const FRONTEND_PUMP_MAXIMUM_QUIET_SLICES: usize = 16;
+const NATIVE_PUMP_WALL_TIME: std::time::Duration = std::time::Duration::from_millis(8);
+const MAXIMUM_PENDING_NATIVE_REQUESTS: usize = 128;
+
+/// Single mutable owner of native storage and service providers.
+pub trait NativeHostHandler {
+    fn handle_storage(&mut self, request: StorageRequest) -> StorageResponse;
+    fn handle_service(&mut self, request: ServiceRequest) -> Option<ServiceResponse>;
+
+    /// Owned services must return a response and never fall back to the frontend.
+    fn owns_service(&self, _request: &ServiceRequest) -> bool {
+        false
+    }
+
+    /// Synchronize authoritative provider roles after each actual runtime drive.
+    ///
+    /// # Errors
+    /// Returns the host's provider synchronization error.
+    fn sync_sql_providers(
+        &mut self,
+        _live: SqlProviderHandleV1,
+        _candidate: Option<SqlProviderHandleV1>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Observe a completion only after its response envelope was successfully submitted.
+    ///
+    /// # Errors
+    /// The recorder must retain a sticky capture failure before returning an error.
+    /// Audit errors are observed out of action and never fail an already submitted batch.
+    #[cfg(feature = "performance-audit")]
+    fn record_completion(&mut self, _completion: NativeCompletionEvidence) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// Owned audit evidence. Payloads remain protocol byte buffers, never JSON trees.
+#[cfg(feature = "performance-audit")]
+#[derive(Clone, Debug)]
+pub struct NativeCompletionEvidence {
+    pub request: NativeRequestEvidence,
+    pub response: RuntimeMessage,
+    pub response_message_id: u64,
+}
+
+#[cfg(feature = "performance-audit")]
+#[derive(Clone, Debug)]
+pub struct NativeRequestEvidence {
+    pub sequence: u64,
+    pub message_id: u64,
+    pub correlation_id: Option<u64>,
+    pub epoch: Option<u64>,
+    pub message: RuntimeMessage,
+}
+
+#[cfg(feature = "performance-audit")]
+impl NativeRequestEvidence {
+    fn new(event: &WebEvent, message: RuntimeMessage) -> Self {
+        Self {
+            sequence: event.sequence,
+            message_id: event.message_id,
+            correlation_id: event.correlation_id,
+            epoch: event.epoch,
+            message,
+        }
+    }
+}
+
+struct ClosureNativeHost<S, H> {
+    storage: S,
+    service: H,
+}
+
+impl<S, H> NativeHostHandler for ClosureNativeHost<S, H>
+where
+    S: FnMut(StorageRequest) -> StorageResponse,
+    H: FnMut(ServiceRequest) -> Option<ServiceResponse>,
+{
+    fn handle_storage(&mut self, request: StorageRequest) -> StorageResponse {
+        (self.storage)(request)
+    }
+
+    fn handle_service(&mut self, request: ServiceRequest) -> Option<ServiceResponse> {
+        (self.service)(request)
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,6 +193,7 @@ impl Serialize for WebBytes {
 #[serde(rename_all = "camelCase")]
 pub struct PumpBatch {
     pub state: WebDriveState,
+    pub immediate_work: bool,
     pub vm_instructions: u64,
     pub runtime_transitions: u32,
     pub cooperative_background_work: bool,
@@ -115,6 +203,7 @@ pub struct PumpBatch {
 impl PumpBatch {
     fn append(&mut self, mut next: Self) {
         self.state = next.state;
+        self.immediate_work = next.immediate_work;
         self.vm_instructions = self.vm_instructions.saturating_add(next.vm_instructions);
         self.runtime_transitions = self
             .runtime_transitions
@@ -149,9 +238,17 @@ pub struct WebSession {
     runtime_sequence: u64,
     debug_sequence: u64,
     next_message_id: u64,
+    pending_native: std::collections::VecDeque<PendingNativeRequest>,
 }
 
 impl WebSession {
+    /// Read opt-in VM frequency evidence outside timed gameplay operations.
+    #[cfg(feature = "vm-instruction-profile")]
+    #[must_use]
+    pub fn instruction_profile_snapshot(&self) -> Option<erabasic_vm::InstructionProfileSnapshot> {
+        self.runtime.instruction_profile_snapshot()
+    }
+
     /// Resolve project metadata through the shared public core parser after negotiation.
     ///
     /// # Errors
@@ -202,6 +299,7 @@ impl WebSession {
             runtime_sequence: 0,
             debug_sequence: 0,
             next_message_id: 1,
+            pending_native: std::collections::VecDeque::new(),
         };
         session.submit_runtime(
             &RuntimeMessage::ClientHello(client_hello(options, limits)),
@@ -515,6 +613,7 @@ impl WebSession {
         }
         Ok(PumpBatch {
             state: report.state.into(),
+            immediate_work: report.immediate_work,
             vm_instructions: report.vm_instructions,
             runtime_transitions: report.runtime_transitions,
             cooperative_background_work: report.cooperative_background_work,
@@ -569,70 +668,115 @@ impl WebSession {
         budget: RuntimeDriveBudget,
         maximum_quiet_slices: usize,
         maximum_external_requests: usize,
-        mut handle_storage: impl FnMut(StorageRequest) -> StorageResponse,
-        mut handle_service: impl FnMut(ServiceRequest) -> Option<ServiceResponse>,
+        handle_storage: impl FnMut(StorageRequest) -> StorageResponse,
+        handle_service: impl FnMut(ServiceRequest) -> Option<ServiceResponse>,
     ) -> Result<PumpBatch, String> {
-        let mut combined: Option<PumpBatch> = None;
-        let mut handled = 0usize;
-        loop {
-            let mut batch = self.pump_quiet(budget, maximum_quiet_slices)?;
-            let (visible, completions) = extract_native_events(
-                std::mem::take(&mut batch.events),
-                maximum_external_requests.saturating_sub(handled),
-                &mut handle_storage,
-                &mut handle_service,
-            )?;
-            batch.events = visible;
-            merge_pump_batch(&mut combined, batch);
-            if completions.is_empty() {
-                return combined.ok_or_else(|| "native host pump produced no batch".into());
-            }
-            for completion in completions {
-                self.submit_runtime(&completion.message, completion.correlation_id)?;
-                handled = handled.saturating_add(1);
-            }
-            if handled == maximum_external_requests {
-                let Some(result) = combined.as_mut() else {
-                    return Err("native host pump produced no batch".into());
-                };
-                result.state = WebDriveState::MoreWork;
-                return combined.ok_or_else(|| "native host pump produced no batch".into());
-            }
-        }
+        self.pump_with_native_handler(
+            budget,
+            maximum_quiet_slices,
+            maximum_external_requests,
+            &mut ClosureNativeHost {
+                storage: handle_storage,
+                service: handle_service,
+            },
+        )
     }
 
-    /// Drive bounded observable work while satisfying native requests under one host ownership.
-    ///
-    /// Observable event batches are retained in order, while cooperative background work, a
-    /// terminal/blocked state, or either global cap returns control to the frontend. The quiet
-    /// slice cap bounds compute work inside each batch, so the product of both caps is the global
-    /// compute-slice ceiling for this call.
+    /// Drive bounded observable work with legacy closure providers.
     ///
     /// # Errors
-    ///
-    /// Returns the same runtime, projection, and native-completion errors as
-    /// [`Self::pump_with_native_host`].
+    /// Returns runtime, projection, or native completion errors.
     pub fn pump_with_native_host_until_blocked(
         &mut self,
         budget: RuntimeDriveBudget,
         maximum_quiet_slices: usize,
         maximum_batches: usize,
         maximum_external_requests: usize,
-        mut handle_storage: impl FnMut(StorageRequest) -> StorageResponse,
-        mut handle_service: impl FnMut(ServiceRequest) -> Option<ServiceResponse>,
+        handle_storage: impl FnMut(StorageRequest) -> StorageResponse,
+        handle_service: impl FnMut(ServiceRequest) -> Option<ServiceResponse>,
     ) -> Result<PumpBatch, String> {
-        let mut driver = WebSessionNativePumpDriver {
-            session: self,
+        self.pump_with_native_handler_until_blocked(
             budget,
             maximum_quiet_slices,
-        };
-        drive_native_until_blocked(
-            &mut driver,
             maximum_batches,
             maximum_external_requests,
-            &mut handle_storage,
-            &mut handle_service,
+            &mut ClosureNativeHost {
+                storage: handle_storage,
+                service: handle_service,
+            },
         )
+    }
+
+    /// Drive native requests, returning on the first batch without a native completion.
+    ///
+    /// # Errors
+    /// Returns runtime, provider synchronization, or completion errors.
+    pub fn pump_with_native_handler(
+        &mut self,
+        budget: RuntimeDriveBudget,
+        maximum_quiet_slices: usize,
+        maximum_external_requests: usize,
+        handler: &mut impl NativeHostHandler,
+    ) -> Result<PumpBatch, String> {
+        self.run_native_handler(
+            budget,
+            NativePumpLimits {
+                maximum_quiet_slices,
+                maximum_batches: maximum_external_requests.saturating_add(1),
+                maximum_external_requests,
+                until_blocked: false,
+            },
+            handler,
+        )
+    }
+
+    /// Drive bounded observable work using a single native provider owner.
+    ///
+    /// The 8ms deadline is checked between drives and host requests. A single legitimate
+    /// host operation runs to completion even when it exceeds that fairness deadline.
+    ///
+    /// # Errors
+    /// Returns runtime, provider synchronization, or completion errors.
+    pub fn pump_with_native_handler_until_blocked(
+        &mut self,
+        budget: RuntimeDriveBudget,
+        maximum_quiet_slices: usize,
+        maximum_batches: usize,
+        maximum_external_requests: usize,
+        handler: &mut impl NativeHostHandler,
+    ) -> Result<PumpBatch, String> {
+        self.run_native_handler(
+            budget,
+            NativePumpLimits {
+                maximum_quiet_slices,
+                maximum_batches,
+                maximum_external_requests,
+                until_blocked: true,
+            },
+            handler,
+        )
+    }
+
+    fn run_native_handler(
+        &mut self,
+        budget: RuntimeDriveBudget,
+        limits: NativePumpLimits,
+        handler: &mut impl NativeHostHandler,
+    ) -> Result<PumpBatch, String> {
+        let start = std::time::Instant::now();
+        let mut pending = std::mem::take(&mut self.pending_native);
+        let result = drive_native_handler(
+            &mut WebSessionNativePumpDriver {
+                session: self,
+                budget,
+            },
+            &mut pending,
+            limits,
+            handler,
+            &mut || start.elapsed() >= NATIVE_PUMP_WALL_TIME,
+        );
+        self.pending_native = pending;
+        result
     }
 
     #[must_use]
@@ -664,83 +808,209 @@ fn session_limits(options: &WebSessionOptions) -> RuntimeLimits {
 /// Return the exact Core client projection used by a performance-audit session.
 #[must_use]
 pub fn performance_audit_client(options: WebSessionOptions) -> serde_json::Value {
-    let hello = client_hello(options.clone(), session_limits(&options));
+    let limits = session_limits(&options);
+    let hello = client_hello(options, limits);
     serde_json::json!({"features": hello.features, "capabilities": hello.capabilities})
 }
 
 trait NativePumpDriver {
+    /// Exactly one actual runtime drive.
     fn pump_batch(&mut self) -> Result<PumpBatch, String>;
-    fn submit_completion(&mut self, completion: NativeCompletion) -> Result<(), String>;
+    fn sql_provider_lifecycle(&self) -> (SqlProviderHandleV1, Option<SqlProviderHandleV1>);
+    fn submit_completion(&mut self, completion: &NativeCompletion) -> Result<u64, String>;
 }
 
 struct WebSessionNativePumpDriver<'a> {
     session: &'a mut WebSession,
     budget: RuntimeDriveBudget,
-    maximum_quiet_slices: usize,
 }
 
 impl NativePumpDriver for WebSessionNativePumpDriver<'_> {
     fn pump_batch(&mut self) -> Result<PumpBatch, String> {
-        self.session
-            .pump_quiet(self.budget, self.maximum_quiet_slices)
+        self.session.pump(self.budget)
     }
 
-    fn submit_completion(&mut self, completion: NativeCompletion) -> Result<(), String> {
+    fn sql_provider_lifecycle(&self) -> (SqlProviderHandleV1, Option<SqlProviderHandleV1>) {
+        self.session.runtime.sql_provider_lifecycle()
+    }
+
+    fn submit_completion(&mut self, completion: &NativeCompletion) -> Result<u64, String> {
         self.session
             .submit_runtime(&completion.message, completion.correlation_id)
-            .map(|_| ())
     }
 }
 
-fn drive_native_until_blocked(
-    driver: &mut impl NativePumpDriver,
+#[derive(Clone, Copy)]
+struct NativePumpLimits {
+    maximum_quiet_slices: usize,
     maximum_batches: usize,
     maximum_external_requests: usize,
-    mut handle_storage: impl FnMut(StorageRequest) -> StorageResponse,
-    mut handle_service: impl FnMut(ServiceRequest) -> Option<ServiceResponse>,
+    until_blocked: bool,
+}
+
+struct PendingNativeRequest {
+    request: ServiceRequest,
+    correlation_id: Option<u64>,
+    terminal_state: Option<WebDriveState>,
+    #[cfg(feature = "performance-audit")]
+    evidence: NativeRequestEvidence,
+}
+
+fn submit_native_completion(
+    driver: &mut impl NativePumpDriver,
+    handler: &mut impl NativeHostHandler,
+    completion: NativeCompletion,
+) -> Result<(), String> {
+    let response_message_id = driver.submit_completion(&completion)?;
+    #[cfg(feature = "performance-audit")]
+    let _ = handler.record_completion(NativeCompletionEvidence {
+        request: completion.evidence,
+        response: completion.message,
+        response_message_id,
+    });
+    #[cfg(not(feature = "performance-audit"))]
+    {
+        let _ = (handler, response_message_id);
+        drop(completion);
+    }
+    Ok(())
+}
+
+fn complete_owned_request(
+    driver: &mut impl NativePumpDriver,
+    handler: &mut impl NativeHostHandler,
+    pending: PendingNativeRequest,
+) -> Result<(), String> {
+    let response = handler
+        .handle_service(pending.request)
+        .ok_or_else(|| "native host did not respond to an owned service request".to_owned())?;
+    submit_native_completion(
+        driver,
+        handler,
+        NativeCompletion {
+            message: RuntimeMessage::ServiceResponse(response),
+            correlation_id: pending.correlation_id,
+            #[cfg(feature = "performance-audit")]
+            evidence: pending.evidence,
+        },
+    )
+}
+
+fn mark_native_more_work(batch: &mut PumpBatch) {
+    if !matches!(batch.state, WebDriveState::Stopped | WebDriveState::Faulted) {
+        batch.state = WebDriveState::MoreWork;
+        batch.immediate_work = true;
+    }
+}
+
+fn native_quiet_batch(
+    driver: &mut impl NativePumpDriver,
+    handler: &mut impl NativeHostHandler,
+    maximum_slices: usize,
+    expired: &mut impl FnMut() -> bool,
 ) -> Result<PumpBatch, String> {
-    let maximum_batches = maximum_batches.max(1);
-    let mut combined: Option<PumpBatch> = None;
-    let mut handled = 0usize;
-    for batch_index in 0..maximum_batches {
-        let mut batch = driver.pump_batch()?;
-        let cooperative_background_work = batch.cooperative_background_work;
-        let (visible, completions) = extract_native_events(
+    let mut combined = None;
+    for _ in 0..maximum_slices.max(1) {
+        if combined.is_some() && expired() {
+            break;
+        }
+        let batch = driver.pump_batch()?;
+        let (live, candidate) = driver.sql_provider_lifecycle();
+        handler.sync_sql_providers(live, candidate)?;
+        let stop = !batch.events.is_empty()
+            || batch.cooperative_background_work
+            || !matches!(
+                batch.state,
+                WebDriveState::MoreWork | WebDriveState::OutputReady
+            );
+        merge_pump_batch(&mut combined, batch);
+        if stop {
+            break;
+        }
+    }
+    combined.ok_or_else(|| "native host pump produced no batch".to_owned())
+}
+
+fn drive_native_handler(
+    driver: &mut impl NativePumpDriver,
+    pending: &mut std::collections::VecDeque<PendingNativeRequest>,
+    limits: NativePumpLimits,
+    handler: &mut impl NativeHostHandler,
+    expired: &mut impl FnMut() -> bool,
+) -> Result<PumpBatch, String> {
+    let mut request_count = 0usize;
+    let had_pending = !pending.is_empty();
+    let pending_terminal = pending.front().and_then(|request| request.terminal_state);
+    // Never drive again while a deferred native request still awaits its owner.
+    while !pending.is_empty() && request_count < limits.maximum_external_requests && !expired() {
+        let request = pending.pop_front().expect("pending request");
+        complete_owned_request(driver, handler, request)?;
+        request_count += 1;
+    }
+    let mut combined = None;
+    if had_pending
+        && (!pending.is_empty()
+            || request_count == limits.maximum_external_requests
+            || pending_terminal.is_some()
+            || expired())
+    {
+        return Ok(PumpBatch {
+            state: pending_terminal.unwrap_or(WebDriveState::MoreWork),
+            immediate_work: pending_terminal.is_none(),
+            vm_instructions: 0,
+            runtime_transitions: 0,
+            cooperative_background_work: false,
+            events: Vec::new(),
+        });
+    }
+    for batch_index in 0..limits.maximum_batches.max(1) {
+        // Always obtain one actual batch for an otherwise empty call.
+        if combined.is_some() && expired() {
+            if let Some(batch) = combined.as_mut() {
+                mark_native_more_work(batch);
+            }
+            break;
+        }
+        let mut batch = native_quiet_batch(driver, handler, limits.maximum_quiet_slices, expired)?;
+        let before = request_count;
+        batch.events = process_native_events(
             std::mem::take(&mut batch.events),
-            maximum_external_requests.saturating_sub(handled),
-            &mut handle_storage,
-            &mut handle_service,
+            driver,
+            pending,
+            handler,
+            &mut request_count,
+            limits.maximum_external_requests,
+            expired,
         )?;
-        batch.events = visible;
+        let completed = request_count > before;
+        let terminal = matches!(batch.state, WebDriveState::Stopped | WebDriveState::Faulted);
+        if terminal {
+            for request in pending.iter_mut() {
+                request.terminal_state = Some(batch.state);
+            }
+        }
         let active = matches!(
             batch.state,
             WebDriveState::MoreWork | WebDriveState::OutputReady
         );
-        let submitted_completions = !completions.is_empty();
-        merge_pump_batch(&mut combined, batch);
-        for completion in completions {
-            driver.submit_completion(completion)?;
-            handled = handled.saturating_add(1);
-        }
-        let external_cap_reached = submitted_completions && handled == maximum_external_requests;
-        let batch_cap_reached = batch_index + 1 == maximum_batches;
-        let terminal = matches!(
-            combined.as_ref().map(|result| result.state),
-            Some(WebDriveState::Stopped | WebDriveState::Faulted)
-        );
-        if !terminal
-            && (external_cap_reached
-                || (submitted_completions && (batch_cap_reached || cooperative_background_work)))
+        let deadline = expired();
+        let external_cap = completed && request_count == limits.maximum_external_requests;
+        let batch_cap = batch_index + 1 == limits.maximum_batches.max(1);
+        let cooperative = batch.cooperative_background_work && limits.until_blocked;
+        if !pending.is_empty()
+            || (deadline && active)
+            || (completed && (deadline || external_cap || batch_cap || cooperative))
         {
-            combined
-                .as_mut()
-                .ok_or_else(|| "native host pump produced no batch".to_owned())?
-                .state = WebDriveState::MoreWork;
+            mark_native_more_work(&mut batch);
         }
-        if cooperative_background_work
-            || external_cap_reached
-            || batch_cap_reached
-            || (!submitted_completions && !active)
+        merge_pump_batch(&mut combined, batch);
+        if terminal
+            || deadline
+            || external_cap
+            || batch_cap
+            || cooperative
+            || !pending.is_empty()
+            || (!completed && (!active || !limits.until_blocked))
         {
             break;
         }
@@ -836,9 +1106,12 @@ fn project_runtime_message(
     (serde_json::to_value(message), data_bytes)
 }
 
+#[cfg_attr(test, derive(Clone))]
 struct NativeCompletion {
     message: RuntimeMessage,
     correlation_id: Option<u64>,
+    #[cfg(feature = "performance-audit")]
+    evidence: NativeRequestEvidence,
 }
 
 fn merge_pump_batch(combined: &mut Option<PumpBatch>, batch: PumpBatch) {
@@ -849,48 +1122,111 @@ fn merge_pump_batch(combined: &mut Option<PumpBatch>, batch: PumpBatch) {
     }
 }
 
-fn extract_native_events(
+fn process_native_events(
     events: Vec<WebEvent>,
+    driver: &mut impl NativePumpDriver,
+    pending: &mut std::collections::VecDeque<PendingNativeRequest>,
+    handler: &mut impl NativeHostHandler,
+    request_count: &mut usize,
     allowance: usize,
-    mut handle_storage: impl FnMut(StorageRequest) -> StorageResponse,
-    mut handle_service: impl FnMut(ServiceRequest) -> Option<ServiceResponse>,
-) -> Result<(Vec<WebEvent>, Vec<NativeCompletion>), String> {
-    let mut completions = Vec::new();
+    expired: &mut impl FnMut() -> bool,
+) -> Result<Vec<WebEvent>, String> {
     let mut visible = Vec::with_capacity(events.len());
     for event in events {
-        if event.channel != WebChannel::Runtime || completions.len() >= allowance {
+        if event.channel != WebChannel::Runtime {
             visible.push(event);
             continue;
         }
+        let available = *request_count < allowance && !expired() && pending.is_empty();
         match event
             .message
             .get("type")
             .and_then(serde_json::Value::as_str)
         {
-            Some("storage_request") => {
-                let correlation_id = event.correlation_id;
-                let message: RuntimeMessage =
-                    serde_json::from_value(event.message).map_err(|error| error.to_string())?;
-                let RuntimeMessage::StorageRequest(request) = message else {
+            Some("storage_request") if available => {
+                let RuntimeMessage::StorageRequest(request) =
+                    RuntimeMessage::deserialize(&event.message)
+                        .map_err(|error| error.to_string())?
+                else {
                     return Err("storage request projection decoded to another message".into());
                 };
-                completions.push(NativeCompletion {
-                    message: RuntimeMessage::StorageResponse(handle_storage(request)),
-                    correlation_id,
-                });
+                #[cfg(feature = "performance-audit")]
+                let evidence = NativeRequestEvidence::new(
+                    &event,
+                    RuntimeMessage::StorageRequest(request.clone()),
+                );
+                let correlation_id = event.correlation_id;
+                drop(event);
+                let response = handler.handle_storage(request);
+                submit_native_completion(
+                    driver,
+                    handler,
+                    NativeCompletion {
+                        message: RuntimeMessage::StorageResponse(response),
+                        correlation_id,
+                        #[cfg(feature = "performance-audit")]
+                        evidence,
+                    },
+                )?;
+                *request_count += 1;
             }
             Some("service_request") => {
-                let correlation_id = event.correlation_id;
-                let message: RuntimeMessage = serde_json::from_value(event.message.clone())
-                    .map_err(|error| error.to_string())?;
-                let RuntimeMessage::ServiceRequest(request) = message else {
+                // Deserialize directly from the projection: no cloned JSON payload or
+                // production audit envelope is kept for a native-owned service.
+                let RuntimeMessage::ServiceRequest(request) =
+                    RuntimeMessage::deserialize(&event.message)
+                        .map_err(|error| error.to_string())?
+                else {
                     return Err("service request projection decoded to another message".into());
                 };
-                if let Some(response) = handle_service(request) {
-                    completions.push(NativeCompletion {
-                        message: RuntimeMessage::ServiceResponse(response),
-                        correlation_id,
-                    });
+                if handler.owns_service(&request) {
+                    #[cfg(feature = "performance-audit")]
+                    let evidence = NativeRequestEvidence::new(
+                        &event,
+                        RuntimeMessage::ServiceRequest(request.clone()),
+                    );
+                    let request = PendingNativeRequest {
+                        request,
+                        correlation_id: event.correlation_id,
+                        terminal_state: None,
+                        #[cfg(feature = "performance-audit")]
+                        evidence,
+                    };
+                    drop(event);
+                    if available {
+                        complete_owned_request(driver, handler, request)?;
+                        *request_count += 1;
+                    } else {
+                        // Core's pending-request limit is the same bound. Do not drive
+                        // while this queue is nonempty, so it cannot grow across calls.
+                        if pending.len() >= MAXIMUM_PENDING_NATIVE_REQUESTS {
+                            return Err("native pending request limit exceeded".into());
+                        }
+                        pending.push_back(request);
+                    }
+                } else if available {
+                    #[cfg(feature = "performance-audit")]
+                    let evidence = NativeRequestEvidence::new(
+                        &event,
+                        RuntimeMessage::ServiceRequest(request.clone()),
+                    );
+                    if let Some(response) = handler.handle_service(request) {
+                        let correlation_id = event.correlation_id;
+                        drop(event);
+                        submit_native_completion(
+                            driver,
+                            handler,
+                            NativeCompletion {
+                                message: RuntimeMessage::ServiceResponse(response),
+                                correlation_id,
+                                #[cfg(feature = "performance-audit")]
+                                evidence,
+                            },
+                        )?;
+                        *request_count += 1;
+                    } else {
+                        visible.push(event);
+                    }
                 } else {
                     visible.push(event);
                 }
@@ -898,7 +1234,7 @@ fn extract_native_events(
             _ => visible.push(event),
         }
     }
-    Ok((visible, completions))
+    Ok(visible)
 }
 
 fn coalesce_quiet_pumps(

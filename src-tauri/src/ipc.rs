@@ -35,6 +35,7 @@ pub(crate) fn encode_pump_response_with_len(
     Ok((Response::new(bytes), byte_len))
 }
 
+#[cfg(not(feature = "performance-audit"))]
 pub(crate) fn encode_submitted_pump_response(
     message_id: u64,
     value: &PumpBatch,
@@ -65,7 +66,7 @@ impl Serialize for SafeSubmittedPump<'_> {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(5))?;
+        let mut map = serializer.serialize_map(Some(6))?;
         map.serialize_entry("submittedMessageId", &SafeU64(self.message_id))?;
         serialize_pump_fields(&mut map, self.value)?;
         map.end()
@@ -79,7 +80,7 @@ impl Serialize for SafePump<'_> {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(4))?;
+        let mut map = serializer.serialize_map(Some(5))?;
         serialize_pump_fields(&mut map, self.0)?;
         map.end()
     }
@@ -90,6 +91,7 @@ where
     S: SerializeMap,
 {
     map.serialize_entry("state", &value.state)?;
+    map.serialize_entry("immediateWork", &value.immediate_work)?;
     map.serialize_entry("vmInstructions", &SafeU64(value.vm_instructions))?;
     map.serialize_entry("runtimeTransitions", &value.runtime_transitions)?;
     map.serialize_entry("events", &SafeEvents(&value.events))?;
@@ -222,6 +224,7 @@ mod tests {
     fn pump_serializer_tags_outer_and_nested_unsafe_integers_without_reprojection() {
         let batch = PumpBatch {
             state: WebDriveState::OutputReady,
+            immediate_work: true,
             vm_instructions: MAXIMUM_SAFE_JAVASCRIPT_INTEGER + 1,
             runtime_transitions: 1,
             cooperative_background_work: false,
@@ -245,6 +248,7 @@ mod tests {
             encoded["vmInstructions"][IPC_INTEGER_TAG],
             (MAXIMUM_SAFE_JAVASCRIPT_INTEGER + 1).to_string()
         );
+        assert_eq!(encoded["immediateWork"], true);
         assert_eq!(
             encoded["events"][0]["message"]["value"][IPC_INTEGER_TAG],
             (MAXIMUM_SAFE_JAVASCRIPT_INTEGER + 2).to_string()
@@ -255,6 +259,7 @@ mod tests {
     fn submitted_pump_serializer_tags_the_message_id() {
         let batch = PumpBatch {
             state: WebDriveState::Idle,
+            immediate_work: false,
             vm_instructions: 1,
             runtime_transitions: 2,
             cooperative_background_work: false,
@@ -274,6 +279,7 @@ mod tests {
             (MAXIMUM_SAFE_JAVASCRIPT_INTEGER + 1).to_string()
         );
         assert_eq!(encoded["state"], "idle");
+        assert_eq!(encoded["immediateWork"], false);
         assert_eq!(encoded["runtimeTransitions"], 2);
     }
 
@@ -281,6 +287,7 @@ mod tests {
     fn pump_serializer_and_command_decoder_use_tagged_binary_bytes() {
         let batch = PumpBatch {
             state: WebDriveState::OutputReady,
+            immediate_work: false,
             vm_instructions: 0,
             runtime_transitions: 1,
             cooperative_background_work: false,
