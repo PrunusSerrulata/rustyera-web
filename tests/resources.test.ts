@@ -6,6 +6,8 @@ import {
   serviceLifecycleImageCrossOrigin,
   serviceLifecycleResourceUrl,
   serviceLifecycleSnapshot,
+  takeServiceLifecycleDiagnosisExportPath,
+  takeServiceLifecycleStateExportPath,
 } from "@/testing/serviceLifecycle";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -245,5 +247,38 @@ describe("test-only real lifecycle resource stream boundary", () => {
     );
     expect(nextServiceLifecycleProject("/fixture/original")).toBe("/fixture/successor");
     expect(nextServiceLifecycleProject("/fixture/original")).toBe("/fixture/original");
+  });
+
+  it.each(["/fixture/output.sav", "C:/fixture/output.sav", "C:\\fixture\\output.sav"])(
+    "preserves absolute native lifecycle paths on every host: %s",
+    (path) => {
+      vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+      configureServiceLifecycle({
+        projectPaths: [path],
+        diagnosisExportPath: path,
+        stateExportPath: path,
+      });
+      expect(nextServiceLifecycleProject("fallback")).toBe(path);
+      expect(takeServiceLifecycleDiagnosisExportPath()).toBe(path);
+      expect(takeServiceLifecycleStateExportPath()).toBe(path);
+      expect(takeServiceLifecycleDiagnosisExportPath()).toBeUndefined();
+      expect(takeServiceLifecycleStateExportPath()).toBeUndefined();
+    },
+  );
+
+  it.each([
+    "relative.sav",
+    "C:relative.sav",
+    "C:\\fixture\\..\\output.sav",
+    "C:/fixture//output.sav",
+    "/fixture/../output.sav",
+  ])("rejects non-normalized native export paths: %s", (path) => {
+    vi.stubEnv("VITE_RUSTYERA_TEST", "1");
+    expect(() => configureServiceLifecycle({ diagnosisExportPath: path })).toThrow(
+      "absolute normalized",
+    );
+    expect(() => configureServiceLifecycle({ stateExportPath: path })).toThrow(
+      "absolute normalized",
+    );
   });
 });

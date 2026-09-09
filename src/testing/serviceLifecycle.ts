@@ -56,9 +56,7 @@ export function configureServiceLifecycle(value: ServiceLifecycleConfiguration):
   if (value.projectPaths) {
     if (
       value.projectPaths.length > 2 ||
-      value.projectPaths.some(
-        (path) => typeof path !== "string" || !path.startsWith("/") || path.includes("\0"),
-      )
+      value.projectPaths.some((path) => absolutePathParts(path) === undefined)
     )
       throw new Error("lifecycle picker needs at most two absolute isolated project paths");
     projectPaths.splice(0, projectPaths.length, ...value.projectPaths);
@@ -89,17 +87,20 @@ export function takeServiceLifecycleStateExportPath(): string | undefined {
   return import.meta.env.VITE_RUSTYERA_TEST === "1" ? path : undefined;
 }
 
+function absolutePathParts(path: unknown): string[] | undefined {
+  if (typeof path !== "string" || path.length > 32768 || path.includes("\0")) return undefined;
+  // The test controller runs in a WebView, so Node's host-specific path module is
+  // unavailable. Preserve the original path for the real native file command.
+  if (/^[a-z]:[\\/]/i.test(path)) return path.slice(3).split(/[\\/]/);
+  if (path.startsWith("/")) return path.slice(1).split("/");
+  return undefined;
+}
+
 function validateExportPath(path: string | undefined, label: string): void {
+  const parts = absolutePathParts(path);
   if (
     path !== undefined &&
-    (typeof path !== "string" ||
-      !path.startsWith("/") ||
-      path.length > 32768 ||
-      path.includes("\0") ||
-      path
-        .split("/")
-        .slice(1)
-        .some((part) => !part || part === "." || part === ".."))
+    (!parts || parts.some((part) => !part || part === "." || part === ".."))
   )
     throw new Error(`${label} export needs an absolute normalized isolated file path`);
 }
