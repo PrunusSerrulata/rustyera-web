@@ -227,11 +227,17 @@ function measureLineElement(
   return measureVirtualElement(element, entry, instance);
 }
 
+// A new lookup invalidates TanStack's cached positions without discarding measured sizes.
+// Input, resource and other non-history revisions do not need to scan accumulated rows.
+const virtualItemKey = computed(() => {
+  void store.presentation.lineLayoutRevision;
+  void store.runtimeEpoch;
+  return (index: number) => lineRenderKey(index);
+});
+
 const virtualizer = useVirtualizer(
   computed(() => {
-    // Equal-length replacements do not change count; revision keeps the virtualizer's key lookup
-    // synchronized while lineRenderKey limits work to the requested virtual window.
-    void store.presentation.revision;
+    // Equal-length replacements invalidate positions through virtualItemKey too.
     return {
       count: store.presentation.lines.length,
       getScrollElement: () => viewport.value ?? null,
@@ -242,7 +248,7 @@ const virtualizer = useVirtualizer(
       // Preserve measured rows and mounted media across same-epoch snapshots. When an animation
       // deletes and recreates an equal-length tail, reuse that row's render key so its canvas can
       // keep the prior frame visible until the replacement replay has committed.
-      getItemKey: lineRenderKey,
+      getItemKey: virtualItemKey.value,
     };
   }),
 );

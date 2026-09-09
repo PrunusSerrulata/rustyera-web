@@ -142,6 +142,12 @@ describe("verified Tauri build reuse", () => {
     expect(performance.VITE_RUSTYERA_TAURI_SNAKE_RUNTIME_PERFORMANCE).toBeUndefined();
     expect(first.VITE_RUSTYERA_TEST_PROJECT).toBe("/first/project");
     expect(reusableBuildEnvironment(first, "other.spec.mjs", undefined, false)).toEqual(first);
+    expect(
+      reusableBuildEnvironment(first, "snake-history-replacement-layout.spec.mjs", "/state", true),
+    ).toEqual(first);
+    expect(
+      reusableBuildEnvironment(second, "snake-history-replacement-layout.spec.mjs", "/state", true),
+    ).not.toEqual(first);
     expect(() => reusableBuildEnvironment(first, "other.spec.mjs", undefined, true)).toThrow(
       "supported",
     );

@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eratw-sub-modding",
+  "mode": "fixed",
+  "start": {
+    "type": "vm_snapshot"
+  },
+  "viewport": {
+    "width": 2048,
+    "height": 900
+  },
+  "summary_observations": true,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [
+    {
+      "type": "fill",
+      "locator": {
+        "css": ".prompt-bar input"
+      },
+      "value": "12"
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": ".prompt-bar button[type=submit]"
+      },
+      "auto_enter": false,
+      "advances_game": true,
+      "settle_ms": 3000
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": ".game-viewport"
+      },
+      "button": "left",
+      "advances_game": true,
+      "auto_enter": false,
+      "settle_ms": 3000
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": ".game-viewport"
+      },
+      "button": "left",
+      "advances_game": true,
+      "auto_enter": false,
+      "settle_ms": 3000
+    },
+    {
+      "type": "query",
+      "locator": {
+        "css": ".virtual-history"
+      },
+      "fields": ["html"]
+    },
+    {
+      "type": "assert_layout",
+      "locator": {
+        "css": ".virtual-history > .game-line"
+      },
+      "expect": {
+        "visible": true
+      }
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "fault": null,
+        "canInteract": true
+      }
+    },
+    {
+      "type": "scroll_key",
+      "locator": {
+        "css": ".game-viewport"
+      },
+      "key": "PageUp",
+      "settle_ms": 3000
+    },
+    {
+      "type": "scroll_key",
+      "locator": {
+        "css": ".game-viewport"
+      },
+      "key": "PageUp",
+      "settle_ms": 3000
+    },
+    {
+      "type": "scroll_key",
+      "locator": {
+        "css": ".game-viewport"
+      },
+      "key": "PageUp",
+      "settle_ms": 3000
+    },
+    {
+      "type": "scroll_key",
+      "locator": {
+        "css": ".game-viewport"
+      },
+      "key": "PageUp",
+      "settle_ms": 3000
+    },
+    {
+      "type": "scroll_key",
+      "locator": {
+        "css": ".game-viewport"
+      },
+      "key": "End",
+      "settle_ms": 3000
+    },
+    {
+      "type": "query",
+      "locator": {
+        "css": ".virtual-history"
+      },
+      "fields": ["html"]
+    },
+    {
+      "type": "assert_layout",
+      "locator": {
+        "css": ".virtual-history > .game-line"
+      },
+      "expect": {
+        "visible": true
+      }
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "fault": null,
+        "canInteract": true
+      }
+    }
+  ],
+  "limits": {
+    "max_steps": 20,
+    "timeout_seconds": 600
+  }
+}

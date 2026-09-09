@@ -163,6 +163,7 @@ describe("presentation projection", () => {
       operations: [{ type: "set_title", title: "changed" }],
     });
     expect(state.historyRevision).toBe(0);
+    expect(state.lineLayoutRevision).toBe(0);
   });
 
   it("retires regular and HTML history buttons without disabling current partial updates", () => {
@@ -567,6 +568,7 @@ describe("presentation projection", () => {
       history: { logical_lines: [line(1, "before"), line(2, "map frame 1")] },
     });
     const historyRevision = state.historyRevision;
+    const layoutRevision = state.lineLayoutRevision;
 
     applyDelta(state, {
       base_revision: 1,
@@ -580,6 +582,7 @@ describe("presentation projection", () => {
 
     expect(state.lines.map(plainLine)).toEqual(["before", "map frame 2"]);
     expect(state.historyRevision).toBe(historyRevision);
+    expect(state.lineLayoutRevision).toBe(layoutRevision + 1);
   });
 
   it("keeps a same-length resynchronized tail replacement at its scroll position", () => {
@@ -602,11 +605,13 @@ describe("presentation projection", () => {
     });
     applySnapshot(state, snapshot(1, 1, "frame 1"));
     const historyRevision = state.historyRevision;
+    const layoutRevision = state.lineLayoutRevision;
 
     applySnapshot(state, snapshot(2, 2, "frame 2"));
 
     expect(state.lines.map(plainLine)).toEqual(["frame 2"]);
     expect(state.historyRevision).toBe(historyRevision);
+    expect(state.lineLayoutRevision).toBe(layoutRevision + 1);
   });
 
   it("marks an image replacement as output even when both images have empty alt text", () => {

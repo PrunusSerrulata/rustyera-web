@@ -1,3 +1,4 @@
+import { Virtualizer } from "@tanstack/virtual-core";
 import {
   DisplayLine,
   GameViewport,
@@ -24,6 +25,7 @@ describe("game viewport", () => {
     store.runtimeEpoch = 1;
     store.presentation.revision = 1;
     store.presentation.historyRevision = 1;
+    store.presentation.lineLayoutRevision = 1;
     store.presentation.lines = [
       { line_id: 1, alignment: "left", runs: [], text_background_eligible: false },
     ];
@@ -111,11 +113,21 @@ describe("game viewport", () => {
       text_background_eligible: false,
     }));
     const wrapper = mountViewport();
+    const options = () => ({
+      ...virtualOptions.value.value,
+      scrollToFn: vi.fn(),
+      observeElementRect: vi.fn(),
+      observeElementOffset: vi.fn(),
+    });
+    const virtualizer = new Virtualizer<HTMLElement, Element>(options());
+    virtualizer.getTotalSize();
     lineIdReads = 0;
 
     store.presentation.revision += 1;
     await nextTick();
 
+    virtualizer.setOptions(options());
+    virtualizer.getTotalSize();
     expect(lineIdReads).toBe(0);
     wrapper.unmount();
   });
@@ -320,6 +332,48 @@ describe("game viewport", () => {
     await nextTick();
 
     expect(virtualOptions.value.value.getItemKey(0)).toBe("1:2");
+    wrapper.unmount();
+  });
+
+  it("recalculates real virtual positions after an equal-length history replacement", async () => {
+    store.presentation.lines = [1, 2, 3].map((line_id) => ({
+      line_id,
+      alignment: "left",
+      runs: [],
+      text_background_eligible: false,
+    }));
+    const wrapper = mountViewport();
+    const options = () => ({
+      ...virtualOptions.value.value,
+      scrollToFn: vi.fn(),
+      observeElementRect: vi.fn(),
+      observeElementOffset: vi.fn(),
+    });
+    const virtualizer = new Virtualizer<HTMLElement, Element>(options());
+    expect(virtualizer.getTotalSize()).toBe(39);
+    virtualizer.resizeItem(0, 39);
+    expect(virtualizer.getTotalSize()).toBe(65);
+
+    // A refresh of the same lines retains their measured heights.
+    store.presentation.revision += 1;
+    store.presentation.lineLayoutRevision += 1;
+    await nextTick();
+    virtualizer.setOptions(options());
+    expect(virtualizer.getTotalSize()).toBe(65);
+
+    // A new console row at the same index must not inherit the removed row's height.
+    store.presentation.lines[0] = {
+      line_id: 4,
+      alignment: "left",
+      runs: [],
+      text_background_eligible: false,
+    };
+    store.presentation.revision += 1;
+    store.presentation.lineLayoutRevision += 1;
+    await nextTick();
+    virtualizer.setOptions(options());
+    expect(virtualizer.getTotalSize()).toBe(39);
+    expect(virtualizer.measurementsCache[1].start).toBe(13);
     wrapper.unmount();
   });
 

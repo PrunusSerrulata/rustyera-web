@@ -52,6 +52,7 @@ const store = makeReactive({
   presentation: {
     revision: 1,
     historyRevision: 1,
+    lineLayoutRevision: 1,
     lines: [
       {
         line_id: 1,

@@ -20,6 +20,8 @@ import { applyResourceReplayDelta } from "@/core/resourceReplayDelta";
 export interface PresentationState {
   revision: number;
   historyRevision: number;
+  /** Invalidates row geometry independently of the bottom-follow policy. */
+  lineLayoutRevision: number;
   title: string;
   lines: DisplayLine[];
   scene: SceneStateV1;
@@ -50,6 +52,7 @@ export function emptyPresentation(): PresentationState {
   return {
     revision: 0,
     historyRevision: 0,
+    lineLayoutRevision: 0,
     title: "RustyEra",
     lines: [],
     scene: emptyScene(),
@@ -82,6 +85,7 @@ function applySnapshotCandidate(state: PresentationState, snapshot: any): void {
   state.revision = exactFrontendRevision(snapshot.revision, "presentation revision");
   state.title = snapshot.title;
   state.lines = nextLines;
+  state.lineLayoutRevision += 1;
   const sourceScene = (snapshot.scene ?? emptyScene()) as SceneStateV1;
   const scene = { revision: sourceScene.revision, layers: [...sourceScene.layers] };
   validateScene(scene);
@@ -141,6 +145,7 @@ function applyDeltaCandidate(
   const previousLineCount = state.lines.length;
   let previousSceneSequences: Map<string, number> | undefined;
   let existingLineChanged = false;
+  let lineLayoutChanged = false;
   let pendingPrefixTrim = 0;
   const flushPrefixTrim = () => {
     if (pendingPrefixTrim === 0) return;
@@ -152,10 +157,12 @@ function applyDeltaCandidate(
   for (const operation of delta.operations ?? []) {
     switch (operation.type) {
       case "append_line":
+        lineLayoutChanged = true;
         assignLineSequences(state, operation.line);
         state.lines.push(operation.line);
         break;
       case "delete_lines":
+        lineLayoutChanged = true;
         flushPrefixTrim();
         serviceInteger(operation.count, "deleted presentation line count");
         state.lines.splice(
@@ -164,6 +171,7 @@ function applyDeltaCandidate(
         );
         break;
       case "clear":
+        lineLayoutChanged = true;
         state.lines = [];
         pendingPrefixTrim = 0;
         break;
@@ -186,6 +194,7 @@ function applyDeltaCandidate(
         flushPrefixTrim();
         const index = findLineIndexFromEnd(state.lines, operation.line_id);
         if (index >= 0) {
+          lineLayoutChanged = true;
           const previousSequences = collectLineSequences(state.lines[index]);
           assignLineSequences(state, operation.line, previousSequences);
           existingLineChanged ||= lineContentChanged(state.lines[index], operation.line);
@@ -218,6 +227,7 @@ function applyDeltaCandidate(
         state.buttonGeneration = operation.generation;
         break;
       case "trim_lines":
+        lineLayoutChanged = true;
         serviceInteger(operation.count, "trimmed presentation line count");
         pendingPrefixTrim += Math.min(
           Math.max(0, Number(operation.count)),
@@ -229,6 +239,7 @@ function applyDeltaCandidate(
     }
   }
   flushPrefixTrim();
+  if (lineLayoutChanged) state.lineLayoutRevision += 1;
   // Emuera's dynamic-map loop deletes and recreates the same tail rows. Its console keeps the
   // scrollbar unchanged when the final line count is unchanged, so only actual history growth
   // (or an in-place line whose dimensions may change) should request another bottom follow.

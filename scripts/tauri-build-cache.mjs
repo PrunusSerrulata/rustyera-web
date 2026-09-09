@@ -35,6 +35,8 @@ const reusableSpecs = new Set([
 // No fixture paths or per-spec flags need to be embedded in the reusable executable.
 export function reusableBuildEnvironment(environment, specName, state, enabled) {
   if (!enabled) return { ...environment };
+  // Snapshot layout regressions bind their exact fixture paths in the build contract.
+  if (specName === "snake-history-replacement-layout.spec.mjs" && state) return { ...environment };
   if (!reusableSpecs.has(specName) || state)
     throw new Error("--reuse-build requires a supported snake/native-input spec without --state");
   const result = { ...environment };
