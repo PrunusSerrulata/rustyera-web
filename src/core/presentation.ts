@@ -15,6 +15,7 @@ import { applySceneDelta, emptyScene, validateScene, type SceneStateV1 } from "@
 import { decodeFixedColorMatrix } from "@/core/colorMatrix";
 import { sameServiceInteger, serviceInteger } from "@/core/runtimeServiceProtocol";
 import { parseAudioStates, type AudioStateProjection } from "@/core/audio/model";
+import { applyResourceReplayDelta } from "@/core/resourceReplayDelta";
 
 export interface PresentationState {
   revision: number;
@@ -115,13 +116,17 @@ export function defaultTooltipSettings(): TooltipSettings {
 
 export function applyDelta(state: PresentationState, delta: any): void {
   const clonedDelta = cloneProtocol(delta);
-  validatePresentationDelta(state, clonedDelta);
+  const resourceUpdates = validatePresentationDelta(state, clonedDelta);
   // Validation covers every operation that can fail before the live projection is touched.
   // Commit directly so a one-line animation delta does not copy the complete history first.
-  applyDeltaCandidate(state, clonedDelta);
+  applyDeltaCandidate(state, clonedDelta, resourceUpdates);
 }
 
-function applyDeltaCandidate(state: PresentationState, delta: any): void {
+function applyDeltaCandidate(
+  state: PresentationState,
+  delta: any,
+  resourceUpdates: Map<any, any>,
+): void {
   const baseRevision = serviceInteger(delta.base_revision, "presentation delta base revision");
   const newRevision = serviceInteger(delta.new_revision, "presentation delta revision");
   if (!sameServiceInteger(baseRevision, state.revision)) {
@@ -197,6 +202,9 @@ function applyDeltaCandidate(state: PresentationState, delta: any): void {
       case "set_resources":
         state.resources = operation.resources;
         break;
+      case "apply_resource_delta":
+        state.resources = resourceUpdates.get(operation);
+        break;
       case "set_html_island": {
         const previousSequences = collectHtmlIslandSequences(state.htmlIsland);
         state.htmlIsland = operation.html_island;
@@ -263,7 +271,7 @@ function validatePresentationCandidate(state: PresentationState): void {
   for (const document of state.htmlIsland) validateColorMatricesInNodes(document?.nodes ?? []);
 }
 
-function validatePresentationDelta(state: PresentationState, delta: any): void {
+function validatePresentationDelta(state: PresentationState, delta: any): Map<any, any> {
   const baseRevision = serviceInteger(delta.base_revision, "presentation delta base revision");
   const newRevision = serviceInteger(delta.new_revision, "presentation delta revision");
   if (!sameServiceInteger(baseRevision, state.revision))
@@ -276,6 +284,8 @@ function validatePresentationDelta(state: PresentationState, delta: any): void {
     throw new Error("presentation delta operations are invalid");
 
   const lines = new DeltaLineView(state.lines);
+  const resourceUpdates = new Map<any, any>();
+  let resources = state.resources;
   let scene = state.scene;
   let htmlIsland: any[] | undefined;
   for (const operation of delta.operations) {
@@ -304,11 +314,17 @@ function validatePresentationDelta(state: PresentationState, delta: any): void {
       case "trim_lines":
         lines.trimPrefix(serviceInteger(operation.count, "trimmed presentation line count"));
         break;
+      case "apply_resource_delta":
+        resources = applyResourceReplayDelta(resources, operation.delta);
+        resourceUpdates.set(operation, resources);
+        break;
+      case "set_resources":
+        resources = operation.resources;
+        break;
       case "set_title":
       case "set_input_wait":
       case "set_settings":
       case "set_tooltip":
-      case "set_resources":
       case "set_redraw":
       case "set_button_generation":
         break;
@@ -320,6 +336,7 @@ function validatePresentationDelta(state: PresentationState, delta: any): void {
   if (htmlIsland !== undefined) validatePresentationHtmlIsland(htmlIsland);
   if (scene !== state.scene)
     visitScene(scene, ({ interaction }) => validateInteraction(interaction));
+  return resourceUpdates;
 }
 
 /** Minimal line topology used only for atomic delta preflight. It references untouched history

@@ -168,6 +168,7 @@ export class RuntimePresentationProjection {
     const target = shouldStage ? this.stage() : this.presentation;
     if (target === this.stagedPresentation) this.prepareStagedLines(operations);
     applyDelta(target, delta);
+    markObjectRaw(toRaw(target).resources);
     if (target !== this.stagedPresentation) {
       if (PERFORMANCE_AUDIT_ENABLED) {
         recordPublishedPresentationRevision(this.presentation.revision);
@@ -254,7 +255,7 @@ function markDeltaPayloadsRaw(delta: any): void {
       for (const document of operation.html_island ?? []) markObjectRaw(document);
     } else if (operation.type === "set_resources") {
       markObjectRaw(operation.resources);
-    } else if (operation.type === "apply_scene_delta") {
+    } else if (["apply_scene_delta", "apply_resource_delta"].includes(operation.type)) {
       markObjectRaw(operation.delta);
     }
   }
