@@ -1,4 +1,5 @@
 import { decodeHtmlServiceQuery, htmlAdvanceMillipixels } from "@/core/htmlServiceProtocol";
+import type { HtmlAdvanceMeasurementResult } from "@/core/htmlMeasurement";
 import {
   RuntimeServiceError,
   projectionMap,
@@ -17,7 +18,8 @@ export interface RuntimeHtmlServiceProvider {
     context: ProjectionQueryContext,
     lease: RuntimeServiceLease,
   ): Promise<{ binding: HtmlMeasurementBinding; guard: HtmlMeasurementGuard }>;
-  measurement: Pick<HtmlMeasurementProvider, "measure" | "measureImageSlot" | "ensureFixedSlot">;
+  measurement: Pick<HtmlMeasurementProvider, "measure" | "measureImageSlot" | "ensureFixedSlot"> &
+    Partial<Pick<HtmlMeasurementProvider, "measureBatch">>;
 }
 
 /** Providers return CSS metrics only. Core retains slicing, line policy and RESULTS writes. */
@@ -38,38 +40,60 @@ export async function resolveHtmlRuntimeService(
       "prepared HTML context differs from the request",
     );
   const results: Map<number, unknown>[] = [];
-  for (const probe of query.probes) {
+  const textProbes = query.probes.filter((probe) => probe.mode === "text_part");
+  const useBatch =
+    Boolean(provider.measurement.measureBatch) && textProbes.length === query.probes.length;
+  const encodedBatch: [number, unknown[]][] = [];
+  const batch = useBatch
+    ? await provider.measurement.measureBatch!(
+        textProbes.map((probe) => ({
+          document: probe.document,
+          mode: "text_part",
+          cuts: probe.cuts,
+          style: query.style,
+        })),
+        prepared.binding,
+        prepared.guard,
+        (measured, index) => {
+          lease.assertActive();
+          prepared.guard.assertCurrent();
+          if (index !== encodedBatch.length || index >= textProbes.length)
+            throw new RuntimeServiceError(
+              "backend_failure",
+              "HTML provider returned an out-of-order probe",
+            );
+          encodedBatch.push(encodeTextResult(measured, textProbes[index].cuts, query.context));
+        },
+      )
+    : undefined;
+  lease.assertActive();
+  prepared.guard.assertCurrent();
+  if (
+    useBatch &&
+    (!Array.isArray(batch) ||
+      batch.length !== query.probes.length ||
+      encodedBatch.length !== query.probes.length)
+  )
+    throw new RuntimeServiceError("backend_failure", "HTML provider returned a wrong probe count");
+  for (const [index, probe] of query.probes.entries()) {
     lease.assertActive();
     prepared.guard.assertCurrent();
     let result: [number, unknown[]];
     switch (probe.mode) {
       case "text_part": {
+        if (useBatch) {
+          result = encodedBatch[index];
+          break;
+        }
         const measured = await provider.measurement.measure(
           { document: probe.document, mode: "text_part", cuts: probe.cuts, style: query.style },
           prepared.binding,
           prepared.guard,
+          "advance",
         );
         lease.assertActive();
         prepared.guard.assertCurrent();
-        requireContext(measured.context, query.context);
-        if (!Array.isArray(measured.cuts) || measured.cuts.length !== probe.cuts.length)
-          throw new RuntimeServiceError(
-            "backend_failure",
-            "HTML provider returned a wrong cut count",
-          );
-        const remaining = new Map(probe.cuts.map((cut) => [cut.id, cut]));
-        const cuts = measured.cuts.map((cut) => {
-          if (!Number.isSafeInteger(cut.id) || !remaining.delete(cut.id))
-            throw new RuntimeServiceError(
-              "backend_failure",
-              "HTML provider returned a duplicate or unknown cut",
-            );
-          return new Map<number, unknown>([
-            [0, cut.id],
-            [1, htmlAdvanceMillipixels(cut.advancePx)],
-          ]);
-        });
-        result = [0, [htmlAdvanceMillipixels(measured.advancePx), cuts]];
+        result = encodeTextResult(measured, probe.cuts, query.context);
         break;
       }
       case "image_slot": {
@@ -130,6 +154,31 @@ export async function resolveHtmlRuntimeService(
     [0, projectionMap(query.context)],
     [1, results],
   ]);
+}
+
+function encodeTextResult(
+  measured: HtmlAdvanceMeasurementResult,
+  expectedCuts: readonly { id: number }[],
+  context: ProjectionQueryContext,
+): [number, unknown[]] {
+  if (!measured)
+    throw new RuntimeServiceError("backend_failure", "HTML provider omitted a probe result");
+  requireContext(measured.context, context);
+  if (!Array.isArray(measured.cuts) || measured.cuts.length !== expectedCuts.length)
+    throw new RuntimeServiceError("backend_failure", "HTML provider returned a wrong cut count");
+  const remaining = new Set(expectedCuts.map((cut) => cut.id));
+  const cuts = measured.cuts.map((cut) => {
+    if (!Number.isSafeInteger(cut.id) || !remaining.delete(cut.id))
+      throw new RuntimeServiceError(
+        "backend_failure",
+        "HTML provider returned a duplicate or unknown cut",
+      );
+    return new Map<number, unknown>([
+      [0, cut.id],
+      [1, htmlAdvanceMillipixels(cut.advancePx)],
+    ]);
+  });
+  return [0, [htmlAdvanceMillipixels(measured.advancePx), cuts]];
 }
 
 function requireContext(actual: ProjectionQueryContext, expected: ProjectionQueryContext): void {

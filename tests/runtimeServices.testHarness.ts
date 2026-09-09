@@ -43,7 +43,7 @@ import type { FrontendBridge } from "@/core/types";
 
 import type { HtmlImageMeasurementResult, HtmlMeasurementResult } from "@/core/htmlMeasurement";
 
-import type { HtmlMeasurementBinding } from "@/platform/htmlMeasurement";
+import type { HtmlMeasurementBinding, HtmlMeasurementProvider } from "@/platform/htmlMeasurement";
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
   let resolve!: (value: T) => void;
@@ -199,7 +199,7 @@ function htmlServiceRequest(
   };
 }
 
-function htmlServiceHarness() {
+function htmlServiceHarness(batch = false) {
   const harness = serviceHarness();
   let current = true;
   const guard = {
@@ -239,6 +239,21 @@ function htmlServiceHarness() {
     ensureFixedSlot: vi.fn(async () => ({ context: projectionContext, type: "ready" as const })),
   };
   harness.context.html = { prepare: vi.fn(async () => ({ binding, guard })), measurement };
+  if (batch) {
+    const measure: HtmlMeasurementProvider["measure"] = measurement.measure;
+    harness.context.html.measurement = {
+      ...measurement,
+      measureBatch: async (probes, binding, guard, consume) => {
+        const results = [];
+        for (const [index, probe] of probes.entries()) {
+          const result = await measure(probe, binding, guard, "advance");
+          consume?.(result, index);
+          results.push(result);
+        }
+        return results;
+      },
+    };
+  }
   return {
     ...harness,
     measurement,

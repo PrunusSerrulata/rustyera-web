@@ -17,6 +17,7 @@ import {
   type CanonicalHtmlDocument,
   type HtmlMeasurementProbe,
   type HtmlMeasurementResult,
+  type HtmlAdvanceMeasurementResult,
   type HtmlImageMeasurementProbe,
   type HtmlImageMeasurementResult,
   type HtmlFixedSlotProbe,
@@ -64,11 +65,23 @@ export class HtmlMeasurementProvider {
     this.activeScope?.dispose();
   }
 
+  measure(
+    probe: HtmlMeasurementProbe,
+    binding: HtmlMeasurementBinding,
+    guard: HtmlMeasurementGuard,
+  ): Promise<HtmlMeasurementResult>;
+  measure(
+    probe: HtmlMeasurementProbe,
+    binding: HtmlMeasurementBinding,
+    guard: HtmlMeasurementGuard,
+    detail: "advance",
+  ): Promise<HtmlAdvanceMeasurementResult>;
   async measure(
     probe: HtmlMeasurementProbe,
     binding: HtmlMeasurementBinding,
     guard: HtmlMeasurementGuard,
-  ): Promise<HtmlMeasurementResult> {
+    detail?: "advance",
+  ): Promise<HtmlMeasurementResult | HtmlAdvanceMeasurementResult> {
     validateProbe(probe, binding.replaceFullWidthSpaces);
     const document = cloneBounded(probe.document);
     const cuts = cloneBounded(probe.cuts);
@@ -93,7 +106,10 @@ export class HtmlMeasurementProvider {
         }
         // Shape each prefix independently, but read every width from one settled DOM layout.
         // Mounting/unmounting between cuts can mix fallback-font epochs in native browsers.
-        const measured = await this.render(documents, style, frozen, current, "part");
+        const measured =
+          detail === "advance"
+            ? await this.render(documents, style, frozen, current, "advance")
+            : await this.render(documents, style, frozen, current, "part");
         current.assertCurrent();
         return {
           ...measured[0],
@@ -104,6 +120,85 @@ export class HtmlMeasurementProvider {
         };
       },
     );
+  }
+
+  /** Consecutive small text probes share one bounded DOM/font epoch, never cached metrics. */
+  async measureBatch(
+    probes: readonly HtmlMeasurementProbe[],
+    binding: HtmlMeasurementBinding,
+    guard: HtmlMeasurementGuard,
+    consume?: (result: HtmlAdvanceMeasurementResult, index: number) => void,
+  ): Promise<HtmlAdvanceMeasurementResult[]> {
+    const results: HtmlAdvanceMeasurementResult[] = [];
+    const publish = (result: HtmlAdvanceMeasurementResult) => {
+      guard.assertCurrent();
+      consume?.(result, results.length);
+      results.push(result);
+    };
+    for (let first = 0; first < probes.length;) {
+      guard.assertCurrent();
+      const plans: SmallTextPart[] = [];
+      let work = 0;
+      let bytes = 0;
+      for (let index = first; index < Math.min(first + 16, probes.length); index++) {
+        const candidate = probes[index];
+        if (!candidate || candidate.style !== probes[first]?.style) break;
+        const plan = smallTextPart(
+          candidate,
+          binding.replaceFullWidthSpaces,
+          900 - work,
+          256 * 1024 - bytes,
+        );
+        if (!plan) break;
+        plans.push(plan);
+        work += plan.work;
+        bytes += plan.bytes;
+      }
+      if (plans.length === 0) {
+        publish(await this.measure(probes[first], binding, guard, "advance"));
+        first++;
+        continue;
+      }
+      const documents = plans.flatMap((plan) => plan.documents);
+      let measured: HtmlAdvanceMeasurementResult[];
+      try {
+        measured = await this.schedule(
+          probes[first].style,
+          binding,
+          guard,
+          documents,
+          (style, frozen, current) => this.render(documents, style, frozen, current, "advance"),
+        );
+      } catch (error) {
+        guard.assertCurrent();
+        if (
+          plans.length === 1 ||
+          guard.signal.aborted ||
+          (error instanceof RuntimeServiceError && error.category === "stale_projection")
+        )
+          throw error;
+        // A later font/render failure must not hide an earlier result-validation error.
+        // Measurement is side-effect-free; retry only this failed group in original order.
+        for (let index = first; index < first + plans.length; index++)
+          publish(await this.measure(probes[index], binding, guard, "advance"));
+        first += plans.length;
+        continue;
+      }
+      guard.assertCurrent();
+      let offset = 0;
+      for (const plan of plans) {
+        publish({
+          ...measured[offset],
+          cuts: plan.cuts.map((cut, index) => ({
+            id: cut.id,
+            advancePx: measured[offset + index + 1].advancePx,
+          })),
+        });
+        offset += plan.documents.length;
+      }
+      first += plans.length;
+    }
+    return results;
   }
 
   async measureImageSlot(
@@ -252,6 +347,13 @@ export class HtmlMeasurementProvider {
     style: HtmlQueryStyle,
     binding: HtmlMeasurementBinding,
     guard: HtmlMeasurementGuard,
+    mode: "advance",
+  ): Promise<HtmlAdvanceMeasurementResult[]>;
+  private render(
+    documents: CanonicalHtmlDocument[],
+    style: HtmlQueryStyle,
+    binding: HtmlMeasurementBinding,
+    guard: HtmlMeasurementGuard,
     mode: "part",
   ): Promise<HtmlMeasurementResult[]>;
   private render(
@@ -273,8 +375,10 @@ export class HtmlMeasurementProvider {
     style: HtmlQueryStyle,
     binding: HtmlMeasurementBinding,
     guard: HtmlMeasurementGuard,
-    mode: "part" | "document" | "ready",
-  ): Promise<HtmlMeasurementResult | HtmlMeasurementResult[] | void> {
+    mode: "part" | "document" | "ready" | "advance",
+  ): Promise<
+    HtmlMeasurementResult | HtmlMeasurementResult[] | HtmlAdvanceMeasurementResult[] | void
+  > {
     guard.assertCurrent();
     validateBinding(binding, style);
     const documents = Array.isArray(document) ? document : [document];
@@ -377,6 +481,15 @@ export class HtmlMeasurementProvider {
       }
       // Geometry reads flush layout without a paint tick, which an occluded WebView can suspend.
       // No await between these reads: all independent text shapes share one font/layout epoch.
+      if (mode === "advance") {
+        const results = [...lines].map((line) => ({
+          context: { ...binding.context },
+          advancePx: finitePixels(line.getBoundingClientRect().width),
+          cuts: [],
+        }));
+        scope.assertCurrent();
+        return results;
+      }
       const results = [...lines].map((line, index) => {
         const width = finitePixels(line.getBoundingClientRect().width);
         const firstRow = readFirstRow(
@@ -405,6 +518,98 @@ export class HtmlMeasurementProvider {
       }
     }
   }
+}
+
+interface SmallTextPart {
+  documents: CanonicalHtmlDocument[];
+  cuts: HtmlMeasurementProbe["cuts"];
+  work: number;
+  bytes: number;
+}
+
+/** Eligibility is bounded before cloning. Invalid/large probes retain sequential error ordering. */
+function smallTextPart(
+  probe: HtmlMeasurementProbe,
+  replaceSpaces: boolean,
+  remainingWork: number,
+  remainingBytes: number,
+): SmallTextPart | undefined {
+  if (!Array.isArray(probe?.cuts) || probe.cuts.length > 16) return;
+  let nodes = 0;
+  let units = 0;
+  const small = (list: CanonicalHtmlDocument["nodes"], depth: number): boolean =>
+    depth <= 16 &&
+    Array.isArray(list) &&
+    list.every((node) => {
+      if (++nodes > 16 || !node) return false;
+      if (node.type === "text") {
+        if (typeof node.text !== "string") return false;
+        units += node.text.length;
+        return units <= 128;
+      }
+      return node.type === "element" && small(node.children, depth + 1);
+    });
+  if (!small(probe.document?.nodes, 0)) return;
+  // Charge an upper bound before cloning any prefix, including all DTO metadata and keys.
+  const copies = probe.cuts.length + 1;
+  const work = (nodes + units + 3) * copies;
+  if (work > remainingWork) return;
+  const limit = Math.min(64 * 1024, remainingBytes) - 128;
+  const documentBytes = smallDtoBytes(probe.document, Math.floor(limit / copies));
+  if (documentBytes == null) return;
+  const metadataBytes = smallDtoBytes(
+    { cuts: probe.cuts, style: probe.style },
+    limit - documentBytes * copies,
+  );
+  if (metadataBytes == null) return;
+  const bytes = documentBytes * copies + metadataBytes + 128;
+  try {
+    validateProbe(probe, replaceSpaces);
+    const document = cloneBounded(probe.document);
+    const cuts = cloneBounded(probe.cuts);
+    const documents = [document, ...cuts.map((cut) => htmlPrefixDocument(document, cut))];
+    // A conservative bound covers line wrappers, style nodes and text segment wrappers.
+    // The renderer still enforces the actual 4096-node limit after mounting.
+    return { documents, cuts, work, bytes };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Stop before building entry arrays or clones for large/cyclic/non-DTO input. */
+function smallDtoBytes(value: unknown, limit: number): number | undefined {
+  let bytes = 0;
+  const ancestors = new Set<object>();
+  const visit = (item: unknown, depth: number): boolean => {
+    bytes += 32;
+    if (bytes > limit || depth > 64) return false;
+    if (typeof item === "string") {
+      bytes += item.length * 2;
+      return bytes <= limit;
+    }
+    if (item == null || ["number", "boolean", "bigint"].includes(typeof item)) return true;
+    if (typeof item !== "object" || ancestors.has(item)) return false;
+    if (!Array.isArray(item) && ![Object.prototype, null].includes(Object.getPrototypeOf(item)))
+      return false;
+    ancestors.add(item);
+    try {
+      if (Array.isArray(item)) {
+        if (item.length * 32 > limit - bytes) return false;
+        for (const child of item) if (!visit(child, depth + 1)) return false;
+      } else {
+        for (const key in item)
+          if (Object.hasOwn(item, key)) {
+            bytes += 32 + key.length * 2;
+            if (bytes > limit || !visit((item as Record<string, unknown>)[key], depth + 1))
+              return false;
+          }
+      }
+      return true;
+    } finally {
+      ancestors.delete(item);
+    }
+  };
+  return visit(value, 0) ? bytes : undefined;
 }
 
 function validateProbe(probe: HtmlMeasurementProbe, replaceSpaces: boolean): void {

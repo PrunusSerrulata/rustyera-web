@@ -4,7 +4,7 @@ import { HtmlMeasurementProvider } from "@/platform/htmlMeasurement";
 import { encodeProjectionServicePayload } from "@/core/serviceCodec";
 import { projectionMap, type ProjectionQueryContext } from "@/core/runtimeServiceProtocol";
 import { RuntimeServiceError } from "@/core/runtimeServiceError";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   installRuntimeStoreTestHarness,
   advanceUntil,
@@ -86,6 +86,25 @@ const providerLifetimeEndings = [
 ] as const;
 describe("runtime store debug-presentation-reload", () => {
   installRuntimeStoreTestHarness();
+  beforeEach(() => {
+    // These store tests replace layout, while the provider tests exercise real batch rendering.
+    vi.spyOn(HtmlMeasurementProvider.prototype, "measureBatch").mockImplementation(async function (
+      this: HtmlMeasurementProvider,
+      probes,
+      binding,
+      guard,
+      consume,
+    ) {
+      const results = [];
+      for (let index = 0; index < probes.length; index++) {
+        const result = await this.measure(probes[index], binding, guard, "advance");
+        guard.assertCurrent();
+        consume?.(result, index);
+        results.push(result);
+      }
+      return results;
+    });
+  });
 
   it.each(providerLifetimeEndings)(
     "binds HTML provider lifetime to the confirmed viewport through %s",

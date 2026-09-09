@@ -11,7 +11,7 @@ import {
   encodeProjectionServicePayload,
   expect,
   handleRuntimeService,
-  htmlServiceHarness,
+  htmlServiceHarness as createHtmlServiceHarness,
   htmlServicePayload,
   htmlServiceRequest,
   it,
@@ -24,6 +24,7 @@ import {
   wasmServiceRequest,
 } from "./runtimeServices.testHarness";
 import type { HtmlMeasurementResult } from "./runtimeServices.testHarness";
+import type { HtmlMeasurementProvider } from "@/platform/htmlMeasurement";
 
 describe("runtime image pixel cache", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -270,7 +271,110 @@ describe("input runtime service adapter", () => {
   });
 });
 
-describe("HTML v2 runtime service adapter", () => {
+describe.each([false, true])("HTML v2 runtime service adapter (batch=%s)", (batch) => {
+  const htmlServiceHarness = () => createHtmlServiceHarness(batch);
+  it("uses the optional text batch and preserves probe IDs and canonical advances", async () => {
+    const harness = htmlServiceHarness();
+    const payload = htmlServicePayload();
+    const first = (payload.get(2) as Map<number, unknown>[])[0];
+    const second = new Map(first);
+    second.set(0, 8);
+    payload.set(2, [first, second]);
+    const measureBatch = vi.fn<HtmlMeasurementProvider["measureBatch"]>(
+      async (_probes, _binding, _guard, consume) => {
+        const results = [10.125, 20.25].map((advancePx) => ({
+          context: projectionContext,
+          advancePx,
+          cuts: [
+            { id: 0, advancePx: 0 },
+            { id: 1, advancePx },
+          ],
+        }));
+        results.forEach((result, index) => consume?.(result, index));
+        return results;
+      },
+    );
+    harness.context.html!.measurement = { ...harness.measurement, measureBatch };
+    await handleRuntimeService(htmlServiceRequest(payload), 42, harness.context);
+    expect(measureBatch).toHaveBeenCalledOnce();
+    expect(harness.measurement.measure).not.toHaveBeenCalled();
+    const response = (harness.send.mock.calls[0] as unknown as [any])[0].value.result;
+    expect(response.type).toBe("ready");
+    const decoded = decodeServicePayload(response.payload) as Map<number, any>;
+    expect(
+      decoded.get(1).map((probe: Map<number, any>) => [probe.get(0), probe.get(1)[1][0]]),
+    ).toEqual([
+      [7, 10125],
+      [8, 20250],
+    ]);
+  });
+
+  it("rejects a batch with missing results rather than silently measuring again", async () => {
+    const harness = htmlServiceHarness();
+    harness.context.html!.measurement = {
+      ...harness.measurement,
+      measureBatch: vi.fn(async () => []),
+    };
+    await handleRuntimeService(htmlServiceRequest(), 42, harness.context);
+    const response = (harness.send.mock.calls[0] as unknown as [any])[0].value.result;
+    expect(response.error.code).toBe("frontend.backend_failure");
+    expect(harness.measurement.measure).not.toHaveBeenCalled();
+  });
+
+  it("reports an earlier width-limit error before a later font failure", async () => {
+    const harness = htmlServiceHarness();
+    const payload = htmlServicePayload();
+    const first = (payload.get(2) as Map<number, unknown>[])[0];
+    const second = new Map(first);
+    second.set(0, 8);
+    payload.set(2, [first, second]);
+    harness.measurement.measure
+      .mockResolvedValueOnce({
+        context: projectionContext,
+        advancePx: 2_000_000,
+        cuts: [
+          { id: 0, advancePx: 0 },
+          { id: 1, advancePx: 2_000_000 },
+        ],
+        textNodes: [],
+        firstRow: { advancePx: 0, heightPx: 0, fragments: [] },
+      })
+      .mockRejectedValueOnce(new RuntimeServiceError("backend_failure", "later font failure"));
+    await handleRuntimeService(htmlServiceRequest(payload), undefined, harness.context);
+    const result = (harness.send.mock.calls[0] as unknown as [any])[0].value.result;
+    expect(result.error.code).toBe("frontend.resource_limit");
+    expect(harness.measurement.measure).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps mixed text, image and fixed-slot probes in original order", async () => {
+    const harness = htmlServiceHarness();
+    const payload = htmlServicePayload();
+    const text = (payload.get(2) as Map<number, unknown>[])[0];
+    const image = new Map(text);
+    image.set(0, 8);
+    image.set(2, 1);
+    image.set(3, []);
+    image.set(4, text.get(1));
+    image.set(1, new Map([[0, [[1, [10, [], [], null, 0, 0, [7, ["sprite"]]]]]]]));
+    const fixed = new Map(text);
+    fixed.set(0, 9);
+    fixed.set(2, 2);
+    fixed.set(3, []);
+    fixed.set(1, new Map([[0, [[1, [11, [], [], null, 0, 0, [8, ["space", [[0, [12]]]]]]]]]]));
+    payload.set(2, [text, image, fixed]);
+    const measureBatch = vi.fn(async () => []);
+    harness.context.html!.measurement = { ...harness.measurement, measureBatch };
+    await handleRuntimeService(htmlServiceRequest(payload), undefined, harness.context);
+    expect((harness.send.mock.calls[0] as unknown as [any])[0].value.result.type).toBe("ready");
+    expect(measureBatch).not.toHaveBeenCalled();
+    expect(harness.measurement.measure.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.measurement.measureImageSlot.mock.invocationCallOrder[0],
+    );
+    expect(harness.measurement.measureImageSlot.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.measurement.ensureFixedSlot.mock.invocationCallOrder[0],
+    );
+  });
+
   it.each(["html_string_len", "html_substring", "html_string_lines"])(
     "accepts WASM bigint versions and payload bytes for %s",
     async (operation) => {

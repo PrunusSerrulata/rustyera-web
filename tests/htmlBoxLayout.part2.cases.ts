@@ -19,6 +19,9 @@ import {
   vi,
 } from "./htmlBoxLayout.testHarness";
 import type { CanonicalHtmlDocument } from "./htmlBoxLayout.testHarness";
+import type { HtmlMeasurementProbe } from "@/core/htmlMeasurement";
+import * as measurementModel from "@/core/htmlMeasurement";
+import { htmlAdvanceMillipixels } from "@/core/htmlServiceProtocol";
 
 describe("bounded offscreen HTML measurement", () => {
   let viewport: HTMLElement;
@@ -105,6 +108,475 @@ describe("bounded offscreen HTML measurement", () => {
     expect(result.cuts).toEqual([{ id: 7, advancePx: 6 }]);
     expect(regular).toEqual(["normal"]);
     expect(register).not.toHaveBeenCalled();
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it("returns identical advances without collecting unused first-row range geometry", async () => {
+    const provider = new HtmlMeasurementProvider();
+    const probe = {
+      document: queryText("fi"),
+      mode: "text_part" as const,
+      style: queryStyle(),
+      cuts: [{ id: 7, textNodePath: [0], decodedUtf8Offset: 1, decodedUtf16Offset: 1 }],
+    };
+    const binding = measurementBinding(viewport);
+    const guard = { signal: new AbortController().signal, assertCurrent() {} };
+    const ranges = vi.spyOn(Range.prototype, "getClientRects");
+    const detailed = await provider.measure(probe, binding, guard);
+    expect(ranges).toHaveBeenCalled();
+    ranges.mockClear();
+    const advance = await provider.measure(probe, binding, guard, "advance");
+    expect(advance).toEqual({
+      context: detailed.context,
+      advancePx: detailed.advancePx,
+      cuts: detailed.cuts,
+    });
+    expect(ranges).not.toHaveBeenCalled();
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it.each(["first", "later", "hole", "earlier-font"])(
+    "preserves illegal-probe order: %s",
+    async (kind) => {
+      const provider = new HtmlMeasurementProvider();
+      const valid = {
+        document: queryText("f"),
+        mode: "text_part" as const,
+        cuts: [],
+        style: queryStyle(),
+      };
+      const probes = kind === "first" ? [null, valid] : [valid, null];
+      if (kind === "hole") Reflect.deleteProperty(probes, 1);
+      if (kind === "earlier-font") fontLoad.mockRejectedValue(new Error("first font failure"));
+      await expect(
+        provider.measureBatch(
+          probes as unknown as HtmlMeasurementProbe[],
+          measurementBinding(viewport),
+          {
+            signal: new AbortController().signal,
+            assertCurrent() {},
+          },
+        ),
+      ).rejects.toMatchObject({
+        category: kind === "earlier-font" ? "backend_failure" : "invalid_request",
+      });
+      expect(fontLoad).toHaveBeenCalledTimes(kind === "first" ? 0 : 1);
+      expect(document.body.querySelector(".html-measurement-host")).toBeNull();
+    },
+  );
+
+  it("reuses a prepared singleton without cloning its prefixes again", async () => {
+    const provider = new HtmlMeasurementProvider();
+    const prefixes = vi.spyOn(measurementModel, "htmlPrefixDocument");
+    const probe: HtmlMeasurementProbe = {
+      document: queryText("fi"),
+      mode: "text_part",
+      style: queryStyle(),
+      cuts: [{ id: 1, textNodePath: [0], decodedUtf8Offset: 1, decodedUtf16Offset: 1 }],
+    };
+    const guard = { signal: new AbortController().signal, assertCurrent() {} };
+    const result = await provider.measureBatch([probe], measurementBinding(viewport), guard);
+    expect(prefixes).toHaveBeenCalledTimes(1);
+    expect(result[0].advancePx).toBe(9);
+    expect(result[0].cuts).toEqual([{ id: 1, advancePx: 6 }]);
+    prefixes.mockClear();
+    fontLoad.mockRejectedValue(new Error("singleton font failure"));
+    await expect(
+      provider.measureBatch([probe], measurementBinding(viewport), guard),
+    ).rejects.toThrow();
+    expect(prefixes).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it("bounds metadata amplification before cloning candidate prefixes", async () => {
+    const document: CanonicalHtmlDocument = {
+      nodes: [
+        {
+          type: "element",
+          kind: "bold",
+          semantic: { type: "style" },
+          attributes: Array.from({ length: 16 }, (_, index) => ({
+            name: `data-${index}`,
+            value: "x".repeat(4096),
+          })),
+          children: queryText("f").nodes,
+        },
+      ],
+    };
+    const style = queryStyle();
+    const probe = {
+      document,
+      mode: "text_part" as const,
+      style,
+      cuts: Array.from({ length: 16 }, (_, id) => ({
+        id,
+        textNodePath: [0, 0],
+        decodedUtf8Offset: 1,
+        decodedUtf16Offset: 1,
+      })),
+    };
+    const prefixes = vi.spyOn(measurementModel, "htmlPrefixDocument");
+    const append = vi.spyOn(window.document.body, "append");
+    const result = await new HtmlMeasurementProvider().measureBatch(
+      [probe, probe],
+      measurementBinding(viewport),
+      {
+        signal: new AbortController().signal,
+        assertCurrent() {},
+      },
+    );
+    expect(result.map((item) => item.advancePx)).toEqual([6, 6]);
+    expect(prefixes).toHaveBeenCalledTimes(32);
+    expect(append).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([16, 17])("preserves the node eligibility boundary at %s", async (count) => {
+    const document: CanonicalHtmlDocument = queryText("f");
+    while (document.nodes.length < count) document.nodes.push({ type: "text", text: "" });
+    const style = queryStyle();
+    const probe = { document, mode: "text_part" as const, cuts: [], style };
+    const append = vi.spyOn(window.document.body, "append");
+    const results = await new HtmlMeasurementProvider().measureBatch(
+      [probe, probe],
+      measurementBinding(viewport),
+      {
+        signal: new AbortController().signal,
+        assertCurrent() {},
+      },
+    );
+    expect(results.map((result) => result.advancePx)).toEqual([6, 6]);
+    expect(append).toHaveBeenCalledTimes(count === 16 ? 1 : 2);
+  });
+
+  it.each([16, 17])("preserves the cut eligibility boundary at %s", async (count) => {
+    const style = queryStyle();
+    const probe = {
+      document: queryText("f"),
+      mode: "text_part" as const,
+      style,
+      cuts: Array.from({ length: count }, (_, id) => ({
+        id,
+        textNodePath: [0],
+        decodedUtf8Offset: 1,
+        decodedUtf16Offset: 1,
+      })),
+    };
+    const append = vi.spyOn(window.document.body, "append");
+    const results = await new HtmlMeasurementProvider().measureBatch(
+      [probe, probe],
+      measurementBinding(viewport),
+      {
+        signal: new AbortController().signal,
+        assertCurrent() {},
+      },
+    );
+    expect(results.map((result) => result.cuts.length)).toEqual([count, count]);
+    expect(append).toHaveBeenCalledTimes(count === 16 ? 1 : 2);
+  });
+
+  it("keeps distinct query styles in separate measurements", async () => {
+    const first = {
+      document: queryText("f"),
+      mode: "text_part" as const,
+      cuts: [],
+      style: queryStyle(),
+    };
+    const second = { ...first, style: queryStyle() };
+    second.style.base.bold = true;
+    const append = vi.spyOn(document.body, "append");
+    const results = await new HtmlMeasurementProvider().measureBatch(
+      [first, second],
+      measurementBinding(viewport),
+      {
+        signal: new AbortController().signal,
+        assertCurrent() {},
+      },
+    );
+    expect(results.length).toBe(2);
+    expect(append).toHaveBeenCalledTimes(2);
+  });
+
+  it("validates earlier widths after a failed combined render before trying later probes", async () => {
+    const style = queryStyle();
+    const probes = ["wide", "later"].map((text) => ({
+      document: queryText(text),
+      mode: "text_part" as const,
+      cuts: [],
+      style,
+    }));
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return new DOMRect(0, 0, this.textContent === "wide" ? 2_000_000 : 6, 16);
+    });
+    fontLoad.mockRejectedValueOnce(new Error("later font failure")).mockResolvedValue([]);
+    await expect(
+      new HtmlMeasurementProvider().measureBatch(
+        probes,
+        measurementBinding(viewport),
+        {
+          signal: new AbortController().signal,
+          assertCurrent() {},
+        },
+        (result) => {
+          htmlAdvanceMillipixels(result.advancePx);
+        },
+      ),
+    ).rejects.toMatchObject({ category: "resource_limit" });
+    expect(fontLoad).toHaveBeenCalledTimes(2);
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it.each(["revision", "clear", "font"])(
+    "cleans a failed batch and allows a later request: %s",
+    async (kind) => {
+      const provider = new HtmlMeasurementProvider();
+      const style = queryStyle();
+      const probe = { document: queryText("f"), mode: "text_part" as const, cuts: [], style };
+      let current = true;
+      const guard = {
+        signal: new AbortController().signal,
+        assertCurrent() {
+          if (!current) throw new RuntimeServiceError("stale_projection", "changed");
+        },
+      };
+      let release!: () => void;
+      let started!: () => void;
+      const loading = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      fontLoad.mockImplementation(async () => {
+        started();
+        await gate;
+        if (kind === "font") throw new Error("font failed");
+        return [];
+      });
+      const consumed = vi.fn();
+      const pending = provider.measureBatch(
+        [probe, probe],
+        measurementBinding(viewport),
+        guard,
+        consumed,
+      );
+      const rejected = expect(pending).rejects.toMatchObject({
+        category: kind === "font" ? "backend_failure" : "stale_projection",
+      });
+      await loading;
+      if (kind === "revision") current = false;
+      else if (kind === "clear") provider.clear();
+      release();
+      await rejected;
+      expect(consumed).not.toHaveBeenCalled();
+      expect(document.body.querySelector(".html-measurement-host")).toBeNull();
+      current = true;
+      fontLoad.mockResolvedValue([]);
+      expect(
+        (await provider.measureBatch([probe, probe], measurementBinding(viewport), guard)).length,
+      ).toBe(2);
+      expect(document.body.querySelector(".html-measurement-host")).toBeNull();
+    },
+  );
+
+  it("waits for both font barriers with styled text and full-width-space replacement in a batch", async () => {
+    const provider = new HtmlMeasurementProvider();
+    const style = queryStyle();
+    const document: CanonicalHtmlDocument = {
+      nodes: [
+        {
+          type: "element",
+          kind: "font",
+          attributes: [],
+          semantic: { type: "font", face: "FixtureFont" },
+          children: [
+            {
+              type: "element",
+              kind: "bold",
+              attributes: [],
+              semantic: { type: "style" },
+              children: [
+                {
+                  type: "element",
+                  kind: "italic",
+                  attributes: [],
+                  semantic: { type: "style" },
+                  children: queryText("f　i").nodes,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const probe = {
+      document,
+      mode: "text_part" as const,
+      style,
+      cuts: [{ id: 1, textNodePath: [0, 0, 0, 0], decodedUtf8Offset: 1, decodedUtf16Offset: 1 }],
+    };
+    const binding = measurementBinding(viewport);
+    binding.replaceFullWidthSpaces = true;
+    let releaseLoad!: () => void, releaseReady!: () => void, started!: () => void;
+    const loading = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const load = new Promise<void>((resolve) => {
+      releaseLoad = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      releaseReady = resolve;
+    });
+    let width = 20;
+    fontLoad.mockImplementation(async () => {
+      started();
+      await load;
+      return [];
+    });
+    Object.defineProperty(window.document, "fonts", {
+      configurable: true,
+      value: { load: fontLoad, ready },
+    });
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return new DOMRect(0, 0, (this.textContent?.length ?? 0) * width, 16);
+    });
+    const consumed = vi.fn();
+    const pending = provider.measureBatch(
+      [probe, probe],
+      binding,
+      { signal: new AbortController().signal, assertCurrent() {} },
+      consumed,
+    );
+    await loading;
+    expect(consumed).not.toHaveBeenCalled();
+    releaseLoad();
+    await flushPromises();
+    expect(consumed).not.toHaveBeenCalled();
+    width = 7;
+    releaseReady();
+    const results = await pending;
+    expect(results.map((result) => result.cuts[0].advancePx)).toEqual([7, 7]);
+    expect(results[0].advancePx).toBe(results[1].advancePx);
+    expect(consumed).toHaveBeenCalledTimes(2);
+    const sequential = await provider.measure(
+      probe,
+      binding,
+      { signal: new AbortController().signal, assertCurrent() {} },
+      "advance",
+    );
+    expect(results).toEqual([sequential, sequential]);
+    expect(window.document.body.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it("batches small Unicode text probes in one mount without changing independent shaping", async () => {
+    const provider = new HtmlMeasurementProvider();
+    const style = queryStyle();
+    const probes = ["fi", "😀中", "全　角", ""].map((text) => ({
+      document: queryText(text),
+      mode: "text_part" as const,
+      style,
+      cuts: [
+        {
+          id: 3,
+          textNodePath: [0],
+          decodedUtf8Offset: new TextEncoder().encode(text).length,
+          decodedUtf16Offset: text.length,
+        },
+      ],
+    }));
+    const binding = measurementBinding(viewport);
+    const guard = { signal: new AbortController().signal, assertCurrent() {} };
+    const expected = [];
+    for (const probe of probes)
+      expected.push(await provider.measure(probe, binding, guard, "advance"));
+    fontLoad.mockClear();
+    const append = vi.spyOn(document.body, "append");
+    const ranges = vi.spyOn(Range.prototype, "getClientRects");
+    const actual = await provider.measureBatch(probes, binding, guard);
+    expect(actual).toEqual(expected);
+    expect(fontLoad).toHaveBeenCalledTimes(1);
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(ranges).not.toHaveBeenCalled();
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it("splits text batches at the probe cap and falls back for larger valid probes", async () => {
+    const provider = new HtmlMeasurementProvider();
+    const style = queryStyle();
+    const probe = { document: queryText("f"), mode: "text_part" as const, cuts: [], style };
+    const binding = measurementBinding(viewport);
+    const guard = { signal: new AbortController().signal, assertCurrent() {} };
+    const append = vi.spyOn(document.body, "append");
+    const results = await provider.measureBatch(
+      Array.from({ length: 17 }, () => probe),
+      binding,
+      guard,
+    );
+    expect(results.map((result) => result.advancePx)).toEqual(Array(17).fill(6));
+    expect(append).toHaveBeenCalledTimes(2);
+    append.mockClear();
+    const large = { ...probe, document: queryText("f".repeat(129)) };
+    const mixed = await provider.measureBatch([large, probe, probe], binding, guard);
+    expect(mixed.map((result) => result.advancePx)).toEqual([129 * 6, 6, 6]);
+    expect(append).toHaveBeenCalledTimes(2);
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it("preserves sequential errors for an invalid later probe", async () => {
+    const provider = new HtmlMeasurementProvider();
+    const style = queryStyle();
+    const first = { document: queryText("f"), mode: "text_part" as const, cuts: [], style };
+    const invalid = {
+      ...first,
+      cuts: [{ id: 0, textNodePath: [0], decodedUtf8Offset: 10, decodedUtf16Offset: 10 }],
+    };
+    await expect(
+      provider.measureBatch([first, invalid], measurementBinding(viewport), {
+        signal: new AbortController().signal,
+        assertCurrent() {},
+      }),
+    ).rejects.toMatchObject({ category: "invalid_request" });
+    expect(fontLoad).toHaveBeenCalledTimes(1);
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it("splits a batch before aggregate text work exceeds the DOM eligibility budget", async () => {
+    const style = queryStyle();
+    const probe = {
+      document: queryText("f".repeat(64)),
+      mode: "text_part" as const,
+      cuts: [],
+      style,
+    };
+    const append = vi.spyOn(document.body, "append");
+    const result = await new HtmlMeasurementProvider().measureBatch(
+      Array.from({ length: 16 }, () => probe),
+      measurementBinding(viewport),
+      { signal: new AbortController().signal, assertCurrent() {} },
+    );
+    expect(result.map((item) => item.advancePx)).toEqual(Array(16).fill(384));
+    expect(append).toHaveBeenCalledTimes(2);
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it("rejects and cleans up a batch when its projection changes during font readiness", async () => {
+    const provider = new HtmlMeasurementProvider();
+    const controller = new AbortController();
+    fontLoad.mockImplementation(async () => {
+      controller.abort();
+      return [];
+    });
+    const style = queryStyle();
+    const probe = { document: queryText("f"), mode: "text_part" as const, cuts: [], style };
+    await expect(
+      provider.measureBatch([probe, probe], measurementBinding(viewport), {
+        signal: controller.signal,
+        assertCurrent() {},
+      }),
+    ).rejects.toMatchObject({ category: "stale_projection" });
     expect(document.body.querySelector(".html-measurement-host")).toBeNull();
   });
 

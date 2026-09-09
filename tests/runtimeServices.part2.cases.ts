@@ -45,6 +45,44 @@ describe("projection runtime services", () => {
     expect(() => validateServiceRequest(request)).toThrow("service operation version is invalid");
   });
 
+  it("accepts only the advertised SQL 1.0-1.2 version range", () => {
+    const sql = (minor: number) =>
+      ({
+        ...serviceRequest(),
+        kind: "sql",
+        operation: "rustyera.sql",
+        operation_version: { major: 1, minor },
+      }) as RuntimeServiceRequest;
+    expect(() => validateServiceRequest(sql(0))).not.toThrow();
+    expect(() => validateServiceRequest(sql(1))).not.toThrow();
+    expect(() => validateServiceRequest(sql(2))).not.toThrow();
+    expect(() => validateServiceRequest(sql(3))).toThrow("not implemented");
+    expect(() =>
+      validateServiceRequest({
+        ...serviceRequest(),
+        operation_version: { major: 1, minor: 1 },
+      }),
+    ).toThrow("not implemented");
+  });
+
+  it.each([0, 1, 2, 0n, 1n, 2n])(
+    "forwards SQL minor %s capabilities to the provider",
+    async (minor) => {
+      const { context } = serviceHarness();
+      const handle = vi.fn(async () => new Map());
+      Object.assign(context, { sql: { handle } });
+      const request = {
+        ...serviceRequest(),
+        kind: "sql",
+        operation: "rustyera.sql",
+        operation_version: { major: typeof minor === "bigint" ? 1n : 1, minor },
+      } as RuntimeServiceRequest;
+      await handleRuntimeService(request, 42, context);
+      expect(handle).toHaveBeenCalledOnce();
+      expect(handle.mock.calls[0]?.slice(2)).toEqual([Number(minor) >= 1, Number(minor) >= 2]);
+    },
+  );
+
   it.each([-1n, 256n, 1.5, NaN, "163"])("rejects invalid protocol byte %s", (byte) => {
     const request = { ...serviceRequest(), payload: [byte] } as RuntimeServiceRequest;
     expect(() => validateServiceRequest(request)).toThrow("service payload contains a non-byte");

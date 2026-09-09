@@ -237,7 +237,7 @@ describe("runtime store debug-presentation-reload", () => {
             type: "fiber_page",
             value: { stop: command.stop, fibers: [], next_cursor: null },
           });
-        } else if (command.type === "list_variables") {
+        } else if (command.type === "describe_variables") {
           response({
             type: "variable_page",
             value: {

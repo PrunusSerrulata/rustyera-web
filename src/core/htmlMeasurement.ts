@@ -176,6 +176,11 @@ export interface HtmlMeasurementResult {
   textNodes: HtmlMeasuredTextNode[];
   firstRow: HtmlFirstRowMetrics;
 }
+/** Runtime text-width requests do not consume the document diagnostic projection. */
+export type HtmlAdvanceMeasurementResult = Pick<
+  HtmlMeasurementResult,
+  "context" | "advancePx" | "cuts"
+>;
 export const HTML_MEASUREMENT_LIMITS = Object.freeze({
   nodes: 4096,
   depth: 64,
