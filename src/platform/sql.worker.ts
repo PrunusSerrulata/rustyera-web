@@ -2,6 +2,7 @@ import sqlite3InitModule, {
   type Database,
   type PreparedStatement,
   type Sqlite3Static,
+  type SQLiteDataType,
   type SqlValue as NativeSqlValue,
 } from "@sqlite.org/sqlite-wasm";
 
@@ -31,8 +32,10 @@ import {
   type SqlWorkerPublication,
   type SqlWorkerReply,
 } from "@/platform/sqlWorkerProtocol";
+import { prepareReusableScalar, type SqlScalarReuseState } from "@/platform/sqlScalarReuse";
+import { projectReaderRow } from "@/platform/sqlReaderRow";
 
-interface Connection {
+interface Connection extends SqlScalarReuseState {
   handle: SqlHandle;
   db: Database;
   persistent: boolean;
@@ -47,6 +50,7 @@ interface Reader {
   readonly: boolean;
   status: 0 | 1 | 2 | 3;
   rowsRead: bigint;
+  originalTypes?: (SQLiteDataType | undefined)[];
 }
 
 interface PendingPublication extends Omit<SqlWorkerPublication, "connection" | "expectedRevision"> {
@@ -193,11 +197,18 @@ function runOperation(sqlite: Sqlite3Static, command: SqlWorkerExecuteCommand) {
       const execution = withBudget(sqlite, connection, () =>
         executeImmediate(sqlite, connection, operation),
       );
-      if (execution.mutating) preparePublication(sqlite, connection);
+      if (execution.mutating) {
+        connection.ordinaryTables = undefined;
+        preparePublication(sqlite, connection);
+      }
+      const result =
+        execution.reusable && command.reusableScalarResults
+          ? [11, execution.result[1]]
+          : execution.result;
       return encodeSqlResponse({
         provider: request.provider,
         database: databaseState(sqlite, connection),
-        result: execution.result,
+        result,
       });
     }
     case "reader_read": {
@@ -211,22 +222,53 @@ function runOperation(sqlite: Sqlite3Static, command: SqlWorkerExecuteCommand) {
           result: [4, [false]],
         });
       const statement = requiredReaderStatement(reader);
+      reader.originalTypes = undefined;
       const hasRow = withBudget(sqlite, reader.connection, () => statement.step());
       if (hasRow) {
         reader.rowsRead += 1n;
         if (reader.rowsRead > BigInt(SQL_LIMITS.maximumReaderRows))
           throw new ProviderError(SqlErrorCode.ReaderRowLimit, "SQL reader row limit exceeded");
         reader.status = 1;
+        if (command.readerRowResults) {
+          // Capture types before any bytes/text conversion. SQLite only guarantees the type
+          // before conversions, so fallback operations must use these same original types.
+          reader.originalTypes = Array.from(
+            { length: Math.min(statement.columnCount, 32) },
+            (_, column) => {
+              const type = sqlite.capi.sqlite3_column_type(statement, column);
+              // Columns that are never projected must retain the original provider's
+              // on-demand conversion sequence (notably BLOB -> text -> IsNull).
+              return type === sqlite.capi.SQLITE_INTEGER ||
+                type === sqlite.capi.SQLITE_TEXT ||
+                type === sqlite.capi.SQLITE_NULL
+                ? type
+                : undefined;
+            },
+          );
+        }
       } else {
         reader.status = 2;
         finalizeReaderStatement(reader);
-        if (!reader.readonly) preparePublication(sqlite, reader.connection);
+        if (!reader.readonly) {
+          reader.connection.ordinaryTables = undefined;
+          preparePublication(sqlite, reader.connection);
+        }
       }
       return encodeSqlResponse({
         provider: request.provider,
         database: databaseState(sqlite, reader.connection),
         reader: readerState(reader),
-        result: [4, [hasRow]],
+        result:
+          hasRow && command.readerRowResults
+            ? [
+                12,
+                [
+                  projectReaderRow(sqlite, statement, reader.originalTypes ?? [], (column, mode) =>
+                    readerValue(sqlite, statement, column, mode, reader.originalTypes?.[column]),
+                  ),
+                ],
+              ]
+            : [4, [hasRow]],
       });
     }
     case "reader_get":
@@ -239,8 +281,19 @@ function runOperation(sqlite: Sqlite3Static, command: SqlWorkerExecuteCommand) {
         return failure(sqlite, request, SqlErrorCode.ColumnOutOfRange, reader.connection, reader);
       const value =
         operation.kind === "reader_get"
-          ? readerValue(sqlite, statement, operation.column, operation.mode)
-          : nativeValue(sqlite, statement, operation.column);
+          ? readerValue(
+              sqlite,
+              statement,
+              operation.column,
+              operation.mode,
+              reader.originalTypes?.[operation.column],
+            )
+          : nativeValue(
+              sqlite,
+              statement,
+              operation.column,
+              reader.originalTypes?.[operation.column],
+            );
       return encodeSqlResponse({
         provider: request.provider,
         database: databaseState(sqlite, reader.connection),
@@ -255,7 +308,10 @@ function runOperation(sqlite: Sqlite3Static, command: SqlWorkerExecuteCommand) {
       const reader = readers.get(handleKey(operation.reader));
       if (reader) {
         closeReader(reader);
-        if (!reader.readonly) preparePublication(sqlite, reader.connection);
+        if (!reader.readonly) {
+          reader.connection.ordinaryTables = undefined;
+          preparePublication(sqlite, reader.connection);
+        }
       }
       return encodeSqlResponse({
         provider: request.provider,
@@ -267,6 +323,7 @@ function runOperation(sqlite: Sqlite3Static, command: SqlWorkerExecuteCommand) {
     case "import_map_rows": {
       const connection = requiredConnection(operation.connection);
       withBudget(sqlite, connection, () => importRows(connection, operation.table, operation.rows));
+      connection.ordinaryTables = undefined;
       preparePublication(sqlite, connection);
       return encodeSqlResponse({
         provider: request.provider,
@@ -296,27 +353,37 @@ function executeImmediate(
   sqlite: Sqlite3Static,
   connection: Connection,
   operation: Extract<SqlRequest["operation"], { kind: "execute" }>,
-): { result: unknown[]; mutating: boolean } {
+): { result: unknown[]; mutating: boolean; reusable: boolean } {
   if (operation.mode === 0) {
     const before = connection.db.changes(true, true);
     connection.db.exec({ sql: operation.sql, bind: binding(operation.parameters) });
     return {
       result: [1, [checkedSqlI64(connection.db.changes(true, true) - before, "affected rows")]],
       mutating: true,
+      reusable: false,
     };
   }
-  const statement = connection.db.prepare(operation.sql);
+  const prepared = prepareReusableScalar(sqlite, connection.db, connection, operation.sql);
+  const statement = prepared.statement;
   try {
     const mutating = sqlite.capi.sqlite3_stmt_readonly(statement) === 0;
     bind(statement, operation.parameters);
     if (!statement.step() || statement.columnCount === 0)
-      return { result: [2, [[0, []]]], mutating };
+      return { result: [2, [[0, []]]], mutating, reusable: prepared.reusable() && !mutating };
     if (operation.mode === 3)
       throw new ProviderError(SqlErrorCode.InvalidState, "reader execution reached scalar path");
     const value = scalarValue(sqlite, statement, operation.mode);
-    return { result: [2, [encodeSqlValue(value)]], mutating };
+    return {
+      result: [2, [encodeSqlValue(value)]],
+      mutating,
+      reusable: prepared.reusable() && !mutating,
+    };
   } finally {
-    statement.finalize();
+    try {
+      statement.finalize();
+    } finally {
+      prepared.finish();
+    }
   }
 }
 
@@ -419,6 +486,9 @@ function replaceDatabase(sqlite: Sqlite3Static, connection: Connection, bytes?: 
     if (reader.connection === connection) closeReader(reader);
   connection.db.close();
   connection.db = openDatabase(sqlite, bytes);
+  connection.ordinaryTables = undefined;
+  connection.reuseCandidate = undefined;
+  connection.reuseAuthorizerInstalled = false;
 }
 
 function withBudget<T>(sqlite: Sqlite3Static, connection: Connection, operation: () => T): T {
@@ -444,10 +514,12 @@ function nativeValue(
   sqlite: Sqlite3Static,
   statement: PreparedStatement,
   column: number,
+  originalType?: SQLiteDataType,
 ): SqlValue {
-  const type = sqlite.capi.sqlite3_column_type(statement, column);
+  const type = originalType ?? sqlite.capi.sqlite3_column_type(statement, column);
   if (type === sqlite.capi.SQLITE_NULL) return null;
-  const value = statement.get(column);
+  const value =
+    originalType === undefined ? statement.get(column) : statement.get(column, originalType);
   if (type === sqlite.capi.SQLITE_INTEGER) return checkedSqlI64(value, "SQL integer cell");
   if (type === sqlite.capi.SQLITE_TEXT) {
     const text = String(value);
@@ -477,8 +549,12 @@ function readerValue(
   statement: PreparedStatement,
   column: number,
   mode: 0 | 1,
+  originalType?: SQLiteDataType,
 ): SqlValue {
-  if (sqlite.capi.sqlite3_column_type(statement, column) === sqlite.capi.SQLITE_NULL) return null;
+  if (
+    (originalType ?? sqlite.capi.sqlite3_column_type(statement, column)) === sqlite.capi.SQLITE_NULL
+  )
+    return null;
   if (mode === 0) {
     const value = statement.get(column, sqlite.capi.SQLITE_INTEGER);
     return checkedSqlI64(value, "SQL reader integer");

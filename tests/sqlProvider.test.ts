@@ -349,6 +349,23 @@ describe("SQL Worker provider", () => {
     expect(sqlErrorCode(response)).toBe(11);
     expect(ProviderWorkerStub.instance?.messages).toHaveLength(0);
   });
+
+  it("enables reusable scalar results only for a negotiated minor-version request", async () => {
+    vi.stubGlobal("Worker", ProviderWorkerStub);
+    const provider = new SqlProvider(new ProviderBridge(new Uint8Array()) as never);
+    const signal = new AbortController().signal;
+
+    await provider.handle(executeRequest("SELECT 1"), signal);
+    await provider.handle(executeRequest("SELECT 1"), signal, true);
+    await provider.handle(executeRequest("SELECT 1"), signal, true, true);
+
+    expect(
+      ProviderWorkerStub.instance?.messages.map((message) => message.value.reusableScalarResults),
+    ).toEqual([false, true, true]);
+    expect(
+      ProviderWorkerStub.instance?.messages.map((message) => message.value.readerRowResults),
+    ).toEqual([false, false, true]);
+  });
 });
 
 function openRequest(seed: Uint8Array): Map<number, unknown> {

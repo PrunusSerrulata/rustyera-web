@@ -41,7 +41,12 @@ export class SqlProvider {
     this.storage = new SqlStorage(bridge);
   }
 
-  handle(query: unknown, signal: AbortSignal): Promise<Map<number, unknown>> {
+  handle(
+    query: unknown,
+    signal: AbortSignal,
+    reusableScalarResults = false,
+    readerRowResults = false,
+  ): Promise<Map<number, unknown>> {
     const request = decodeSqlRequest(query);
     if (!this.enterProvider(request.provider))
       return Promise.resolve(
@@ -51,7 +56,9 @@ export class SqlProvider {
         }),
       );
     const generation = this.generation;
-    const operation = this.tail.then(() => this.execute(request, signal, generation));
+    const operation = this.tail.then(() =>
+      this.execute(request, signal, generation, reusableScalarResults, readerRowResults),
+    );
     this.tail = operation.then(
       () => undefined,
       () => undefined,
@@ -72,6 +79,8 @@ export class SqlProvider {
     request: SqlRequest,
     signal: AbortSignal,
     generation: number,
+    reusableScalarResults: boolean,
+    readerRowResults: boolean,
   ): Promise<Map<number, unknown>> {
     if (generation !== this.generation)
       return encodeSqlResponse({
@@ -79,7 +88,12 @@ export class SqlProvider {
         result: sqlErrorResult(SqlErrorCode.StaleEpoch, operationKind(request.operation)),
       });
     if (signal.aborted) throw new DOMException("SQL request cancelled", "AbortError");
-    const workerCommand: SqlWorkerExecuteCommand = { request, persistent: false };
+    const workerCommand: SqlWorkerExecuteCommand = {
+      request,
+      persistent: false,
+      reusableScalarResults,
+      readerRowResults,
+    };
     let pendingChain: SqlStorageChain | undefined;
     try {
       const transport = (this.transport ??= new SqlWorkerTransport());

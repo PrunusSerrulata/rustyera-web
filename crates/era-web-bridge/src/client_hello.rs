@@ -29,7 +29,6 @@ fn service_capabilities(audio_available: bool) -> Vec<ServiceCapability> {
             era_runtime_protocol::GET_LINE_GEOMETRY_OPERATION,
         ),
         (ServiceKind::FontMetrics, "gget_text_size"),
-        (ServiceKind::Sql, SQL_OPERATION),
     ]
     .into_iter()
     .map(|(kind, operation)| ServiceCapability {
@@ -47,6 +46,11 @@ fn service_capabilities(audio_available: bool) -> Vec<ServiceCapability> {
             }),
     )
     .collect::<Vec<_>>();
+    services.push(ServiceCapability {
+        kind: ServiceKind::Sql,
+        operation: SQL_OPERATION.into(),
+        versions: era_runtime_protocol::SQL_OPERATION_VERSIONS,
+    });
     if audio_available {
         services.push(ServiceCapability {
             kind: ServiceKind::Audio,

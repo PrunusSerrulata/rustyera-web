@@ -160,8 +160,15 @@ export function validateServiceRequest(request: RuntimeServiceRequest): unknown 
     !isBoundedUnsignedInteger(version.minor, 65535)
   )
     throw new RuntimeServiceError("invalid_request", "service operation version is invalid");
-  const major = isHtmlQueryService(request) ? 2 : 1;
-  if (!sameServiceInteger(version.major, major) || !sameServiceInteger(version.minor, 0))
+  const supportedVersion = isHtmlQueryService(request)
+    ? sameServiceInteger(version.major, 2) && sameServiceInteger(version.minor, 0)
+    : request.kind === "sql" && request.operation === "rustyera.sql"
+      ? sameServiceInteger(version.major, 1) &&
+        (sameServiceInteger(version.minor, 0) ||
+          sameServiceInteger(version.minor, 1) ||
+          sameServiceInteger(version.minor, 2))
+      : sameServiceInteger(version.major, 1) && sameServiceInteger(version.minor, 0);
+  if (!supportedVersion)
     throw new RuntimeServiceError(
       "unsupported",
       `service operation version ${version.major}.${version.minor} is not implemented`,

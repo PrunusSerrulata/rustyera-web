@@ -11,6 +11,8 @@ export interface SqlWorkerExecuteCommand {
   initialBytes?: Uint8Array;
   durableRevision?: Uint8Array;
   persistent: boolean;
+  reusableScalarResults: boolean;
+  readerRowResults?: boolean;
 }
 
 export interface SqlWorkerPublication {
@@ -68,6 +70,10 @@ export function decodeSqlWorkerCommand(value: unknown): SqlWorkerCommand {
   const command = object(record.value, "SQL Worker execute command");
   const request = decodeInternalRequest(command.request);
   if (typeof command.persistent !== "boolean") invalid("SQL Worker persistence flag");
+  if (typeof command.reusableScalarResults !== "boolean")
+    invalid("SQL Worker reusable scalar flag");
+  if (command.readerRowResults !== undefined && typeof command.readerRowResults !== "boolean")
+    invalid("SQL Worker reader row flag");
   const initialBytes = optionalBytes(command.initialBytes, "SQL Worker initial database");
   const durableRevision = optionalDigest(command.durableRevision, "SQL Worker durable revision");
   if (command.persistent && Boolean(initialBytes) !== Boolean(durableRevision))
@@ -77,7 +83,14 @@ export function decodeSqlWorkerCommand(value: unknown): SqlWorkerCommand {
   return {
     id,
     type: "execute",
-    value: { request, persistent: command.persistent, initialBytes, durableRevision },
+    value: {
+      request,
+      persistent: command.persistent,
+      reusableScalarResults: command.reusableScalarResults,
+      readerRowResults: command.readerRowResults === true,
+      initialBytes,
+      durableRevision,
+    },
   };
 }
 

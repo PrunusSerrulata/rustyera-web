@@ -23,6 +23,7 @@ describe("SQL Worker structured-clone protocol", () => {
           },
         },
         persistent: false,
+        reusableScalarResults: true,
       },
     });
     expect(command.type).toBe("execute");
@@ -109,14 +110,19 @@ describe("SQL Worker structured-clone protocol", () => {
       decodeSqlWorkerCommand({
         id: 3,
         type: "execute",
-        value: { request, persistent: true },
+        value: { request, persistent: true, reusableScalarResults: false },
       }),
     ).toMatchObject({ type: "execute", value: { persistent: true } });
     expect(() =>
       decodeSqlWorkerCommand({
         id: 4,
         type: "execute",
-        value: { request, persistent: true, initialBytes: Uint8Array.of(1) },
+        value: {
+          request,
+          persistent: true,
+          reusableScalarResults: false,
+          initialBytes: Uint8Array.of(1),
+        },
       }),
     ).toThrow("persistent SQL Worker database material");
   });

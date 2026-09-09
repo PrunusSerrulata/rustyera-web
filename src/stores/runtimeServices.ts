@@ -312,7 +312,14 @@ async function resolveRuntimeService(
     return resolveHtmlRuntimeService(query, context.html, context.lease);
   if (request.kind === "sql" && request.operation === "rustyera.sql") {
     if (!context.sql) throw new RuntimeServiceError("unsupported", "SQL provider is not installed");
-    return context.sql.handle(query, context.lease.signal);
+    return context.sql.handle(
+      query,
+      context.lease.signal,
+      Number(request.operation_version?.major) === 1 &&
+        Number(request.operation_version?.minor) >= 1,
+      Number(request.operation_version?.major) === 1 &&
+        Number(request.operation_version?.minor) >= 2,
+    );
   }
   switch (`${request.kind}/${request.operation}`) {
     case "audio/audio_observation": {
