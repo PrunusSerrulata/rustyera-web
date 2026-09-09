@@ -2,6 +2,17 @@ import assert from "node:assert/strict";
 import { access, readFile, writeFile } from "node:fs/promises";
 
 import { clickTauriTestElement } from "../../scripts/dom-test-input.mjs";
+import { startCpuSample, finishCpuSample } from "../../scripts/tauri-performance-diagnostics.mjs";
+import { readPerformanceAuditTelemetry } from "../../scripts/tauri-performance-timing-evidence.mjs";
+import {
+  assertVmProfileMode,
+  createVmProfileCapture,
+  finishProfileCapture,
+} from "../../scripts/tauri-performance-vm-profile.mjs";
+import {
+  refreshPerformanceSession,
+  performanceTelemetryCompleteness,
+} from "../../scripts/tauri-performance-audit.mjs";
 import {
   readPerformanceTrace,
   replayPerformanceTrace,
@@ -16,6 +27,7 @@ const tracePath = process.env.RUSTYERA_TAURI_PERF_TRACE;
 enabled("Tauri snake runtime performance audit", () => {
   it("replays four versioned runtime paths with calibrated presentation", async () => {
     assert.ok(tracePath, "runner must provide an externally captured, frozen performance trace");
+    assertVmProfileMode(process.env);
     if (process.env.RUSTYERA_TAURI_PERF_CAPTURE === "1") {
       const template = JSON.parse(await readFile(tracePath, "utf8"));
       await startRun(template);
@@ -26,14 +38,77 @@ enabled("Tauri snake runtime performance audit", () => {
         candidatePath && actionInboxPath && projectDigest,
         "capture runner omitted its isolated files or digest",
       );
-      const candidate = await runPerformanceTraceCapture(browser, {
-        templatePath: tracePath,
-        candidatePath,
-        actionInboxPath,
-        projectDigest,
-        onObservation: (observation) =>
-          emit({ type: "tauri-performance-capture-observation", observation }),
-      });
+      const samplePath = process.env.RUSTYERA_TAURI_PERF_CPU_SAMPLE;
+      const sampleCommand = Number(process.env.RUSTYERA_TAURI_PERF_CPU_SAMPLE_COMMAND ?? "6");
+      assert.ok(
+        Number.isSafeInteger(sampleCommand) && sampleCommand > 0,
+        "invalid CPU sample command",
+      );
+      let sample;
+      const vmProfile =
+        process.env.RUSTYERA_TAURI_PERF_VM_SAMPLE === "1"
+          ? await createVmProfileCapture(browser, `${candidatePath}.vm-profile.jsonl`)
+          : undefined;
+      let candidate;
+      let captureError;
+      try {
+        candidate = await runPerformanceTraceCapture(browser, {
+          acceptanceTiming: !samplePath && !vmProfile,
+          templatePath: tracePath,
+          candidatePath,
+          actionInboxPath,
+          projectDigest,
+          beforeTimedAction: async ({ command }) => {
+            await vmProfile?.capture({ kind: "before", command });
+            if (samplePath && command === sampleCommand) {
+              sample = await startCpuSample(
+                Number(process.env.RUSTYERA_TAURI_PERF_ROOT_PID),
+                samplePath,
+              );
+              emit({
+                type: "tauri-performance-diagnostic-only",
+                acceptanceTiming: false,
+                samplePath,
+              });
+            }
+          },
+          onObservation: async (observation) => {
+            await vmProfile?.capture({ kind: "after", command: observation.command });
+            emit({ type: "tauri-performance-capture-observation", observation });
+            if (samplePath && [3, 6, 7, 8, 10].includes(observation.command)) {
+              const inventory = await browser.execute(() =>
+                window.__RUSTYERA_TEST__.performancePresentationInventory(),
+              );
+              emit({
+                type: "tauri-performance-presentation-inventory",
+                command: observation.command,
+                inventory,
+              });
+            }
+          },
+          onTimingEvidence: (evidence) =>
+            emit({ type: "tauri-performance-timing-evidence", evidence }),
+        });
+      } catch (error) {
+        captureError = { error };
+        try {
+          sample?.stop("capture failed");
+        } catch {
+          /* Preserve the capture failure. */
+        }
+        throw error;
+      } finally {
+        await finishProfileCapture(
+          [
+            () => vmProfile?.close(),
+            () =>
+              finishCpuSample(sample, (result) =>
+                emit({ type: "tauri-performance-cpu-sample", result }),
+              ),
+          ],
+          captureError,
+        );
+      }
       emit({
         type: "tauri-performance-capture-complete",
         candidatePath,
@@ -60,7 +135,7 @@ enabled("Tauri snake runtime performance audit", () => {
         emit({ type: "tauri-performance-step", run: 0, path: pathId, step }),
       ),
     );
-    const telemetry = await browser.execute(() => window.__RUSTYERA_TEST__.performanceAudit());
+    const telemetry = await readPerformanceAuditTelemetry(browser);
     assert.equal(
       telemetry.frontend.epoch,
       telemetry.frontend.timings[0]?.epoch ?? telemetry.frontend.epoch,
@@ -100,7 +175,22 @@ enabled("Tauri snake runtime performance audit", () => {
       calibration,
       runs,
       summary: summarizeRuns(runs),
-      telemetry,
+      telemetry: {
+        ...performanceTelemetryCompleteness(telemetry),
+        frontend: {
+          schemaVersion: telemetry.frontend.schemaVersion,
+          epoch: telemetry.frontend.epoch,
+          timingSamples: telemetry.frontend.timings.length,
+          dropped: telemetry.frontend.timingSamplesDropped,
+          longTasksDropped: telemetry.frontend.longTasksDropped,
+        },
+        native: {
+          schemaVersion: telemetry.native.schemaVersion,
+          epoch: telemetry.native.epoch,
+          pumpSamples: telemetry.native.pumps.length,
+          dropped: telemetry.native.dropped,
+        },
+      },
       terminal: await snapshot(),
     });
   });
@@ -117,8 +207,9 @@ async function calibrate() {
 }
 
 async function startRun(trace) {
-  await browser.refresh();
-  await waitForControl();
+  const projectCopy = process.env.RUSTYERA_TAURI_PERF_PROJECT_COPY;
+  assert.ok(projectCopy, "runner must supply the validated performance project copy");
+  await refreshPerformanceSession(browser, projectCopy, waitForControl);
   await browser.execute(
     async ({ seed, clock }) => {
       window.__RUSTYERA_TEST__.configure({ start: { type: "new_game", seed }, clock });
@@ -129,7 +220,7 @@ async function startRun(trace) {
   await clickTauriTestElement(browser, await browser.$(".welcome .primary"));
   await browser.waitUntil(
     async () => {
-      const state = await snapshot();
+      const state = await browser.execute(() => window.__RUSTYERA_TEST__.performanceProgress());
       if (state?.fault) throw new Error(JSON.stringify(state.fault));
       return state?.projectOpen && state.phase === "waiting_input" && state.canInteract;
     },
@@ -169,7 +260,7 @@ async function profilerCheckpoint() {
 
 async function waitForControl() {
   await browser.waitUntil(
-    () => browser.execute(() => Boolean(window.__RUSTYERA_TEST__?.snapshotSummary())),
+    () => browser.execute(() => Boolean(window.__RUSTYERA_TEST__?.performanceProgress)),
     { timeout: 20_000, interval: 50, timeoutMsg: "performance test control was not installed" },
   );
   const state = await snapshot();

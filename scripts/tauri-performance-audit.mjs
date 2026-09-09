@@ -2,13 +2,47 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, readdir, realpath } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  stat,
+  statfs,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
 export const PERFORMANCE_AUDIT_SPEC = "snake-runtime-performance.spec.mjs";
 export const DEFAULT_PERFORMANCE_WINDOW_MODE = "visible";
-export const PERFORMANCE_WINDOW_MODES = new Set(["visible", "minimized", "offscreen"]);
+export const PERFORMANCE_WINDOW_MODES = new Set(["visible", "minimized"]);
+const PERFORMANCE_PROJECT_COPY_MARKER = ".rustyera/performance-project-copy-v1.json";
+const MINIMUM_COPY_FREE_BYTES = 10 * 1024 ** 3;
+
+export function performanceCommandTimeoutMs(performanceEnabled) {
+  return performanceEnabled === true ? 30_000 : 5_000;
+}
+
+export function performanceTelemetryCompleteness(telemetry) {
+  const timingSamplesDropped = telemetry.frontend.timingSamplesDropped;
+  const longTasksDropped = telemetry.frontend.longTasksDropped;
+  const nativeDropped = telemetry.native.dropped;
+  return {
+    complete: [timingSamplesDropped, longTasksDropped, nativeDropped].every((value) => value === 0),
+    timingSamplesDropped,
+    longTasksDropped,
+    nativeDropped,
+  };
+}
+
+export function performanceSnapshotMode(performanceEnabled, heavyDiagnostics = false) {
+  if (performanceEnabled !== true) return "complete";
+  return heavyDiagnostics ? "performance-diagnostic" : "performance-progress";
+}
 
 export function performanceWindowMode(arguments_) {
   const indexes = arguments_.flatMap((value, index) => (value === "--window-mode" ? [index] : []));
@@ -17,19 +51,66 @@ export function performanceWindowMode(arguments_) {
   const mode = arguments_[indexes[0] + 1];
   if (!mode || mode.startsWith("--")) throw new Error("--window-mode requires a value");
   if (!PERFORMANCE_WINDOW_MODES.has(mode))
-    throw new Error("--window-mode must be visible, minimized, or offscreen");
+    throw new Error("--window-mode must be visible or minimized for a Tauri performance audit");
   return mode;
 }
 
 export function performanceWindowArguments(mode) {
   if (!PERFORMANCE_WINDOW_MODES.has(mode))
-    throw new Error("performance window mode must be visible, minimized, or offscreen");
-  return [...(mode === "visible" ? [] : ["--background-dom"]), "--window-mode", mode];
+    throw new Error("Tauri performance audit supports visible or minimized window mode");
+  return [...(mode === "minimized" ? ["--background-dom"] : []), "--window-mode", mode];
+}
+
+export function performanceCaptureChildArguments(project, mode) {
+  if (typeof project !== "string" || !project)
+    throw new Error("performance capture requires an explicit source project");
+  return [
+    "scripts/tauri-test.mjs",
+    "--perf-audit",
+    "--release",
+    "--require-reuse-build",
+    "--project",
+    project,
+    "--spec",
+    "tests/tauri/snake-runtime-performance.spec.mjs",
+    ...performanceWindowArguments(mode),
+  ];
+}
+
+export async function refreshPerformanceSession(browser, projectCopy, waitForControl) {
+  if (
+    typeof projectCopy !== "string" ||
+    !projectCopy.startsWith("/") ||
+    projectCopy.includes("\0") ||
+    projectCopy === "/__rustyera_test_picker_must_be_configured__"
+  )
+    throw new Error("performance session requires the validated absolute project copy");
+  const previousOrigin = await browser.execute(() => window.performance.timeOrigin);
+  await browser.refresh();
+  // WebDriver refresh can return while the old document still exposes its control. Wait for
+  // a new document and its installed interface together, not two racy readiness reads.
+  await browser.waitUntil(
+    () =>
+      browser.execute(
+        (origin) =>
+          window.performance.timeOrigin !== origin &&
+          typeof window.__RUSTYERA_TEST__?.performanceProgress === "function" &&
+          typeof window.__RUSTYERA_TEST__?.snapshotSummary === "function",
+        previousOrigin,
+      ),
+    { timeout: 30_000, interval: 50, timeoutMsg: "fresh performance document was not ready" },
+  );
+  await waitForControl();
+  await browser.execute(
+    (projectPath) =>
+      window.__RUSTYERA_TEST__.configureServiceLifecycle({ projectPaths: [projectPath] }),
+    projectCopy,
+  );
 }
 
 export function instrumentedPerformanceWindowMode(options, instrumentPerformance) {
   if (!instrumentPerformance) return undefined;
-  return options.windowMode ?? DEFAULT_PERFORMANCE_WINDOW_MODE;
+  return options.enabled ? options.windowMode : "visible";
 }
 
 export function performanceAuditOptions(arguments_, specName, paths = {}) {
@@ -44,12 +125,11 @@ export function performanceAuditOptions(arguments_, specName, paths = {}) {
   for (const flag of ["--perf-audit", "--release"]) requireOccurrences(arguments_, flag, 1);
   if (backgroundDom) requireOccurrences(arguments_, "--background-dom", 1);
   for (const option of ["--project", "--spec"]) requireSingleOptionValue(arguments_, option);
-  for (const optionalFlag of ["--reuse-build", "--require-reuse-build"])
+  for (const optionalFlag of ["--reuse-build", "--require-reuse-build", "--build-only"])
     if (arguments_.includes(optionalFlag)) requireOccurrences(arguments_, optionalFlag, 1);
   for (const rejected of [
     "--state",
     "--state-type",
-    "--build-only",
     "--native-webdriver-source",
     "--prewarm-with-tui",
   ]) {
@@ -69,14 +149,11 @@ export function performanceAuditOptions(arguments_, specName, paths = {}) {
   if (!arguments_.includes("--release")) throw new Error("--perf-audit requires --release");
   if (!arguments_.includes("--project"))
     throw new Error("--perf-audit requires an explicit isolated source project");
-  const background = windowMode !== "visible";
-  if (background !== backgroundDom)
-    throw new Error(
-      background
-        ? "minimized or offscreen performance mode requires --background-dom"
-        : "--background-dom requires minimized or offscreen performance mode",
-    );
-  return { enabled: true, background, windowMode };
+  if (windowMode === "minimized" && !backgroundDom)
+    throw new Error("minimized performance mode requires --background-dom");
+  if (windowMode === "visible" && backgroundDom)
+    throw new Error("--background-dom requires minimized window mode");
+  return { enabled: true, background: backgroundDom, windowMode };
 }
 
 export async function validatePerformanceAuditProject(sourceProject, copiedProject) {
@@ -94,6 +171,101 @@ export async function validatePerformanceAuditProject(sourceProject, copiedProje
       throw new Error(`${project} requires reraconfig.toml profile emuera.skia.snake`);
   }
   return { source, copy };
+}
+
+export async function ensurePerformanceProjectCopy(sourceProject, copiedProject) {
+  const source = await realpath(sourceProject);
+  const copy = path.resolve(copiedProject);
+  const relative = path.relative(source, copy);
+  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative)))
+    throw new Error("performance project copy must be outside its read-only source");
+  if (!(await stat(source)).isDirectory())
+    throw new Error("performance project source must be a directory");
+
+  const sourceDigest = await performanceProjectDigest(source);
+  let copyExists = true;
+  try {
+    await stat(copy);
+  } catch (error) {
+    if (error.code === "ENOENT") copyExists = false;
+    else throw error;
+  }
+  if (copyExists)
+    return {
+      source,
+      copy: await validateExistingPerformanceProjectCopy(source, copy, sourceDigest),
+      projectDigest: sourceDigest,
+      created: false,
+    };
+
+  const parent = path.dirname(copy);
+  await mkdir(parent, { recursive: true });
+  const free = await statfs(parent);
+  const freeBytes = Number(free.bavail) * Number(free.bsize);
+  if (!Number.isFinite(freeBytes) || freeBytes < MINIMUM_COPY_FREE_BYTES)
+    throw new Error(
+      "less than 10 GiB is available; refusing to create the performance project copy",
+    );
+
+  const lock = `${copy}.copy-lock`;
+  try {
+    await mkdir(lock);
+  } catch (error) {
+    if (error.code === "EEXIST")
+      throw new Error(
+        `performance project copy creation is already locked at ${lock}; refusing to copy again`,
+      );
+    throw error;
+  }
+  const temporary = `${copy}.creating-${process.pid}`;
+  // On failure, keep both the lock and this process-owned partial copy. A later invocation must
+  // diagnose the failed attempt instead of silently starting a second full game copy.
+  await cp(source, temporary, { recursive: true, errorOnExist: true, force: false });
+  const copiedDigest = await performanceProjectDigest(temporary);
+  if (copiedDigest !== sourceDigest)
+    throw new Error("performance project copy digest differs from its source");
+  const marker = path.join(temporary, PERFORMANCE_PROJECT_COPY_MARKER);
+  await mkdir(path.dirname(marker), { recursive: true });
+  await writeFile(marker, `${JSON.stringify({ source, projectDigest: sourceDigest }, null, 2)}\n`, {
+    flag: "wx",
+  });
+  await rename(temporary, copy);
+  await rm(lock, { recursive: true });
+  await validatePerformanceAuditProject(source, copy);
+  return { source, copy: await realpath(copy), projectDigest: sourceDigest, created: true };
+}
+
+export async function validateExistingPerformanceProjectCopy(
+  sourceProject,
+  copiedProject,
+  expectedDigest,
+) {
+  const { copy, sourceDigest } = await validatePerformanceProjectCopyMarker(
+    sourceProject,
+    copiedProject,
+    expectedDigest,
+  );
+  const copiedDigest = await performanceProjectDigest(copy);
+  if (copiedDigest !== sourceDigest)
+    throw new Error("performance project copy inputs changed; refusing to copy the game again");
+  return copy;
+}
+
+export async function validatePerformanceProjectCopyMarker(
+  sourceProject,
+  copiedProject,
+  expectedDigest,
+) {
+  const source = await realpath(sourceProject);
+  const copy = await realpath(copiedProject);
+  const marker = JSON.parse(
+    await readFile(path.join(copy, PERFORMANCE_PROJECT_COPY_MARKER), "utf8"),
+  );
+  const sourceDigest = expectedDigest ?? (await performanceProjectDigest(source));
+  if (marker.source !== source || marker.projectDigest !== sourceDigest)
+    throw new Error("performance project copy marker does not match the selected source");
+  await validatePerformanceAuditProject(source, copy);
+  return { source, copy, sourceDigest };
 }
 
 export async function performanceProjectDigest(root) {
@@ -215,90 +387,83 @@ function decodeProjectText(bytes, category, name) {
   throw new Error(`${name} is not valid UTF-8, Windows-31J, or GBK`);
 }
 
-export function classifyWindowCalibration(minimized, offscreen) {
-  const minimizedMedian = Number(minimized?.medianIntervalMs);
-  const offscreenMedian = Number(offscreen?.medianIntervalMs);
-  const ratio =
-    Number.isFinite(minimizedMedian) && Number.isFinite(offscreenMedian) && offscreenMedian > 0
-      ? minimizedMedian / offscreenMedian
-      : Number.POSITIVE_INFINITY;
-  const minimizedPaint = Number(minimized?.medianPaintCheckpointMs);
-  const offscreenPaint = Number(offscreen?.medianPaintCheckpointMs);
-  const paintRatio =
-    Number.isFinite(minimizedPaint) && Number.isFinite(offscreenPaint) && offscreenPaint > 0
-      ? minimizedPaint / offscreenPaint
-      : Number.POSITIVE_INFINITY;
-  const throttled =
-    minimized?.timedOut === true ||
-    Number(minimized?.nonBusinessStallsOver100Ms ?? 0) > 0 ||
-    ratio > 1.2 ||
-    paintRatio > 1.2;
-  const offscreenUsable =
-    offscreen?.timedOut !== true &&
-    Number(offscreen?.observedFrames ?? 0) === Number(offscreen?.requestedFrames ?? 100) &&
-    Number(offscreen?.nonBusinessStallsOver100Ms ?? 0) === 0;
-  return {
-    selectedMode: throttled ? "offscreen" : "minimized",
-    minimizedToOffscreenMedianRatio: Number.isFinite(ratio) ? ratio : null,
-    minimizedToOffscreenPaintRatio: Number.isFinite(paintRatio) ? paintRatio : null,
-    minimizedThrottled: throttled,
-    offscreenUsable,
-  };
+export async function minimizePerformanceWindow(browser) {
+  await browser.minimizeWindow();
 }
 
-export async function capturePerformanceWindowSafety(
-  browser,
-  windowMode,
-  foregroundBaseline,
-  rootPid,
-) {
-  const windowState = await browser.execute(async (mode) => {
+export async function waitForPerformanceWindowSafety(browser, inspectWindow) {
+  let state;
+  let lastError;
+  try {
+    await browser.waitUntil(
+      async () => {
+        try {
+          state = await inspectWindow();
+          return true;
+        } catch (error) {
+          lastError = error;
+          return false;
+        }
+      },
+      {
+        timeout: 5_000,
+        interval: 50,
+        timeoutMsg:
+          "Tauri performance window did not reach a safe minimized state within 5 seconds",
+      },
+    );
+  } catch (error) {
+    if (lastError instanceof Error)
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}; last window safety failure: ${lastError.message}`,
+        { cause: lastError },
+      );
+    throw error;
+  }
+  if (state === undefined) throw new Error("Tauri performance window safety returned no state");
+  return state;
+}
+
+export async function readPerformanceWindowState(browser) {
+  return browser.execute(async () => {
     const api = window.__TAURI__.window;
     const current = api.getCurrentWindow();
-    const [visible, minimized, focused, position, size, monitors] = await Promise.all([
+    const [visible, minimized, focused, position, size] = await Promise.all([
       current.isVisible(),
       current.isMinimized(),
       current.isFocused(),
       current.outerPosition(),
       current.outerSize(),
-      api.availableMonitors(),
     ]);
-    const right = Math.max(...monitors.map((monitor) => monitor.position.x + monitor.size.width));
-    const bottom = Math.max(...monitors.map((monitor) => monitor.position.y + monitor.size.height));
-    const offscreen =
-      position.x >= right ||
-      position.y >= bottom ||
-      position.x + size.width <= Math.min(...monitors.map((monitor) => monitor.position.x)) ||
-      position.y + size.height <= Math.min(...monitors.map((monitor) => monitor.position.y));
     return {
-      mode,
+      mode: "minimized",
       visible,
       minimized,
       focused,
       position,
       size,
-      offscreen,
       documentFocused: document.hasFocus(),
       visibilityState: document.visibilityState,
     };
-  }, windowMode);
-  const foreground = windowMode === "visible" ? null : await observeForegroundApplication();
-  const processTree = await capturePerformanceProcessTree(rootPid);
+  });
+}
+
+export async function capturePerformanceWindowSafety(
+  browser,
+  foregroundBaseline,
+  rootPid,
+  dependencies = {},
+) {
+  const windowState = await readPerformanceWindowState(browser);
+  const observeForeground =
+    dependencies.observeForegroundApplication ?? observeForegroundApplication;
+  const captureProcessTree =
+    dependencies.capturePerformanceProcessTree ?? capturePerformanceProcessTree;
+  const [foreground, processTree] = await Promise.all([
+    observeForeground(),
+    captureProcessTree(rootPid),
+  ]);
   const ownsForeground = processTree.some((process) => process.pid === foreground?.pid);
-  const validPlacement =
-    windowMode === "visible"
-      ? windowState.visible && !windowState.minimized && !windowState.offscreen
-      : windowMode === "minimized"
-        ? windowState.visible && windowState.minimized
-        : windowState.visible && !windowState.minimized && windowState.offscreen;
-  const backgroundViolation =
-    windowMode !== "visible" &&
-    (windowState.focused || windowState.documentFocused || ownsForeground);
-  if (!validPlacement || backgroundViolation) {
-    throw new Error(
-      `Tauri performance audit violated window policy: ${JSON.stringify({ windowState, foreground, foregroundBaseline })}`,
-    );
-  }
   return { ...windowState, foreground, foregroundBaseline, ownsForeground, processTree };
 }
 
@@ -397,6 +562,7 @@ function assertOnlyPerformanceArguments(arguments_) {
     "--release",
     "--reuse-build",
     "--require-reuse-build",
+    "--build-only",
   ]);
   const options = new Set(["--project", "--spec", "--window-mode"]);
   for (let index = 0; index < arguments_.length; index += 1) {

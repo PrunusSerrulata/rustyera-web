@@ -166,14 +166,14 @@ export class TauriBridge implements FrontendBridge {
         correlationId: encodeIpcValue(correlationId),
       });
       if (PERFORMANCE_AUDIT_ENABLED) {
-        recordPerformanceTiming("invoke", "submit_and_pump", invokeStartedAt, () => ({
+        recordPerformanceTiming("invoke", "submit_runtime_and_pump", invokeStartedAt, () => ({
           responseBytes: ipcResponseBytes(response),
         }));
       }
       const decodeStartedAt = PERFORMANCE_AUDIT_ENABLED ? performance.now() : undefined;
       const decoded = decodeIpcResponse<SubmittedPumpBatch>(response);
       if (PERFORMANCE_AUDIT_ENABLED)
-        recordPerformanceTiming("decode", "submit_and_pump", decodeStartedAt);
+        recordPerformanceTiming("decode", "submit_runtime_and_pump", decodeStartedAt);
       return decoded;
     });
   }

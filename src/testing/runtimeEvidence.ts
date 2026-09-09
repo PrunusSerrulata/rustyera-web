@@ -5,6 +5,10 @@ import { blake3 } from "@noble/hashes/blake3.js";
 const MAXIMUM_STATE_CHUNK_BYTES = 16 * 1024 * 1024;
 const MAXIMUM_STORAGE_BYTES = 64 * 1024 * 1024;
 const HASH_CHUNK_BYTES = 64 * 1024;
+const DEFAULT_MAXIMUM_EVIDENCE_BYTES = 64 * 1024 * 1024;
+const DEFAULT_MAXIMUM_EVIDENCE_RECORDS = 8192;
+const PERFORMANCE_MAXIMUM_EVIDENCE_BYTES = 256 * 1024 * 1024;
+const PERFORMANCE_MAXIMUM_EVIDENCE_RECORDS = 262_144;
 const EXPORT_MESSAGE_TYPES = new Set([
   "state_import_chunk",
   "state_import_commit",
@@ -35,9 +39,10 @@ export class RuntimeEvidence {
     private readonly enabled: boolean,
     // A real TW failed compile report alone exceeds 16 MiB. Keep it lossless while
     // retaining a finite ledger bound; periodic snapshots use summary(), not this payload.
-    private readonly maximumBytes = 64 * 1024 * 1024,
-    private readonly maximumRecords = 8192,
+    private readonly maximumBytes = DEFAULT_MAXIMUM_EVIDENCE_BYTES,
+    private readonly maximumRecords = DEFAULT_MAXIMUM_EVIDENCE_RECORDS,
     private readonly selectedTypes?: ReadonlySet<string>,
+    private readonly options: { compactPresentationOutput?: boolean } = {},
   ) {
     // Startup diagnostics can exhaust the general ledger before a large project's export.
     // Keep its failure intact, and independently bound the narrow transfer-command evidence.
@@ -48,6 +53,23 @@ export class RuntimeEvidence {
   receive(event: WebEvent, sessionGeneration = 0): void {
     this.exportEvidence?.receive(event, sessionGeneration);
     if (!this.acceptsMessageType(event.message.type)) return;
+    if (
+      this.options.compactPresentationOutput === true &&
+      event.channel === "runtime" &&
+      (event.message.type === "presentation_delta" ||
+        event.message.type === "presentation_snapshot")
+    ) {
+      // Performance checkpoints read canonical presentation separately. Keep the wire
+      // envelope and output tag in order without even accessing the large value tree.
+      // The dedicated export ledger retains its independent, unchanged policy.
+      this.record({
+        direction: "receive",
+        ...event,
+        message: { type: event.message.type },
+        sessionGeneration,
+      });
+      return;
+    }
     this.record({
       direction: "receive",
       ...event,
@@ -197,7 +219,13 @@ export class RuntimeEvidence {
     }
   }
 
-  snapshot(sessionGeneration = 0, messageTypes?: ReadonlySet<string>): Record<string, unknown> {
+  snapshot(
+    sessionGeneration = 0,
+    messageTypes?: ReadonlySet<string>,
+    fromRecord = 0,
+  ): Record<string, unknown> {
+    if (!Number.isSafeInteger(fromRecord) || fromRecord < 0 || fromRecord > this.records.length)
+      throw new Error("runtime evidence cursor is outside the retained ledger");
     if (
       this.exportEvidence &&
       messageTypes?.size &&
@@ -211,11 +239,19 @@ export class RuntimeEvidence {
     return {
       ...this.summary(sessionGeneration),
       bytes: this.bytes,
+      recordCursor: this.records.length,
       ...(messageTypes ? { selectedMessageTypes: [...messageTypes] } : {}),
       records: this.records
-        .filter((_, index) => !messageTypes || messageTypes.has(this.messageTypes[index] ?? ""))
+        .slice(fromRecord)
+        .filter(
+          (_, index) =>
+            !messageTypes || messageTypes.has(this.messageTypes[fromRecord + index] ?? ""),
+        )
         .map((record) => JSON.parse(record)),
-      pointerSamples: messageTypes ? [] : this.pointerSamples.map((record) => JSON.parse(record)),
+      pointerSamples:
+        messageTypes || fromRecord > 0
+          ? []
+          : this.pointerSamples.map((record) => JSON.parse(record)),
     };
   }
 
@@ -266,6 +302,21 @@ export class RuntimeEvidence {
       this.failure = "unserializable_observation";
     }
   }
+}
+
+export function runtimeEvidenceLimits(performanceAudit: boolean): {
+  maximumBytes: number;
+  maximumRecords: number;
+} {
+  return performanceAudit
+    ? {
+        maximumBytes: PERFORMANCE_MAXIMUM_EVIDENCE_BYTES,
+        maximumRecords: PERFORMANCE_MAXIMUM_EVIDENCE_RECORDS,
+      }
+    : {
+        maximumBytes: DEFAULT_MAXIMUM_EVIDENCE_BYTES,
+        maximumRecords: DEFAULT_MAXIMUM_EVIDENCE_RECORDS,
+      };
 }
 
 /** Read the actual typed debug value; do not parse the UI's formatted value string. */
@@ -321,19 +372,12 @@ export async function readTypedWatches(
 ): Promise<Record<string, unknown>> {
   const parsed = parseTypedWatches(watches);
   const names = new Set(parsed.map((watch) => watch.name));
-  const cursors = new Set<string>();
-  let cursor = null;
-  // Large projects resolve each descriptor against their symbol table. Bound each
-  // synchronous request while preserving the same total enumeration allowance.
-  const pageLimit = 256;
-  const maximumPages = (256 * 1024) / pageLimit;
-  for (let page = 0; candidates.size < names.size; page += 1) {
-    if (page >= maximumPages) throw new Error("typed variable enumeration exceeds its limit");
+  if (candidates.size < names.size) {
     assertCurrent();
-    const response = await request({ type: "list_variables", stop, cursor, limit: pageLimit });
+    const response = await request({ type: "describe_variables", stop, names: [...names] });
     assertCurrent();
     if (response.type !== "variable_page" || !Array.isArray(response.value?.variables))
-      throw new Error("typed variable enumeration returned an unexpected response");
+      throw new Error("typed variable description returned an unexpected response");
     for (const variable of response.value.variables) {
       if (names.has(variable.name)) {
         const entries = candidates.get(variable.name) ?? new Map<string, any>();
@@ -351,14 +395,9 @@ export async function readTypedWatches(
         candidates.set(variable.name, entries);
       }
     }
-    if (candidates.size === names.size) break;
-    cursor = response.value.next_cursor ?? null;
-    if (cursor === null) break;
-    const key = JSON.stringify(cursor, (_key, value) =>
-      typeof value === "bigint" ? value.toString() : value,
-    );
-    if (cursors.has(key)) throw new Error("typed variable enumeration repeated a cursor");
-    cursors.add(key);
+    // A successful description response is also authoritative for absent names.
+    // Cache empty entries so repeated checkpoints do not rescan immutable symbols.
+    for (const name of names) if (!candidates.has(name)) candidates.set(name, new Map());
   }
   const values: Record<string, unknown> = {};
   for (const { watch, name, character, indices } of parsed) {

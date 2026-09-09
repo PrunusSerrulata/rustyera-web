@@ -8,6 +8,7 @@
 /.rustyera/test-runs
 /.rustyera/webdriver
 /.rustyera/cargo-local
+/.rustyera/performance-*
 /tests/fixtures/**/.rustyera
 /.playwright-browsers
 /src-tauri/gen

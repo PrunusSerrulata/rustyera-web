@@ -278,6 +278,32 @@ describe("Tauri end-to-end test support", () => {
     ).not.toThrow();
   });
 
+  it.each(["performance-progress", "performance-diagnostic"])(
+    "permits thirty seconds for explicit %s observations only",
+    (observationMode) => {
+      vi.stubEnv("RUSTYERA_TAURI_PERF_CAPTURE", "1");
+      vi.stubEnv("RUSTYERA_TEST_AUTONOMOUS_CAPTURE_STALL_INTERVALS", "6");
+      const snapshot = {
+        observationMode,
+        document: [{ tag: "main" }],
+        runtime: { phase: "waiting_input", canInteract: true },
+      };
+      for (const count of [1, 2, 3, 4, 5])
+        expect(() =>
+          assertSnapshotProgress(snapshot, structuredClone(snapshot), "Capture", count),
+        ).not.toThrow();
+      expect(() =>
+        assertSnapshotProgress(snapshot, structuredClone(snapshot), "Capture", 6),
+      ).toThrow(/6 consecutive 5-second intervals/);
+
+      const ordinary = { document: snapshot.document, runtime: snapshot.runtime };
+      expect(snapshotCaptureTimeout(ordinary, 5_000)).toBe(5_000);
+      expect(() => assertSnapshotProgress(ordinary, structuredClone(ordinary), "Tauri", 1)).toThrow(
+        /1 consecutive 5-second interval/,
+      );
+    },
+  );
+
   it("reuses precomputed complete snapshot signatures", () => {
     const previous = { document: [] };
     const current = { document: [] };

@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  coreCheckpointVariables,
+  coreNormalizeCheckpointValue,
+  coreSerialize,
+  coreStableInputWait,
   capturedCoreSetupMessages,
   inputReplaySummary,
   isStableObservationCandidate,
   stableObservationSignature,
+  waitForObservationFrame,
 } from "@/testing/control";
 import {
   configureServiceLifecycle,
@@ -15,10 +20,145 @@ import {
   RuntimeEvidence,
   createTypedWatchReader,
   readTypedWatches,
+  runtimeEvidenceLimits,
 } from "@/testing/runtimeEvidence";
 import { blake3 } from "@noble/hashes/blake3.js";
 
 describe("runtime evidence observations", () => {
+  it("keeps ordinary evidence bounds while provisioning long performance traces", () => {
+    expect(runtimeEvidenceLimits(false)).toEqual({
+      maximumBytes: 64 * 1024 * 1024,
+      maximumRecords: 8192,
+    });
+    expect(runtimeEvidenceLimits(true)).toEqual({
+      maximumBytes: 256 * 1024 * 1024,
+      maximumRecords: 262_144,
+    });
+  });
+
+  it("returns only runtime evidence appended after a validated cursor", () => {
+    const evidence = new RuntimeEvidence(true);
+    evidence.sent("runtime", { type: "input", value: { value: 1 } }, 1, 1);
+    const first = evidence.snapshot() as any;
+    evidence.sent("runtime", { type: "input", value: { value: 2 } }, 2, 1);
+    const delta = evidence.snapshot(0, undefined, first.recordCursor) as any;
+    expect(first.recordCursor).toBe(1);
+    expect(delta.recordCursor).toBe(2);
+    expect(delta.records).toHaveLength(1);
+    expect(delta.records[0].message.value.value).toBe(2);
+    expect(() => evidence.snapshot(0, undefined, 3)).toThrow("outside the retained ledger");
+  });
+
+  it("reports the exact path of an unsafe Core companion integer", () => {
+    expect(() =>
+      coreSerialize({ setupMessages: [{ value: { project_revision: 9415387604111894472n } }] }),
+    ).toThrow("$.setupMessages[0].value.project_revision");
+    expect(() => coreSerialize({ "a.b": { 'quoted"key': 9415387604111894472n } })).toThrow(
+      '$["a.b"]["quoted\\"key"]',
+    );
+  });
+
+  it("uses exact decimal strings for checkpoint integers outside the JavaScript range", () => {
+    expect(
+      coreNormalizeCheckpointValue({
+        resources: { sprites: [{ revision: 9_415_387_604_111_894_472n }] },
+        safe: 9_007_199_254_740_991n,
+        negative: -9_007_199_254_740_992n,
+      }),
+    ).toEqual({
+      resources: { sprites: [{ revision: "9415387604111894472" }] },
+      safe: 9_007_199_254_740_991,
+      negative: "-9007199254740992",
+    });
+  });
+
+  it("normalizes Core checkpoint watches without debug session identities", () => {
+    expect(
+      coreCheckpointVariables({
+        version: 1,
+        stop: { session_epoch: 9415387604111894472n },
+        values: {
+          DAY: {
+            present: true,
+            value: { type: "integer", value: 7n },
+            command: { stop: { session_epoch: 9415387604111894472n } },
+            response: { correlation_id: 9415387604111894472n },
+          },
+          NAME: { present: true, value: { type: "string", value: "灵梦" } },
+          READY: { present: true, value: { type: "boolean", value: true } },
+        },
+      }),
+    ).toEqual({ DAY: 7n, NAME: "灵梦", READY: true });
+  });
+
+  it("normalizes the Core wait without transient identity and deadline fields", () => {
+    expect(
+      coreStableInputWait({
+        kind: "integer_value",
+        stability: "transient",
+        one_input: false,
+        stop_message_skip: false,
+        system_input: false,
+        mouse_input: false,
+        default_value: { type: "integer", value: 2n },
+        display_time: false,
+        timeout_message: "开始播放DEMO",
+        viewport_policy: "preserve_user_viewport",
+        wait_id: 205n,
+        generation: 17n,
+        deadline_ns: 20_000_000_000n,
+        submission_token: { epoch: 2n, id: 9415387604111894472n },
+      }),
+    ).toEqual({
+      kind: "integer_value",
+      stability: "transient",
+      oneInput: false,
+      stopMessageSkip: false,
+      systemInput: false,
+      mouseInput: false,
+      defaultValue: { type: "integer", value: 2n },
+      displayTime: false,
+      timeoutMessage: "开始播放DEMO",
+      viewportPolicy: "preserve_user_viewport",
+    });
+  });
+
+  it("rejects unavailable or unsupported Core checkpoint watches", () => {
+    expect(() =>
+      coreCheckpointVariables({ values: { DAY: { present: false, error: "not_found" } } }),
+    ).toThrow("DAY is unavailable");
+    expect(() =>
+      coreCheckpointVariables({
+        values: { DAY: { present: 1, value: { type: "integer", value: 7n } } },
+      }),
+    ).toThrow("DAY is unavailable");
+    expect(() =>
+      coreCheckpointVariables({
+        values: { DATA: { present: true, value: { type: "array", value: [] } } },
+      }),
+    ).toThrow("DATA has an unsupported value");
+    expect(() =>
+      coreCheckpointVariables({
+        values: { DAY: { present: true, value: { type: "integer" } } },
+      }),
+    ).toThrow("DAY has an unsupported value");
+    expect(() =>
+      coreCheckpointVariables({
+        values: { DAY: { present: true, value: { type: "integer", value: "7" } } },
+      }),
+    ).toThrow("DAY has an unsupported value");
+    expect(() =>
+      coreCheckpointVariables({
+        values: {
+          DAY: {
+            present: true,
+            value: { type: "integer", value: Number(9_415_387_604_111_894_472n) },
+          },
+        },
+      }),
+    ).toThrow("DAY has an unsupported value");
+  });
+
   it("captures only replayable setup messages between server hello and project manifest", () => {
     const preference = {
       type: "apply_client_preferences",
@@ -35,6 +175,33 @@ describe("runtime evidence observations", () => {
         { direction: "send", channel: "runtime", message: { type: "start" } },
       ]),
     ).toEqual([preference]);
+  });
+
+  it("captures native setup when Tauri prepares the project outside the runtime protocol", () => {
+    const preference = {
+      type: "apply_client_preferences",
+      value: { configuration: { skip_display: false } },
+    };
+    expect(
+      capturedCoreSetupMessages(
+        [
+          { direction: "send", channel: "runtime", message: { type: "client_hello" } },
+          { direction: "receive", channel: "runtime", message: { type: "server_hello" } },
+          { direction: "send", channel: "runtime", message: preference },
+          { direction: "send", channel: "runtime", message: { type: "start" } },
+        ],
+        true,
+      ),
+    ).toEqual([preference]);
+  });
+
+  it("does not accept a missing project manifest for a browser capture", () => {
+    expect(() =>
+      capturedCoreSetupMessages([
+        { direction: "receive", channel: "runtime", message: { type: "server_hello" } },
+        { direction: "send", channel: "runtime", message: { type: "start" } },
+      ]),
+    ).toThrow("project_manifest");
   });
 
   it("rejects messages that Core perf-run cannot replay between manifest and start", () => {
@@ -567,7 +734,7 @@ describe("runtime evidence observations", () => {
     });
   });
 
-  it("paginates typed watches and distinguishes integer values from numeric strings", async () => {
+  it("describes typed watches by name and distinguishes integers from numeric strings", async () => {
     const commands: any[] = [];
     const stop = { program_generation: 7n };
     const result: any = await readTypedWatches(
@@ -575,35 +742,37 @@ describe("runtime evidence observations", () => {
       stop,
       async (command) => {
         commands.push(command);
-        if (command.type === "list_variables")
+        if (command.type === "describe_variables")
           return {
             type: "variable_page",
             value: {
               variables: [
                 {
-                  name: command.cursor === null ? "RESULT" : "RESULTS",
+                  name: "RESULT",
                   symbol_key: [1],
                   storage: "global",
                   dimensions: [100],
                 },
-                ...(command.cursor === null
-                  ? [
-                      {
-                        name: "NAME",
-                        symbol_key: [2],
-                        storage: "character",
-                        dimensions: [],
-                      },
-                      {
-                        name: "CFLAG",
-                        symbol_key: [3],
-                        storage: "character",
-                        dimensions: [100],
-                      },
-                    ]
-                  : []),
+                {
+                  name: "RESULTS",
+                  symbol_key: [4],
+                  storage: "global",
+                  dimensions: [100],
+                },
+                {
+                  name: "NAME",
+                  symbol_key: [2],
+                  storage: "character",
+                  dimensions: [],
+                },
+                {
+                  name: "CFLAG",
+                  symbol_key: [3],
+                  storage: "character",
+                  dimensions: [100],
+                },
               ],
-              next_cursor: command.cursor === null ? 1n : null,
+              next_cursor: null,
             },
           };
         return {
@@ -637,12 +806,14 @@ describe("runtime evidence observations", () => {
     expect(result.values.NAME).toEqual({ present: false, error: "character_required" });
     expect(result.values["RESULT@1:0"]).toEqual({ present: false, error: "not_character" });
     expect(result.values.MISSING).toEqual({ present: false, error: "not_found" });
-    expect(commands.filter((command) => command.type === "list_variables")).toHaveLength(2);
-    expect(
-      commands
-        .filter((command) => command.type === "list_variables")
-        .every((command) => command.limit === 256),
-    ).toBe(true);
+    expect(commands.filter((command) => command.type === "describe_variables")).toHaveLength(1);
+    expect(commands.find((command) => command.type === "describe_variables")?.names).toEqual([
+      "RESULT",
+      "RESULTS",
+      "NAME",
+      "CFLAG",
+      "MISSING",
+    ]);
     expect(commands.at(-1).value.generation).toBe(7n);
   });
 
@@ -652,7 +823,7 @@ describe("runtime evidence observations", () => {
     let value = 7;
     const request = async (command: any) => {
       commands.push(command);
-      return command.type === "list_variables"
+      return command.type === "describe_variables"
         ? {
             type: "variable_page",
             value: {
@@ -673,13 +844,13 @@ describe("runtime evidence observations", () => {
     const later: any = await read(["MONEY"], laterStop, request, () => {}, 4);
     expect(later.values.MONEY.value).toEqual({ type: "integer", value: 14 });
     expect(commands.at(-1).stop).toEqual(laterStop);
-    expect(commands.filter((command) => command.type === "list_variables")).toHaveLength(1);
+    expect(commands.filter((command) => command.type === "describe_variables")).toHaveLength(1);
     const reloadedStop = { ...stop, program_generation: 2n };
     await read(["MONEY"], reloadedStop, request, () => {}, 4);
     const replacedSession = { ...reloadedStop, session_epoch: 4n };
     await read(["MONEY"], replacedSession, request, () => {}, 4);
     await read(["MONEY"], replacedSession, request, () => {}, 5);
-    expect(commands.filter((command) => command.type === "list_variables")).toHaveLength(4);
+    expect(commands.filter((command) => command.type === "describe_variables")).toHaveLength(4);
     const changedWatches: any = await read(
       ["MONEY", "MISSING"],
       replacedSession,
@@ -688,18 +859,18 @@ describe("runtime evidence observations", () => {
       5,
     );
     expect(changedWatches.values.MISSING).toEqual({ present: false, error: "not_found" });
-    expect(commands.filter((command) => command.type === "list_variables")).toHaveLength(5);
+    expect(commands.filter((command) => command.type === "describe_variables")).toHaveLength(5);
+    await read(
+      ["MONEY", "MISSING"],
+      { ...replacedSession, runtime_revision: 21n, pause_epoch: 2n },
+      request,
+      () => {},
+      5,
+    );
+    expect(commands.filter((command) => command.type === "describe_variables")).toHaveLength(5);
   });
 
-  it("rejects repeated cursors and a changed stop before reading stale values", async () => {
-    await expect(
-      readTypedWatches(
-        ["RESULT"],
-        {},
-        async () => ({ type: "variable_page", value: { variables: [], next_cursor: 1 } }),
-        () => {},
-      ),
-    ).rejects.toThrow("repeated a cursor");
+  it("rejects a changed stop before reading stale values", async () => {
     await expect(
       readTypedWatches(
         ["RESULT"],
@@ -712,7 +883,7 @@ describe("runtime evidence observations", () => {
     ).rejects.toThrow("changed stop");
   });
 
-  it("deduplicates character descriptors and stops after all requested names are found", async () => {
+  it("deduplicates character descriptors returned for a requested name", async () => {
     const commands: any[] = [];
     const descriptor = {
       name: "NAME",
@@ -727,7 +898,7 @@ describe("runtime evidence observations", () => {
       { program_generation: 3n },
       async (command) => {
         commands.push(command);
-        if (command.type === "list_variables")
+        if (command.type === "describe_variables")
           return {
             type: "variable_page",
             value: { variables: [descriptor, { ...descriptor }], next_cursor: 1024n },
@@ -743,11 +914,35 @@ describe("runtime evidence observations", () => {
       present: true,
       value: { type: "string", value: "博丽灵梦" },
     });
-    expect(commands.filter((command) => command.type === "list_variables")).toHaveLength(1);
+    expect(commands.filter((command) => command.type === "describe_variables")).toHaveLength(1);
   });
 });
 
 describe("Web test observation boundaries", () => {
+  it("falls back when a native WebView suppresses animation frames", async () => {
+    vi.useFakeTimers();
+    const request = vi.fn(() => 17);
+    const cancel = vi.fn();
+    vi.stubGlobal("requestAnimationFrame", request);
+    vi.stubGlobal("cancelAnimationFrame", cancel);
+    try {
+      let finished = false;
+      const waiting = waitForObservationFrame().then(() => {
+        finished = true;
+      });
+      await vi.advanceTimersByTimeAsync(15);
+      expect(finished).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await waiting;
+      expect(finished).toBe(true);
+      expect(request).toHaveBeenCalledOnce();
+      expect(cancel).toHaveBeenCalledWith(17);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("settles ready input while the background pump advances, retaining real state changes", () => {
     const state = {
       phase: "waiting_input",
@@ -755,11 +950,18 @@ describe("Web test observation boundaries", () => {
       output: ["ready"],
       fault: null,
       cooperativeBackgroundWorkRevision: 1,
+      performanceAudit: { timingSamples: 10, mutationCallbacks: 2 },
+      memory: { residentBytes: 1_000 },
     };
     const signature = stableObservationSignature(state);
-    expect(stableObservationSignature({ ...state, cooperativeBackgroundWorkRevision: 9 })).toBe(
-      signature,
-    );
+    expect(
+      stableObservationSignature({
+        ...state,
+        cooperativeBackgroundWorkRevision: 9,
+        performanceAudit: { timingSamples: 99, mutationCallbacks: 40 },
+        memory: { residentBytes: 2_000 },
+      }),
+    ).toBe(signature);
     expect(
       stableObservationSignature({
         ...state,

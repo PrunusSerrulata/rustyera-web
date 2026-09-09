@@ -6,8 +6,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  performanceProjectDigest,
-  performanceWindowArguments,
+  ensurePerformanceProjectCopy,
+  performanceCaptureChildArguments,
   performanceWindowMode,
   validatePerformanceAuditProject,
 } from "./tauri-performance-audit.mjs";
@@ -39,44 +39,43 @@ if (command === "freeze") {
   );
 } else if (command === "capture") {
   const project = option("--project");
+  const projectCopy = option("--project-copy");
   const template = option("--template");
   const candidate = option("--candidate");
   const actions = option("--actions");
   const windowMode = performanceWindowMode(arguments_);
-  rejectUnknown(new Set(["--project", "--template", "--candidate", "--actions", "--window-mode"]));
+  rejectUnknown(
+    new Set([
+      "--project",
+      "--project-copy",
+      "--template",
+      "--candidate",
+      "--actions",
+      "--window-mode",
+    ]),
+  );
   const identity = await validatePerformanceAuditProject(project);
   assertOutsideSource(identity.source, candidate, "--candidate");
   assertOutsideSource(identity.source, actions, "--actions");
-  const projectDigest = await performanceProjectDigest(identity.source);
+  const preparedCopy = await ensurePerformanceProjectCopy(identity.source, projectCopy);
+  const projectDigest = preparedCopy.projectDigest;
   await assertMissing(candidate);
   await mkdir(path.dirname(candidate), { recursive: true });
   await mkdir(path.dirname(actions), { recursive: true });
-  const child = spawn(
-    process.execPath,
-    [
-      "scripts/tauri-test.mjs",
-      "--perf-audit",
-      "--release",
-      "--project",
-      project,
-      "--spec",
-      "tests/tauri/snake-runtime-performance.spec.mjs",
-      ...performanceWindowArguments(windowMode),
-    ],
-    {
-      cwd: repository,
-      env: {
-        ...process.env,
-        RUSTYERA_TAURI_PERF_CAPTURE: "1",
-        RUSTYERA_TAURI_PERF_PHASE: "capture",
-        RUSTYERA_TAURI_PERF_TRACE: template,
-        RUSTYERA_TAURI_PERF_CANDIDATE: candidate,
-        RUSTYERA_TAURI_PERF_ACTIONS: actions,
-        RUSTYERA_TAURI_PERF_PROJECT_DIGEST: projectDigest,
-      },
-      stdio: "inherit",
+  const child = spawn(process.execPath, performanceCaptureChildArguments(project, windowMode), {
+    cwd: repository,
+    env: {
+      ...process.env,
+      RUSTYERA_TAURI_PERF_CAPTURE: "1",
+      RUSTYERA_TAURI_PERF_PHASE: "capture",
+      RUSTYERA_TAURI_PERF_TRACE: template,
+      RUSTYERA_TAURI_PERF_CANDIDATE: candidate,
+      RUSTYERA_TAURI_PERF_ACTIONS: actions,
+      RUSTYERA_TAURI_PERF_PROJECT_DIGEST: projectDigest,
+      RUSTYERA_TAURI_PERF_PROJECT_COPY: preparedCopy.copy,
     },
-  );
+    stdio: "inherit",
+  });
   const exitCode = await new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", resolve);

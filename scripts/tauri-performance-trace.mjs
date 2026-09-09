@@ -1,15 +1,26 @@
 /* global window */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { blake3 } from "@noble/hashes/blake3.js";
+import { readFile, rename, stat, writeFile } from "node:fs/promises";
+import {
+  createPerformanceTimingCollector,
+  parsePerformanceObservationJson,
+} from "./tauri-performance-timing-evidence.mjs";
 
 import {
   clickTauriTestElement,
   hoverTauriTestElement,
+  secondaryClickTauriTestElement,
   setTauriTestInput,
 } from "./dom-test-input.mjs";
 
 export const PERFORMANCE_PATHS = ["loading", "steady-runtime", "map-nf-sql", "save-load"];
+export const PERFORMANCE_TRACE_SCHEMA_VERSION = 3;
+export const MAXIMUM_PERFORMANCE_TRACE_BYTES = 256 * 1024 * 1024;
+const MAXIMUM_PROTOCOL_RESULT_BYTES = 64 * 1024 * 1024;
+const MAXIMUM_PROTOCOL_RESULTS = 65_536;
+const protocolResultBudgets = new WeakMap();
 const REQUIRED_EVIDENCE = {
   loading: ["title", "newGame", "qol", "sql", "map", "privateRoom", "day1"],
   "steady-runtime": ["dailyLoop", "longOutput", "dynamicCall", "formatting", "stringWork"],
@@ -18,13 +29,13 @@ const REQUIRED_EVIDENCE = {
 };
 
 export async function readPerformanceTrace(path) {
-  const trace = JSON.parse(await readFile(path, "utf8"));
+  const trace = await readBoundedTraceJson(path);
   validateTrace(trace, false);
   return trace;
 }
 
 export async function freezePerformanceTrace(candidatePath, outputPath, coreOutputPath) {
-  const trace = JSON.parse(await readFile(candidatePath, "utf8"));
+  const trace = await readBoundedTraceJson(candidatePath);
   validateTrace(trace, true);
   trace.captureRequired = false;
   trace.traceDigest = traceHash(trace);
@@ -37,39 +48,28 @@ export async function freezePerformanceTrace(candidatePath, outputPath, coreOutp
 
 export function coreTraceFromPerformanceTrace(trace) {
   validateTrace(trace, false);
-  validateCoreCapture(trace.core, trace.steps);
+  validateCoreCapture(trace.core, trace.steps, trace.protocolResults);
+  const steps = trace.core.steps.map(({ id, checkpoint, expect, action }) => ({
+    id,
+    checkpoint,
+    expect: sortKeys(expect),
+    action: coreTraceAction(action),
+  }));
+  const resultRefs = new Set(
+    steps.map((step) => step.action.resultRef).filter((resultRef) => resultRef != null),
+  );
   const coreTrace = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     traceDigest: "",
     scenario: trace.scenario,
     projectDigest: trace.core.projectDigest,
     seed: trace.seed,
     client: trace.core.client,
     setupMessages: trace.core.setupMessages,
-    steps: trace.core.steps.map((step) => {
-      const normalizedState = sortKeys(step.normalizedState);
-      return {
-        id: step.id,
-        checkpoint: step.checkpoint,
-        expect: {
-          phase: normalizedState.phase,
-          waitKind: normalizedState.wait?.kind ?? null,
-          textContains: step.textContains ?? [],
-          outboundTags: normalizedState.otherOutboundTags ?? [],
-          services: (normalizedState.services ?? []).map(({ kind, operation }) => ({
-            kind,
-            operation,
-          })),
-          storage: (normalizedState.storage ?? []).map(({ namespace, relativePath }) => ({
-            namespace,
-            relativePath,
-          })),
-          variables: normalizedState.variables ?? {},
-          stateSignature: checkpointHash(normalizedState),
-        },
-        action: step.action,
-      };
-    }),
+    protocolResults: Object.fromEntries(
+      Object.entries(trace.protocolResults).filter(([resultRef]) => resultRefs.has(resultRef)),
+    ),
+    steps,
   };
   coreTrace.traceDigest = digestWithoutField(coreTrace, "traceDigest");
   return coreTrace;
@@ -78,50 +78,105 @@ export function coreTraceFromPerformanceTrace(trace) {
 export async function replayPerformanceTrace(browser, trace, onCheckpoint = () => undefined) {
   validateTrace(trace, false);
   const paths = [];
+  let protocolCursor = null;
   for (const pathClass of PERFORMANCE_PATHS) {
     const steps = trace.steps.filter((step) => step.path === pathClass);
     const startedAt = performance.now();
     const inputSamples = [];
+    const diagnosticSamples = [];
     for (let index = 0; index < steps.length; index += 1) {
       const step = steps[index];
-      const before = await capturePerformanceCheckpoint(browser, step.expect.watches);
+      const before = await capturePerformanceCheckpoint(
+        browser,
+        step.expect.watches,
+        protocolCursor,
+      );
+      protocolCursor = before.value.coreProjection.protocolCursor;
       assertWait(step.expect.wait, before.value.wait, `${pathClass}[${index}]`);
-      const stepStartedAt = performance.now();
-      await performAction(browser, step.action);
-      await waitForNextObservation(browser, before, step.expect.settle, step.expect.watches);
-      const after = await capturePerformanceCheckpoint(browser, step.expect.watches);
+      const inputElapsedMs = await performTimedAction(
+        browser,
+        step.action,
+        before,
+        step.expect.settle,
+        step.expect.watches,
+      );
+      const after = await capturePerformanceCheckpoint(
+        browser,
+        step.expect.watches,
+        protocolCursor,
+      );
+      protocolCursor = after.value.coreProjection.protocolCursor;
       assert.equal(
         after.hash,
         step.expect.checkpointHash,
         `${pathClass}[${index}] scenario signature mismatch`,
       );
-      assert.deepEqual(
-        after.value,
-        step.expect.checkpoint,
-        `${pathClass}[${index}] checkpoint mismatch`,
-      );
-      inputSamples.push(performance.now() - stepStartedAt);
-      await onCheckpoint({ path: pathClass, step: index, before, after });
+      const timingBasis = performanceTimingBasis(step.expect.settle);
+      if (timingBasis === "action-to-stable-observation") inputSamples.push(inputElapsedMs);
+      else diagnosticSamples.push({ elapsedMs: inputElapsedMs, timingBasis, step: index });
+      await onCheckpoint({ path: pathClass, step: index, before, after, inputElapsedMs });
     }
     paths.push({
       id: pathClass,
       class: pathClass,
       elapsedMs: performance.now() - startedAt,
+      responseSamplesMs: inputSamples,
+      diagnosticResponseSamples: diagnosticSamples,
       inputMs: summarizeSamples(inputSamples),
     });
   }
   return { paths };
 }
 
-export async function runPerformanceTraceCapture(
+export async function runPerformanceTraceCapture(browser, options) {
+  const timing = await createPerformanceTimingCollector(
+    browser,
+    `${options.candidatePath}.timings`,
+  );
+  try {
+    return await capturePerformanceTraceWithTiming(browser, options, timing);
+  } catch (error) {
+    await timing.fail(error).catch(() => {});
+    throw error;
+  }
+}
+
+async function capturePerformanceTraceWithTiming(
   browser,
-  { templatePath, candidatePath, actionInboxPath, projectDigest, onObservation = () => undefined },
+  {
+    templatePath,
+    candidatePath,
+    actionInboxPath,
+    projectDigest,
+    onObservation = () => undefined,
+    onTimingEvidence = () => undefined,
+    beforeTimedAction = () => undefined,
+    acceptanceTiming = true,
+  },
+  timing,
 ) {
-  const trace = JSON.parse(await readFile(templatePath, "utf8"));
+  const trace = await readBoundedTraceJson(templatePath);
+  assert.equal(
+    trace.schemaVersion,
+    PERFORMANCE_TRACE_SCHEMA_VERSION,
+    "unsupported performance trace schema",
+  );
   assert.equal(trace.captureRequired, true, "capture must start from a candidate template");
   trace.projectDigest = projectDigest;
   trace.core.projectDigest = projectDigest;
-  const audit = await browser.execute(() => window.__RUSTYERA_TEST__.performanceAudit());
+  const startupTiming = await timing.collect(
+    {
+      kind: "startup",
+      sourceWebStep: null,
+      projectDigest,
+      profile: trace.profile,
+      seed: trace.seed,
+      clock: trace.clock,
+    },
+    true,
+  );
+  await onTimingEvidence({ ...startupTiming, identity: undefined });
+  const audit = { native: startupTiming.identity };
   assert.ok(
     audit.native?.coreClient,
     "native performance capture omitted the actual ClientHello projection",
@@ -133,11 +188,13 @@ export async function runPerformanceTraceCapture(
   trace.core.client = audit.native.coreClient;
   trace.core.setupMessages = audit.native.setupMessages;
   trace.steps = [];
+  trace.protocolResults = {};
   trace.core.steps = [];
   trace.coverage = Object.fromEntries(PERFORMANCE_PATHS.map((pathClass) => [pathClass, {}]));
   await writeJsonAtomically(candidatePath, trace);
   let processed = 0;
   let lastCheckpoint;
+  let protocolCursor = null;
   for (;;) {
     const commands = await readJsonLines(actionInboxPath);
     if (processed >= commands.length) {
@@ -146,14 +203,36 @@ export async function runPerformanceTraceCapture(
     }
     const command = commands[processed++];
     if (command.type === "finish") {
-      if (lastCheckpoint && trace.core.steps.at(-1)?.action?.kind !== "none")
+      if (lastCheckpoint) {
+        assert.ok(
+          !trace.core.steps.some((step) => step.action?.kind === "none"),
+          "only capture may append the final Core none action",
+        );
         trace.core.steps.push({
           id: "final",
           checkpoint: "final",
-          normalizedState: lastCheckpoint.coreProjection.normalizedState,
+          expect: coreCheckpointExpectation(lastCheckpoint.coreProjection.normalizedState),
           action: { kind: "none" },
         });
+      }
       await writeJsonAtomically(candidatePath, trace);
+      let pendingError;
+      try {
+        await browser.execute(() =>
+          window.__RUSTYERA_TEST__.waitForPendingPerformanceObservations(30_000),
+        );
+      } catch (error) {
+        pendingError = error;
+      }
+      await onTimingEvidence(
+        await timing.collect({
+          kind: "final",
+          sourceWebStep: null,
+          observationsComplete: pendingError == null,
+        }),
+      );
+      if (pendingError) throw pendingError;
+      await timing.complete();
       return trace;
     }
     if (command.type === "core_steps") {
@@ -166,13 +245,25 @@ export async function runPerformanceTraceCapture(
         "core_steps omitted mappings",
       );
       for (const coreStep of command.coreSteps)
-        trace.core.steps.push({ ...coreStep, sourceWebStep: command.sourceWebStep });
+        trace.core.steps.push(compactCoreStep(coreStep, command.sourceWebStep, trace));
       await writeJsonAtomically(candidatePath, trace);
       continue;
     }
     assert.equal(command.type, "action", "capture inbox accepts only action or finish records");
     assert.ok(PERFORMANCE_PATHS.includes(command.path), `unknown capture path ${command.path}`);
-    const before = await capturePerformanceCheckpoint(browser, command.watches);
+    validatePerformanceTraceAction(command.action, command.path);
+    assert.ok(
+      Array.isArray(command.watches) && command.watches.length > 0,
+      "capture action requires key-variable watches",
+    );
+    const settle =
+      command.settle ?? (command.action.type === "hover" ? "checkpoint_change" : "wait_change");
+    assert.ok(
+      ["wait_change", "checkpoint_change"].includes(settle),
+      "invalid capture settle policy",
+    );
+    const before = await capturePerformanceCheckpoint(browser, command.watches, protocolCursor);
+    protocolCursor = before.value.coreProjection.protocolCursor;
     if (trace.steps.length === 0) {
       trace.core.setupMessages = [
         ...trace.core.setupMessages,
@@ -183,16 +274,41 @@ export async function runPerformanceTraceCapture(
         setupMessages: trace.core.setupMessages,
       });
     }
-    await performAction(browser, command.action);
-    const settle =
-      command.settle ?? (command.action.type === "hover" ? "checkpoint_change" : "wait_change");
-    assert.ok(
-      ["wait_change", "checkpoint_change"].includes(settle),
-      "invalid capture settle policy",
+    const inputElapsedMs = await performTimedAction(
+      browser,
+      command.action,
+      before,
+      settle,
+      command.watches,
+      async () => {
+        await onTimingEvidence(
+          await timing.collect({
+            kind: "setup",
+            command: processed,
+            sourceWebStep: trace.steps.length,
+            path: command.path,
+          }),
+        );
+        await beforeTimedAction({ command: processed, path: command.path });
+      },
     );
-    await waitForNextObservation(browser, before, settle, command.watches);
-    const after = await capturePerformanceCheckpoint(browser, command.watches);
-    const protocolActions = protocolActionDelta(before.value, after.value);
+    const actionTiming = await timing.collect({
+      kind: "action",
+      command: processed,
+      sourceWebStep: trace.steps.length,
+      path: command.path,
+      inputElapsedMs,
+      timingBasis: acceptanceTiming ? performanceTimingBasis(settle) : "diagnostic-only",
+      acceptanceTiming,
+    });
+    await onTimingEvidence(actionTiming);
+    const after = await capturePerformanceCheckpoint(browser, command.watches, protocolCursor);
+    protocolCursor = after.value.coreProjection.protocolCursor;
+    const protocolActions = internProtocolActions(
+      trace,
+      protocolActionDelta(before.value, after.value),
+    );
+    assertSecondaryClickProtocolActions(command.action, protocolActions, command.path);
     trace.steps.push({
       path: command.path,
       action: command.action,
@@ -201,7 +317,6 @@ export async function runPerformanceTraceCapture(
         settle,
         watches: command.watches,
         checkpointHash: after.hash,
-        checkpoint: after.value,
       },
       protocolActions,
     });
@@ -218,29 +333,217 @@ export async function runPerformanceTraceCapture(
           ]
         : []);
     for (const coreStep of coreSteps)
-      trace.core.steps.push({ ...coreStep, sourceWebStep: trace.steps.length - 1 });
+      trace.core.steps.push(compactCoreStep(coreStep, trace.steps.length - 1, trace));
     lastCheckpoint = after.value;
     Object.assign(trace.coverage[command.path], command.evidence);
     await writeJsonAtomically(candidatePath, trace);
-    await onObservation({ command: processed, path: command.path, before, after });
+    await onObservation({
+      command: processed,
+      path: command.path,
+      before: checkpointObservationSummary(before),
+      after: checkpointObservationSummary(after),
+      inputElapsedMs,
+      timingBasis: acceptanceTiming ? performanceTimingBasis(settle) : "diagnostic-only",
+      acceptanceTiming,
+      timingEvidence: { directory: actionTiming.directory, summaryFile: actionTiming.summaryFile },
+      protocolActionCount: protocolActions.length,
+      protocolActions: protocolActions.map(protocolActionSummary),
+    });
   }
 }
 
-export async function capturePerformanceCheckpoint(browser, watches) {
+export async function capturePerformanceCheckpoint(browser, watches, protocolCursor = null) {
   assert.ok(
     Array.isArray(watches) && watches.length > 0,
     "checkpoint requires key-variable watches",
   );
-  const raw = await browser.execute(
-    (requestedWatches) => window.__RUSTYERA_TEST__.performanceCheckpoint(requestedWatches),
-    watches,
+  // The checkpoint (including coreProjection) is already JSON-safe. Encoding in
+  // the WebView avoids WebDriver's recursive native conversion of every object
+  // and byte array. This remains outside the existing action timing boundary.
+  const raw = parsePerformanceObservationJson(
+    await browser.execute(
+      async (requestedWatches, requestedCursor) =>
+        JSON.stringify(
+          await window.__RUSTYERA_TEST__.performanceCheckpoint(requestedWatches, requestedCursor),
+          // WebDriver's object conversion retains undefined properties as null.
+          (_key, value) => (value === undefined ? null : value),
+        ),
+      watches,
+      protocolCursor,
+    ),
+    "performance checkpoint",
+    MAXIMUM_PERFORMANCE_TRACE_BYTES,
   );
+  if (raw.coreProjection?.protocolActions)
+    raw.coreProjection.protocolActions = await restoreNativeReplayBytes(
+      browser,
+      raw.coreProjection.protocolActions,
+    );
   const value = canonicalizeCheckpoint(raw);
-  return { value, hash: checkpointHash(value) };
+  return { value, hash: performanceCheckpointBehaviorHash(value) };
+}
+
+async function restoreNativeReplayBytes(browser, actions) {
+  const deadline = Date.now() + 30_000;
+  let cumulative = 0;
+  const restore = async (value) => {
+    if (value && typeof value === "object" && Object.hasOwn(value, "nativeReplayBytes")) {
+      assert.ok(
+        Number.isSafeInteger(value.nativeReplayBytes) &&
+          value.nativeReplayBytes >= 0 &&
+          Number.isSafeInteger(value.byteLength) &&
+          value.byteLength >= 0 &&
+          /^[0-9a-f]{64}$/.test(value.blake3),
+        "invalid native replay byte reference",
+      );
+      cumulative += value.byteLength;
+      assert.ok(cumulative <= 64 * 1024 * 1024, "native replay bytes exceed capture bound");
+      const bytes = Buffer.alloc(value.byteLength);
+      let offset = 0;
+      do {
+        assert.ok(Date.now() < deadline, "native replay byte export deadline exceeded");
+        const chunk = parsePerformanceObservationJson(
+          await browser.execute(
+            (id, offset) =>
+              JSON.stringify(
+                window.__RUSTYERA_TEST__.takeNativeReplayBytes(id, offset),
+                (_key, value) => (value === undefined ? null : value),
+              ),
+            value.nativeReplayBytes,
+            offset,
+          ),
+          "native replay byte page",
+          512 * 1024,
+        );
+        assert.ok(Date.now() < deadline, "native replay byte export deadline exceeded");
+        assert.equal(chunk.offset, offset, "native replay byte gap");
+        assert.equal(chunk.totalBytes, bytes.length, "native replay byte length changed");
+        assert.ok(
+          typeof chunk.hex === "string" &&
+            /^(?:[0-9a-f]{2})*$/.test(chunk.hex) &&
+            Buffer.byteLength(JSON.stringify(chunk)) <= 512 * 1024,
+          "invalid native replay byte page",
+        );
+        const part = Buffer.from(chunk.hex, "hex");
+        assert.ok(
+          part.length <= bytes.length - offset && (part.length > 0 || bytes.length === 0),
+          "native replay byte truncation",
+        );
+        bytes.set(part, offset);
+        offset += part.length;
+      } while (offset < bytes.length);
+      assert.equal(
+        Buffer.from(blake3(bytes)).toString("hex"),
+        value.blake3,
+        "native replay byte digest mismatch",
+      );
+      return Array.from(bytes);
+    }
+    if (Array.isArray(value)) {
+      const result = [];
+      for (const child of value) result.push(await restore(child));
+      return result;
+    }
+    if (value && typeof value === "object") {
+      const result = {};
+      for (const [key, child] of Object.entries(value)) result[key] = await restore(child);
+      return result;
+    }
+    return value;
+  };
+  const result = [];
+  for (const action of actions)
+    result.push(action.nativeCompletion ? await restore(action) : action);
+  return result;
+}
+
+/** Raw records keep their route and identities. Only this semantic projection is hashed. */
+export function performanceCheckpointBehaviorHash(value) {
+  const hashValue = {
+    ...value,
+    service: omitVolatileIdentity(value.service),
+    transfer: omitVolatileIdentity(value.transfer),
+    storage: value.storage && {
+      ...omitVolatileIdentity(value.storage),
+      records: (value.storage.records ?? []).map((record) => ({
+        direction: record.direction,
+        message: semanticStorageMessage(record.message),
+      })),
+    },
+  };
+  if (hashValue.coreProjection) {
+    hashValue.coreProjection = { ...hashValue.coreProjection };
+    delete hashValue.coreProjection.protocolCursor;
+    // Host ownership is capture metadata, not a change to the canonical game state.
+    if (Array.isArray(hashValue.coreProjection.protocolActions))
+      hashValue.coreProjection.protocolActions = hashValue.coreProjection.protocolActions.map(
+        (action) => {
+          const canonical = { ...action };
+          delete canonical.nativeCompletion;
+          if (canonical.kind === "storage_response")
+            canonical.result = semanticStorageBytes(canonical.result);
+          return canonical;
+        },
+      );
+  }
+  // Sort the semantic projection after dropping only capture/transport metadata.
+  return hashCheckpointJson(JSON.stringify(sortKeys(hashValue)));
+}
+
+function semanticStorageMessage(message) {
+  const value = { ...message.value };
+  delete value.request_id;
+  // These identify delivery, not a change to stored content or completion semantics.
+  delete value.deadline_ns;
+  delete value.idempotency_key;
+  if (value.operation) value.operation = semanticStorageBytes(value.operation);
+  if (value.result) value.result = semanticStorageBytes(value.result);
+  return { type: message.type, value };
+}
+
+function semanticStorageBytes(container) {
+  if (!container || !("data" in container)) return container;
+  const data = container.data;
+  if (data?.observation === "bulk_bytes_digest") {
+    assert.ok(
+      Number.isSafeInteger(data.byteLength) &&
+        data.byteLength >= 0 &&
+        /^[0-9a-f]{64}$/.test(data.blake3),
+      "invalid storage digest",
+    );
+    return { ...container, data: { byteLength: data.byteLength, blake3: data.blake3 } };
+  }
+  assert.ok(data instanceof Uint8Array || Array.isArray(data), "storage evidence omitted bytes");
+  const hash = blake3.create();
+  for (let offset = 0; offset < data.length; offset += 65536) {
+    const part = data.slice(offset, offset + 65536);
+    assert.ok(
+      part.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255),
+      "invalid storage byte",
+    );
+    hash.update(Uint8Array.from(part));
+  }
+  return {
+    ...container,
+    data: { byteLength: data.length, blake3: Buffer.from(hash.digest()).toString("hex") },
+  };
 }
 
 export function summarizeRuns(runs) {
+  runs = runs.filter((run) => run.acceptanceTiming !== false);
   const byPath = Object.fromEntries(
+    PERFORMANCE_PATHS.map((pathClass) => [
+      pathClass,
+      summarizeSamples(
+        runs.flatMap((run) =>
+          run.paths
+            .filter((entry) => entry.class === pathClass)
+            .flatMap((entry) => entry.responseSamplesMs ?? []),
+        ),
+      ),
+    ]),
+  );
+  const harnessByPath = Object.fromEntries(
     PERFORMANCE_PATHS.map((pathClass) => [
       pathClass,
       summarizeSamples(
@@ -250,7 +553,7 @@ export function summarizeRuns(runs) {
       ),
     ]),
   );
-  return { runs: runs.length, byPath };
+  return { runs: runs.length, byPath, harnessByPath };
 }
 
 export function summarizeSamples(samples) {
@@ -273,7 +576,11 @@ export function summarizeSamples(samples) {
 }
 
 function validateTrace(trace, candidate) {
-  assert.equal(trace.schemaVersion, 1, "unsupported performance trace schema");
+  assert.equal(
+    trace.schemaVersion,
+    PERFORMANCE_TRACE_SCHEMA_VERSION,
+    "unsupported performance trace schema",
+  );
   assert.equal(trace.scenario, "snake-tw-runtime-four-paths", "unexpected performance scenario");
   assert.equal(
     trace.profile,
@@ -312,8 +619,12 @@ function validateTrace(trace, candidate) {
         true,
         `${pathClass} lacks captured ${evidence} evidence`,
       );
-    for (const step of steps) validateStep(step, pathClass);
+    for (const step of steps) validateStep(step, pathClass, trace.protocolResults);
   }
+  validateProtocolResults(
+    trace.protocolResults,
+    trace.steps.flatMap((step) => step.protocolActions),
+  );
   assert.ok(
     trace.core && typeof trace.core === "object",
     "trace omitted Core companion capture state",
@@ -323,11 +634,11 @@ function validateTrace(trace, candidate) {
     trace.projectDigest,
     "Core and Tauri project digests differ",
   );
-  if (!candidate) validateCoreCapture(trace.core, trace.steps);
+  if (!candidate) validateCoreCapture(trace.core, trace.steps, trace.protocolResults);
   if (!candidate) assert.equal(trace.traceDigest, traceHash(trace), "trace digest mismatch");
 }
 
-function validateCoreCapture(core, webSteps) {
+function validateCoreCapture(core, webSteps, protocolResults) {
   assert.match(core?.projectDigest ?? "", /^[0-9a-f]{64}$/, "Core capture omitted projectDigest");
   assert.ok(
     core?.client && typeof core.client === "object",
@@ -356,35 +667,36 @@ function validateCoreCapture(core, webSteps) {
     "Core capture omitted normalized checkpoints",
   );
   const mapped = new Set();
+  const ids = new Set();
+  const checkpoints = new Set();
+  let latestSourceWebStep = -1;
   for (const [index, step] of core.steps.entries()) {
-    assert.equal(typeof step.id, "string", `Core step ${index} omitted id`);
-    assert.equal(typeof step.checkpoint, "string", `Core step ${index} omitted checkpoint`);
     assert.ok(
-      step.normalizedState && typeof step.normalizedState === "object",
-      `Core step ${index} omitted normalizedState`,
+      typeof step.id === "string" && step.id && !ids.has(step.id),
+      `Core step ${index} has an empty or duplicate id`,
     );
-    assert.deepEqual(
-      Object.keys(step.normalizedState).sort(),
-      [
-        "lines",
-        "otherOutboundTags",
-        "phase",
-        "resources",
-        "scene",
-        "services",
-        "storage",
-        "variables",
-        "wait",
-      ].sort(),
-      `Core step ${index} normalizedState does not match Core perf-run`,
+    ids.add(step.id);
+    assert.ok(
+      typeof step.checkpoint === "string" && step.checkpoint && !checkpoints.has(step.checkpoint),
+      `Core step ${index} has an empty or duplicate checkpoint`,
     );
-    assertCoreAction(step.action, index);
+    checkpoints.add(step.checkpoint);
+    validateCoreExpectation(step.expect, index);
+    assertCoreAction(step.action, index, protocolResults);
     if (step.sourceWebStep != null) {
       assert.ok(
         Number.isSafeInteger(step.sourceWebStep) && webSteps[step.sourceWebStep],
         `Core step ${index} has invalid sourceWebStep`,
       );
+      assert.ok(
+        step.sourceWebStep >= latestSourceWebStep,
+        `Core step ${index} is out of Web action order`,
+      );
+      assert.notEqual(step.action.kind, "none", `Core step ${index} maps a premature none action`);
+      latestSourceWebStep = step.sourceWebStep;
       mapped.add(step.sourceWebStep);
+    } else {
+      assert.equal(index, core.steps.length - 1, `Core step ${index} omitted sourceWebStep`);
     }
   }
   for (const [index, step] of webSteps.entries())
@@ -396,15 +708,29 @@ function validateCoreCapture(core, webSteps) {
       assert.deepEqual(
         core.steps
           .filter((coreStep) => coreStep.sourceWebStep === index && coreStep.action.kind !== "none")
-          .map((coreStep) => coreStep.action),
-        step.protocolActions,
+          .map((coreStep) => coreTraceAction(coreStep.action)),
+        step.protocolActions.map(coreTraceAction),
         `Web step ${index} Core protocol actions are not lossless`,
       );
     }
   assert.equal(core.steps.at(-1)?.action?.kind, "none", "final Core step action must be none");
 }
 
-function assertCoreAction(action, index) {
+export function coreTraceAction(action) {
+  if (action.nativeCompletion === true) {
+    const canonical = { ...action };
+    delete canonical.nativeCompletion;
+    return canonical;
+  }
+  if (action.kind !== "input") return action;
+  return {
+    kind: action.kind,
+    intent: action.intent,
+    message_skip: action.messageSkip,
+  };
+}
+
+function assertCoreAction(action, index, protocolResults) {
   assert.ok(
     action &&
       ["none", "input", "service_response", "storage_response", "submit"].includes(action.kind),
@@ -413,10 +739,19 @@ function assertCoreAction(action, index) {
   const allowed = {
     none: ["kind"],
     input: ["intent", "kind", "messageSkip"],
-    service_response: ["kind", "result", "service"],
-    storage_response: ["kind", "result", "storage"],
+    service_response: ["kind", "resultRef", "service"],
+    storage_response: ["kind", "resultRef", "storage"],
     submit: ["kind", "message"],
   }[action.kind];
+  if (action.nativeCompletion !== undefined) {
+    assert.equal(action.nativeCompletion, true, "invalid native completion marker");
+    assert.ok(
+      ["service_response", "storage_response"].includes(action.kind),
+      "native marker requires a completion",
+    );
+    allowed.push("nativeCompletion");
+    allowed.sort();
+  }
   assert.deepEqual(
     Object.keys(action).sort(),
     allowed,
@@ -424,8 +759,8 @@ function assertCoreAction(action, index) {
   );
   if (action.kind === "input")
     assert.ok(
-      action.intent && typeof action.intent === "object",
-      `Core input step ${index} omitted intent`,
+      action.intent && typeof action.intent === "object" && typeof action.messageSkip === "boolean",
+      `Core input step ${index} omitted intent or messageSkip`,
     );
   if (action.kind === "service_response") {
     assert.ok(
@@ -433,8 +768,8 @@ function assertCoreAction(action, index) {
       `Core service step ${index} omitted request identity`,
     );
     assert.ok(
-      action.result && typeof action.result === "object",
-      `Core service step ${index} omitted result`,
+      protocolResults?.[action.resultRef]?.kind === "service_response",
+      `Core service step ${index} omitted a valid resultRef`,
     );
   }
   if (action.kind === "storage_response") {
@@ -443,8 +778,8 @@ function assertCoreAction(action, index) {
       `Core storage step ${index} omitted request identity`,
     );
     assert.ok(
-      action.result && typeof action.result === "object",
-      `Core storage step ${index} omitted result`,
+      protocolResults?.[action.resultRef]?.kind === "storage_response",
+      `Core storage step ${index} omitted a valid resultRef`,
     );
   }
   if (action.kind === "submit")
@@ -454,27 +789,218 @@ function assertCoreAction(action, index) {
     );
 }
 
-function validateStep(step, pathClass) {
+function compactCoreStep(step, sourceWebStep, trace) {
   assert.ok(
-    ["input", "click", "hover"].includes(step.action?.type),
-    `${pathClass} has unsupported action`,
+    step?.normalizedState && typeof step.normalizedState === "object",
+    "core_steps entry omitted normalizedState",
   );
-  if (step.action.type === "input")
-    assert.notEqual(step.action.value, undefined, `${pathClass} input omitted value`);
-  else {
-    assert.equal(typeof step.action.selector, "string", `${pathClass} DOM action omitted selector`);
-    assert.equal(
-      typeof step.action.expectedText,
-      "string",
-      `${pathClass} DOM action omitted exact text`,
+  assert.notEqual(step.action?.kind, "none", "core_steps cannot supply the final none action");
+  validateNormalizedCoreState(step.normalizedState, "core_steps entry");
+  return {
+    id: step.id,
+    checkpoint: step.checkpoint,
+    expect: coreCheckpointExpectation(step.normalizedState, step.textContains),
+    action: internProtocolAction(trace, step.action),
+    sourceWebStep,
+  };
+}
+
+function coreCheckpointExpectation(normalizedState, textContains = []) {
+  validateNormalizedCoreState(normalizedState, "captured Core checkpoint");
+  const normalized = sortKeys(normalizedState);
+  const expect = {
+    phase: normalized.phase,
+    waitKind: normalized.wait?.kind ?? null,
+    textContains,
+    outboundTags: normalized.otherOutboundTags ?? [],
+    services: (normalized.services ?? []).map(({ kind, operation }) => ({ kind, operation })),
+    storage: (normalized.storage ?? []).map(({ namespace, relativePath }) => ({
+      namespace,
+      relativePath,
+    })),
+    variables: normalized.variables ?? {},
+    stateSignature: checkpointHash(normalized),
+  };
+  validateCoreExpectation(expect, "captured");
+  return expect;
+}
+
+function validateNormalizedCoreState(state, label) {
+  assert.ok(state && typeof state === "object" && !Array.isArray(state), `${label} is invalid`);
+  assert.deepEqual(
+    Object.keys(state).sort(),
+    [
+      "lines",
+      "otherOutboundTags",
+      "phase",
+      "resources",
+      "scene",
+      "services",
+      "storage",
+      "variables",
+      "wait",
+    ].sort(),
+    `${label} does not match Core perf-run`,
+  );
+  assert.ok(RUNTIME_PHASES.has(state.phase), `${label} has invalid phase`);
+  assert.ok(
+    state.wait == null || WAIT_KINDS.has(state.wait?.kind),
+    `${label} has invalid wait kind`,
+  );
+  assert.ok(Array.isArray(state.lines), `${label} has invalid lines`);
+  assert.ok(
+    state.resources && typeof state.resources === "object",
+    `${label} has invalid resources`,
+  );
+  assert.ok(state.scene && typeof state.scene === "object", `${label} has invalid scene`);
+  assert.ok(
+    state.variables && typeof state.variables === "object" && !Array.isArray(state.variables),
+    `${label} has invalid variables`,
+  );
+  assert.ok(Array.isArray(state.services), `${label} has invalid services`);
+  assert.ok(Array.isArray(state.storage), `${label} has invalid storage`);
+  assert.ok(Array.isArray(state.otherOutboundTags), `${label} has invalid outbound tags`);
+}
+
+function validateCoreExpectation(expect, index) {
+  assert.ok(expect && typeof expect === "object", `Core step ${index} omitted expect`);
+  assert.deepEqual(
+    Object.keys(expect).sort(),
+    [
+      "outboundTags",
+      "phase",
+      "services",
+      "stateSignature",
+      "storage",
+      "textContains",
+      "variables",
+      "waitKind",
+    ].sort(),
+    `Core step ${index} expectation does not match Core perf-run`,
+  );
+  assert.ok(RUNTIME_PHASES.has(expect.phase), `Core step ${index} has invalid phase`);
+  assert.ok(
+    expect.waitKind == null || WAIT_KINDS.has(expect.waitKind),
+    `Core step ${index} has invalid waitKind`,
+  );
+  for (const field of ["textContains", "outboundTags", "services", "storage"])
+    assert.ok(Array.isArray(expect[field]), `Core step ${index} has invalid ${field}`);
+  assert.ok(
+    expect.textContains.every((value) => typeof value === "string"),
+    `Core step ${index} has invalid textContains`,
+  );
+  assert.ok(
+    expect.outboundTags.every(
+      (value) => Number.isSafeInteger(value) && value >= 0 && value <= 0xffff_ffff,
+    ),
+    `Core step ${index} has invalid outboundTags`,
+  );
+  for (const service of expect.services)
+    assert.deepEqual(
+      {
+        keys: Object.keys(service).sort(),
+        kind: SERVICE_KINDS.has(service.kind),
+        operation: typeof service.operation === "string" && service.operation.length > 0,
+      },
+      { keys: ["kind", "operation"], kind: true, operation: true },
+      `Core step ${index} has invalid service expectation`,
     );
-  }
-  if (step.action.type === "click")
-    assert.notEqual(
-      step.action.semanticInput,
-      undefined,
-      `${pathClass} click omitted semanticInput`,
+  for (const storage of expect.storage)
+    assert.deepEqual(
+      {
+        keys: Object.keys(storage).sort(),
+        namespace: STORAGE_NAMESPACES.has(storage.namespace),
+        relativePath: typeof storage.relativePath === "string",
+      },
+      { keys: ["namespace", "relativePath"], namespace: true, relativePath: true },
+      `Core step ${index} has invalid storage expectation`,
     );
+  assert.ok(
+    expect.variables && typeof expect.variables === "object" && !Array.isArray(expect.variables),
+    `Core step ${index} has invalid variables`,
+  );
+  assert.ok(
+    Object.values(expect.variables).every(
+      (value) =>
+        typeof value === "string" ||
+        typeof value === "boolean" ||
+        (typeof value === "number" && Number.isSafeInteger(value)),
+    ),
+    `Core step ${index} has invalid variable value`,
+  );
+  assert.match(
+    expect.stateSignature ?? "",
+    /^[0-9a-f]{64}$/,
+    `Core step ${index} has invalid stateSignature`,
+  );
+}
+
+function checkpointObservationSummary(checkpoint) {
+  const output = checkpoint.value.output ?? [];
+  return {
+    hash: checkpoint.hash,
+    phase: checkpoint.value.phase,
+    wait: checkpoint.value.wait,
+    variables: checkpoint.value.coreProjection.normalizedState.variables,
+    outputTail: output.slice(-20).map((line) => String(line).slice(-2_000)),
+  };
+}
+
+function protocolActionSummary(action) {
+  if (action.kind === "input") return action;
+  if (action.kind === "service_response") return { kind: action.kind, service: action.service };
+  if (action.kind === "storage_response") return { kind: action.kind, storage: action.storage };
+  return { kind: action.kind };
+}
+
+const RUNTIME_PHASES = new Set([
+  "negotiating",
+  "loading_project",
+  "ready",
+  "starting",
+  "running",
+  "waiting_input",
+  "waiting_external",
+  "debug_paused",
+  "reloading",
+  "stopping",
+  "stopped",
+  "faulted",
+  "analyzing_project",
+]);
+const WAIT_KINDS = new Set([
+  "enter_key",
+  "any_key",
+  "integer_value",
+  "string_value",
+  "void",
+  "any_value",
+  "integer_button",
+  "string_button",
+  "primitive_mouse_key",
+]);
+const SERVICE_KINDS = new Set([
+  "font_metrics",
+  "image",
+  "canvas",
+  "audio",
+  "network",
+  "open_url",
+  "extension",
+  "input_state",
+  "clock",
+  "entropy",
+  "presentation_query",
+  "sql",
+]);
+const STORAGE_NAMESPACES = new Set(["project", "save", "global_save", "data", "log", "resource"]);
+
+function validateStep(step, pathClass, protocolResults) {
+  validatePerformanceTraceAction(step.action, pathClass);
+  assertSecondaryClickProtocolActions(step.action, step.protocolActions, pathClass);
+  assert.ok(Array.isArray(step.protocolActions), `${pathClass} omitted protocolActions`);
+  for (const [index, action] of step.protocolActions.entries())
+    assertCoreAction(action, `${pathClass} protocol ${index}`, protocolResults);
   assert.equal(typeof step.expect?.wait?.kind, "string", `${pathClass} omitted wait kind`);
   assert.ok("generation" in step.expect.wait, `${pathClass} omitted wait generation`);
   assert.ok("waitId" in step.expect.wait, `${pathClass} omitted wait_id`);
@@ -486,15 +1012,55 @@ function validateStep(step, pathClass) {
     Array.isArray(step.expect.watches) && step.expect.watches.length > 0,
     `${pathClass} omitted key variables`,
   );
-  assert.ok(step.expect.checkpoint?.variables, `${pathClass} omitted captured variable values`);
-  assert.equal(
-    checkpointHash(step.expect.checkpoint),
-    step.expect.checkpointHash,
-    `${pathClass} stored hash mismatch`,
+  assert.match(
+    step.expect.checkpointHash ?? "",
+    /^[0-9a-f]{64}$/,
+    `${pathClass} omitted checkpoint hash`,
   );
 }
 
-async function performAction(browser, action) {
+export function validatePerformanceTraceAction(action, pathClass = "performance trace") {
+  assert.ok(
+    ["input", "click", "hover"].includes(action?.type),
+    `${pathClass} has unsupported action`,
+  );
+  if (action.type === "input")
+    assert.notEqual(action.value, undefined, `${pathClass} input omitted value`);
+  else {
+    assert.equal(typeof action.selector, "string", `${pathClass} DOM action omitted selector`);
+    assert.equal(
+      typeof action.expectedText,
+      "string",
+      `${pathClass} DOM action omitted exact text`,
+    );
+  }
+  if (action.type === "click") {
+    assert.ok(
+      action.button === undefined || ["left", "right"].includes(action.button),
+      `${pathClass} click has unsupported button`,
+    );
+    assert.notEqual(action.semanticInput, undefined, `${pathClass} click omitted semanticInput`);
+  }
+}
+
+export function assertSecondaryClickProtocolActions(
+  action,
+  protocolActions,
+  pathClass = "performance trace",
+) {
+  if (action?.type !== "click" || action.button !== "right") return;
+  assert.ok(Array.isArray(protocolActions), `${pathClass} right click omitted protocolActions`);
+  const inputs = protocolActions.filter((protocolAction) => protocolAction.kind === "input");
+  assert.equal(inputs.length, 1, `${pathClass} right click must map to exactly one Core input`);
+  assert.equal(
+    inputs[0].messageSkip,
+    true,
+    `${pathClass} right click did not produce messageSkip=true`,
+  );
+}
+
+async function prepareAction(browser, action) {
+  validatePerformanceTraceAction(action);
   if (action.type === "input") {
     const prompt = await browser.$(".prompt-bar input");
     const submit = await browser.$(".prompt-bar button[type=submit]");
@@ -507,15 +1073,63 @@ async function performAction(browser, action) {
       "trace submit unavailable",
     );
     await setTauriTestInput(browser, prompt, String(action.value));
-    await clickTauriTestElement(browser, submit);
-    return;
+    return () => clickTauriTestElement(browser, submit);
   }
   const element = await browser.$(action.selector);
   assert.ok(await element.isExisting(), `trace target does not exist: ${action.selector}`);
   if (action.expectedText != null)
     assert.equal((await element.getText()).trim(), action.expectedText);
-  if (action.type === "click") return clickTauriTestElement(browser, element);
-  await hoverTauriTestElement(browser, element);
+  if (action.type === "click")
+    return action.button === "right"
+      ? () => secondaryClickTauriTestElement(browser, element)
+      : () => clickTauriTestElement(browser, element);
+  return () => hoverTauriTestElement(browser, element);
+}
+
+async function performTimedAction(browser, action, before, settle, watches, beforeTiming) {
+  // Selector resolution, exact-label validation and input preparation are harness
+  // setup, not the response to the real input. Keep all assertions, outside its clock.
+  const performAction = await prepareAction(browser, action);
+  await beforeTiming?.();
+  const startedAt = performance.now();
+  await performAction();
+  await assertSecondaryActionStarted(browser, action, before);
+  await waitForNextObservation(browser, before, settle, watches);
+  return performance.now() - startedAt;
+}
+
+function performanceTimingBasis(settle) {
+  if (process.env.RUSTYERA_TAURI_PERF_HEAVY_DIAGNOSTICS === "1") return "diagnostic-heavy-dom";
+  return settle === "checkpoint_change"
+    ? "diagnostic-checkpoint-change"
+    : "action-to-stable-observation";
+}
+
+export async function assertSecondaryActionStarted(browser, action, before) {
+  if (action?.type !== "click" || action.button !== "right") return;
+  const previousIdentity = waitIdentity(before.value.wait);
+  const timeoutMessage = "right click produced no pending input or wait transition";
+  let last;
+  try {
+    await browser.waitUntil(
+      async () => {
+        last = await browser.execute(() => window.__RUSTYERA_TEST__.performanceProgress());
+        if (last?.fault) throw new Error(JSON.stringify(last.fault));
+        return (
+          last?.canInteract === false ||
+          (hasWaitIdentity(last?.wait) && waitIdentity(last.wait) !== previousIdentity)
+        );
+      },
+      {
+        timeout: 1_000,
+        interval: 10,
+        timeoutMsg: timeoutMessage,
+      },
+    );
+  } catch (error) {
+    if (!String(error).includes(timeoutMessage)) throw error;
+    throw new Error(`${timeoutMessage}: ${JSON.stringify(last ?? null)}`, { cause: error });
+  }
 }
 
 async function waitForNextObservation(browser, previous, settle, watches) {
@@ -523,15 +1137,27 @@ async function waitForNextObservation(browser, previous, settle, watches) {
   await browser.waitUntil(
     async () => {
       if (settle === "checkpoint_change")
-        return (await capturePerformanceCheckpoint(browser, watches)).hash !== previous.hash;
-      const current = await browser.execute(() => window.__RUSTYERA_TEST__.snapshotSummary());
+        return (
+          (
+            await capturePerformanceCheckpoint(
+              browser,
+              watches,
+              previous.value.coreProjection.protocolCursor,
+            )
+          ).hash !== previous.hash
+        );
+      const current = await browser.execute(() => window.__RUSTYERA_TEST__.performanceProgress());
       if (current?.fault) throw new Error(JSON.stringify(current.fault));
       return (
         current?.canInteract && current.wait && waitIdentity(current.wait) !== previousIdentity
       );
     },
-    { timeout: 300_000, interval: 20, timeoutMsg: "trace action did not settle" },
+    { timeout: 30_000, interval: 20, timeoutMsg: "trace action did not settle" },
   );
+  await browser.execute(async () => {
+    await window.__RUSTYERA_TEST__.waitForStableObservation(30_000, true, true);
+    return true;
+  });
 }
 
 function assertWait(expected, actual, label) {
@@ -548,17 +1174,23 @@ function assertWait(expected, actual, label) {
 function waitIdentity(wait) {
   return `${wait?.kind ?? ""}:${String(wait?.generation ?? "")}:${String(wait?.waitId ?? wait?.wait_id ?? "")}`;
 }
+
+function hasWaitIdentity(wait) {
+  return (
+    wait != null &&
+    typeof wait === "object" &&
+    typeof wait.kind === "string" &&
+    (wait.waitId != null || wait.wait_id != null)
+  );
+}
 function canonicalizeCheckpoint(raw) {
-  const checkpoint = structuredClone(raw);
-  checkpoint.service = omitVolatileIdentity(checkpoint.service);
-  checkpoint.storage = omitVolatileIdentity(checkpoint.storage);
-  checkpoint.transfer = omitVolatileIdentity(checkpoint.transfer);
-  return sortKeys(checkpoint);
+  return sortKeys(raw);
 }
 function checkpointHash(value) {
-  return createHash("sha256")
-    .update(JSON.stringify(sortKeys(value)))
-    .digest("hex");
+  return hashCheckpointJson(JSON.stringify(sortKeys(value)));
+}
+function hashCheckpointJson(json) {
+  return createHash("sha256").update(json).digest("hex");
 }
 function traceHash(trace) {
   return checkpointHash({ ...trace, traceDigest: null });
@@ -569,14 +1201,91 @@ function digestWithoutField(value, field) {
   return checkpointHash(unsigned);
 }
 function protocolActionDelta(before, after) {
-  const previous = before?.coreProjection?.protocolActions ?? [];
   const current = after?.coreProjection?.protocolActions ?? [];
-  assert.deepEqual(
-    current.slice(0, previous.length),
-    previous,
-    "protocol action history changed during capture",
+  assert.ok(
+    Array.isArray(before?.coreProjection?.protocolActions),
+    "before checkpoint omitted protocol actions",
   );
-  return current.slice(previous.length);
+  return current;
+}
+
+function internProtocolActions(trace, actions) {
+  return actions.map((action) => internProtocolAction(trace, action));
+}
+
+function internProtocolAction(trace, action) {
+  if (!["service_response", "storage_response"].includes(action?.kind)) return action;
+  if (action.resultRef) {
+    assert.equal(action.result, undefined, "protocol action cannot contain result and resultRef");
+    return action;
+  }
+  assert.ok(action.result && typeof action.result === "object", "protocol response omitted result");
+  const resultEntry = sortKeys({ kind: action.kind, result: action.result });
+  const resultRef = checkpointHash(resultEntry);
+  const existing = trace.protocolResults[resultRef];
+  if (existing) {
+    assert.deepEqual(existing, resultEntry, `protocol result digest collision ${resultRef}`);
+  } else {
+    const budget = protocolResultBudgets.get(trace) ?? protocolResultBudget(trace.protocolResults);
+    const bytes = Buffer.byteLength(JSON.stringify(resultEntry));
+    if (budget.count + 1 > MAXIMUM_PROTOCOL_RESULTS)
+      throw new Error("performance trace exceeds its unique protocol result count limit");
+    if (budget.bytes + bytes > MAXIMUM_PROTOCOL_RESULT_BYTES)
+      throw new Error("performance trace exceeds its unique protocol result byte limit");
+    trace.protocolResults[resultRef] = resultEntry;
+    protocolResultBudgets.set(trace, { count: budget.count + 1, bytes: budget.bytes + bytes });
+  }
+  const reference = { ...action };
+  delete reference.result;
+  return { ...reference, resultRef };
+}
+
+function protocolResultBudget(results) {
+  const entries = Object.values(results ?? {});
+  return {
+    count: entries.length,
+    bytes: entries.reduce((total, entry) => total + Buffer.byteLength(JSON.stringify(entry)), 0),
+  };
+}
+
+function validateProtocolResults(results, actions) {
+  assert.ok(
+    results && typeof results === "object" && !Array.isArray(results),
+    "trace omitted protocolResults",
+  );
+  const budget = protocolResultBudget(results);
+  assert.ok(budget.count <= MAXIMUM_PROTOCOL_RESULTS, "trace has too many unique protocol results");
+  assert.ok(
+    budget.bytes <= MAXIMUM_PROTOCOL_RESULT_BYTES,
+    "trace protocol results exceed their byte limit",
+  );
+  for (const [resultRef, entry] of Object.entries(results)) {
+    assert.match(resultRef, /^[0-9a-f]{64}$/, "protocol result reference is not a digest");
+    assert.deepEqual(
+      Object.keys(entry).sort(),
+      ["kind", "result"],
+      `protocol result ${resultRef} has unknown fields`,
+    );
+    assert.ok(
+      ["service_response", "storage_response"].includes(entry.kind),
+      `protocol result ${resultRef} has invalid kind`,
+    );
+    assert.ok(
+      entry.result && typeof entry.result === "object",
+      `protocol result ${resultRef} is invalid`,
+    );
+    assert.equal(checkpointHash(entry), resultRef, `protocol result ${resultRef} digest mismatch`);
+  }
+  const referenced = new Set(
+    actions
+      .filter((action) => ["service_response", "storage_response"].includes(action.kind))
+      .map((action) => action.resultRef),
+  );
+  assert.equal(
+    referenced.size,
+    Object.keys(results).length,
+    "trace contains unreferenced protocol results",
+  );
 }
 function omitVolatileIdentity(value) {
   if (Array.isArray(value)) return value.map(omitVolatileIdentity);
@@ -617,8 +1326,16 @@ async function readJsonLines(path) {
 }
 async function writeJsonAtomically(path, value) {
   const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx" });
+  const serialized = `${JSON.stringify(value)}\n`;
+  if (Buffer.byteLength(serialized) > MAXIMUM_PERFORMANCE_TRACE_BYTES)
+    throw new Error("performance trace exceeds its 256 MiB file limit");
+  await writeFile(temporary, serialized, { flag: "wx" });
   await rename(temporary, path);
+}
+async function readBoundedTraceJson(path) {
+  if ((await stat(path)).size > MAXIMUM_PERFORMANCE_TRACE_BYTES)
+    throw new Error("performance trace exceeds its 256 MiB file limit");
+  return JSON.parse(await readFile(path, "utf8"));
 }
 function percentile(ordered, quantile) {
   if (!ordered.length) return null;

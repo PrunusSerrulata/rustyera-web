@@ -168,6 +168,31 @@ export function expandCompleteTauriSnapshot(snapshot) {
   return snapshot;
 }
 
+/** Performance sampling must not force layout or serialize the full page in the
+ * measured interval. Full snapshots remain the ordinary E2E/explicit diagnostic path. */
+export async function capturePerformanceProgressSnapshot(browser, timeoutMs = 30_000) {
+  let timeout;
+  try {
+    return await Promise.race([
+      browser.execute(() => {
+        const control = window.__RUSTYERA_TEST__;
+        return {
+          observationMode: "performance-progress",
+          runtime: control ? control.performanceProgress() : null,
+        };
+      }),
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`performance progress capture exceeded ${timeoutMs} ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export function snapshotCaptureTimeout(_previousSnapshot, interval = SNAPSHOT_INTERVAL_MS) {
   return interval;
 }
@@ -187,7 +212,13 @@ export function assertSnapshotProgress(
     currentSnapshot.runtime.canInteract !== true &&
     currentSnapshot.runtime.wait == null &&
     currentSnapshot.runtime.transfer?.export == null;
-  const maximumIdenticalIntervals = loadingAllowance ? 4 : 1;
+  const maximumIdenticalIntervals = ["performance-progress", "performance-diagnostic"].includes(
+    currentSnapshot?.observationMode,
+  )
+    ? 6
+    : loadingAllowance
+      ? 4
+      : 1;
   if (
     previousSnapshot != null &&
     identicalIntervals >= maximumIdenticalIntervals &&
@@ -195,7 +226,7 @@ export function assertSnapshotProgress(
       (signatures?.current ?? snapshotProgressSignature(currentSnapshot))
   ) {
     throw new Error(
-      `${label} end-to-end test stalled: ${identicalIntervals} consecutive 5-second intervals had identical complete snapshots: ${JSON.stringify(currentSnapshot)}`,
+      `${label} end-to-end test stalled: ${identicalIntervals} consecutive 5-second intervals had identical ${currentSnapshot?.observationMode === "performance-progress" ? "performance progress observations" : "complete snapshots"}: ${JSON.stringify(currentSnapshot)}`,
     );
   }
 }
@@ -253,6 +284,7 @@ export function startTauriSessionMonitor(
     allowFault = () => false,
     onSnapshot,
     windowSafety,
+    snapshotMode = "complete",
   } = {},
 ) {
   let stopped = false;
@@ -291,12 +323,17 @@ export function startTauriSessionMonitor(
         if (deadline != null && Date.now() >= deadline) {
           throw new Error(describeDeadline());
         }
-        const captured = await captureCompleteTauriSnapshot(
+        const captureSnapshot =
+          snapshotMode === "performance-progress"
+            ? capturePerformanceProgressSnapshot
+            : captureCompleteTauriSnapshot;
+        const captured = await captureSnapshot(
           browser,
-          snapshotCaptureTimeout(previousSnapshot, interval),
+          snapshotMode !== "complete" ? 30_000 : snapshotCaptureTimeout(previousSnapshot, interval),
         );
         const snapshot = {
           ...captured,
+          ...(snapshotMode === "performance-diagnostic" ? { observationMode: snapshotMode } : {}),
           operation: snapshotContext(),
           windowSafety: await windowSafety?.(),
         };

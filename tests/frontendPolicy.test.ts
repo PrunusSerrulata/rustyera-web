@@ -1071,7 +1071,8 @@ describe("frontend host and image-line policy", () => {
     expect(testRunner).not.toContain("autoInstallTauriDriver");
     expect(testRunner).toMatch(/captureBackendLogs:\s*true/);
     expect(tauriTestConfiguration.app.windows[0].visible).toBe(true);
-    expect(testRunner).toContain("startWdioSession(capabilities, { maxInstances: 1 })");
+    expect(testRunner).toMatch(/startWdioSession\(capabilities,\s*\{\s*maxInstances:\s*1,/);
+    expect(testRunner).toContain('logLevel: perfAudit.enabled ? "error" : "info"');
     expect(testRunner).toContain("cleanupWdioSession(browser)");
     expect(testRunner).toContain("const specProfiles =");
     expect(existsSync(resolve("wdio.tauri.conf.mjs"))).toBe(false);

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "traceDigest": null,
   "scenario": "snake-tw-runtime-four-paths",
   "projectDigest": null,
@@ -7,6 +7,7 @@
   "captureRequired": true,
   "seed": 123456,
   "clock": "2026-01-01T00:00:00.000Z",
+  "protocolResults": {},
   "coverage": {
     "loading": {},
     "steady-runtime": {},

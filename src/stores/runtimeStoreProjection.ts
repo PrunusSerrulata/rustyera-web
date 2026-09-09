@@ -2,7 +2,7 @@ type RuntimeStoreProjectionExtras = {
   bridgeKind: "tauri" | "browser";
   directProjectDirectoryAccess: boolean;
   memoryConstrained: boolean;
-  testRuntimeEvidence(messageTypes?: string[]): Record<string, unknown>;
+  testRuntimeEvidence(messageTypes?: string[], fromRecord?: number): Record<string, unknown>;
   testRuntimeEvidenceSummary(): Record<string, unknown>;
   testBackgroundWorkRevision(): number;
 };
@@ -144,10 +144,11 @@ function projectRuntimeStore(context: Record<string, any>) {
     debugCommand: context.debugCommand,
     inspectWatches: context.inspectWatches,
     inspectTypedWatches: context.inspectTypedWatches,
-    testRuntimeEvidence: (messageTypes?: string[]) =>
+    testRuntimeEvidence: (messageTypes?: string[], fromRecord = 0) =>
       context.testEvidence.snapshot(
         context.runtimeSessionObservationGeneration,
         messageTypes ? new Set(messageTypes) : undefined,
+        fromRecord,
       ),
     testRuntimeEvidenceSummary: () =>
       context.testEvidence.summary(context.runtimeSessionObservationGeneration),

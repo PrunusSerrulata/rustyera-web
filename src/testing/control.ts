@@ -5,8 +5,16 @@ import {
   type ServiceLifecycleConfiguration,
 } from "@/testing/serviceLifecycle";
 import type { Pinia } from "pinia";
+import {
+  NativeEvidenceCollector,
+  mergeNativeEvidence,
+  compareProtocolIdentity,
+  compactStorageRecords,
+  type NativeEvidencePage,
+} from "@/testing/nativeEvidence";
 
 import { observedLineText } from "@/testing/presentationText";
+import { performancePresentationInventory } from "@/testing/performancePresentationInventory";
 import { hex } from "@/platform/browserProjectFilesystem";
 import { currentGameViewportMeasurement } from "@/platform/viewportMeasurement";
 import type { RuntimeTestConfiguration } from "@/stores/runtime";
@@ -18,15 +26,23 @@ import {
   performanceAuditProgress,
   performanceAuditSnapshot,
   resetPerformanceAudit,
+  takePerformanceAudit,
+  waitForPendingPerformanceObservations,
 } from "@/testing/performanceAudit";
 
 export interface WebTestControl {
   configure(configuration: RuntimeTestConfiguration): void;
   configureServiceLifecycle(configuration: ServiceLifecycleConfiguration): void;
   openProject(): Promise<void>;
-  waitForStableObservation(timeoutMs?: number, summary?: boolean): Promise<Record<string, unknown>>;
+  waitForStableObservation(
+    timeoutMs?: number,
+    summary?: boolean,
+    progressOnly?: boolean,
+  ): Promise<Record<string, unknown>>;
   snapshot(): Record<string, unknown>;
   snapshotSummary(): Record<string, unknown>;
+  performanceProgress(): Record<string, unknown>;
+  performancePresentationInventory(): Record<string, number | boolean>;
   protocolEvidence(messageTypes: string[]): Record<string, unknown>;
   mediaPlacements(): Record<string, unknown>;
   mediaReplay(resourceName: string): Record<string, unknown>;
@@ -40,11 +56,20 @@ export interface WebTestControl {
   exportDiagnosis(): Promise<void>;
   calibratePerformanceFrames(frameCount?: number): Promise<Record<string, unknown>>;
   performanceAudit(): Promise<Record<string, unknown>>;
+  takePerformanceAudit(limit?: number, includeIdentity?: boolean): Promise<Record<string, unknown>>;
+  waitForPendingPerformanceObservations(timeoutMs?: number): Promise<void>;
   resetPerformanceAudit(): Promise<{ frontendEpoch: number; nativeEpoch: number }>;
+  takeNativeReplayBytes(
+    id: number,
+    offset: number,
+  ): { offset: number; totalBytes: number; hex: string };
   frontendPerformanceAudit(): Record<string, unknown>;
   frontendPerformanceAuditProgress(): Record<string, number>;
   resetFrontendPerformanceAudit(): { frontendEpoch: number };
-  performanceCheckpoint(watches: string[]): Promise<Record<string, unknown>>;
+  performanceCheckpoint(
+    watches: string[],
+    protocolCursor?: number | null,
+  ): Promise<Record<string, unknown>>;
 }
 
 export function isStableObservationCandidate(
@@ -65,9 +90,12 @@ export function isStableObservationCandidate(
 
 export function stableObservationSignature(snapshot: Record<string, unknown>): string {
   const observed = { ...snapshot };
-  // Servicing the background pump does not change an otherwise ready input boundary.
-  // This affects only action settling; the complete-snapshot watchdog keeps this field.
+  // Servicing the background pump and observing it must not keep an otherwise
+  // ready input boundary unstable. The complete-snapshot watchdog still keeps
+  // these fields, so hangs remain visible in persisted evidence.
   delete observed.cooperativeBackgroundWorkRevision;
+  delete observed.performanceAudit;
+  delete observed.memory;
   if (observed.audioProvider && typeof observed.audioProvider === "object")
     observed.audioProvider = Object.fromEntries(
       Object.entries(observed.audioProvider).map(([channel, state]) => [
@@ -80,8 +108,65 @@ export function stableObservationSignature(snapshot: Record<string, unknown>): s
   return JSON.stringify(observed);
 }
 
+/** Prefer a rendered frame, but keep native WebViews that temporarily suppress
+ * animation callbacks from deadlocking a test observation indefinitely. */
+export function waitForObservationFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    let finished = false;
+    const handles: { frame?: number; timer?: number } = {};
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      if (handles.frame !== undefined) cancelAnimationFrame(handles.frame);
+      if (handles.timer !== undefined) window.clearTimeout(handles.timer);
+      resolve();
+    };
+    handles.timer = window.setTimeout(finish, 16);
+    handles.frame = requestAnimationFrame(finish);
+    if (finished) {
+      cancelAnimationFrame(handles.frame);
+      window.clearTimeout(handles.timer);
+    }
+  });
+}
+
+/** Revision-based progress only. Never read DOM geometry, output bodies, resources,
+ * debugger values, live memory, or the wire ledger on the measured polling path. */
+export function capturePerformanceProgress(
+  store: ReturnType<typeof useRuntimeStore>,
+): Record<string, unknown> {
+  return serialize({
+    bridgeKind: store.bridgeKind,
+    phase: store.phase,
+    runtimeEpoch: store.runtimeEpoch,
+    status: store.status,
+    projectOpen: store.projectOpen,
+    projectLoading: store.projectLoading,
+    loadingProgress: store.projectLoading
+      ? { label: store.projectLoadProgressLabel, value: store.projectLoadProgressValue }
+      : null,
+    canInteract: store.canInteract,
+    wait: store.presentation.inputWait,
+    presentationRevision: store.presentation.revision,
+    historyRevision: store.presentation.historyRevision,
+    sceneRevision: store.presentation.scene.revision,
+    fault: store.fault,
+    logs: store.logs.slice(-100),
+    serviceEvidence: store.testRuntimeEvidenceSummary(),
+    transfer: store.testTransferState(),
+    diagnosisExporting: store.diagnosisExporting,
+    saveTransfer: {
+      mode: store.traditionalSaveDialogMode,
+      busy: store.traditionalSaveTransferBusy,
+      error: store.traditionalSaveTransferError,
+      overwriteSlot: store.traditionalSaveOverwriteSlot,
+    },
+  });
+}
+
 export function installWebTestControl(pinia: Pinia): void {
   const store = useRuntimeStore(pinia);
+  let nativeEvidence = new NativeEvidenceCollector();
   installPerformanceAuditObservers();
   const createSnapshot = (summary: boolean): Record<string, unknown> =>
     serialize({
@@ -164,6 +249,7 @@ export function installWebTestControl(pinia: Pinia): void {
     });
   const snapshot = (): Record<string, unknown> => createSnapshot(false);
   const snapshotSummary = (): Record<string, unknown> => createSnapshot(true);
+  const performanceProgress = (): Record<string, unknown> => capturePerformanceProgress(store);
 
   window.__RUSTYERA_TEST__ = {
     configure: (configuration) => store.configureTestRun(configuration),
@@ -171,6 +257,11 @@ export function installWebTestControl(pinia: Pinia): void {
     openProject: () => store.openProject(),
     snapshot,
     snapshotSummary,
+    performanceProgress,
+    performancePresentationInventory: () => {
+      if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
+      return performancePresentationInventory(store.presentation);
+    },
     protocolEvidence: (messageTypes) => serialize(store.testRuntimeEvidence(messageTypes)),
     mediaPlacements: () => presentationMedia(store.presentation),
     mediaReplay: (resourceName) => mediaReplay(store.presentation.resources, resourceName),
@@ -204,7 +295,39 @@ export function installWebTestControl(pinia: Pinia): void {
       const frontendEpoch = resetPerformanceAudit();
       const { invoke } = await import("@tauri-apps/api/core");
       const nativeEpoch = await invoke<number>("performance_audit_reset");
+      nativeEvidence = new NativeEvidenceCollector();
       return { frontendEpoch, nativeEpoch };
+    },
+    async waitForPendingPerformanceObservations(timeoutMs = 30_000) {
+      if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
+      await waitForPendingPerformanceObservations(timeoutMs);
+    },
+    takeNativeReplayBytes(id: number, offset: number) {
+      if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
+      return nativeEvidence.takeReplayBytes(id, offset);
+    },
+    async takePerformanceAudit(limit = 512, includeIdentity = false) {
+      if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1024)
+        throw new Error("performance telemetry chunk limit must be between 1 and 1024");
+      const { invoke } = await import("@tauri-apps/api/core");
+      const native = await invoke<{ nativeEvidence: NativeEvidencePage }>(
+        "performance_audit_take",
+        { limit, includeIdentity },
+      );
+      nativeEvidence.accept(native.nativeEvidence);
+      const exported = nativeEvidence.exportPage(native.nativeEvidence);
+      // These are independent observation boundaries, not an atomic cross-host snapshot.
+      // Never add synthetic transport records to the authority's sequence space.
+      return {
+        native: {
+          ...native,
+          nativeEvidence: exported.page,
+          nativeEvidencePendingPages: exported.remainingPages,
+        },
+        frontend: takePerformanceAudit(limit),
+        atomic: false,
+      };
     },
     async performanceAudit() {
       if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
@@ -240,10 +363,6 @@ export function installWebTestControl(pinia: Pinia): void {
         }>;
         segments: Record<string, { timingSamples: number }>;
       };
-      if (native.epoch !== frontend.epoch)
-        throw new Error(
-          `performance audit epoch mismatch: frontend=${frontend.epoch} native=${native.epoch}`,
-        );
       if (native.dropped !== 0)
         throw new Error(`performance audit native telemetry dropped ${native.dropped} samples`);
       if (frontend.timingSamplesDropped !== 0)
@@ -304,13 +423,52 @@ export function installWebTestControl(pinia: Pinia): void {
         },
       });
     },
-    async performanceCheckpoint(watches) {
+    async performanceCheckpoint(watches, protocolCursor = null) {
       if (!performanceAuditEnabled()) throw new Error("performance audit telemetry is disabled");
       const wait = store.presentation.inputWait as
         { kind?: string; wait_id?: unknown; generation?: unknown } | undefined;
       const variables = await store.inspectTypedWatches(watches);
-      const protocol = store.testRuntimeEvidence() as { records?: unknown[] };
-      return serialize({
+      const initialCheckpoint = protocolCursor == null;
+      const protocol = store.testRuntimeEvidence(
+        undefined,
+        initialCheckpoint ? 0 : protocolCursor,
+      ) as { recordCursor?: number; records?: unknown[] };
+      if (!Number.isSafeInteger(protocol.recordCursor))
+        throw new Error("performance protocol evidence omitted its cursor");
+      let nativeRecords: ReturnType<NativeEvidenceCollector["take"]> = [];
+      if (store.bridgeKind === "tauri") {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const deadline = performance.now() + 30_000;
+        let complete = false;
+        for (let page = 0; page < 1024; page++) {
+          if (performance.now() >= deadline)
+            throw new Error("native evidence drain deadline exceeded");
+          const chunk = await invoke<{ nativeEvidence: NativeEvidencePage; evidenceOnly: boolean }>(
+            "performance_audit_take",
+            {
+              limit: 512,
+              includeIdentity: false,
+              evidenceOnly: true,
+            },
+          );
+          if (chunk.evidenceOnly !== true)
+            throw new Error("performance_audit_take evidenceOnly routing is not installed");
+          nativeEvidence.accept(chunk.nativeEvidence);
+          if (performance.now() >= deadline)
+            throw new Error("native evidence drain deadline exceeded");
+          if (chunk.nativeEvidence.remainingRecords === 0) {
+            complete = true;
+            break;
+          }
+        }
+        if (!complete) throw new Error("native evidence drain page limit exceeded");
+        nativeRecords = nativeEvidence.take();
+      }
+      const protocolRecords = mergeNativeEvidence(protocol.records ?? [], nativeRecords);
+      const replayActions = initialCheckpoint
+        ? []
+        : nativeEvidence.projectReplayActions(coreProtocolActions(protocolRecords));
+      const checkpoint = serialize({
         runtimeEpoch: store.runtimeEpoch,
         phase: store.phase,
         wait: wait
@@ -321,7 +479,10 @@ export function installWebTestControl(pinia: Pinia): void {
         resources: store.presentation.resources,
         variables,
         service: store.testRuntimeEvidenceSummary(),
-        storage: store.testRuntimeEvidence(["storage_request", "storage_response"]),
+        storage: {
+          ...store.testRuntimeEvidenceSummary(),
+          records: compactStorageRecords(protocolRecords),
+        },
         transfer: store.testTransferState(),
         saveTransfer: {
           mode: store.traditionalSaveDialogMode,
@@ -329,15 +490,30 @@ export function installWebTestControl(pinia: Pinia): void {
           error: store.traditionalSaveTransferError,
           overwriteSlot: store.traditionalSaveOverwriteSlot,
         },
-        coreProjection: coreCheckpointProjection(protocol.records ?? [], {
-          phase: store.phase,
-          wait: store.presentation.inputWait,
-          lines: store.presentation.lines,
-          resources: store.presentation.resources,
-          scene: store.presentation.scene,
-          variables,
-        }),
       });
+      // The Core projection already returns JSON-safe values. Do not walk its
+      // full scene/resource tree a second time in the generic serializer.
+      return {
+        ...checkpoint,
+        coreProjection: {
+          ...coreCheckpointProjection(
+            protocolRecords,
+            {
+              phase: store.phase,
+              wait: store.presentation.inputWait,
+              lines: store.presentation.lines,
+              resources: store.presentation.resources,
+              scene: store.presentation.scene,
+              variables,
+            },
+            store.bridgeKind === "tauri",
+            initialCheckpoint,
+            false,
+          ),
+          protocolActions: initialCheckpoint ? [] : coreSerialize(replayActions),
+          protocolCursor: protocol.recordCursor,
+        },
+      };
     },
     async takeDownload(timeoutMs = 30_000) {
       const deadline = performance.now() + timeoutMs;
@@ -352,12 +528,16 @@ export function installWebTestControl(pinia: Pinia): void {
         )}`,
       );
     },
-    async waitForStableObservation(timeoutMs = 30_000, summary = false) {
+    async waitForStableObservation(timeoutMs = 30_000, summary = false, progressOnly = false) {
+      if (progressOnly && !performanceAuditEnabled())
+        throw new Error("performance progress requires an audit build");
       const deadline = performance.now() + timeoutMs;
       let previous = "";
       let stableFrames = 0;
       while (performance.now() < deadline) {
-        const current = stableObservationSignature(snapshotSummary());
+        const current = stableObservationSignature(
+          progressOnly ? performanceProgress() : snapshotSummary(),
+        );
         const observable = isStableObservationCandidate(
           store.phase,
           store.canInteract,
@@ -367,9 +547,10 @@ export function installWebTestControl(pinia: Pinia): void {
         );
         if (observable && current === previous) stableFrames += 1;
         else stableFrames = 0;
-        if (stableFrames >= 2) return summary ? snapshotSummary() : snapshot();
+        if (stableFrames >= 2)
+          return progressOnly ? performanceProgress() : summary ? snapshotSummary() : snapshot();
         previous = current;
-        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        await waitForObservationFrame();
       }
       throw new Error(`等待稳定输入状态超时（${timeoutMs} ms）`);
     },
@@ -542,40 +723,69 @@ function serialize(value: unknown): any {
   return value;
 }
 
-function coreSerialize(value: unknown): any {
+export function coreSerialize(value: unknown, path = "$"): any {
   if (typeof value === "bigint") {
     if (value < BigInt(Number.MIN_SAFE_INTEGER) || value > BigInt(Number.MAX_SAFE_INTEGER))
-      throw new Error(`Core companion integer exceeds the exact JSON range: ${value}`);
+      throw new Error(`Core companion integer at ${path} exceeds the exact JSON range: ${value}`);
     return Number(value);
   }
   if (value instanceof Uint8Array) return [...value];
-  if (Array.isArray(value)) return value.map(coreSerialize);
+  if (Array.isArray(value))
+    return value.map((child, index) => coreSerialize(child, `${path}[${index}]`));
   if (value && typeof value === "object")
     return Object.fromEntries(
-      Object.entries(value).map(([key, child]) => [key, coreSerialize(child)]),
+      Object.entries(value).map(([key, child]) => [
+        key,
+        coreSerialize(child, coreSerializePath(path, key)),
+      ]),
     );
   return value;
 }
 
-function coreProtocolActions(records: unknown[]): unknown[] {
+function coreSerializePath(parent: string, key: string): string {
+  return /^[A-Za-z_$][\w$]*$/.test(key) ? `${parent}.${key}` : `${parent}[${JSON.stringify(key)}]`;
+}
+
+export function coreProtocolActions(records: unknown[]): unknown[] {
   const services = new Map<string, { kind: unknown; operation: unknown }>();
   const storage = new Map<string, { namespace: unknown; relativePath: unknown }>();
   const actions: unknown[] = [];
-  for (const record of records as Array<{
+  const typed = records as Array<{
     direction?: string;
+    channel?: string;
+    epoch?: unknown;
+    messageId?: unknown;
+    nativeCompletion?: boolean;
     message?: { type?: string; value?: Record<string, any> };
-  }>) {
-    const message = record.message;
-    const value = message?.value;
-    const requestId = String(value?.request_id ?? "");
-    if (record.direction === "receive" && message?.type === "service_request")
-      services.set(requestId, { kind: value?.kind, operation: value?.operation });
-    else if (record.direction === "receive" && message?.type === "storage_request")
-      storage.set(requestId, {
+  }>;
+  const requestKey = (record: (typeof typed)[number]) =>
+    `${record.channel ?? "runtime"}/${record.epoch ?? "none"}/${record.message?.value?.request_id ?? ""}`;
+  // Index complete requests before interpreting submits: fused native IPC can expose
+  // its incoming envelopes before the frontend learns its own submitted message ID.
+  for (const record of typed) {
+    const value = record.message?.value;
+    if (record.direction === "receive" && record.message?.type === "service_request")
+      services.set(requestKey(record), { kind: value?.kind, operation: value?.operation });
+    if (record.direction === "receive" && record.message?.type === "storage_request")
+      storage.set(requestKey(record), {
         namespace: value?.namespace,
         relativePath: value?.relative_path,
       });
-    else if (record.direction === "send" && message?.type === "input")
+  }
+  const sends = typed.filter(
+    (record) => record.direction === "send" && (record.channel ?? "runtime") === "runtime",
+  );
+  if (typed.some((record) => record.nativeCompletion))
+    sends.sort(
+      (a, b) =>
+        compareProtocolIdentity(a.epoch, b.epoch) ||
+        compareProtocolIdentity(a.messageId, b.messageId),
+    );
+  for (const record of sends) {
+    const message = record.message;
+    const value = message?.value;
+    const requestId = requestKey(record);
+    if (message?.type === "input")
       actions.push({
         kind: "input",
         intent: value?.intent,
@@ -584,11 +794,21 @@ function coreProtocolActions(records: unknown[]): unknown[] {
     else if (record.direction === "send" && message?.type === "service_response") {
       const service = services.get(requestId);
       if (!service) throw new Error(`Core companion cannot resolve service request ${requestId}`);
-      actions.push({ kind: "service_response", service, result: value?.result });
+      actions.push({
+        kind: "service_response",
+        service,
+        result: value?.result,
+        ...(record.nativeCompletion ? { nativeCompletion: true } : {}),
+      });
     } else if (record.direction === "send" && message?.type === "storage_response") {
       const request = storage.get(requestId);
       if (!request) throw new Error(`Core companion cannot resolve storage request ${requestId}`);
-      actions.push({ kind: "storage_response", storage: request, result: value?.result });
+      actions.push({
+        kind: "storage_response",
+        storage: request,
+        result: value?.result,
+        ...(record.nativeCompletion ? { nativeCompletion: true } : {}),
+      });
     }
   }
   return actions;
@@ -597,10 +817,15 @@ function coreProtocolActions(records: unknown[]): unknown[] {
 function coreCheckpointProjection(
   records: unknown[],
   presentation: Record<string, unknown>,
+  nativePreparedProject: boolean,
+  includeSetupMessages = true,
+  includeProtocolActions = true,
 ): Record<string, unknown> {
   const typed = records as Array<{
+    nativeCompletion?: boolean;
     channel?: string;
     direction?: string;
+    epoch?: unknown;
     message?: { type?: string; value?: Record<string, any> };
   }>;
   const actionTypes = new Set(["start", "input", "service_response", "storage_response"]);
@@ -621,7 +846,20 @@ function coreCheckpointProjection(
   const services: unknown[] = [];
   const storage: unknown[] = [];
   const otherOutboundTags: number[] = [];
+  const requestKey = (record: (typeof typed)[number]) =>
+    `${record.epoch ?? "none"}/${record.message?.type?.replace("_response", "_request")}/${record.message?.value?.request_id}`;
+  const completed = new Set(
+    typed
+      .filter(
+        (record) =>
+          record.direction === "send" &&
+          ["service_response", "storage_response"].includes(record.message?.type ?? ""),
+      )
+      .map(requestKey),
+  );
   for (const record of checkpointRecords) {
+    // A completed request is not outstanding, regardless of which host route handled it.
+    if (completed.has(requestKey(record))) continue;
     if (record.direction !== "receive" || (record.channel ?? "runtime") !== "runtime") continue;
     const message = record.message;
     const value = message?.value;
@@ -640,11 +878,82 @@ function coreCheckpointProjection(
       });
     else if (message?.type) otherOutboundTags.push(runtimeMessageTag(message.type));
   }
-  return coreSerialize({
-    normalizedState: { ...presentation, services, storage, otherOutboundTags },
-    protocolActions: coreProtocolActions(records),
-    setupMessages: capturedCoreSetupMessages(typed),
-  });
+  return {
+    normalizedState: coreNormalizeCheckpointValue({
+      ...presentation,
+      wait: coreStableInputWait(presentation.wait),
+      variables: coreCheckpointVariables(presentation.variables),
+      services,
+      storage,
+      otherOutboundTags,
+    }),
+    protocolActions: includeProtocolActions ? coreSerialize(coreProtocolActions(records)) : [],
+    setupMessages: includeSetupMessages
+      ? coreSerialize(capturedCoreSetupMessages(typed, nativePreparedProject))
+      : [],
+  };
+}
+
+export function coreNormalizeCheckpointValue(value: unknown): any {
+  if (typeof value === "bigint")
+    return value < BigInt(Number.MIN_SAFE_INTEGER) || value > BigInt(Number.MAX_SAFE_INTEGER)
+      ? value.toString()
+      : Number(value);
+  if (value instanceof Uint8Array) return [...value];
+  if (Array.isArray(value)) return value.map(coreNormalizeCheckpointValue);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, coreNormalizeCheckpointValue(child)]),
+    );
+  return value;
+}
+
+export function coreStableInputWait(value: unknown): Record<string, unknown> | null {
+  if (value == null) return null;
+  if (typeof value !== "object" || Array.isArray(value))
+    throw new Error("Core companion input wait is malformed");
+  const wait = value as Record<string, unknown>;
+  // Keep this mapping aligned with runtime-tester's StableInputWait. Session-local
+  // wait IDs, submission tokens, generations, and deadlines are deliberately excluded.
+  return {
+    kind: wait.kind,
+    stability: wait.stability,
+    oneInput: wait.one_input,
+    stopMessageSkip: wait.stop_message_skip,
+    systemInput: wait.system_input,
+    mouseInput: wait.mouse_input,
+    defaultValue: wait.default_value ?? null,
+    displayTime: wait.display_time,
+    timeoutMessage: wait.timeout_message ?? null,
+    viewportPolicy: wait.viewport_policy,
+  };
+}
+
+export function coreCheckpointVariables(value: unknown): Record<string, unknown> {
+  if (value == null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Core companion typed variables are malformed");
+  const observations = (value as { values?: unknown }).values;
+  if (observations == null || typeof observations !== "object" || Array.isArray(observations))
+    throw new Error("Core companion typed variables omitted values");
+  return Object.fromEntries(
+    Object.entries(observations).map(([watch, observation]) => {
+      const typed = observation as {
+        present?: boolean;
+        value?: { type?: string; value?: unknown };
+      };
+      if (typed?.present !== true || typed.value == null)
+        throw new Error(`Core companion watch ${watch} is unavailable`);
+      const scalar = typed.value.value;
+      const valid =
+        (typed.value.type === "integer" &&
+          (typeof scalar === "bigint" ||
+            (typeof scalar === "number" && Number.isSafeInteger(scalar)))) ||
+        (typed.value.type === "string" && typeof scalar === "string") ||
+        (typed.value.type === "boolean" && typeof scalar === "boolean");
+      if (!valid) throw new Error(`Core companion watch ${watch} has an unsupported value`);
+      return [watch, scalar];
+    }),
+  );
 }
 
 export function capturedCoreSetupMessages(
@@ -653,6 +962,7 @@ export function capturedCoreSetupMessages(
     direction?: string;
     message?: { type?: string; value?: Record<string, any> };
   }>,
+  nativePreparedProject = false,
 ): unknown[] {
   const runtime = records.filter((record) => (record.channel ?? "runtime") === "runtime");
   const serverHello = runtime.findIndex(
@@ -660,20 +970,32 @@ export function capturedCoreSetupMessages(
   );
   if (serverHello < 0)
     throw new Error("Core companion capture did not observe the real server_hello boundary");
+  const start = runtime.findIndex(
+    (record, index) =>
+      index > serverHello && record.direction === "send" && record.message?.type === "start",
+  );
+  if (start < 0) throw new Error("Core companion capture did not observe start after server_hello");
   const manifest = runtime.findIndex(
     (record, index) =>
       index > serverHello &&
+      index < start &&
       record.direction === "send" &&
       record.message?.type === "project_manifest",
   );
-  if (manifest < 0)
+  if (manifest < 0 && !nativePreparedProject)
     throw new Error("Core companion capture did not observe project_manifest after server_hello");
-  const start = runtime.findIndex(
-    (record, index) =>
-      index > manifest && record.direction === "send" && record.message?.type === "start",
-  );
-  if (start < 0)
-    throw new Error("Core companion capture did not observe start after project_manifest");
+
+  const setupEnd = manifest < 0 ? start : manifest;
+  const setup = runtime
+    .slice(serverHello + 1, setupEnd)
+    .filter((record) => record.direction === "send" && record.message?.type != null);
+  const lifecycleTypes = new Set(["client_hello", "project_manifest", "project_load", "start"]);
+  const invalid = setup.find((record) => lifecycleTypes.has(record.message?.type ?? ""));
+  if (invalid)
+    throw new Error(
+      `Core companion setup contains reserved lifecycle message ${invalid.message?.type ?? "unknown"}`,
+    );
+  if (manifest < 0) return setup.map((record) => record.message);
 
   const lifecycleSubmissions = runtime
     .slice(manifest + 1, start)
@@ -683,15 +1005,6 @@ export function capturedCoreSetupMessages(
       "Core companion cannot place messages submitted after project_manifest and before start; expected only project_load",
     );
 
-  const setup = runtime
-    .slice(serverHello + 1, manifest)
-    .filter((record) => record.direction === "send" && record.message?.type != null);
-  const lifecycleTypes = new Set(["client_hello", "project_manifest", "project_load", "start"]);
-  const invalid = setup.find((record) => lifecycleTypes.has(record.message?.type ?? ""));
-  if (invalid)
-    throw new Error(
-      `Core companion setup contains reserved lifecycle message ${invalid.message?.type ?? "unknown"}`,
-    );
   return setup.map((record) => record.message);
 }
 

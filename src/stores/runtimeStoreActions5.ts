@@ -163,7 +163,7 @@ export function createRuntimeStoreActions5(context: any) {
       transportValue({
         type: "hello",
         value: {
-          versions: { minimum: { major: 4, minor: 0 }, maximum: { major: 4, minor: 0 } },
+          versions: { minimum: { major: 4, minor: 1 }, maximum: { major: 4, minor: 1 } },
           requested_scopes: [
             "variables_read",
             "variables_write",

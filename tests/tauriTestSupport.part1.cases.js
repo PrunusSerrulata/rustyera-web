@@ -121,6 +121,25 @@ describe("verified Tauri build reuse", () => {
     expect(reusableBuildEnvironment(first, "snake-audio.spec.mjs", undefined, true)).toEqual(
       reusableBuildEnvironment(second, "snake-services.spec.mjs", undefined, true),
     );
+    const performance = reusableBuildEnvironment(
+      {
+        ...first,
+        RUSTYERA_TAURI_PERF_PROJECT_COPY: "/isolated/project-copy",
+        RUSTYERA_SERVICE_CAPTURE_SOURCE_PROJECT: "/isolated/source-project",
+        RUSTYERA_TAURI_STATE_EXPORT_PATH: "/isolated/state.sav",
+        VITE_RUSTYERA_TAURI_SNAKE_RUNTIME_PERFORMANCE: "1",
+      },
+      "snake-runtime-performance.spec.mjs",
+      undefined,
+      true,
+    );
+    expect(performance.VITE_RUSTYERA_TEST_PROJECT).toBe(
+      "/__rustyera_test_picker_must_be_configured__",
+    );
+    expect(JSON.stringify(performance)).not.toContain("/isolated/project-copy");
+    expect(JSON.stringify(performance)).not.toContain("/isolated/source-project");
+    expect(JSON.stringify(performance)).not.toContain("/isolated/state.sav");
+    expect(performance.VITE_RUSTYERA_TAURI_SNAKE_RUNTIME_PERFORMANCE).toBeUndefined();
     expect(first.VITE_RUSTYERA_TEST_PROJECT).toBe("/first/project");
     expect(reusableBuildEnvironment(first, "other.spec.mjs", undefined, false)).toEqual(first);
     expect(() => reusableBuildEnvironment(first, "other.spec.mjs", undefined, true)).toThrow(
@@ -193,6 +212,7 @@ describe("verified Tauri build reuse", () => {
           ["scripts/prepare-snake-audio-fixture.mjs", "old-audio-fixture-builder"],
           ["scripts/web-test-lib.d.mts", "old-node-helper-types"],
           ["scripts/project-export-cancel.mjs", "old-export-observer"],
+          ["AGENTS.md", "old-delegation-policy"],
         ],
         coreSources: [["crates/runtime.rs", "same-core"]],
         environment: { RUSTFLAGS: "same-flags" },
@@ -210,7 +230,7 @@ describe("verified Tauri build reuse", () => {
       changedRuntimeHelper.inputs.webSources[2][1] = "native-foreground-precondition";
       changedRuntimeHelper.inputs.webSources[4][1] = "transport-identity-before-image-gate";
       expect(await reusableArtifact(manifest, changedRuntimeHelper, binary)).toBeDefined();
-      for (const index of [5, 6, 7, 8, 9, 10, 11, 12]) {
+      for (const index of [5, 6, 7, 8, 9, 10, 11, 12, 13]) {
         const changedNodeHelper = structuredClone(changedRuntimeHelper);
         changedNodeHelper.inputs.webSources[index][1] = "node-only-observation-or-foreground";
         expect(compiledBuildInputs(changedNodeHelper.inputs)).toEqual(compiledBuildInputs(inputs));

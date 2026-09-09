@@ -1,4 +1,8 @@
-import { RuntimeEvidence, createTypedWatchReader } from "@/testing/runtimeEvidence";
+import {
+  RuntimeEvidence,
+  createTypedWatchReader,
+  runtimeEvidenceLimits,
+} from "@/testing/runtimeEvidence";
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import type { PresentationState } from "@/core/presentation";
@@ -215,7 +219,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
     MAXIMUM_LOG_TOTAL_BYTES,
   );
   const testEnvironment = new RuntimeTestEnvironment();
-  const testEvidence = new RuntimeEvidence(import.meta.env.VITE_RUSTYERA_TEST === "1");
+  const performanceEvidence = import.meta.env.VITE_RUSTYERA_PERF_AUDIT === "1";
+  const evidenceLimits = runtimeEvidenceLimits(performanceEvidence);
+  const testEvidence = new RuntimeEvidence(
+    import.meta.env.VITE_RUSTYERA_TEST === "1",
+    evidenceLimits.maximumBytes,
+    evidenceLimits.maximumRecords,
+    undefined,
+    { compactPresentationOutput: performanceEvidence },
+  );
   const readTestTypedWatches = createTypedWatchReader();
   const logs = runtimeLogs.entries;
   const projectSettingsOpen = ref(false);

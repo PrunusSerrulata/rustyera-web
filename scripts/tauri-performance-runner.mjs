@@ -1,13 +1,16 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { access, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { access, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { PassThrough, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import { createGzip } from "node:zlib";
 
 import {
   capturePerformanceProcessTree,
-  classifyWindowCalibration,
-  performanceProjectDigest,
+  ensurePerformanceProjectCopy,
   performanceWindowArguments,
   performanceWindowMode,
   validatePerformanceAuditProject,
@@ -20,13 +23,20 @@ import {
 
 const repository = fileURLToPath(new URL("..", import.meta.url));
 const auditDeadline = Date.now() + 60 * 60 * 1_000;
+const MAXIMUM_RAW_EVIDENCE_STREAM_BYTES = 512 * 1024 * 1024;
+const MAXIMUM_SUMMARY_LINE_BYTES = 8 * 1024 * 1024;
 const arguments_ = process.argv.slice(2);
 const project = option("--project");
+const projectCopy = option("--project-copy");
 const output = option("--output");
 const trace = option("--trace");
 const requestedWindowMode = performanceWindowMode(arguments_);
-rejectUnknown(arguments_, new Set(["--project", "--output", "--trace", "--window-mode"]));
+rejectUnknown(
+  arguments_,
+  new Set(["--project", "--project-copy", "--output", "--trace", "--window-mode"]),
+);
 const identity = await validatePerformanceAuditProject(project);
+const preparedCopy = await ensurePerformanceProjectCopy(identity.source, projectCopy);
 const outputParent = await realpath(path.dirname(output));
 const resolvedOutput = path.join(outputParent, path.basename(output));
 const relativeOutput = path.relative(identity.source, resolvedOutput);
@@ -35,7 +45,8 @@ if (relativeOutput === "" || (!relativeOutput.startsWith("..") && !path.isAbsolu
 await mkdir(output, { recursive: true });
 if ((await readdir(output)).length !== 0)
   throw new Error("--output must name an empty isolated evidence directory");
-identity.manifestSha256 = await performanceProjectDigest(identity.source);
+identity.manifestSha256 = preparedCopy.projectDigest;
+identity.projectCopy = preparedCopy.copy;
 const traceIdentity = await readPerformanceTrace(trace);
 const traceSha256 = await sha256(trace);
 if (traceIdentity.projectDigest !== identity.manifestSha256)
@@ -55,7 +66,7 @@ const baseline = {
   runs: baselineRuns,
   summary: summarizeRuns(baselineRuns.flatMap((entry) => entry.result?.runs ?? [])),
   telemetrySegments: summarizeTelemetrySamples(
-    baselineRuns.flatMap((entry) => performanceSamplesFromResult(entry.result)),
+    baselineRuns.flatMap((entry) => entry.telemetrySamples),
   ),
 };
 const cpu = await runAudit("cpu", calibration.selectedMode, ["sample"]);
@@ -115,6 +126,8 @@ async function runAudit(round, mode, profilers = [], measuredRound = round) {
     RUSTYERA_TAURI_PERF_PHASE: round === "calibration" ? "calibration" : "measurement",
     RUSTYERA_TAURI_PERF_ROUND: measuredRound,
     RUSTYERA_TAURI_PERF_TRACE: trace,
+    RUSTYERA_TAURI_PERF_PROJECT_COPY: preparedCopy.copy,
+    RUSTYERA_TAURI_PERF_PROJECT_DIGEST: preparedCopy.projectDigest,
     RUSTYERA_TEST_WALL_CLOCK_DEADLINE_MS: String(auditDeadline),
     ...(profilers.includes("malloc_history") ? { MallocStackLogging: "1" } : {}),
     ...(profilers.length
@@ -137,16 +150,33 @@ async function runAudit(round, mode, profilers = [], measuredRound = round) {
     env: environment,
     stdio: ["ignore", "pipe", "pipe"],
   });
-  let stdout = "";
-  let stderr = "";
+  const records = [];
+  let stdoutTail = "";
+  let stderrTail = "";
+  let parseFailure;
   child.stdout.on("data", (chunk) => {
-    stdout += chunk;
-    process.stdout.write(chunk);
+    const lines = `${stdoutTail}${chunk}`.split(/\r?\n/);
+    stdoutTail = lines.pop() ?? "";
+    if (Buffer.byteLength(stdoutTail) > MAXIMUM_SUMMARY_LINE_BYTES) {
+      parseFailure = new Error("performance child emitted a summary line larger than 8 MiB");
+      child.kill("SIGTERM");
+      return;
+    }
+    for (const line of lines) retainSummaryRecord(records, line);
   });
   child.stderr.on("data", (chunk) => {
-    stderr += chunk;
-    process.stderr.write(chunk);
+    stderrTail = `${stderrTail}${chunk}`.slice(-16_384);
   });
+  const stdoutArchive = startEvidenceArchive(
+    child.stdout,
+    path.join(output, `${round}-${mode}.stdout.txt.gz`),
+    () => child.kill("SIGTERM"),
+  );
+  const stderrArchive = startEvidenceArchive(
+    child.stderr,
+    path.join(output, `${round}-${mode}.stderr.txt.gz`),
+    () => child.kill("SIGTERM"),
+  );
   const profilerTask = profilers.length
     ? attachProfilers(checkpoint, resume, profilers)
     : Promise.resolve([]);
@@ -159,50 +189,66 @@ async function runAudit(round, mode, profilers = [], measuredRound = round) {
     `waiting for ${round}/${mode}`,
   );
   const profiles = await profilerTask;
-  await writeEvidence(`${round}-${mode}.stdout.txt`, stdout);
-  await writeEvidence(`${round}-${mode}.stderr.txt`, stderr);
-  if (exitCode !== 0) throw new Error(`${round}/${mode} performance child exited ${exitCode}`);
+  const [stdoutEvidence, stderrEvidence] = await Promise.all([
+    stdoutArchive.finish(),
+    stderrArchive.finish(),
+  ]);
+  retainSummaryRecord(records, stdoutTail);
+  if (parseFailure) throw parseFailure;
+  if (exitCode !== 0) {
+    if (stderrTail) process.stderr.write(stderrTail);
+    throw new Error(`${round}/${mode} performance child exited ${exitCode}`);
+  }
   buildPrepared = true;
-  const records = stdout.split(/\r?\n/).flatMap((line) => {
-    try {
-      return [JSON.parse(line)];
-    } catch {
-      return [];
-    }
-  });
-  return {
+  const audit = {
     round,
     mode,
     calibration: records.findLast((record) => record.type === "tauri-performance-calibration")
       ?.calibration,
     result: records.findLast((record) => record.type === "tauri-snake-runtime-performance"),
     telemetrySegments: summarizeTelemetrySegments(records),
+    logs: { stdout: stdoutEvidence, stderr: stderrEvidence },
     profiles,
   };
+  Object.defineProperty(audit, "telemetrySamples", {
+    value: records.filter((record) => record.type === "tauri-performance-sample"),
+    enumerable: false,
+  });
+  return audit;
+}
+
+function retainSummaryRecord(records, line) {
+  if (!line) return;
+  try {
+    const record = JSON.parse(line);
+    if (record.type === "tauri-performance-sample")
+      records.push({
+        type: record.type,
+        origin: record.origin,
+        segment: record.segment,
+        phase: record.phase,
+        elapsedMs: record.elapsedMs,
+      });
+    else if (record.type === "tauri-snake-runtime-performance") {
+      const summary = { ...record };
+      delete summary.telemetry;
+      records.push(summary);
+    } else if (record.type === "tauri-performance-calibration") records.push(record);
+  } catch {
+    // Human-readable child diagnostics remain in the compressed raw stream.
+  }
 }
 
 async function calibrateWindow(mode) {
-  if (mode === "minimized") {
-    const minimized = await runAudit("calibration", "minimized");
-    const offscreen = await runAudit("calibration", "offscreen");
-    const calibration = {
-      requestedMode: mode,
-      ...classifyWindowCalibration(minimized.calibration, offscreen.calibration),
-    };
-    if (!calibration.offscreenUsable)
-      throw new Error("off-screen no-focus calibration did not produce 100 usable frames");
-    return { calibration, evidence: { minimized, offscreen } };
-  }
-  const selected = await runAudit("calibration", mode);
-  const sample = selected.calibration;
+  const measured = await runAudit("calibration", mode);
+  const sample = measured.calibration;
   const usable =
     sample?.timedOut !== true &&
-    Number(sample?.observedFrames ?? 0) === Number(sample?.requestedFrames ?? 100) &&
-    (mode === "visible" || Number(sample?.nonBusinessStallsOver100Ms ?? 0) === 0);
+    Number(sample?.observedFrames ?? 0) === Number(sample?.requestedFrames ?? 100);
   if (!usable) throw new Error(`${mode} calibration did not produce 100 usable frames`);
   return {
     calibration: { requestedMode: mode, selectedMode: mode, usable },
-    evidence: { [mode]: selected },
+    evidence: { [mode]: measured },
   };
 }
 
@@ -210,23 +256,6 @@ function summarizeTelemetrySegments(records) {
   return summarizeTelemetrySamples(
     records.filter((record) => record.type === "tauri-performance-sample"),
   );
-}
-
-function performanceSamplesFromResult(result) {
-  if (!result?.telemetry) return [];
-  const frontend = (result.telemetry.frontend?.timings ?? []).map((sample) => ({
-    ...sample,
-    origin: "frontend",
-    segment: sample.phase === "loading" ? "loading" : "runtime",
-  }));
-  const native = (result.telemetry.native?.pumps ?? []).map((sample) => ({
-    ...sample,
-    origin: "native",
-    segment: "runtime",
-    phase: "native_pump",
-    elapsedMs: sample.requestDecodeMs + sample.nativeDriveMs + sample.jsonSerializeMs,
-  }));
-  return [...frontend, ...native];
 }
 
 function summarizeTelemetrySamples(samples) {
@@ -281,11 +310,24 @@ async function attachProfilers(checkpoint, resume, profilers) {
         `${path.basename(checkpoint, ".checkpoint.json")}.${profiler}.${targetPid}.txt`,
       );
       const command = profilerCommand(profiler, targetPid, destination);
-      const exitCode = command.capture
-        ? await spawnCapture(command.executable, command.arguments, destination)
-        : await spawnExit(command.executable, command.arguments);
+      const archivedDestination = `${destination}.gz`;
+      const captured = command.capture
+        ? await spawnCapture(command.executable, command.arguments, archivedDestination)
+        : {
+            exitCode: await spawnExit(command.executable, command.arguments, destination),
+            archive: undefined,
+          };
+      const exitCode = captured.exitCode;
       if (exitCode !== 0) throw new Error(`${profiler} for PID ${targetPid} exited ${exitCode}`);
-      profiles.push({ profiler, pid: targetPid, destination, sha256: await sha256(destination) });
+      const archive = captured.archive ?? (await gzipFile(destination, archivedDestination));
+      profiles.push({
+        profiler,
+        pid: targetPid,
+        destination: archivedDestination,
+        rawBytes: archive.rawBytes,
+        rawSha256: archive.rawSha256,
+        compressedSha256: archive.compressedSha256,
+      });
     }
   }
   await writeFile(resume, "resume\n", { flag: "wx" });
@@ -327,17 +369,53 @@ async function writeEvidence(name, value) {
   return { destination, sha256: await sha256(destination) };
 }
 async function sha256(file) {
-  return createHash("sha256")
-    .update(await readFile(file))
-    .digest("hex");
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  return hash.digest("hex");
 }
-async function spawnExit(executable, args) {
+async function spawnExit(executable, args, boundedOutput) {
   let child;
+  let outputFailure;
+  let outputMonitor;
   return deadlinePromise(
     new Promise((resolve, reject) => {
       child = spawn(executable, args, { stdio: "inherit" });
       child.once("error", reject);
-      child.once("exit", resolve);
+      if (boundedOutput)
+        outputMonitor = setInterval(async () => {
+          try {
+            if ((await stat(boundedOutput)).size > MAXIMUM_RAW_EVIDENCE_STREAM_BYTES) {
+              outputFailure = new Error(
+                `${executable} output exceeds its 512 MiB raw evidence limit`,
+              );
+              child.kill("SIGTERM");
+            }
+          } catch (error) {
+            if (error.code !== "ENOENT") {
+              outputFailure = error;
+              child.kill("SIGTERM");
+            }
+          }
+        }, 250);
+      child.once("exit", async (code) => {
+        if (outputMonitor) clearInterval(outputMonitor);
+        try {
+          if (
+            boundedOutput &&
+            !outputFailure &&
+            (await stat(boundedOutput)).size > MAXIMUM_RAW_EVIDENCE_STREAM_BYTES
+          )
+            outputFailure = new Error(
+              `${executable} output exceeds its 512 MiB raw evidence limit`,
+            );
+          if (outputFailure) {
+            if (boundedOutput) await rm(boundedOutput, { force: true });
+            reject(outputFailure);
+          } else resolve(code);
+        } catch (error) {
+          reject(error);
+        }
+      });
     }),
     () => child?.kill("SIGTERM"),
     executable,
@@ -348,14 +426,21 @@ async function spawnCapture(executable, args, destination) {
   return deadlinePromise(
     new Promise((resolve, reject) => {
       child = spawn(executable, args, { stdio: ["ignore", "pipe", "pipe"] });
-      const chunks = [];
-      child.stdout.on("data", (chunk) => chunks.push(chunk));
-      child.stderr.on("data", (chunk) => chunks.push(chunk));
+      const merged = new PassThrough();
+      let openStreams = 2;
+      const closeInput = () => {
+        openStreams -= 1;
+        if (openStreams === 0) merged.end();
+      };
+      child.stdout.pipe(merged, { end: false });
+      child.stderr.pipe(merged, { end: false });
+      child.stdout.once("end", closeInput);
+      child.stderr.once("end", closeInput);
+      const archive = startEvidenceArchive(merged, destination, () => child.kill("SIGTERM"));
       child.once("error", reject);
       child.once("exit", async (code) => {
         try {
-          await writeFile(destination, Buffer.concat(chunks));
-          resolve(code);
+          resolve({ exitCode: code, archive: await archive.finish() });
         } catch (error) {
           reject(error);
         }
@@ -364,6 +449,68 @@ async function spawnCapture(executable, args, destination) {
     () => child?.kill("SIGTERM"),
     executable,
   );
+}
+async function gzipFile(source, destination) {
+  try {
+    const archive = startEvidenceArchive(createReadStream(source), destination);
+    const result = await archive.finish();
+    await rm(source);
+    return result;
+  } catch (error) {
+    await Promise.all([rm(source, { force: true }), rm(destination, { force: true })]);
+    throw error;
+  }
+}
+function startEvidenceArchive(source, destination, onLimit = () => undefined) {
+  const meter = new EvidenceMeter(MAXIMUM_RAW_EVIDENCE_STREAM_BYTES);
+  let failure;
+  const completion = pipeline(
+    source,
+    meter,
+    createGzip({ level: 9 }),
+    createWriteStream(destination, { flags: "wx" }),
+  ).catch((error) => {
+    failure = error;
+    onLimit();
+  });
+  return {
+    async finish() {
+      await completion;
+      if (failure) {
+        await rm(destination, { force: true });
+        throw failure;
+      }
+      return {
+        destination,
+        rawBytes: meter.bytes,
+        rawSha256: meter.digest(),
+        compressedSha256: await sha256(destination),
+      };
+    },
+  };
+}
+class EvidenceMeter extends Transform {
+  bytes = 0;
+  #hash = createHash("sha256");
+
+  constructor(maximumBytes) {
+    super();
+    this.maximumBytes = maximumBytes;
+  }
+
+  _transform(chunk, _encoding, callback) {
+    this.bytes += chunk.length;
+    if (this.bytes > this.maximumBytes) {
+      callback(new Error("performance evidence stream exceeds its 512 MiB raw limit"));
+      return;
+    }
+    this.#hash.update(chunk);
+    callback(null, chunk);
+  }
+
+  digest() {
+    return this.#hash.digest("hex");
+  }
 }
 function requireRemainingBudget(stage) {
   if (Date.now() >= auditDeadline)

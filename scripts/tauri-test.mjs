@@ -19,6 +19,7 @@ import { execFile, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import Mocha from "mocha";
+import { assertVmProfileMode, vmProfileBuildFeature } from "./tauri-performance-vm-profile.mjs";
 
 import {
   focusCurrentTauriWindow,
@@ -41,11 +42,13 @@ import {
   recordServiceOracleWatchdog,
 } from "./snake-service-capture-client.mjs";
 import {
-  capturePerformanceWindowSafety,
   instrumentedPerformanceWindowMode,
-  observeForegroundApplication,
+  minimizePerformanceWindow,
   performanceAuditOptions,
+  performanceCommandTimeoutMs,
+  performanceSnapshotMode,
   resolvePerformanceRootPid,
+  validatePerformanceProjectCopyMarker,
   validatePerformanceAuditProject,
 } from "./tauri-performance-audit.mjs";
 
@@ -242,6 +245,8 @@ const specProfiles = {
 };
 const specProfile = specName ? specProfiles[specName] : undefined;
 const instrumentPerformance = perfAudit.enabled || specProfile?.performanceAudit === true;
+const vmInstructionProfile = process.env.RUSTYERA_TAURI_PERF_VM_SAMPLE === "1";
+assertVmProfileMode(process.env, { buildOnly, instrumentPerformance });
 const performanceWindowMode = instrumentedPerformanceWindowMode(perfAudit, instrumentPerformance);
 const release = releaseRequested || specProfile?.release === true;
 const configuredState = stateIndex >= 0 ? arguments_[stateIndex + 1] : specProfile?.defaultState;
@@ -282,12 +287,19 @@ if (specProfile?.copyProject) {
   if (!(await stat(project)).isDirectory())
     throw new Error("the selected Tauri spec requires a source project directory");
   const testRuns = path.resolve(repository, ".rustyera/test-runs");
-  await mkdir(testRuns, { recursive: true });
-  const runDirectory = await mkdtemp(
-    path.join(testRuns, perfAudit.enabled ? "tauri-performance-" : "tauri-preferences-"),
-  );
-  const projectCopy = path.join(runDirectory, path.basename(project));
-  await cp(project, projectCopy, { recursive: true });
+  const configuredPerformanceCopy = process.env.RUSTYERA_TAURI_PERF_PROJECT_COPY;
+  if (perfAudit.enabled && !configuredPerformanceCopy)
+    throw new Error("performance audit requires the one reusable project copy");
+  const runDirectory = perfAudit.enabled
+    ? path.dirname(path.resolve(configuredPerformanceCopy))
+    : await (async () => {
+        await mkdir(testRuns, { recursive: true });
+        return mkdtemp(path.join(testRuns, "tauri-preferences-"));
+      })();
+  const projectCopy = perfAudit.enabled
+    ? path.resolve(configuredPerformanceCopy)
+    : path.join(runDirectory, path.basename(project));
+  if (!perfAudit.enabled) await cp(project, projectCopy, { recursive: true });
   if (specName === "preferences.spec.mjs")
     await rm(path.join(projectCopy, ".rustyera", "preferences-v1.json"), { force: true });
   if (specProfile.normalizeReraconfig) {
@@ -302,7 +314,12 @@ if (specProfile?.copyProject) {
   }
   console.log(JSON.stringify({ type: "test-project-copy", source: project, project: projectCopy }));
   project = projectCopy;
-  if (perfAudit.enabled) await validatePerformanceAuditProject(originalProject, project);
+  if (perfAudit.enabled)
+    await validatePerformanceProjectCopyMarker(
+      originalProject,
+      project,
+      process.env.RUSTYERA_TAURI_PERF_PROJECT_DIGEST,
+    );
   if (specProfile.prewarmWithTui) project = await prewarmTuiCache(project, runDirectory);
 }
 
@@ -405,7 +422,9 @@ const buildArguments = [
   ...(release ? [] : ["--debug"]),
   "--no-bundle",
   "--features",
-  instrumentPerformance ? "webdriver,performance-audit" : "webdriver",
+  (instrumentPerformance ? "webdriver,performance-audit" : "webdriver") +
+    (buildEnvironment.RUSTYERA_NATIVE_SQL_PROVIDER === "1" ? ",native-sql" : "") +
+    vmProfileBuildFeature(vmInstructionProfile),
   "--config",
   instrumentPerformance
     ? "src-tauri/tauri.performance.conf.json"
@@ -474,11 +493,15 @@ if (specName === "snake-interop.spec.mjs") {
 }
 environment.RUSTYERA_SERVICE_CAPTURE_NATIVE_BINARY = binary;
 Object.assign(process.env, environment);
+// The standalone service does not forward its logLevel option to remote(). Set
+// the logger's supported environment default before importing/starting it, so
+// remote's default "info" cannot log full checkpoint strings or retain them.
+if (perfAudit.enabled) process.env.WDIO_LOG_LEVEL = "error";
 const { cleanupWdioSession, createTauriCapabilities, startWdioSession } =
   await import("@wdio/tauri-service");
 const capabilities = createTauriCapabilities(binary, {
   driverProvider: "embedded",
-  logLevel: "info",
+  logLevel: perfAudit.enabled ? "error" : "info",
   startTimeout: 60_000,
 });
 capabilities.browserName = "tauri";
@@ -493,23 +516,21 @@ let monitor;
 let runError;
 let finalizationError;
 let mochaFailure;
-const foregroundBaseline = perfAudit.background ? await observeForegroundApplication() : undefined;
-if (perfAudit.background)
-  console.log(
-    JSON.stringify({ type: "tauri-performance-foreground-baseline", foregroundBaseline }),
-  );
 try {
   activeStage = "starting the embedded WebDriver session";
   console.log(JSON.stringify({ type: "tauri-gui-start", binary }));
   browser = await withinDeadline(
-    startWdioSession(capabilities, { maxInstances: 1 }),
+    startWdioSession(capabilities, {
+      maxInstances: 1,
+      logLevel: perfAudit.enabled ? "error" : "info",
+    }),
     taskDeadline,
     () => deadlineDiagnostic(),
   );
-  // The standalone service hard-codes ten HTTP retries. Once connected, retrying a
-  // rejected native action hides its real error and defeats the five-second watchdog.
+  // WebDriver caches its HTTP dispatcher on the first session request. Set the performance
+  // timeout before minimizing or probing; changing it later leaves cached socket limits intact.
   browser.options.connectionRetryCount = 0;
-  browser.options.connectionRetryTimeout = 5_000;
+  browser.options.connectionRetryTimeout = performanceCommandTimeoutMs(perfAudit.enabled);
   globalThis.browser = browser;
   globalThis.$ = browser.$.bind(browser);
   globalThis.$$ = browser.$$.bind(browser);
@@ -518,24 +539,28 @@ try {
     : undefined;
   if (performanceRootPid != null)
     process.env.RUSTYERA_TAURI_PERF_ROOT_PID = String(performanceRootPid);
-  const inspectPerformanceWindow = perfAudit.enabled
-    ? () =>
-        capturePerformanceWindowSafety(
-          browser,
-          perfAudit.windowMode,
-          foregroundBaseline,
-          performanceRootPid,
-        )
-    : undefined;
-  if (inspectPerformanceWindow) {
-    const state = await inspectPerformanceWindow();
-    console.log(
-      JSON.stringify({ type: "tauri-performance-window-safety", stage: "connected", state }),
-    );
+  if (perfAudit.background) {
+    activeStage = "minimizing the Tauri performance window";
+    await minimizePerformanceWindow(browser);
   }
-  const windowSafety = perfAudit.background ? inspectPerformanceWindow : undefined;
   activeStage = "running Tauri end-to-end specs";
+  if (perfAudit.enabled)
+    console.log(
+      JSON.stringify({
+        type: "tauri-performance-observer-policy",
+        fullDomDiagnostics: process.env.RUSTYERA_TAURI_PERF_HEAVY_DIAGNOSTICS === "1",
+        absoluteTimingAllowed:
+          process.env.RUSTYERA_TAURI_PERF_HEAVY_DIAGNOSTICS === "1" ? false : null,
+        probeOverheadValidated: false,
+        progressRequestTimeoutMs: 30_000,
+        stallWindowMs: 30_000,
+      }),
+    );
   monitor = startTauriSessionMonitor(browser, {
+    snapshotMode: performanceSnapshotMode(
+      perfAudit.enabled,
+      process.env.RUSTYERA_TAURI_PERF_HEAVY_DIAGNOSTICS === "1",
+    ),
     deadline: taskDeadline,
     describeDeadline: () => deadlineDiagnostic(),
     allowFault: () => specName === "snake-service-oracle.spec.mjs" && allowsServiceOracleFault(),
@@ -543,7 +568,6 @@ try {
       specName === "snake-service-oracle.spec.mjs"
         ? recordServiceOracleWatchdog(snapshot)
         : undefined,
-    windowSafety,
     output(message) {
       snapshotLog.write(`${message}\n`);
       const report = JSON.parse(message);
@@ -562,9 +586,9 @@ try {
     }),
   );
   if (nativeProvider && !backgroundDom) {
-    activeStage = "establishing the current native WebDriver window foreground";
+    activeStage = "selecting the current native WebDriver window";
     const handle = await focusCurrentTauriWindow(browser);
-    console.log(JSON.stringify({ type: "tauri-native-window-focused", handle }));
+    console.log(JSON.stringify({ type: "tauri-native-window-selected", handle }));
   }
 
   if (reuseBuild) {
@@ -610,6 +634,7 @@ try {
       else reject(new Error(`${failures} Tauri end-to-end test(s) failed`));
     });
     runner.once("fail", (test, error) => {
+      process.exitCode = 1;
       mochaFailure = {
         test: test.fullTitle(),
         name: error?.name ?? "Error",
@@ -627,6 +652,7 @@ try {
   }
 } catch (error) {
   runError = error;
+  process.exitCode = 1;
   if (nativeProvider && process.platform === "darwin") {
     // Read the OS foreground owner before cleanup destroys the failed test window. This does
     // not activate anything; DOM focus alone cannot identify an external focus interruption.
