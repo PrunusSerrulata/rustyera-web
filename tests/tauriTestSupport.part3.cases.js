@@ -838,7 +838,11 @@ describe("real service capture producer boundaries", () => {
       ]);
       expect(source.at(-1).decodedUtf8Sha256).toBe(sha256("A"));
       expect(source.at(-1).sha256).not.toBe(source.at(-1).decodedUtf8Sha256);
-      await symlink(path.join(directory, "src/input.ts"), path.join(directory, "src/alias.ts"));
+      await symlink(
+        path.join(directory, process.platform === "win32" ? "scripts" : "src/input.ts"),
+        path.join(directory, "src/alias.ts"),
+        process.platform === "win32" ? "junction" : "file",
+      );
       await expect(inventory(directory, { sourceManifest: true })).rejects.toThrow("symlink");
     } finally {
       await rm(directory, { recursive: true, force: true });

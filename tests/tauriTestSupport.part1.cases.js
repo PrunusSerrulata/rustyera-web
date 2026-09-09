@@ -278,7 +278,13 @@ describe("verified Tauri build reuse", () => {
       expect(await reusableArtifact(manifest, contract, binary)).toBeUndefined();
       await writeFile(binary, "actual");
       const link = path.join(directory, "link");
-      await symlink(binary, link);
+      // Windows directory junctions exercise linked-input rejection without requiring
+      // the privileged file-symlink capability unavailable on ordinary developer accounts.
+      await symlink(
+        process.platform === "win32" ? directory : binary,
+        link,
+        process.platform === "win32" ? "junction" : "file",
+      );
       await expect(fileIdentity(link)).rejects.toThrow("not a regular file");
     } finally {
       await rm(directory, { recursive: true, force: true });

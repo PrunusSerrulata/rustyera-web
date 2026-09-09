@@ -356,8 +356,18 @@ describe("explicit native WebDriver source binding", () => {
     await fixture(async ({ provider, manifests, nativeSource, validate }) => {
       const target = path.join(manifests, "native.rs");
       await writeFile(target, nativeSource);
-      await rm(path.join(provider, "src/lib.rs"));
-      await symlink(target, path.join(provider, "src/lib.rs"));
+      if (process.platform === "win32") {
+        // The directory link preserves the same bytes and still crosses the provider's
+        // no-symlinks boundary, using Windows' unprivileged junction support.
+        const linkedSource = path.join(manifests, "linked-source");
+        await mkdir(linkedSource);
+        await writeFile(path.join(linkedSource, "lib.rs"), nativeSource);
+        await rm(path.join(provider, "src"), { recursive: true });
+        await symlink(linkedSource, path.join(provider, "src"), "junction");
+      } else {
+        await rm(path.join(provider, "src/lib.rs"));
+        await symlink(target, path.join(provider, "src/lib.rs"));
+      }
       await expect(validate()).rejects.toThrow(/symlinks/);
     });
   });
