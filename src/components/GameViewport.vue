@@ -27,7 +27,7 @@ import {
   htmlBoxRowLayoutsForRange,
   positionedMediaRightBoundariesForRange,
 } from "@/core/htmlBoxLayout";
-import { htmlImageLayerOffsetsForRange } from "@/core/htmlImageLayerLayout";
+import { htmlImageLayerLayoutForRange, type ImageLayerLayout } from "@/core/htmlImageLayerLayout";
 import { usesConfiguredLineHeight } from "@/core/lineLayout";
 import { compactSceneDepthRanks, sceneDepthKey, sceneDepthRankKey } from "@/core/sceneStacking";
 import type {
@@ -306,14 +306,16 @@ const visiblePositionedMediaRightBoundaries = computed(() => {
     },
   );
 });
-const imageLayerOffsets = computed(() => {
+const imageLayerLayouts = computed<ReadonlyMap<number, ImageLayerLayout>>(() => {
   const visibleItems = items.value;
-  if (visibleItems.length === 0) return new Map<number, number>();
-  return htmlImageLayerOffsetsForRange(
+  if (visibleItems.length === 0) return new Map();
+  return htmlImageLayerLayoutForRange(
     store.presentation.lines,
     store.gameLineHeightPx,
     visibleItems[0].index,
     visibleItems.at(-1)?.index ?? visibleItems[0].index,
+    store.gameTextStyle.fontSizePx,
+    store.effectivePreferences.imageScale,
   );
 });
 const measuredHistoryHeight = computed(() => {
@@ -532,7 +534,9 @@ function multilineTextFrameIndex(lines: PresentationLine[]): number {
   return -1;
 }
 
-function lineMinimumHeight(line: any): string | undefined {
+function lineMinimumHeight(line: any, index: number): string | undefined {
+  const layer = imageLayerLayouts.value.get(index);
+  if (layer?.minimumHeight != null) return `${layer.minimumHeight}px`;
   let hasSpaceShape = false;
   let negativeImageBottom = 0;
   const visit = (node: any): void => {
@@ -562,7 +566,7 @@ function lineMinimumHeight(line: any): string | undefined {
 }
 
 function imageLayerOffset(index: number): string | undefined {
-  const offset = imageLayerOffsets.value.get(index);
+  const offset = imageLayerLayouts.value.get(index)?.offset;
   return offset == null ? undefined : `${offset}px`;
 }
 
@@ -762,7 +766,7 @@ watch(viewportLayoutIdentity, () => scheduleViewportSynchronization());
           :class="[
             `align-${store.presentation.lines[item.index].alignment}`,
             {
-              'html-image-layer-line': imageLayerOffsets.has(item.index),
+              'html-image-layer-line': imageLayerLayouts.has(item.index),
               'multiline-text-frame': hasMultilineTextFrame(store.presentation.lines[item.index]),
             },
           ]"
@@ -770,7 +774,7 @@ watch(viewportLayoutIdentity, () => scheduleViewportSynchronization());
           :data-line-id="String(store.presentation.lines[item.index].line_id)"
           :style="{
             transform: `translateY(${item.start + historyBottomInset}px)`,
-            minHeight: lineMinimumHeight(store.presentation.lines[item.index]),
+            minHeight: lineMinimumHeight(store.presentation.lines[item.index], item.index),
             backgroundColor: wholeLineBackground(store.presentation.lines[item.index]),
             '--game-media-line-offset': imageLayerOffset(item.index),
           }"

@@ -480,6 +480,117 @@ describe("game viewport", () => {
     wrapper.unmount();
   });
 
+  it("reserves a multi-column layer group only after its final image row", async () => {
+    const zeroSpace = (lineId: number) => ({
+      line_id: lineId,
+      alignment: "left",
+      text_background_eligible: false,
+      runs: [
+        {
+          type: "html_document",
+          document: {
+            nodes: [
+              {
+                type: "element",
+                kind: "shape",
+                attributes: [],
+                semantic: {
+                  type: "shape",
+                  kind: "space",
+                  parameters: [{ unit: "font_height_hundredths", value: 0 }],
+                },
+                children: [],
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const image = (lineId: number, source: string, y: number) => ({
+      line_id: lineId,
+      alignment: "left",
+      text_background_eligible: false,
+      runs: [
+        {
+          type: "html_document",
+          document: {
+            nodes: [
+              {
+                type: "element",
+                kind: "paragraph",
+                attributes: [],
+                semantic: { type: "paragraph", alignment: "left" },
+                children: [
+                  {
+                    type: "element",
+                    kind: "image",
+                    attributes: [],
+                    semantic: {
+                      type: "image",
+                      source,
+                      display: "relative",
+                      y: { unit: "font_height_hundredths", value: y },
+                    },
+                    children: [],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    });
+    store.gameLineHeightPx = 17;
+    store.presentation.lines = [
+      zeroSpace(510),
+      image(511, "30_BODY_WEAR", 0),
+      zeroSpace(512),
+      image(513, "30_PANTS_WEAR_TYPE6_NORMAL", -100),
+      zeroSpace(514),
+      image(515, "30_SHADOW_LIFT", -200),
+    ] as any;
+    store.gameTextStyle.fontSizePx = 17;
+    for (let index = 1; index < 6; index += 2) {
+      const children = (store.presentation.lines[index].runs[0] as any).document.nodes[0].children;
+      children[0].semantic.height = { unit: "font_height_hundredths", value: 1125 };
+      children.push(
+        index === 1
+          ? JSON.parse(JSON.stringify(children[0]))
+          : {
+              type: "element",
+              kind: "shape",
+              attributes: [],
+              children: [],
+              semantic: {
+                type: "shape",
+                kind: "space",
+                parameters: [{ unit: "font_height_hundredths", value: 1125 }],
+              },
+            },
+      );
+    }
+    virtualState.items = store.presentation.lines.map((line, index) => ({
+      index,
+      key: String(line.line_id),
+      start: index * 17,
+    }));
+    virtualState.totalSize = 102;
+
+    const wrapper = mountViewport();
+    await nextTick();
+    const rows = wrapper.findAll<HTMLElement>(".virtual-history > .game-line");
+    expect(rows).toHaveLength(6);
+    expect(rows[1].classes()).toContain("html-image-layer-line");
+    expect(rows[1].element.style.getPropertyValue("--game-media-line-offset")).toBe("-17px");
+    expect(rows[3].element.style.getPropertyValue("--game-media-line-offset")).toBe("-34px");
+    expect(rows[5].element.style.getPropertyValue("--game-media-line-offset")).toBe("-51px");
+    expect(rows[0].element.style.getPropertyValue("--game-media-line-offset")).toBe("");
+    expect(rows[1].element.style.minHeight).toBe("17px");
+    expect(rows[3].element.style.minHeight).toBe("17px");
+    expect(rows[5].element.style.minHeight).toBe("106.25px");
+    wrapper.unmount();
+  });
+
   it("uses the configured height without a synchronous DOM read for fixed console rows", () => {
     const wrapper = mountViewport();
     const element = document.createElement("div");

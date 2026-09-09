@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eratw-sub-modding",
+  "mode": "fixed",
+  "start": {
+    "type": "vm_snapshot"
+  },
+  "viewport": {
+    "width": 2048,
+    "height": 900
+  },
+  "summary_observations": true,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [
+    {
+      "type": "assert_layout",
+      "locator": {
+        "css": ".game-line:is([data-line-id='1203'], [data-line-id='1205'], [data-line-id='1207'], [data-line-id='1209'], [data-line-id='1211']) .media-positioned > .media-visual"
+      },
+      "expect": {
+        "count": 6,
+        "visible": true,
+        "same_top_within": 2
+      }
+    },
+    {
+      "type": "assert_layout",
+      "locator": {
+        "css": ".game-line[data-line-id='1211'] .media-positioned > .media-visual"
+      },
+      "relative_to": {
+        "css": ".game-line[data-line-id='1214']"
+      },
+      "expect": {
+        "count": 1,
+        "visible": true,
+        "no_overlap": true,
+        "above": {
+          "min": 0,
+          "max": 60
+        }
+      }
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "fault": null,
+        "canInteract": true
+      }
+    }
+  ],
+  "limits": {
+    "max_steps": 4,
+    "timeout_seconds": 600
+  },
+  "goal": {
+    "wait_kind": "enter_key"
+  }
+}

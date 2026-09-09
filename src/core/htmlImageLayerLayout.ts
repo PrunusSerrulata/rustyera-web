@@ -1,13 +1,17 @@
-import type {
-  CanonicalHtmlDocument,
-  CanonicalHtmlLength,
-  CanonicalHtmlNode,
-} from "@/core/htmlMeasurement";
+import type { CanonicalHtmlDocument, CanonicalHtmlLength } from "@/core/htmlMeasurement";
+import { projectPresentationLength } from "@/core/shapeProjection";
 import type { DisplayLine } from "@/core/types";
 
 interface ImageLayerRow {
   index: number;
   y: CanonicalHtmlLength;
+  heights: CanonicalHtmlLength[];
+  multipleColumns: boolean;
+}
+
+export interface ImageLayerLayout {
+  offset: number;
+  minimumHeight?: number;
 }
 
 /**
@@ -34,32 +38,82 @@ export function htmlImageLayerOffsetsForRange(
   firstIndex: number,
   lastIndex: number,
 ): ReadonlyMap<number, number> {
-  const offsets = new Map<number, number>();
-  if (!Number.isFinite(lineHeightPx) || lineHeightPx <= 0) return offsets;
+  return new Map(
+    [...htmlImageLayerLayoutForRange(lines, lineHeightPx, firstIndex, lastIndex)].map(
+      ([index, layout]) => [index, layout.offset],
+    ),
+  );
+}
+
+export function htmlImageLayerLayoutForRange(
+  lines: readonly DisplayLine[],
+  lineHeightPx: number,
+  firstIndex: number,
+  lastIndex: number,
+  fontSizePx = lineHeightPx,
+  imageScale = 1,
+): ReadonlyMap<number, ImageLayerLayout> {
+  const offsets = new Map<number, ImageLayerLayout>();
+  if (![lineHeightPx, fontSizePx, imageScale].every((value) => Number.isFinite(value) && value > 0))
+    return offsets;
   if (!lines.length || firstIndex > lastIndex) return offsets;
 
   const first = Math.max(0, Math.min(lines.length - 1, Math.trunc(firstIndex)));
   const last = Math.max(first, Math.min(lines.length - 1, Math.trunc(lastIndex)));
   for (let start = Math.max(0, first - 1); start <= last && start < lines.length - 1; start += 1) {
-    if (!isZeroSpaceLine(lines[start]) || relativeImageLineY(lines[start + 1]) == null) continue;
+    if (!isZeroSpaceLine(lines[start]) || relativeImageLine(lines[start + 1]) == null) continue;
     while (
       start >= 2 &&
-      relativeImageLineY(lines[start - 1]) != null &&
+      relativeImageLine(lines[start - 1]) != null &&
       isZeroSpaceLine(lines[start - 2])
     )
       start -= 2;
     const rows: ImageLayerRow[] = [];
     let cursor = start;
     while (isZeroSpaceLine(lines[cursor])) {
-      const y = relativeImageLineY(lines[cursor + 1]);
-      if (y == null) break;
-      rows.push({ index: cursor + 1, y });
+      const row = relativeImageLine(lines[cursor + 1]);
+      if (row == null) break;
+      rows.push({ index: cursor + 1, ...row });
       cursor += 2;
     }
     if (isImageLayerGroup(rows)) {
+      const multipleColumns = rows.some((row) => row.multipleColumns);
+      const standardSequence = rows.every(
+        (row, layer) => row.y.unit === "font_height_hundredths" && row.y.value === -100 * layer,
+      );
+      const sized = rows.every(
+        (row) =>
+          row.heights.length > 0 &&
+          row.heights.every((height) => Number.isFinite(height.value) && height.value !== 0),
+      );
+      // Extend only the confirmed multi-column signature. Existing single-image groups retain
+      // their signed displacement, including pixel units and nonstandard vertical steps.
+      if (multipleColumns && (!standardSequence || !sized)) {
+        start = cursor - 1;
+        continue;
+      }
+      let bottom = 0;
+      for (const row of rows)
+        for (const height of row.heights)
+          bottom = Math.max(
+            bottom,
+            Math.abs(projectPresentationLength(height, fontSizePx) ?? 0) * imageScale,
+          );
       rows.forEach((row, layer) => {
-        if (row.index >= first && row.index <= last)
-          offsets.set(row.index, -(layer + 1) * lineHeightPx);
+        if (row.index < first || row.index > last) return;
+        if (!multipleColumns) {
+          offsets.set(row.index, { offset: -(layer + 1) * lineHeightPx });
+          return;
+        }
+        const advance = (row.index - start) * lineHeightPx;
+        const y = (projectPresentationLength(row.y, fontSizePx) ?? 0) * imageScale;
+        offsets.set(row.index, {
+          offset: -advance - y,
+          // Reserve the group's visible extent once, after the final layer. Intermediate
+          // rows must not acquire the height of their overflowing images.
+          minimumHeight:
+            layer === rows.length - 1 ? Math.max(lineHeightPx, bottom - advance) : lineHeightPx,
+        });
       });
     }
     // Backtracking can move start before the loop's prior cursor. Always skip the group just
@@ -86,36 +140,48 @@ function isZeroSpaceLine(line: DisplayLine | undefined): boolean {
     node.semantic.type === "shape" &&
     node.semantic.kind.toLowerCase() === "space" &&
     node.semantic.parameters.length === 1 &&
-    node.semantic.parameters[0].value === 0
+    Number(node.semantic.parameters[0].value) === 0
   );
 }
 
-function relativeImageLineY(line: DisplayLine | undefined): CanonicalHtmlLength | undefined {
+function relativeImageLine(
+  line: DisplayLine | undefined,
+): Omit<ImageLayerRow, "index"> | undefined {
   const nodes = htmlDocument(line)?.nodes;
   if (nodes?.length !== 1) return undefined;
-  const image = singleImage(nodes[0]);
-  if (
-    image == null ||
-    image.interaction != null ||
-    image.semantic.type !== "image" ||
-    (image.semantic.display ?? "relative") !== "relative" ||
-    image.semantic.y == null
-  )
-    return undefined;
-  return image.semantic.y;
-}
-
-function singleImage(
-  node: CanonicalHtmlNode,
-): Extract<CanonicalHtmlNode, { type: "element" }> | undefined {
-  if (node.type !== "element" || node.interaction != null) return undefined;
-  if (node.kind === "image" && node.children.length === 0) return node;
-  if (node.kind !== "paragraph" || node.semantic.type !== "paragraph" || node.children.length !== 1)
-    return undefined;
-  const child = node.children[0];
-  return child.type === "element" && child.kind === "image" && child.children.length === 0
-    ? child
-    : undefined;
+  const root = nodes[0];
+  if (root.type !== "element" || root.interaction != null) return undefined;
+  const children =
+    root.kind === "paragraph" && root.semantic.type === "paragraph" ? root.children : [root];
+  let y: CanonicalHtmlLength | undefined;
+  const heights: CanonicalHtmlLength[] = [];
+  for (const child of children) {
+    if (child.type !== "element" || child.interaction != null || child.children.length !== 0)
+      return undefined;
+    const semantic = child.semantic;
+    if (
+      child.kind === "shape" &&
+      semantic.type === "shape" &&
+      semantic.kind.toLowerCase() === "space" &&
+      semantic.parameters.length === 1 &&
+      Number.isFinite(Number(semantic.parameters[0].value)) &&
+      Number(semantic.parameters[0].value) >= 0
+    )
+      continue;
+    if (
+      child.kind !== "image" ||
+      semantic.type !== "image" ||
+      (semantic.display ?? "relative") !== "relative" ||
+      semantic.y == null ||
+      !Number.isFinite(Number(semantic.y.value))
+    )
+      return undefined;
+    if (y && (y.unit !== semantic.y.unit || y.value !== Number(semantic.y.value))) return undefined;
+    // Runtime CBOR lengths may be bigint even though measurement requests use numbers.
+    y = { ...semantic.y, value: Number(semantic.y.value) };
+    if (semantic.height) heights.push({ ...semantic.height, value: Number(semantic.height.value) });
+  }
+  return y ? { y, heights, multipleColumns: children.length > 1 } : undefined;
 }
 
 function isImageLayerGroup(rows: readonly ImageLayerRow[]): boolean {

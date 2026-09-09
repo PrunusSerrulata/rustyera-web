@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { htmlImageLayerOffsets, htmlImageLayerOffsetsForRange } from "@/core/htmlImageLayerLayout";
+import {
+  htmlImageLayerOffsets,
+  htmlImageLayerOffsetsForRange,
+  htmlImageLayerLayoutForRange,
+} from "@/core/htmlImageLayerLayout";
 import type { DisplayLine } from "@/core/types";
 
 const htmlLine = (lineId: number, nodes: any[]): DisplayLine =>
@@ -90,6 +94,115 @@ describe("Snake HTML image layer layout", () => {
     ];
 
     expect([...htmlImageLayerOffsetsForRange(lines, 17, 4, 5)]).toEqual([[5, -34]]);
+  });
+
+  it.each([0.5, 1, 2])(
+    "keeps multi-column layers aligned at image scale %s and reserves height once",
+    (scale) => {
+      const lines: DisplayLine[] = [];
+      for (let layer = 0; layer < 5; layer += 1) {
+        const row = positionedImage(layer * 2 + 1, "layer", -100 * layer);
+        const children = (row.runs[0] as any).document.nodes[0].children;
+        children.push(
+          layer === 0
+            ? structuredClone(children[0])
+            : {
+                type: "element",
+                kind: "shape",
+                attributes: [],
+                children: [],
+                semantic: {
+                  type: "shape",
+                  kind: "space",
+                  parameters: [{ unit: "font_height_hundredths", value: 1125 }],
+                },
+              },
+        );
+        lines.push(zeroSpace(layer * 2), row);
+      }
+      const layout = htmlImageLayerLayoutForRange(lines, 17, 0, 9, 16, scale);
+      expect(layout.size).toBe(5);
+      for (let layer = 0; layer < 5; layer += 1) {
+        const index = layer * 2 + 1;
+        const entry = layout.get(index)!;
+        expect(index * 17 - layer * 16 * scale + entry.offset).toBe(0);
+        expect(entry.minimumHeight).toBe(layer === 4 ? Math.max(17, 180 * scale - 153) : 17);
+      }
+      expect([...htmlImageLayerLayoutForRange(lines, 17, 7, 9, 16, scale)]).toEqual(
+        [...layout].filter(([index]) => index >= 7),
+      );
+    },
+  );
+
+  it("recognizes the bigint lengths received from the real runtime wire", () => {
+    const lines: DisplayLine[] = [];
+    for (let layer = 0; layer < 5; layer += 1) {
+      const row = positionedImage(layer * 2 + 1, "layer", -100 * layer);
+      const children = (row.runs[0] as any).document.nodes[0].children;
+      children.push(
+        layer === 0
+          ? structuredClone(children[0])
+          : {
+              type: "element",
+              kind: "shape",
+              attributes: [],
+              children: [],
+              semantic: {
+                type: "shape",
+                kind: "space",
+                parameters: [{ unit: "font_height_hundredths", value: 1125 }],
+              },
+            },
+      );
+      lines.push(zeroSpace(layer * 2), row);
+    }
+    const convert = (value: any): void => {
+      if (value == null || typeof value !== "object") return;
+      if (typeof value.unit === "string" && typeof value.value === "number")
+        value.value = BigInt(value.value);
+      for (const child of Object.values(value)) convert(child);
+    };
+    const expected = [...htmlImageLayerLayoutForRange(lines, 16, 0, 9, 16, 1)];
+    convert(lines);
+    expect([...htmlImageLayerLayoutForRange(lines, 16, 0, 9, 16, 1)]).toEqual(expected);
+    expect(expected).toHaveLength(5);
+  });
+
+  it.each(["pixels", "font_height_hundredths"])("preserves legacy nonstandard y in %s", (unit) => {
+    const first = positionedImage(1, "first", 0);
+    const second = positionedImage(3, "second", -50);
+    for (const row of [first, second])
+      (row.runs[0] as any).document.nodes[0].children[0].semantic.y.unit = unit;
+    expect([
+      ...htmlImageLayerLayoutForRange([zeroSpace(0), first, zeroSpace(2), second], 17, 0, 3, 16, 2),
+    ]).toEqual([
+      [1, { offset: -17 }],
+      [3, { offset: -34 }],
+    ]);
+  });
+
+  it("rejects mixed-y images, breaks, text, and interactive filler inside a layer", () => {
+    for (const extra of [
+      { type: "text", text: "caption" },
+      { type: "element", kind: "break", children: [], semantic: { type: "break" } },
+      {
+        type: "element",
+        kind: "shape",
+        children: [],
+        interaction: { id: 1 },
+        semantic: { type: "shape", kind: "space", parameters: [{ unit: "pixels", value: 10 }] },
+      },
+      (positionedImage(9, "other", -200).runs[0] as any).document.nodes[0].children[0],
+    ]) {
+      const second = positionedImage(3, "second", -100);
+      (second.runs[0] as any).document.nodes[0].children.push(extra);
+      expect([
+        ...htmlImageLayerOffsets(
+          [zeroSpace(0), positionedImage(1, "first", 0), zeroSpace(2), second],
+          16,
+        ),
+      ]).toEqual([]);
+    }
   });
 
   it("does not move ordinary images or nonzero layout spaces", () => {
