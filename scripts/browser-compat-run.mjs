@@ -345,7 +345,9 @@ export async function runBrowserCompatibility(argv) {
           return;
         }
         if (!progress.active) return;
-        const state = window.__RUSTYERA_TEST__?.snapshot();
+        // Full snapshots insert a viewport measurement probe. Reading one from this
+        // observer feeds DOM mutations back into itself before startup can settle.
+        const state = window.__RUSTYERA_TEST__?.performanceProgress();
         if (state?.canInteract || state?.status === "游戏运行中") {
           progress.active = false;
           progress.completed = true;
