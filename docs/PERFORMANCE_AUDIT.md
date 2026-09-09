@@ -308,3 +308,15 @@ Minimized is the only invisible path. Lightweight runtime progress observations 
 while minimized. Telemetry, profiler and
 process metadata are excluded from the progress signature, so instrumentation cannot hide a frozen
 game. The audit never invokes native OS keyboard/mouse injection or a system picker.
+
+On macOS, an explicitly enabled minimized audit holds a Foundation
+`UserInitiatedAllowingIdleSystemSleep` activity for its event-loop lifetime. In a recorded replay,
+semantic DOM input did not prevent every native thread dropping to scheduling priority 4 mid-run;
+the priority observation alone does not identify the exact responsible macOS policy. The activity
+marks the whole replay as user-requested work and is released when
+the synchronous activity block returns (or the test process exits). It does not prevent display or
+system sleep, change a global preference, or manually raise thread priority. Production builds and
+the default visible audit path do not acquire this activity. Startup emits
+`tauri-performance-activity` with the activity mode so evidence can distinguish this environment
+from older potentially throttled runs. Do not label a latency improvement caused by this scheduling
+correction as a core/game optimization, or compare the two environments as identical baselines.

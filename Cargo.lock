@@ -985,6 +985,7 @@ version = "0.10.0-alpha.1-tauri"
 dependencies = [
  "base64 0.22.1",
  "blake3",
+ "block2",
  "encoding_rs",
  "era-debug-protocol",
  "era-protocol",
@@ -996,6 +997,7 @@ dependencies = [
  "glob",
  "mimalloc",
  "minicbor",
+ "objc2-foundation",
  "rustix",
  "schemars 1.2.1",
  "serde",

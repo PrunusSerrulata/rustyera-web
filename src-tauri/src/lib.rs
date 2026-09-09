@@ -1180,6 +1180,13 @@ fn install_runtime_commands(builder: tauri::Builder<tauri::Wry>) -> tauri::Build
 ///
 /// Panics when Tauri cannot initialize or run its application event loop.
 pub fn run() {
+    #[cfg(all(feature = "performance-audit", target_os = "macos"))]
+    performance_audit::run_with_activity(run_application);
+    #[cfg(not(all(feature = "performance-audit", target_os = "macos")))]
+    run_application();
+}
+
+fn run_application() {
     let builder = tauri::Builder::default();
     #[cfg(feature = "webdriver")]
     let builder = builder

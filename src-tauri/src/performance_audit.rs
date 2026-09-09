@@ -4,8 +4,12 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use tauri::{App, Manager, Runtime};
 
+#[cfg(target_os = "macos")]
+mod activity;
 mod drive_clock;
 mod native_evidence;
+#[cfg(target_os = "macos")]
+pub(crate) use activity::run_with_activity;
 pub(crate) use drive_clock::{NativeDriveClock, NativeDriveTiming};
 use native_evidence::{NativeEvidenceLedger, NativeEvidencePage};
 
