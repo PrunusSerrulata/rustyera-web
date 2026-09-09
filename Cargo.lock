@@ -868,8 +868,8 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "era-config"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "erabasic-compat",
  "serde",
@@ -879,8 +879,8 @@ dependencies = [
 
 [[package]]
 name = "era-debug-protocol"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "era-protocol",
  "minicbor",
@@ -889,8 +889,8 @@ dependencies = [
 
 [[package]]
 name = "era-protocol"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "minicbor",
  "serde",
@@ -899,8 +899,8 @@ dependencies = [
 
 [[package]]
 name = "era-runtime"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "blake3",
  "era-config",
@@ -933,8 +933,8 @@ dependencies = [
 
 [[package]]
 name = "era-runtime-protocol"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "era-protocol",
  "erabasic-compat",
@@ -946,8 +946,8 @@ dependencies = [
 
 [[package]]
 name = "era-runtime-save"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "flate2",
  "serde",
@@ -955,8 +955,8 @@ dependencies = [
 
 [[package]]
 name = "era-sql-provider"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "era-protocol",
  "era-runtime-protocol",
@@ -967,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "era-web-bridge"
-version = "0.9.0"
+version = "0.10.0-alpha.1"
 dependencies = [
  "blake3",
  "era-debug-protocol",
@@ -981,7 +981,7 @@ dependencies = [
 
 [[package]]
 name = "era-web-tauri"
-version = "0.9.0-tauri"
+version = "0.10.0-alpha.1-tauri"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -1011,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "era-web-wasm"
-version = "0.9.0-wasm"
+version = "0.10.0-alpha.1-wasm"
 dependencies = [
  "blake3",
  "era-debug-protocol",
@@ -1027,8 +1027,8 @@ dependencies = [
 
 [[package]]
 name = "erabasic-analyzer"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "blake3",
  "erabasic-ast",
@@ -1045,16 +1045,16 @@ dependencies = [
 
 [[package]]
 name = "erabasic-ast"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "erabasic-bytecode"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "blake3",
  "erabasic-ast",
@@ -1068,8 +1068,8 @@ dependencies = [
 
 [[package]]
 name = "erabasic-compat"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "blake3",
  "minicbor",
@@ -1078,8 +1078,8 @@ dependencies = [
 
 [[package]]
 name = "erabasic-compiler"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "blake3",
  "erabasic-analyzer",
@@ -1097,8 +1097,8 @@ dependencies = [
 
 [[package]]
 name = "erabasic-csv"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "erabasic-compat",
  "erabasic-data",
@@ -1107,8 +1107,8 @@ dependencies = [
 
 [[package]]
 name = "erabasic-data"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "encoding_rs",
  "serde",
@@ -1116,8 +1116,8 @@ dependencies = [
 
 [[package]]
 name = "erabasic-hir"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "erabasic-ast",
  "erabasic-compat",
@@ -1127,8 +1127,8 @@ dependencies = [
 
 [[package]]
 name = "erabasic-html"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "blake3",
  "minicbor",
@@ -1137,16 +1137,16 @@ dependencies = [
 
 [[package]]
 name = "erabasic-lexer"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "erabasic-ast",
 ]
 
 [[package]]
 name = "erabasic-parser"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "erabasic-ast",
  "erabasic-compat",
@@ -1156,8 +1156,8 @@ dependencies = [
 
 [[package]]
 name = "erabasic-validator"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "erabasic-bytecode",
  "erabasic-data",
@@ -1168,8 +1168,8 @@ dependencies = [
 
 [[package]]
 name = "erabasic-vm"
-version = "0.8.0"
-source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=228f5993c1b8d8088a5cb87aaaecf8169872c6d8#228f5993c1b8d8088a5cb87aaaecf8169872c6d8"
+version = "0.9.0-alpha.1"
+source = "git+https://github.com/PrunusSerrulata/rustyera-core.git?rev=463a54fed023efb59311fec8ae9db4d27426eeff#463a54fed023efb59311fec8ae9db4d27426eeff"
 dependencies = [
  "blake3",
  "erabasic-ast",
