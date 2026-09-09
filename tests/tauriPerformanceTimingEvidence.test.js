@@ -238,12 +238,62 @@ describe("bounded authoritative timing evidence", () => {
       maximum: 6,
     });
     expect(summary.nativeStages[0].nativeDriveMs.total).toBe(6);
+    expect(summary.nativeStages[0].nativeThreadCpuMs.count).toBe(0);
+    expect(summary.nativeStages[0].nativeSetupMs.count).toBe(0);
     expect(summary.accounting).toContain("do not sum overlapping");
     expect(summary.probeOverhead).toBe("unmeasured");
     await collector.complete();
     const manifest = JSON.parse(await readFile(join(target, "manifest.json"), "utf8"));
     expect(manifest.status).toBe("complete");
     expect(manifest.streams.native).toEqual({ epoch: 1, next: 4, dropped: 0 });
+  });
+
+  it("keeps optional CPU and setup attribution separate from wall time", async () => {
+    const target = await directory();
+    const page = chunk(0, 3);
+    Object.assign(page.native.pumps[0], { nativeSetupMs: 0.25, nativeThreadCpuMs: 1.5 });
+    Object.assign(page.native.pumps[1], { nativeSetupMs: 0.5, nativeThreadCpuMs: null });
+    const collector = await createPerformanceTimingCollector(
+      { execute: vi.fn().mockResolvedValue(JSON.stringify(page)) },
+      target,
+    );
+    const result = await collector.collect({ kind: "startup" }, true);
+    const summary = JSON.parse(await readFile(join(target, result.summaryFile), "utf8"));
+    expect(summary.nativeStages[0].nativeDriveMs.total).toBe(6);
+    expect(summary.nativeStages[0].nativeSetupMs).toEqual({
+      count: 2,
+      total: 0.75,
+      minimum: 0.25,
+      maximum: 0.5,
+    });
+    expect(summary.nativeStages[0].nativeThreadCpuMs).toEqual({
+      count: 1,
+      total: 1.5,
+      minimum: 1.5,
+      maximum: 1.5,
+    });
+    expect(summary.nativeCpuAccounting).toContain("excludes SQL owner work");
+    expect(summary.probeOverhead).toBe("unmeasured");
+    await collector.complete();
+  });
+
+  it.each([
+    ["nativeThreadCpuMs", -1],
+    ["nativeThreadCpuMs", "1"],
+    ["nativeSetupMs", -1],
+    ["nativeSetupMs", "1"],
+  ])("rejects invalid optional %s attribution %s", async (field, value) => {
+    const target = await directory();
+    const page = chunk(0, 1);
+    page.native.pumps[0][field] = value;
+    const collector = await createPerformanceTimingCollector(
+      { execute: vi.fn().mockResolvedValue(JSON.stringify(page)) },
+      target,
+    );
+    await expect(collector.collect({ kind: "startup" }, true)).rejects.toThrow(
+      "invalid timing metric",
+    );
+    await expect(collector.complete()).rejects.toThrow("failed");
   });
 
   it("persists a dropped/gapped frontier before rejecting incomplete evidence", async () => {

@@ -7,7 +7,7 @@ license.workspace = true
 [features]
 native-sql = ["dep:era-sql-provider"]
 webdriver = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
-performance-audit = ["webdriver", "era-web-bridge/performance-audit", "dep:minicbor"]
+performance-audit = ["webdriver", "era-web-bridge/performance-audit", "dep:minicbor", "dep:rustix"]
 vm-instruction-profile = ["performance-audit", "era-web-bridge/vm-instruction-profile"]
 
 [build-dependencies]
@@ -43,3 +43,6 @@ workspace = true
 
 [dev-dependencies]
 minicbor.workspace = true
+
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+rustix = { version = "1.1.4", features = ["time"], optional = true }

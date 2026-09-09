@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use tauri::{App, Manager, Runtime};
 
+mod drive_clock;
 mod native_evidence;
+pub(crate) use drive_clock::{NativeDriveClock, NativeDriveTiming};
 use native_evidence::{NativeEvidenceLedger, NativeEvidencePage};
 
 const MAXIMUM_PUMP_SAMPLES: usize = 20_000;
@@ -17,6 +19,8 @@ pub(super) struct NativePumpTiming {
     operation: &'static str,
     request_decode_ms: f64,
     native_drive_ms: f64,
+    native_setup_ms: f64,
+    native_thread_cpu_ms: Option<f64>,
     json_serialize_ms: f64,
     response_bytes: usize,
     events: usize,
@@ -74,7 +78,7 @@ impl PerformanceAuditTelemetry {
         &self,
         operation: &'static str,
         request_decode_ms: f64,
-        native_drive_ms: f64,
+        drive: NativeDriveTiming,
         json_serialize_ms: f64,
         response_bytes: usize,
         batch: &era_web_bridge::PumpBatch,
@@ -113,7 +117,9 @@ impl PerformanceAuditTelemetry {
             sequence,
             operation,
             request_decode_ms,
-            native_drive_ms,
+            native_drive_ms: drive.wall.as_secs_f64() * 1000.0,
+            native_setup_ms: drive.setup.as_secs_f64() * 1000.0,
+            native_thread_cpu_ms: drive.thread_cpu.map(|value| value.as_secs_f64() * 1000.0),
             json_serialize_ms,
             response_bytes,
             events: batch.events.len(),
@@ -286,6 +292,7 @@ pub(super) fn configure_window<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use era_web_bridge::{PumpBatch, WebDriveState};
+    use std::time::Duration;
 
     use super::*;
 
@@ -300,7 +307,7 @@ mod tests {
             cooperative_background_work: false,
             events: Vec::new(),
         };
-        telemetry.record("pump", 0.0, 0.0, 0.0, 0, &batch);
+        telemetry.record("pump", 0.0, NativeDriveTiming::default(), 0.0, 0, &batch);
         let evidence = telemetry.take_evidence(512).unwrap();
         assert!(evidence.evidence_only);
         assert!(evidence.pumps.is_empty());
@@ -332,8 +339,22 @@ mod tests {
         };
         batch.events[1].message = serde_json::json!({"type": 1});
         batch.events[2].message = serde_json::json!({"value": {"type": "ignored"}});
-        telemetry.record("pump", 0.0, 0.0, 0.0, 1024 * 1024 - 1, &batch);
-        telemetry.record("pump", 0.0, 0.0, 0.0, 1024 * 1024, &batch);
+        telemetry.record(
+            "pump",
+            0.0,
+            NativeDriveTiming::default(),
+            0.0,
+            1024 * 1024 - 1,
+            &batch,
+        );
+        telemetry.record(
+            "pump",
+            0.0,
+            NativeDriveTiming::default(),
+            0.0,
+            1024 * 1024,
+            &batch,
+        );
         let snapshot = telemetry.snapshot().unwrap();
         assert!(snapshot.pumps[0].large_response_event_types.is_empty());
         let types = &snapshot.pumps[1].large_response_event_types;
@@ -353,7 +374,17 @@ mod tests {
             cooperative_background_work: false,
             events: Vec::new(),
         };
-        telemetry.record("pump", 0.0, 1.0, 2.0, 3, &batch);
+        telemetry.record(
+            "pump",
+            0.0,
+            NativeDriveTiming {
+                wall: Duration::from_millis(1),
+                ..NativeDriveTiming::default()
+            },
+            2.0,
+            3,
+            &batch,
+        );
         assert_eq!(telemetry.snapshot().unwrap().next_sequence, 1);
         assert_eq!(telemetry.reset().unwrap(), 1);
         let snapshot = telemetry.snapshot().unwrap();
@@ -375,7 +406,7 @@ mod tests {
             events: Vec::new(),
         };
         for _ in 0..=MAXIMUM_PUMP_SAMPLES {
-            telemetry.record("pump", 0.0, 0.0, 0.0, 0, &batch);
+            telemetry.record("pump", 0.0, NativeDriveTiming::default(), 0.0, 0, &batch);
         }
         let snapshot = telemetry.snapshot().unwrap();
         assert_eq!(snapshot.pumps.len(), MAXIMUM_PUMP_SAMPLES);
@@ -420,13 +451,28 @@ mod tests {
             .unwrap();
         telemetry.reset().unwrap();
         for _ in 0..3 {
-            telemetry.record("pump", 1.0, 2.0, 3.0, 4, &batch);
+            telemetry.record(
+                "pump",
+                1.0,
+                NativeDriveTiming {
+                    wall: Duration::from_millis(2),
+                    setup: Duration::from_micros(250),
+                    thread_cpu: Some(Duration::from_micros(1500)),
+                },
+                3.0,
+                4,
+                &batch,
+            );
         }
         let first = telemetry.take(2, true).unwrap();
         assert_eq!(first.epoch, 1);
         assert_eq!(first.next_sequence, 3);
         assert_eq!(first.remaining_samples, 1);
         assert_eq!(first.dropped, 0);
+        let serialized = serde_json::to_value(&first.pumps[0]).unwrap();
+        assert_eq!(serialized["nativeDriveMs"], 2.0);
+        assert_eq!(serialized["nativeSetupMs"], 0.25);
+        assert_eq!(serialized["nativeThreadCpuMs"], 1.5);
         assert_eq!(
             first
                 .pumps
@@ -442,7 +488,7 @@ mod tests {
         assert_eq!(second.next_sequence, 3);
         assert!(second.core_client.is_none());
         assert!(telemetry.take(2, false).unwrap().pumps.is_empty());
-        telemetry.record("pump", 0.0, 0.0, 0.0, 0, &batch);
+        telemetry.record("pump", 0.0, NativeDriveTiming::default(), 0.0, 0, &batch);
         assert_eq!(telemetry.take(2, false).unwrap().pumps[0].sequence, 3);
         assert!(telemetry.take(0, false).is_err());
         assert!(telemetry.take(1025, false).is_err());

@@ -219,7 +219,7 @@ async fn submit_runtime_and_pump(
         #[cfg(feature = "performance-audit")]
         let request_decode_ms = decode_started.elapsed().as_secs_f64() * 1000.0;
         #[cfg(feature = "performance-audit")]
-        let drive_started = Instant::now();
+        let mut drive_clock = performance_audit::NativeDriveClock::start();
         let mut session_guard = state.session.lock().map_err(lock_error)?;
         let session = session_guard
             .as_mut()
@@ -227,6 +227,8 @@ async fn submit_runtime_and_pump(
         let message_id = session.submit_runtime(&message, correlation_id)?;
         let mut storage_guard = state.storage.lock().map_err(lock_error)?;
         let project_guard = state.project.lock().map_err(lock_error)?;
+        #[cfg(feature = "performance-audit")]
+        drive_clock.drive_ready();
         let batch = match pump_mode {
             SubmittedPumpMode::UntilBlocked => pump_message_skip_session(
                 &state,
@@ -243,14 +245,14 @@ async fn submit_runtime_and_pump(
         };
         #[cfg(feature = "performance-audit")]
         {
-            let native_drive_ms = drive_started.elapsed().as_secs_f64() * 1000.0;
+            let drive = drive_clock.finish();
             let serialize_started = Instant::now();
             let (response, response_bytes) =
                 encode_submitted_pump_response_with_len(message_id, &batch)?;
             state.performance_audit.record(
                 "submit_runtime_and_pump",
                 request_decode_ms,
-                native_drive_ms,
+                drive,
                 serialize_started.elapsed().as_secs_f64() * 1000.0,
                 response_bytes,
                 &batch,
@@ -369,13 +371,15 @@ async fn pump(state: State<'_, AppState>) -> Result<tauri::ipc::Response, String
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         #[cfg(feature = "performance-audit")]
-        let drive_started = Instant::now();
+        let mut drive_clock = performance_audit::NativeDriveClock::start();
         let mut session_guard = state.session.lock().map_err(lock_error)?;
         let session = session_guard
             .as_mut()
             .ok_or_else(|| "runtime session has not been created".to_owned())?;
         let mut storage_guard = state.storage.lock().map_err(lock_error)?;
         let project_guard = state.project.lock().map_err(lock_error)?;
+        #[cfg(feature = "performance-audit")]
+        drive_clock.drive_ready();
         let batch = pump_frontend_session(
             &state,
             session,
@@ -384,13 +388,13 @@ async fn pump(state: State<'_, AppState>) -> Result<tauri::ipc::Response, String
         )?;
         #[cfg(feature = "performance-audit")]
         {
-            let native_drive_ms = drive_started.elapsed().as_secs_f64() * 1000.0;
+            let drive = drive_clock.finish();
             let serialize_started = Instant::now();
             let (response, response_bytes) = encode_pump_response_with_len(&batch)?;
             state.performance_audit.record(
                 "pump",
                 0.0,
-                native_drive_ms,
+                drive,
                 serialize_started.elapsed().as_secs_f64() * 1000.0,
                 response_bytes,
                 &batch,

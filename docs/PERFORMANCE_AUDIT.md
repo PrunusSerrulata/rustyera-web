@@ -165,6 +165,17 @@ or result logging also fails. These observations and timing boundaries carry
 aggregation. Bounded post-action presentation inventory counts metadata, never image byte payloads,
 under one shared 100,000-entry traversal cap. Neither diagnostic runs in ordinary capture.
 
+Native pump samples additionally distinguish `nativeSetupMs` (the initial interval containing
+host lock acquisition and, on fused input, message submission) and `nativeThreadCpuMs`. The latter
+uses two safe in-process thread-clock reads on macOS/Linux and is `null` elsewhere; there are no
+subprocesses, memory/DOM snapshots, allocations or changes to scheduling policy in that path.
+It excludes time descheduled or blocked and work performed on the separate SQL owner thread.
+Therefore wall time minus thread CPU is not exclusively lock contention or scheduler delay.
+The CPU endpoint is read just after the wall endpoint; tiny samples need not satisfy CPU <= wall.
+Both fields overlap `nativeDriveMs`, not additional latency. Old captures without these fields
+remain readable: unavailable counters have zero samples, never fabricated zero-duration values.
+These counters do not measure total probe overhead; that remains explicitly unmeasured.
+
 Capture writes a fresh directory beside its candidate: `<candidate-path>.timings/`. The existing
 frontend ring and native `PerformanceAuditTelemetry` expose bounded destructive reads; each call
 moves at most 512 timing records per origin and 512 long-task records, leaving epoch, next-sequence

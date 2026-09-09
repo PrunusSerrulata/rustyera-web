@@ -268,6 +268,8 @@ export async function createPerformanceTimingCollector(
             operation: sample.operation,
             requestDecodeMs: metric(),
             nativeDriveMs: metric(),
+            nativeSetupMs: metric(),
+            nativeThreadCpuMs: metric(),
             jsonSerializeMs: metric(),
             responseBytes: metric(),
             events: metric(),
@@ -289,6 +291,10 @@ export async function createPerformanceTimingCollector(
             "runtimeTransitions",
           ])
             add(stage[field], sample[field]);
+          // Older audit builds and unsupported platforms omit CPU attribution; retain zero
+          // samples, not an invented zero-duration measurement. Existing required fields stay strict.
+          for (const field of ["nativeSetupMs", "nativeThreadCpuMs"])
+            if (sample[field] != null) add(stage[field], sample[field]);
           nativeStages.set(sample.operation, stage);
         }
         for (const sample of front.longTasks) add(longTaskDurations, sample.elapsedMs);
@@ -321,6 +327,8 @@ export async function createPerformanceTimingCollector(
           "record-arrival-between-drains; asynchronous completions can cross action boundaries",
         accounting:
           "frontend invoke includes native stages; do not sum overlapping layers or long tasks",
+        nativeCpuAccounting:
+          "thread CPU excludes SQL owner work, blocked time and descheduling; setup includes locks and submission before drive; neither measures probe overhead",
         probeOverhead: "unmeasured",
         atomicCrossHostSnapshot: false,
       };
