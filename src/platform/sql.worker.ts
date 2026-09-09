@@ -68,7 +68,7 @@ self.onmessage = async (event: MessageEvent) => {
       if (publication) throw new Error("SQL publication acknowledgement is pending");
       reply = { id: message.id, type: "executed", result: await execute(message.value) };
     } else if (message.type === "validate") {
-      const sqlite = await sqlitePromise;
+      const sqlite = await readySqlite();
       const database = openDatabase(sqlite, message.value);
       database.close();
       reply = { id: message.id, type: "validated", result: null };
@@ -88,10 +88,15 @@ self.onmessage = async (event: MessageEvent) => {
   }
 };
 
-async function execute(command: SqlWorkerExecuteCommand): Promise<SqlWorkerExecuteResult> {
+async function readySqlite(): Promise<Sqlite3Static> {
   const sqlite = await sqlitePromise;
   if (sqlite.version.libVersion !== SQL_SQLITE_VERSION)
     throw new Error(`SQLite version mismatch: ${sqlite.version.libVersion}`);
+  return sqlite;
+}
+
+async function execute(command: SqlWorkerExecuteCommand): Promise<SqlWorkerExecuteResult> {
+  const sqlite = await readySqlite();
   const request = command.request;
   try {
     const response = runOperation(sqlite, command);

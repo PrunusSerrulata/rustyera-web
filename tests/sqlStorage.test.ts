@@ -59,7 +59,96 @@ class MemorySqlBridge {
   }
 }
 
+function legacyIdentity(prefix: string, name: string, seed?: Uint8Array) {
+  const encoder = new TextEncoder();
+  const encodedName = encoder.encode(name);
+  const length = new Uint8Array(4);
+  new DataView(length.buffer).setUint32(0, encodedName.length, false);
+  return bytesHex(
+    sha256Bytes(
+      new Uint8Array([
+        ...encoder.encode(prefix + "\0"),
+        ...length,
+        ...encodedName,
+        ...(seed ?? []),
+        ...encoder.encode("3.53.0\0"),
+        0,
+        0,
+        0,
+        1,
+      ]),
+    ),
+  );
+}
+
 describe("SQL revision storage", () => {
+  it("reuses legacy resource current/exact paths and CAS without rewriting old bytes", async () => {
+    const seed = new TextEncoder().encode("immutable old seed");
+    const current = new TextEncoder().encode("old current database");
+    const exact = new TextEncoder().encode("older exact database");
+    const currentRevision = sha256Bytes(current);
+    const exactRevision = sha256Bytes(exact);
+    const identity = legacyIdentity(
+      "rustyera.sql.identity.v1",
+      "plugins/qol_data.db",
+      sha256Bytes(seed),
+    );
+    const bridge = new MemorySqlBridge(seed);
+    const pointerPath = `sql/v1/${identity}/current`;
+    const currentPath = `sql/v1/${identity}/revisions/${bytesHex(currentRevision)}.sqlite3`;
+    const exactPath = `sql/v1/${identity}/revisions/${bytesHex(exactRevision)}.sqlite3`;
+    const pointer = new TextEncoder().encode(bytesHex(currentRevision) + "\n");
+    bridge.files.set(pointerPath, pointer);
+    bridge.files.set(currentPath, current);
+    bridge.files.set(exactPath, exact);
+    const storage = new SqlStorage(bridge as never);
+    const opened = await storage.openResource(
+      "plugins/qol_data.db",
+      sha256Bytes(seed),
+      { kind: "current" },
+      acceptSeed,
+    );
+    const restored = await storage.openResource(
+      "plugins/qol_data.db",
+      sha256Bytes(seed),
+      { kind: "exact", sha256: exactRevision },
+      acceptSeed,
+    );
+    expect(opened.chain!.identityHex).toBe(identity);
+    expect(restored.chain!.identityHex).toBe(identity);
+    expect(bytesHex(opened.bytes!)).toBe(bytesHex(current));
+    expect(bytesHex(restored.bytes!)).toBe(bytesHex(exact));
+    expect(restored.durableRevision).toEqual(exactRevision);
+    expect(bridge.requests.every((request) => request.operation.type === "read")).toBe(true);
+    const next = new TextEncoder().encode("new database");
+    await storage.publish(opened.chain!, currentRevision, next, sha256Bytes(next));
+    expect(bridge.requests.at(-1)).toMatchObject({
+      relative_path: pointerPath,
+      operation: { precondition: { type: "revision", revision: digest(pointer) } },
+    });
+    expect(bridge.files.get(currentPath)).toEqual(current);
+    expect(bridge.files.get(exactPath)).toEqual(exact);
+    expect(bridge.resource).toEqual(seed);
+  });
+
+  it("keeps the legacy Web memory exact revision path", async () => {
+    const bytes = new TextEncoder().encode("old memory revision");
+    const revision = sha256Bytes(bytes);
+    const identity = legacyIdentity("rustyera.sql.memory.v1", "db");
+    const bridge = new MemorySqlBridge(new Uint8Array());
+    const path = `sql/v1/${identity}/revisions/${bytesHex(revision)}.sqlite3`;
+    bridge.files.set(path, bytes);
+    const opened = await new SqlStorage(bridge as never).openMemory("db", {
+      kind: "exact",
+      sha256: revision,
+    });
+    expect(opened.chain!.identityHex).toBe(identity);
+    expect(bytesHex(opened.bytes!)).toBe(bytesHex(bytes));
+    expect(opened.durableRevision).toEqual(revision);
+    expect(bridge.requests.map((request) => request.relative_path)).toEqual([path]);
+    expect(bridge.files.size).toBe(1);
+  });
+
   it("seeds a content-addressed revision before atomically creating current", async () => {
     const seed = new TextEncoder().encode("SQLite fixture");
     const bridge = new MemorySqlBridge(seed);

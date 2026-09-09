@@ -9,7 +9,10 @@ import {
 } from "@/core/runtimeServiceProtocol";
 
 export const SQL_OPERATION = "rustyera.sql";
-export const SQL_SQLITE_VERSION = "3.53.0";
+export const SQL_SQLITE_VERSION = "3.53.4";
+/** Frozen v1 storage-chain lineage, not the running SQLite engine version.
+ * Keep existing current/exact paths and immutable revision bytes across this upgrade. */
+export const SQL_STORAGE_IDENTITY_ANCHOR_V1 = "3.53.0";
 export const SQL_DATABASE_FORMAT_VERSION = 1;
 
 export const SQL_LIMITS = Object.freeze({
@@ -361,7 +364,7 @@ export function sqlIdentityPreimage(resourceId: string, seedSha256: Uint8Array):
   validateSqlResourceId(resourceId);
   const prefix = new TextEncoder().encode("rustyera.sql.identity.v1\0");
   const resource = new TextEncoder().encode(resourceId);
-  const sqlite = new TextEncoder().encode(`${SQL_SQLITE_VERSION}\0`);
+  const sqlite = new TextEncoder().encode(`${SQL_STORAGE_IDENTITY_ANCHOR_V1}\0`);
   const result = new Uint8Array(prefix.length + 4 + resource.length + 32 + sqlite.length + 4);
   let offset = 0;
   result.set(prefix, offset);

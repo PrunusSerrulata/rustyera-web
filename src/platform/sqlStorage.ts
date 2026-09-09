@@ -2,6 +2,7 @@ import type { FrontendBridge } from "@/core/types";
 import {
   SQL_DATABASE_FORMAT_VERSION,
   SQL_SQLITE_VERSION,
+  SQL_STORAGE_IDENTITY_ANCHOR_V1,
   SqlErrorCode,
   bytesHex,
   hexBytes,
@@ -430,7 +431,7 @@ function memoryIdentityDigest(logicalName: string): Uint8Array {
   const normalized = logicalName.toLowerCase();
   const name = new TextEncoder().encode(normalized);
   const prefix = new TextEncoder().encode("rustyera.sql.memory.v1\0");
-  const sqlite = new TextEncoder().encode(`${SQL_SQLITE_VERSION}\0`);
+  const sqlite = new TextEncoder().encode(`${SQL_STORAGE_IDENTITY_ANCHOR_V1}\0`);
   const bytes = new Uint8Array(prefix.length + 4 + name.length + sqlite.length + 4);
   let offset = 0;
   bytes.set(prefix, offset);

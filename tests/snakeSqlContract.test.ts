@@ -16,7 +16,9 @@ import {
 describe("three-client SQL convergence fixture", () => {
   it("pins every behavioral input plus the provider identity", () => {
     expect(snakeSqlContract.schemaVersion).toBe(1);
-    expect(snakeSqlContract.sqliteVersion).toBe(SQL_SQLITE_VERSION);
+    // Historical seed provenance and bytes remain immutable across engine upgrades.
+    expect(snakeSqlContract.sqliteVersion).toBe("3.53.0");
+    expect(SQL_SQLITE_VERSION).toBe("3.53.4");
     expect(snakeSqlContract.limits).toEqual(SQL_LIMITS);
     expect(snakeSqlContract.errorCodes).toEqual({
       invalidSource: SqlErrorCode.InvalidSource,
