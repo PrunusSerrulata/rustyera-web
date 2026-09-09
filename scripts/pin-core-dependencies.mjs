@@ -13,8 +13,8 @@ const manifest = readFileSync(manifestPath, "utf8");
 const escapedSource = source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const dependencyPattern = new RegExp(`${escapedSource}(?:,\\s*rev\\s*=\\s*"[^"]*")?`, "g");
 const dependencyCount = [...manifest.matchAll(dependencyPattern)].length;
-if (dependencyCount !== 5) {
-  throw new Error("expected five rustyera-core workspace dependencies");
+if (dependencyCount !== 6) {
+  throw new Error("expected six rustyera-core workspace dependencies");
 }
 
 writeFileSync(

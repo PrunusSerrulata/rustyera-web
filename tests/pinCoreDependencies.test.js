@@ -17,7 +17,7 @@ async function fixture(revision) {
   await copyFile(sourceScript, path.join(scripts, "pin-core-dependencies.mjs"));
   const dependency = revision === undefined ? source : `${source}, rev = "${revision}"`;
   const manifest = Array.from(
-    { length: 5 },
+    { length: 6 },
     (_, index) => `core-${index} = { ${dependency} }`,
   ).join("\n");
   await writeFile(path.join(root, "Cargo.toml"), `${manifest}\n`);
@@ -30,7 +30,7 @@ function run(script) {
 
 async function expectPinned(root) {
   const manifest = await readFile(path.join(root, "Cargo.toml"), "utf8");
-  expect(manifest.match(/rev = "[^"]+"/g)).toEqual(Array(5).fill(`rev = "${newRevision}"`));
+  expect(manifest.match(/rev = "[^"]+"/g)).toEqual(Array(6).fill(`rev = "${newRevision}"`));
   await expect(readFile(path.join(root, "rustyera-core.rev"), "utf8")).resolves.toBe(
     `${newRevision}\n`,
   );

@@ -11,8 +11,8 @@ const manifest = readFileSync(resolve(root, "Cargo.toml"), "utf8");
 const revisions = [...manifest.matchAll(/rustyera-core\.git", rev = "([^"]+)"/g)].map(
   (match) => match[1],
 );
-if (revisions.length !== 5 || revisions.some((revision) => revision !== expected)) {
-  throw new Error("all five core workspace dependencies must match rustyera-core.rev");
+if (revisions.length !== 6 || revisions.some((revision) => revision !== expected)) {
+  throw new Error("all six core workspace dependencies must match rustyera-core.rev");
 }
 
 console.log(`rustyera-core revision: ${expected}`);
