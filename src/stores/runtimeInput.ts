@@ -39,9 +39,12 @@ export class RuntimeInputState {
     const wait = this.context.presentation().inputWait;
     if (!wait) return false;
     const waitIdentity = inputWaitIdentity(wait);
-    const previousRetiredInteractionSequence = retirePresentedButtons(
-      this.context.mutableInteractions(),
-    );
+    const interactions = this.context.mutableInteractions();
+    // Reference Emuera keeps the current button generation across message waits.
+    // A continuation can append choices to the same menu before its value input.
+    const previousRetiredInteractionSequence = isMessageContinuationWait(wait)
+      ? interactions.retiredInteractionSequence
+      : retirePresentedButtons(interactions);
     this.pending.value = {
       waitIdentity,
       waitId: String(wait.wait_id),
@@ -64,6 +67,7 @@ export class RuntimeInputState {
             this.context.mutableInteractions(),
             previousRetiredInteractionSequence,
           );
+        else retirePresentedButtons(this.context.mutableInteractions());
         this.pending.value = undefined;
       }
       throw error;

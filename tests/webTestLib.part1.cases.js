@@ -31,6 +31,25 @@ import {
 } from "./webTestLib.testHarness";
 
 describe("web game test scenario", () => {
+  it("preserves explicit initial wait pacing and rejects non-boolean overrides", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rustyera-initial-wait-"));
+    try {
+      const file = path.join(root, "scenario.json");
+      const scenario = {
+        schema_version: 1,
+        project: ".",
+        mode: "fixed",
+        initial_auto_enter: false,
+      };
+      await writeFile(file, JSON.stringify(scenario));
+      expect((await loadScenario(file)).initial_auto_enter).toBe(false);
+      await writeFile(file, JSON.stringify({ ...scenario, initial_auto_enter: "false" }));
+      await expect(loadScenario(file)).rejects.toThrow("initial_auto_enter must be a boolean");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("requires every animation frame to publish and synchronize within the script cadence", () => {
     const revisions = [10, 12, 14, 16];
     const publishes = revisions.map((revision, index) => ({

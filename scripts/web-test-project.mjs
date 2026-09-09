@@ -156,6 +156,8 @@ export async function loadScenario(file, projectOverride, stateOverride) {
     throw new Error("scenario has_touch must be a boolean");
   if (raw.summary_observations != null && typeof raw.summary_observations !== "boolean")
     throw new Error("scenario summary_observations must be a boolean");
+  if (raw.initial_auto_enter != null && typeof raw.initial_auto_enter !== "boolean")
+    throw new Error("scenario initial_auto_enter must be a boolean");
   const actions = raw.actions
     ? raw.actions.map((item) => ({ ...item }))
     : (raw.inputs ?? []).map((item) => ({

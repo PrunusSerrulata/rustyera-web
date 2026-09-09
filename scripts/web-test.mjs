@@ -498,7 +498,7 @@ async function execute(args) {
         expectedProjectLoadFailure: scenario.expect_project_load_failure,
       });
     }
-    let current = await observe();
+    let current = await observe(scenario.initial_auto_enter !== false);
     if (scenario.project_file) {
       const exactCacheHit = current.rust.frontend.logs.some((entry) =>
         String(entry.message).includes("runtime.compiled_cache_hit"),

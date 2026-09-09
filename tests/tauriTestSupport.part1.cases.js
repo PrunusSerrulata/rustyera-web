@@ -146,6 +146,9 @@ describe("verified Tauri build reuse", () => {
       reusableBuildEnvironment(first, "snake-history-replacement-layout.spec.mjs", "/state", true),
     ).toEqual(first);
     expect(
+      reusableBuildEnvironment(first, "snake-message-header-buttons.spec.mjs", "/state", true),
+    ).toEqual(first);
+    expect(
       reusableBuildEnvironment(second, "snake-history-replacement-layout.spec.mjs", "/state", true),
     ).not.toEqual(first);
     expect(() => reusableBuildEnvironment(first, "other.spec.mjs", undefined, true)).toThrow(

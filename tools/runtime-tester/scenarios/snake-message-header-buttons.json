@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eratw-sub-modding",
+  "mode": "fixed",
+  "start": {
+    "type": "vm_snapshot"
+  },
+  "viewport": {
+    "width": 2048,
+    "height": 1400
+  },
+  "summary_observations": true,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".game-line[data-line-id=\"956\"]:not(:has(button, a, input, [role=button]))"
+      },
+      "expect": {
+        "count": 1,
+        "visible": true
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": ".game-line[data-line-id=\"956\"]:not(:has(button, a, input, [role=button]))"
+      },
+      "button": "left",
+      "force": true,
+      "advances_game": true,
+      "auto_enter": false,
+      "settle_ms": 3000
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "role": "button",
+        "name": "催眠发动可",
+        "exact": false
+      },
+      "expect": {
+        "count": 1,
+        "enabled": true
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "role": "button",
+        "name": "Status",
+        "exact": false
+      },
+      "expect": {
+        "count": 1,
+        "enabled": true
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "role": "button",
+        "name": "通常",
+        "exact": false
+      },
+      "expect": {
+        "count": 1,
+        "enabled": true
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "role": "button",
+        "name": "Palam",
+        "exact": false
+      },
+      "expect": {
+        "count": 1,
+        "enabled": true
+      }
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "fault": null,
+        "canInteract": true,
+        "wait": {
+          "kind": "integer_value"
+        }
+      }
+    }
+  ],
+  "limits": {
+    "max_steps": 8,
+    "timeout_seconds": 600
+  },
+  "initial_auto_enter": false
+}
