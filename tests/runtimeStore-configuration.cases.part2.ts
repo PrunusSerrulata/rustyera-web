@@ -618,11 +618,29 @@ describe("runtime store configuration", () => {
       chromeHeight: 122,
     });
 
+    // A viewport observation alone must never restore the configured window size.
+    expect(bridge.applyProjectConfiguration).toHaveBeenCalledOnce();
+    await store.clientViewportChromeChanged();
+
     expect(bridge.applyProjectConfiguration).toHaveBeenCalledTimes(2);
     expect(bridge.applyProjectConfiguration).toHaveBeenCalledWith(configuration.entries, {
       width: 20,
       height: 122,
     });
+
+    // Fractional-DPI rounding and manual resize/maximize observations must settle
+    // without issuing another native size/unmaximize request.
+    for (const height of [716, 717, 716, 950, 717]) {
+      viewportHeight = height;
+      await store.projectViewport({
+        width: 900,
+        height,
+        lineColumns: 90,
+        chromeWidth: 20,
+        chromeHeight: 839 - height,
+      });
+    }
+    expect(bridge.applyProjectConfiguration).toHaveBeenCalledTimes(2);
   });
 
   it("persists a generated reraconfig with the absent-file precondition", async () => {

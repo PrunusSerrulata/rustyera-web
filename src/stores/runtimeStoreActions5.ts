@@ -35,6 +35,7 @@ export function createRuntimeStoreActions5(context: any) {
         lifecycleGeneration: number;
         sessionGeneration: number;
         configurationIdentity: string;
+        chromeGeneration: number;
         chromeWidth: number;
         chromeHeight: number;
       }
@@ -521,6 +522,7 @@ export function createRuntimeStoreActions5(context: any) {
     const lifecycleGeneration = context.lifecycleGeneration;
     const sessionGeneration = context.runtimeSessionObservationGeneration;
     const configurationIdentity = clientWindowGeometryIdentity();
+    const chromeGeneration = clientViewportChromeGeneration;
     const chrome = context.runtimeViewport.chrome(measurement);
     let succeeded = false;
     const application = (async () => {
@@ -546,6 +548,7 @@ export function createRuntimeStoreActions5(context: any) {
         lifecycleGeneration,
         sessionGeneration,
         configurationIdentity,
+        chromeGeneration,
         chromeWidth: chrome.width,
         chromeHeight: chrome.height,
       };
@@ -581,15 +584,15 @@ export function createRuntimeStoreActions5(context: any) {
     if (clientConfigurationApplication) await clientConfigurationApplication;
     const current = currentGameViewportMeasurement() ?? measurement;
     if (!current) return;
-    const chrome = context.runtimeViewport.chrome(current);
     const applied = appliedClientWindowGeometry;
+    // Resize observations include pixel rounding and user-driven window changes. Only an
+    // explicit application-chrome change may reapply the configured startup dimensions.
     if (
       applied &&
       applied.lifecycleGeneration === context.lifecycleGeneration &&
       applied.sessionGeneration === context.runtimeSessionObservationGeneration &&
       applied.configurationIdentity === configurationIdentity &&
-      applied.chromeWidth === chrome.width &&
-      applied.chromeHeight === chrome.height
+      applied.chromeGeneration === clientViewportChromeGeneration
     )
       return;
     await applyClientConfiguration(current);
