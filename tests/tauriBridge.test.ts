@@ -160,7 +160,13 @@ describe("Tauri project restart", () => {
     await expect(bridge.openUpload()).resolves.toBe(resource);
   });
 
-  it("tags storage write bytes and decodes the raw storage response", async () => {
+  it.each(
+    [
+      Uint8Array.of(0, 0x80, 0xff),
+      [0, 0x80, 0xff],
+      new DataView(Uint8Array.of(99, 0, 0x80, 0xff, 99).buffer, 1, 3),
+    ].map((data) => ({ data })),
+  )("tags storage write bytes $data and decodes the raw storage response", async ({ data }) => {
     const response = new TextEncoder().encode(
       JSON.stringify({
         request_id: { $rustyeraInteger: "9007199254740992" },
@@ -181,7 +187,7 @@ describe("Tauri project restart", () => {
         relative_path: "save01.sav",
         operation: {
           type: "write",
-          data: Uint8Array.of(0, 0x80, 0xff),
+          data,
           atomic_replace: true,
           precondition: { type: "revision", revision: "previous" },
         },
@@ -209,6 +215,53 @@ describe("Tauri project restart", () => {
         },
         idempotency_key: "write-save01",
         deadline_ns: { $rustyeraInteger: "9007199254740993" },
+      },
+    });
+  });
+
+  it.each([[256], [-1], [1.5], [NaN], ["1"], [undefined], null, {}].map((data) => ({ data })))(
+    "rejects malformed storage bytes %j before IPC",
+    async ({ data }) => {
+      await expect(
+        new TauriBridge().handleStorage({ operation: { type: "write", data } }),
+      ).rejects.toThrow(TypeError);
+      expect(invoke).not.toHaveBeenCalled();
+    },
+  );
+
+  it("forwards JSON ProtocolBytes from a raw pump storage request without mutating it", async () => {
+    const request = {
+      request_id: 7,
+      namespace: "global_save",
+      relative_path: "global.sav",
+      operation: { type: "write", data: [0, 128, 255], atomic_replace: true },
+    };
+    invoke.mockResolvedValueOnce(
+      new TextEncoder().encode(
+        JSON.stringify({
+          state: "waiting_external",
+          vmInstructions: 0,
+          runtimeTransitions: 1,
+          events: [
+            {
+              channel: "runtime",
+              sequence: 1,
+              messageId: 2,
+              message: { type: "storage_request", value: request },
+            },
+          ],
+        }),
+      ).buffer,
+    );
+    const bridge = new TauriBridge();
+    const batch = await bridge.pump();
+    const decoded = batch.events[0].message.value;
+    await bridge.handleStorage(decoded);
+    expect(decoded).toEqual(request);
+    expect(invoke).toHaveBeenLastCalledWith("storage_request", {
+      request: {
+        ...request,
+        operation: { ...request.operation, data: { $rustyeraBytes: "AID/" } },
       },
     });
   });

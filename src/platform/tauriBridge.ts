@@ -393,18 +393,28 @@ export class TauriBridge implements FrontendBridge {
   }
 
   async handleStorage(request: any): Promise<any> {
-    const encoded = encodeIpcValue(request) as Record<string, unknown>;
     const operation = request?.operation;
     if (operation?.type === "write") {
-      if (!ArrayBuffer.isView(operation.data))
-        throw new TypeError("storage write data must be a byte view");
-      const view = operation.data as ArrayBufferView;
-      const data = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-      encoded.operation = {
-        ...(encoded.operation as Record<string, unknown>),
-        data: encodeIpcBytes(data),
+      let data: Uint8Array;
+      if (ArrayBuffer.isView(operation.data)) {
+        const view = operation.data as ArrayBufferView;
+        data = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+      } else if (Array.isArray(operation.data)) {
+        // ProtocolBytes is a JSON integer array in runtime messages, unlike raw IPC bodies.
+        for (const byte of operation.data) {
+          if (!Number.isInteger(byte) || byte < 0 || byte > 255)
+            throw new TypeError("storage write data contains an invalid byte");
+        }
+        data = Uint8Array.from(operation.data);
+      } else {
+        throw new TypeError("storage write data must be a byte view or byte array");
+      }
+      request = {
+        ...request,
+        operation: { ...operation, data: encodeIpcBytes(data) },
       };
     }
+    const encoded = encodeIpcValue(request);
     return decodeIpcResponse(await invoke("storage_request", { request: encoded }));
   }
 
