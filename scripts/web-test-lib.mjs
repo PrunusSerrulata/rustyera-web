@@ -1,5 +1,11 @@
 /* global document, window */
 
+import {
+  captureXrayLayout,
+  assertXrayLayout,
+  loadXrayExpectedImages,
+  waitForXrayLayout,
+} from "./snake-xray-layout.mjs";
 import { cancelProjectExportDuringTransfer } from "./project-export-cancel.mjs";
 import { constants as fsConstants } from "node:fs";
 import { copyFile, lstat, mkdir, stat, writeFile } from "node:fs/promises";
@@ -134,6 +140,15 @@ async function stopAtomicPresentationProbe(page) {
 }
 
 export async function runAction(page, action) {
+  if (action.type === "assert_xray_layout") {
+    const expected = await loadXrayExpectedImages();
+    const layout = await waitForXrayLayout(
+      (images) => page.evaluate(captureXrayLayout, images),
+      expected,
+    );
+    assertXrayLayout(layout);
+    return { query: { xray_layout: layout } };
+  }
   if (action.type === "cancel_project_export")
     return cancelProjectExportDuringTransfer(page, action);
   if (action.type === "reset_frontend_performance_audit") {

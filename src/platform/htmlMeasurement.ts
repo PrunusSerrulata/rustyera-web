@@ -35,6 +35,7 @@ import {
   sameServiceInteger,
   serviceInteger,
 } from "@/core/runtimeServiceProtocol";
+import { resolveCurrentSpriteReplay } from "@/core/replayResources";
 import { finitePixels, readFirstRow } from "./htmlMeasurementRow";
 
 export type {
@@ -223,9 +224,7 @@ export class HtmlMeasurementProvider {
       guard,
       [document, missing],
       async (style, frozen, current) => {
-        const sprite = frozen.resources.sprites?.find(
-          (item) => item.name.toUpperCase() === name.toUpperCase(),
-        );
+        const sprite = resolveCurrentSpriteReplay(frozen.resources.sprites, name);
         if (!sprite) {
           const fallback = await this.render(missing, style, frozen, current, "part");
           current.assertCurrent();
@@ -734,9 +733,7 @@ function validateMedia(document: CanonicalHtmlDocument, resources: HtmlMeasureme
       if (node.type === "element") {
         if (node.semantic.type === "image") {
           const source = node.semantic.source;
-          const sprite = resources.sprites?.find(
-            (item) => item.name.toUpperCase() === source.toUpperCase(),
-          );
+          const sprite = resolveCurrentSpriteReplay(resources.sprites, source);
           if (!sprite)
             throw new RuntimeServiceError(
               "backend_failure",
@@ -976,13 +973,16 @@ function cloneResources(
   const selectSprite = (name: unknown, revision?: unknown) => {
     if (typeof name !== "string") return;
     const key = name.toUpperCase();
-    const sprite = sprites.find(
-      (candidate) =>
-        candidate != null &&
-        typeof candidate.name === "string" &&
-        candidate.name.toUpperCase() === key &&
-        (revision == null || sameServiceInteger(candidate.revision, revision)),
-    );
+    const sprite =
+      revision == null
+        ? resolveCurrentSpriteReplay(sprites, name)
+        : sprites.find(
+            (candidate) =>
+              candidate != null &&
+              typeof candidate.name === "string" &&
+              candidate.name.toUpperCase() === key &&
+              (revision == null || sameServiceInteger(candidate.revision, revision)),
+          );
     if (!sprite || seenSprites.has(sprite)) return;
     seenSprites.add(sprite);
     selectedSprites.push(sprite);

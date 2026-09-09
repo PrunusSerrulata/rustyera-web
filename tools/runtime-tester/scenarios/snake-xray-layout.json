@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eratw-sub-modding",
+  "mode": "fixed",
+  "start": {
+    "type": "vm_snapshot"
+  },
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "summary_observations": true,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [
+    {
+      "type": "assert_xray_layout"
+    },
+    {
+      "type": "assert_state",
+      "expect": {
+        "fault": null,
+        "canInteract": true
+      }
+    }
+  ],
+  "limits": {
+    "max_steps": 4,
+    "timeout_seconds": 600
+  }
+}

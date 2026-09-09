@@ -62,6 +62,39 @@ export async function loadCompatibilityOptions(argv) {
   if (backgroundDom && nativeDriverInputs)
     throw new Error("--background-dom and --native-driver-inputs are distinct input modes");
   const stateIndex = argv.indexOf("--traditional-state");
+  const runtimeStateIndex = argv.indexOf("--runtime-state");
+  const runtimeStorageIndex = argv.indexOf("--runtime-storage");
+  const snapshotXray = argv.includes("--snapshot-xray");
+  for (const [flag, index] of [
+    ["--runtime-state", runtimeStateIndex],
+    ["--runtime-storage", runtimeStorageIndex],
+  ]) {
+    if (index >= 0 && (!argv[index + 1] || argv[index + 1].startsWith("--")))
+      throw new Error(`${flag} requires a path`);
+  }
+  if (runtimeStateIndex >= 0 && stateIndex >= 0)
+    throw new Error("--runtime-state and --traditional-state are mutually exclusive");
+  if (runtimeStateIndex >= 0 && (projectIndex < 0 || projectFile))
+    throw new Error("--runtime-state requires --project source directory");
+  if ((snapshotXray || runtimeStorageIndex >= 0) && runtimeStateIndex < 0)
+    throw new Error("--snapshot-xray and --runtime-storage require --runtime-state");
+  if (
+    runtimeStateIndex >= 0 &&
+    (snakeData ||
+      snakeServices ||
+      snakeBatch1 ||
+      snakeServiceLifecycle ||
+      snakeAudioFlow ||
+      snakeInterop ||
+      snakeServiceOracle)
+  )
+    throw new Error("--runtime-state cannot be combined with a snake fixture flow");
+  const runtimeState =
+    runtimeStateIndex >= 0
+      ? [...(await readFile(path.resolve(argv[runtimeStateIndex + 1])))]
+      : undefined;
+  const runtimeStorage =
+    runtimeStorageIndex >= 0 ? path.resolve(argv[runtimeStorageIndex + 1]) : undefined;
   const expectationsIndex = argv.indexOf("--expect-watches");
   if (stateIndex >= 0 && !argv[stateIndex + 1])
     throw new Error("--traditional-state requires a save path");
@@ -123,7 +156,8 @@ export async function loadCompatibilityOptions(argv) {
     snakeAudioFlow ||
     snakeInterop ||
     snakeServiceOracle ||
-    Boolean(traditionalState);
+    Boolean(traditionalState) ||
+    Boolean(runtimeState);
   if (nativeDriverInputs && (!startupOnly || snakeServiceLifecycle || snakeServiceOracle))
     throw new Error("--native-driver-inputs requires a startup, output, or audio acceptance flow");
   if (backgroundDom && (!startupOnly || snakeServiceLifecycle || snakeServiceOracle))
@@ -166,6 +200,9 @@ export async function loadCompatibilityOptions(argv) {
     webdriverOpen,
     safariAllowAutoplay,
     traditionalState,
+    runtimeState,
+    runtimeStorage,
+    snapshotXray,
     expectedWatches,
     lifecycleReplacement,
     lifecycleReplacementFiles,

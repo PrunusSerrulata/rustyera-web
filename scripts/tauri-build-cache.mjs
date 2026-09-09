@@ -37,9 +37,11 @@ export function reusableBuildEnvironment(environment, specName, state, enabled) 
   if (!enabled) return { ...environment };
   // Snapshot layout regressions bind their exact fixture paths in the build contract.
   if (
-    ["snake-history-replacement-layout.spec.mjs", "snake-message-header-buttons.spec.mjs"].includes(
-      specName,
-    ) &&
+    [
+      "snake-history-replacement-layout.spec.mjs",
+      "snake-message-header-buttons.spec.mjs",
+      "snake-xray-layout.spec.mjs",
+    ].includes(specName) &&
     state
   )
     return { ...environment };

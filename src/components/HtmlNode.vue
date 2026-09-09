@@ -5,6 +5,8 @@ import { htmlMeasurementProjectionKey } from "@/components/htmlMeasurementProjec
 import { htmlMeasurementSegments } from "@/core/htmlMeasurement";
 import { useSceneDepthRank } from "@/core/sceneStacking";
 
+import { resolveCurrentSpriteReplay } from "@/core/replayResources";
+import type { CanvasSprite } from "@/components/canvasReplayRenderer";
 import MediaImage from "@/components/MediaImage.vue";
 import { usePointerButton } from "@/components/usePointerButton";
 import { htmlPointerButtonValue } from "@/platform/pointerObservation";
@@ -85,12 +87,10 @@ const imagePlacement = computed(() =>
 );
 
 function htmlImageRevision(name: unknown): unknown {
-  const key = String(name ?? "").toUpperCase();
-  const matches = (store.presentation.resources.sprites ?? []).filter(
-    (sprite: any) => String(sprite?.name ?? "").toUpperCase() === key,
+  return (
+    resolveCurrentSpriteReplay(store.presentation.resources.sprites, String(name ?? ""))
+      ?.revision ?? 0
   );
-  if (matches.length > 1) throw new Error("HTML image sprite revision is ambiguous");
-  return matches[0]?.revision ?? 0;
 }
 const spaceShapeStyle = computed(() => {
   const semantic = props.node.semantic;
@@ -298,8 +298,9 @@ function positionedMediaWidth(node: any): { columns: number; pixels: number } | 
     if (child?.kind === "break") return;
     if (child?.semantic?.type === "image") {
       const source = String(child.semantic.source ?? "").toUpperCase();
-      const sprite = store.presentation.resources.sprites?.find(
-        (item: any) => String(item.name).toUpperCase() === source,
+      const sprite = resolveCurrentSpriteReplay<CanvasSprite>(
+        store.presentation.resources.sprites,
+        source,
       );
       const { width } = projectMediaDimensions({
         requestedWidth: child.semantic.width,

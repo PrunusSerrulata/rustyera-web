@@ -34,6 +34,7 @@ import {
   snakeAudioStressRelations,
   waitForWebDriverDocument,
 } from "./web-test-lib.mjs";
+import { seedSnapshotRuntimeStorage } from "./browser-snapshot-setup.mjs";
 import { loadCompatibilityOptions } from "./browser-compat-options.mjs";
 import {
   assertColdStartup,
@@ -72,6 +73,9 @@ export async function runBrowserCompatibility(argv) {
     webdriverOpen,
     safariAllowAutoplay,
     traditionalState,
+    runtimeState,
+    runtimeStorage,
+    snapshotXray,
     expectedWatches,
     lifecycleReplacement,
     lifecycleReplacementFiles,
@@ -288,7 +292,7 @@ export async function runBrowserCompatibility(argv) {
       throw new Error(`browser startup guidance mismatch: ${JSON.stringify(startupGuidance)}`);
     }
     const globalPreferencesBeforeProject =
-      nativeDriverInputs || backgroundDom
+      nativeDriverInputs || backgroundDom || runtimeState
         ? { scope: "project acceptance; preferences covered separately" }
         : await verifyGlobalPreferencesBeforeProject(browser);
     console.log(
@@ -299,6 +303,19 @@ export async function runBrowserCompatibility(argv) {
       }),
     );
     let minimized = false;
+    if (runtimeStorage) {
+      reportCompatibilityStage("preparing snapshot SQL in isolated imported project storage");
+      const seeded = await seedSnapshotRuntimeStorage(browser, { project, runtimeStorage });
+      const evidence = await persistCompatibilityEvidence("snapshot-runtime-storage", seeded);
+      console.log(
+        JSON.stringify({
+          browser: browserName,
+          type: "snapshot-runtime-storage",
+          ...seeded,
+          evidence,
+        }),
+      );
+    }
     if (snakeInterop && projectFile) {
       compatibilityStage = "preparing reference saves in isolated packaged project storage";
       const expected = JSON.parse(
@@ -366,17 +383,25 @@ export async function runBrowserCompatibility(argv) {
       capture();
     });
 
-    if (snakeData || snakeAudioFlow || snakeServiceOracle || snakeInterop || traditionalState) {
+    if (
+      snakeData ||
+      snakeAudioFlow ||
+      snakeServiceOracle ||
+      snakeInterop ||
+      traditionalState ||
+      runtimeState
+    ) {
       reportCompatibilityStage("configuring snake test runtime");
       await browser.execute(
-        (bytes) =>
+        (bytes, stateType) =>
           window.__RUSTYERA_TEST__.configure({
             start: bytes
-              ? { type: "traditional_save", bytes: new Uint8Array(bytes) }
+              ? { type: stateType, bytes: new Uint8Array(bytes) }
               : { type: "new_game", seed: "123456" },
             clock: "2026-01-01T00:00:00Z",
           }),
-        traditionalState,
+        runtimeState ?? traditionalState,
+        runtimeState ? "vm_snapshot" : "traditional_save",
       );
     }
     const openSelector = projectFile
@@ -491,6 +516,13 @@ export async function runBrowserCompatibility(argv) {
         viewport: Boolean(document.querySelector(".game-viewport")),
       }));
       throw new Error(`${error.message}; diagnosis=${JSON.stringify(diagnosis)}`);
+    }
+    if (snapshotXray) {
+      compatibilityStage = "validating exact snapshot xray composition";
+      const { runXrayLayoutProbe } = await import("./snake-xray-layout.mjs");
+      const evidencePath = path.join(snapshotDirectory, "snapshot-xray.json");
+      await runXrayLayoutProbe(browser, evidencePath);
+      console.log(JSON.stringify({ browser: browserName, type: "snapshot-xray", evidencePath }));
     }
     if (snakeData) {
       compatibilityStage = "running snake data integration through the visible input";

@@ -174,8 +174,9 @@ interface CanvasSpriteFrame {
   offset?: readonly unknown[];
 }
 
-interface CanvasSprite {
+export interface CanvasSprite {
   name: string;
+  current_alias?: boolean | null;
   revision: unknown;
   size?: readonly unknown[];
   position?: readonly unknown[];
