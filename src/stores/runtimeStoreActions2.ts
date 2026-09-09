@@ -19,6 +19,7 @@ import {
 import { type RuntimeServiceLease } from "@/stores/runtimeServiceRequests";
 import { yieldToPaint } from "@/platform/mainThread";
 import { classifyRuntimeRejection } from "@/stores/runtimeRejections";
+import { responseSubmissionCancelled } from "@/stores/runtimePump";
 import { handleRuntimeService } from "@/stores/runtimeServices";
 import { resolveCanvasReplay } from "@/core/replayResources";
 import { isFullProjectExport, GAME_RUNNING_STATUS } from "@/stores/runtimeState";
@@ -605,10 +606,16 @@ export function createRuntimeStoreActions2(context: any) {
         pumpDevices: context.pumpDevices,
         clock: () => context.testEnvironment.clock,
         nextEntropy: () => context.testEnvironment.nextEntropy(),
-        send: (message, correlation) =>
-          active() && lease.active()
-            ? context.send(message, correlation)
-            : Promise.resolve(undefined),
+        send: async (message, correlation) => {
+          const current = () => active() && lease.active();
+          if (!current()) return undefined;
+          try {
+            return await context.send(message, correlation, current);
+          } catch (error) {
+            if (responseSubmissionCancelled(error)) return undefined;
+            throw error;
+          }
+        },
         resourceGeneration: resources,
         imagePixels: context.imagePixels,
         audio: context.audio,
@@ -719,8 +726,10 @@ export function createRuntimeStoreActions2(context: any) {
               },
             },
             correlationId,
+            active,
           );
         } catch (failure) {
+          if (responseSubmissionCancelled(failure)) return;
           if (active())
             context.log(
               "warning",

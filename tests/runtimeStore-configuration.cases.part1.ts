@@ -84,6 +84,120 @@ describe("runtime store configuration", () => {
     expect(errorCall[0].value.result).toMatchObject({ type: "error" });
   });
 
+  it("submits detached Tauri service responses through the fused native drive path", async () => {
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "service_request",
+          {
+            request_id: 7,
+            kind: "entropy",
+            operation: "random_seed",
+            operation_version: { major: 1, minor: 0 },
+            payload: [...encodeServicePayload(new Map())],
+          },
+          41,
+        ),
+      ],
+    });
+    bridge.submitRuntimeAndPump = vi.fn(async () => ({
+      ...emptyBatch(),
+      submittedMessageId: 9,
+    }));
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+    await flushMicrotasks();
+
+    expect(bridge.submitRuntimeAndPump).toHaveBeenCalledOnce();
+    expect(vi.mocked(bridge.submitRuntimeAndPump).mock.contexts[0]).toBe(bridge);
+    expect(bridge.submitRuntimeAndPump).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "service_response",
+        value: expect.objectContaining({ request_id: 7 }),
+      }),
+      41,
+    );
+    expect(
+      bridge.submitRuntime.mock.calls.some(([message]) => message.type === "service_response"),
+    ).toBe(false);
+  });
+
+  it("drops a detached service response retired before native fused submission", async () => {
+    const metadata = deferred<{
+      width: number;
+      height: number;
+      format: string;
+      animated: boolean;
+    }>();
+    bridge.readImageMetadata.mockReturnValueOnce(metadata.promise);
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "service_request",
+          {
+            request_id: 9,
+            kind: "image",
+            operation: "image_metadata",
+            operation_version: { major: 1, minor: 0 },
+            payload: [...encodeServicePayload(new Map([[0, "pending.png"]]))],
+          },
+          41,
+          1,
+        ),
+        runtimeEvent("cancel_external_request", { request_id: 9, kind: "service" }, undefined, 1),
+      ],
+    });
+    bridge.submitRuntimeAndPump = vi.fn(async () => ({
+      ...emptyBatch(),
+      submittedMessageId: 9,
+    }));
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+    metadata.resolve({ width: 1, height: 1, format: "png", animated: false });
+    await flushMicrotasks();
+
+    expect(bridge.submitRuntimeAndPump).not.toHaveBeenCalled();
+    expect(
+      bridge.submitRuntime.mock.calls.some(([message]) => message.type === "service_response"),
+    ).toBe(false);
+  });
+
+  it("fails closed when a fused Tauri service response cannot be submitted", async () => {
+    bridge.createSession.mockResolvedValueOnce({
+      ...emptyBatch(),
+      events: [
+        runtimeEvent(
+          "service_request",
+          {
+            request_id: 7,
+            kind: "entropy",
+            operation: "random_seed",
+            operation_version: { major: 1, minor: 0 },
+            payload: [...encodeServicePayload(new Map())],
+          },
+          41,
+          1,
+        ),
+      ],
+    });
+    bridge.submitRuntimeAndPump = vi.fn(async () => {
+      throw new Error("native fused response failed");
+    });
+    const store = useRuntimeStore();
+
+    await store.enableDebug();
+    await flushMicrotasks();
+
+    expect(store.fault).toMatchObject({ code: "frontend" });
+    expect(
+      bridge.submitRuntime.mock.calls.some(([message]) => message.type === "service_response"),
+    ).toBe(false);
+  });
+
   it("handles cancellation while a service decode is pending without blocking later events", async () => {
     const metadata = deferred<{
       width: number;

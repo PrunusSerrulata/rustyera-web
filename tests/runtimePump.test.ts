@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PumpBatch, SubmittedPumpBatch } from "@/core/types";
-import { RuntimePumpCoordinator, RuntimePumpSubmissionError } from "@/stores/runtimePump";
+import {
+  RuntimePumpCoordinator,
+  RuntimePumpResponseCancelled,
+  RuntimePumpSubmissionError,
+} from "@/stores/runtimePump";
 
 function batch(state: PumpBatch["state"] = "idle"): PumpBatch {
   return { state, vmInstructions: 0, runtimeTransitions: 0, events: [] };
@@ -71,6 +75,62 @@ describe("runtime pump coordinator", () => {
     coordinator.schedule(0);
     await vi.advanceTimersByTimeAsync(0);
 
+    expect(pump).toHaveBeenCalledOnce();
+    coordinator.clearTimer();
+  });
+
+  it.each([false, true, undefined])(
+    "uses the core continuation hint for output batches (%s)",
+    async (immediateWork) => {
+      const pump = vi.fn(async () => batch());
+      const coordinator = createCoordinator({ pump });
+      coordinator.setReady(true);
+      await coordinator.submitAndHandle(async () => ({
+        ...submittedBatch("output_ready"),
+        immediateWork,
+      }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(pump).toHaveBeenCalledTimes(immediateWork === false ? 0 : 1);
+      if (immediateWork === false) {
+        await vi.advanceTimersByTimeAsync(16);
+        expect(pump).toHaveBeenCalledOnce();
+      }
+      coordinator.clearTimer();
+    },
+  );
+
+  it("lets a service response cancel the deferred idle poll", async () => {
+    const pump = vi.fn(async () => batch());
+    const advanceTimedWait = vi.fn(async () => {});
+    const coordinator = createCoordinator({ pump, advanceTimedWait });
+    coordinator.setReady(true);
+    await coordinator.submitAndHandle(async () => ({
+      ...submittedBatch("output_ready"),
+      immediateWork: false,
+    }));
+    await vi.advanceTimersByTimeAsync(4);
+    await coordinator.submitResponseAndHandle(
+      async () => submittedBatch(),
+      () => true,
+    );
+    await vi.advanceTimersByTimeAsync(12);
+    expect(pump).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(4);
+    expect(pump).toHaveBeenCalledOnce();
+    expect(advanceTimedWait).toHaveBeenCalledOnce();
+    coordinator.clearTimer();
+  });
+
+  it("continues cooperative work even when the VM is blocked", async () => {
+    const pump = vi.fn(async () => batch());
+    const coordinator = createCoordinator({ pump });
+    coordinator.setReady(true);
+    await coordinator.submitAndHandle(async () => ({
+      ...submittedBatch("output_ready"),
+      immediateWork: false,
+      cooperativeBackgroundWork: true,
+    }));
+    await vi.advanceTimersByTimeAsync(0);
     expect(pump).toHaveBeenCalledOnce();
     coordinator.clearTimer();
   });
@@ -214,6 +274,85 @@ describe("runtime pump coordinator", () => {
     coordinator.clearTimer();
   });
 
+  it("fuses a detached service response after the current batch finishes", async () => {
+    const response = vi.fn(async () => submittedBatch());
+    let serviceSubmission!: Promise<SubmittedPumpBatch>;
+    let serviceRequested = false;
+    const holder: { coordinator?: RuntimePumpCoordinator } = {};
+    const coordinator = createCoordinator({
+      handleBatch: async () => {
+        if (serviceRequested) return;
+        serviceRequested = true;
+        serviceSubmission = holder.coordinator!.submitResponseAndHandle(response, () => true);
+      },
+    });
+    holder.coordinator = coordinator;
+    coordinator.setReady(true);
+
+    await coordinator.submitAndHandle(async () => submittedBatch());
+    await expect(serviceSubmission).resolves.toEqual(submittedBatch());
+
+    expect(response).toHaveBeenCalledOnce();
+    coordinator.clearTimer();
+  });
+
+  it("serializes multiple detached service responses in arrival order", async () => {
+    const order: string[] = [];
+    let first!: Promise<SubmittedPumpBatch>;
+    let second!: Promise<SubmittedPumpBatch>;
+    let servicesRequested = false;
+    const holder: { coordinator?: RuntimePumpCoordinator } = {};
+    const coordinator = createCoordinator({
+      handleBatch: async () => {
+        if (servicesRequested) return;
+        servicesRequested = true;
+        first = holder.coordinator!.submitResponseAndHandle(
+          async () => {
+            order.push("first");
+            return submittedBatch();
+          },
+          () => true,
+        );
+        second = holder.coordinator!.submitResponseAndHandle(
+          async () => {
+            order.push("second");
+            return submittedBatch();
+          },
+          () => true,
+        );
+      },
+    });
+    holder.coordinator = coordinator;
+    coordinator.setReady(true);
+
+    await coordinator.submitAndHandle(async () => submittedBatch());
+    await Promise.all([first, second]);
+
+    expect(order).toEqual(["first", "second"]);
+    coordinator.clearTimer();
+  });
+
+  it("cancels a detached response retired while the current batch is finishing", async () => {
+    let current = true;
+    const response = vi.fn(async () => submittedBatch());
+    let serviceSubmission!: Promise<SubmittedPumpBatch>;
+    const holder: { coordinator?: RuntimePumpCoordinator } = {};
+    const coordinator = createCoordinator({
+      handleBatch: async () => {
+        serviceSubmission = holder.coordinator!.submitResponseAndHandle(response, () => current);
+        current = false;
+      },
+    });
+    holder.coordinator = coordinator;
+    coordinator.setReady(true);
+
+    await coordinator.submitAndHandle(async () => submittedBatch());
+
+    await expect(serviceSubmission).rejects.toBeInstanceOf(RuntimePumpResponseCancelled);
+    expect(response).not.toHaveBeenCalled();
+    coordinator.clearTimer();
+  });
+
   it("waits for an in-flight pump before starting fast submission", async () => {
     let releasePump!: (value: PumpBatch) => void;
     const inFlight = new Promise<PumpBatch>((resolve) => {
@@ -242,7 +381,6 @@ describe("runtime pump coordinator", () => {
     expect(order).toEqual(["pump"]);
 
     releasePump(batch());
-    await vi.advanceTimersByTimeAsync(16);
     await submission;
 
     expect(order).toEqual(["pump", "batch", "submit", "batch"]);

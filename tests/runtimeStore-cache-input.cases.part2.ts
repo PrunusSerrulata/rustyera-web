@@ -61,6 +61,7 @@ describe("runtime store cache-input", () => {
     await store.skip();
 
     expect(submitRuntimeAndPump).toHaveBeenCalledOnce();
+    expect(submitRuntimeAndPump.mock.contexts[0]).toBe(bridge);
     expect(submitRuntimeAndPump).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "input",

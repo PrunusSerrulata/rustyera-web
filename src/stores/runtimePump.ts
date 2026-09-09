@@ -1,10 +1,10 @@
-import { nextTick, ref } from "vue";
+import { ref } from "vue";
 
 import type { FrontendBridge, PumpBatch, SubmittedPumpBatch } from "@/core/types";
 import {
   PERFORMANCE_AUDIT_ENABLED,
   recordPerformanceTiming,
-  scheduleNextPaintMeasurement,
+  scheduleDomFlushMeasurement,
 } from "@/testing/performanceAudit";
 
 const MAXIMUM_CONTIGUOUS_COMPUTE_PUMPS = 8;
@@ -22,6 +22,7 @@ export class RuntimePumpCoordinator {
   #timer: number | undefined;
   #handlingBatch = false;
   #backgroundWorkRevision = 0;
+  readonly #idleWaiters = new Set<() => void>();
 
   constructor(
     private readonly bridge: Pick<FrontendBridge, "pump">,
@@ -74,8 +75,26 @@ export class RuntimePumpCoordinator {
   }
 
   async waitUntilIdle(): Promise<void> {
-    while (this.pumping)
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    while (this.pumping || this.#handlingBatch)
+      await new Promise<void>((resolve) => this.#idleWaiters.add(resolve));
+  }
+
+  /** Service handlers are detached from batch projection, so they may safely wait for the current
+   * batch to finish and then submit their response through the native fused drive path. */
+  async submitResponseAndHandle(
+    operation: () => Promise<SubmittedPumpBatch>,
+    current: () => boolean,
+  ): Promise<SubmittedPumpBatch> {
+    for (;;) {
+      await this.waitUntilIdle();
+      if (!current()) throw new RuntimePumpResponseCancelled();
+      const batch = await this.submitAndHandle(() => {
+        if (!current()) throw new RuntimePumpResponseCancelled();
+        return operation();
+      });
+      if (batch) return batch;
+      if (!this.ready || this.transitioning) throw new RuntimePumpResponseCancelled();
+    }
   }
 
   async submitAndHandle(
@@ -105,11 +124,7 @@ export class RuntimePumpCoordinator {
           recordPerformanceTiming("store_batch", "handle_batch", batchStartedAt, () => ({
             events: batch.events.length,
           }));
-          await nextTick();
-          recordPerformanceTiming("dom_flush", "vue_next_tick", batchStartedAt, () => ({
-            events: batch.events.length,
-          }));
-          scheduleNextPaintMeasurement(batchStartedAt);
+          scheduleDomFlushMeasurement(batchStartedAt, batch.events.length);
         }
         this.#handlingBatch = false;
       }
@@ -120,6 +135,7 @@ export class RuntimePumpCoordinator {
       throw new RuntimePumpSubmissionError(error);
     } finally {
       this.#pumping.value = false;
+      this.#notifyIdle();
     }
   }
 
@@ -145,11 +161,7 @@ export class RuntimePumpCoordinator {
             recordPerformanceTiming("store_batch", "handle_batch", batchStartedAt, () => ({
               events: batch.events.length,
             }));
-            await nextTick();
-            recordPerformanceTiming("dom_flush", "vue_next_tick", batchStartedAt, () => ({
-              events: batch.events.length,
-            }));
-            scheduleNextPaintMeasurement(batchStartedAt);
+            scheduleDomFlushMeasurement(batchStartedAt, batch.events.length);
           }
           this.#handlingBatch = false;
         }
@@ -168,7 +180,14 @@ export class RuntimePumpCoordinator {
       this.callbacks.handleError(error);
     } finally {
       this.#pumping.value = false;
+      this.#notifyIdle();
     }
+  }
+
+  #notifyIdle(): void {
+    if (this.pumping || this.#handlingBatch) return;
+    for (const resolve of this.#idleWaiters) resolve();
+    this.#idleWaiters.clear();
   }
 
   #observeBackgroundWork(batch: PumpBatch): void {
@@ -184,7 +203,7 @@ function hasPendingWork(batch: PumpBatch): boolean {
   return Boolean(
     batch.cooperativeBackgroundWork ||
     batch.state === "more_work" ||
-    batch.state === "output_ready",
+    (batch.state === "output_ready" && (batch.immediateWork ?? true)),
   );
 }
 
@@ -197,6 +216,17 @@ export class RuntimePumpSubmissionError extends Error {
   }
 }
 
+export class RuntimePumpResponseCancelled extends Error {
+  constructor() {
+    super("runtime service response was retired before submission");
+    this.name = "RuntimePumpResponseCancelled";
+  }
+}
+
 export function inputMayHaveBeenAccepted(error: unknown): boolean {
   return error instanceof RuntimePumpSubmissionError;
+}
+
+export function responseSubmissionCancelled(error: unknown): boolean {
+  return error instanceof RuntimePumpResponseCancelled;
 }

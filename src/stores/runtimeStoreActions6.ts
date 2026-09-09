@@ -219,6 +219,7 @@ export function createRuntimeStoreActions6(context: any) {
   async function send(
     message: RuntimeMessage,
     correlationId?: ServiceInteger,
+    current: () => boolean = () => true,
   ): Promise<number | bigint> {
     if (message.type === "input" || message.type === "client_state_changed")
       await awaitDeviceSubmissions();
@@ -232,15 +233,14 @@ export function createRuntimeStoreActions6(context: any) {
     if (startupStart) context.startupTelemetryState.markStartSubmitted();
     const transported = transportValue(message);
     const observedMessage = context.testEvidence.prepareMessage(transported);
-    if (
-      context.bridge.kind === "tauri" &&
-      message.type === "input" &&
-      message.value?.message_skip === true &&
-      context.bridge.submitRuntimeAndPump
-    ) {
-      const batch = await context.runtimePump.submitAndHandle(() =>
-        context.bridge.submitRuntimeAndPump!(transported, correlationId),
-      );
+    const submitAndPump = context.bridge.submitRuntimeAndPump;
+    const messageSkip = message.type === "input" && message.value?.message_skip === true;
+    const serviceResponse = message.type === "service_response";
+    if (context.bridge.kind === "tauri" && submitAndPump && (messageSkip || serviceResponse)) {
+      const operation = () => submitAndPump.call(context.bridge, transported, correlationId);
+      const batch = serviceResponse
+        ? await context.runtimePump.submitResponseAndHandle(operation, current)
+        : await context.runtimePump.submitAndHandle(operation);
       if (batch) {
         context.testEvidence.sent(
           "runtime",
