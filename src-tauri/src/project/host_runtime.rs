@@ -40,7 +40,7 @@ impl ProjectHost {
                 .indexed_files
                 .iter()
                 .find(|file| file.relative_path.eq_ignore_ascii_case("reraconfig.toml"))
-                .map(|file| ProtocolBytes::new(file.content_hash.to_vec())),
+                .and_then(|file| file.configuration_digest.clone()),
         }
     }
 

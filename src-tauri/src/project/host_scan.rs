@@ -468,8 +468,15 @@ impl ProjectHost {
         }
         let mut temporary = tempfile::NamedTempFile::new_in(&self.root)
             .map_err(|error| format!("cannot create temporary configuration file: {error}"))?;
+        let native_contents = native_configuration_contents(contents);
+        let indexed_contents = super::normalized_project_text(
+            &relative_path,
+            native_contents.as_bytes(),
+            FileCategory::Configuration,
+        )
+        .ok_or_else(|| "reraconfig.toml is not valid UTF-8".to_owned())?;
         temporary
-            .write_all(native_configuration_contents(contents).as_bytes())
+            .write_all(native_contents.as_bytes())
             .map_err(|error| format!("cannot write configuration file: {error}"))?;
         temporary
             .as_file()
@@ -478,12 +485,7 @@ impl ProjectHost {
         temporary
             .persist(&target)
             .map_err(|error| format!("cannot replace configuration file: {}", error.error))?;
-        self.refresh_configuration_index(
-            &relative_path,
-            target,
-            normalized_contents,
-            *requested_digest.as_bytes(),
-        );
+        self.refresh_configuration_index(&relative_path, target, indexed_contents);
         Ok(())
     }
 
@@ -552,8 +554,8 @@ impl ProjectHost {
         relative_path: &str,
         source_path: PathBuf,
         contents: String,
-        content_hash: [u8; 32],
     ) {
+        let content_hash = *blake3::hash(contents.as_bytes()).as_bytes();
         let source_signature = fs::metadata(&source_path)
             .ok()
             .map(|metadata| metadata_signature(&metadata));
@@ -569,6 +571,7 @@ impl ProjectHost {
             source_path: Some(source_path),
             category: FileCategory::Configuration,
             content_hash,
+            configuration_digest: super::configuration_digest(&pending_file),
             byte_length,
             pending_file: Some(pending_file),
             source_signature,

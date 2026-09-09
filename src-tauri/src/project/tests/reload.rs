@@ -130,6 +130,54 @@ fn quick_scan_rechecks_a_new_source_before_reusing_its_payload() {
 }
 
 #[test]
+fn configuration_identity_matches_materialization_across_line_endings() {
+    for ending in ["\n", "\r\n", "\r"] {
+        for prefix in ["", "\u{feff}"] {
+            let directory = tempfile::tempdir().unwrap();
+            let contents = format!("{prefix}[display]{ending}font_size = 18{ending}");
+            fs::write(directory.path().join("reraconfig.toml"), contents).unwrap();
+            for _ in 0..2 {
+                let mut host = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+                let identity = host.identity();
+                let manifest = host.materialize().unwrap();
+                assert_eq!(
+                    era_web_bridge::project_identity(manifest).unwrap(),
+                    identity
+                );
+            }
+            let mut full = ProjectHost::scan_with_progress(directory.path(), 1, None).unwrap();
+            let identity = full.identity();
+            assert_eq!(
+                era_web_bridge::project_identity(full.materialize().unwrap()).unwrap(),
+                identity
+            );
+        }
+    }
+}
+
+#[test]
+fn written_configuration_keeps_identity_after_payload_eviction() {
+    for prefix in ["", "\u{feff}"] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut host = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+        host.write_configuration(&[], &format!("{prefix}[display]\nfont_size = 18\n"))
+            .unwrap();
+        let identity = host.identity();
+        assert_eq!(
+            era_web_bridge::project_identity(host.materialize().unwrap()).unwrap(),
+            identity
+        );
+        host.mark_runtime_manifest_complete();
+        assert_eq!(
+            era_web_bridge::project_identity(host.materialize().unwrap()).unwrap(),
+            identity
+        );
+        let rescanned = ProjectHost::scan_quick(directory.path(), 1).unwrap();
+        assert_eq!(rescanned.identity(), identity);
+    }
+}
+
+#[test]
 fn reload_uses_the_indexed_baseline_after_a_file_is_removed() {
     let directory = tempfile::tempdir().unwrap();
     let fonts = directory.path().join("font");
@@ -337,7 +385,7 @@ fn configuration_write_checks_digest_and_atomically_replaces_root_file() {
 
     assert_eq!(
         fs::read_to_string(path).unwrap(),
-        "[display]\nfont_size = 18\n"
+        native_configuration_contents("[display]\nfont_size = 18\n")
     );
     project
         .write_configuration(digest.as_bytes(), "[display]\r\nfont_size = 18\r\n")
@@ -378,7 +426,7 @@ fn configuration_write_refreshes_the_manifest_used_for_full_project_export() {
                     &file.payload,
                     FilePayload::Utf8(contents)
                         if file.relative_path.eq_ignore_ascii_case("reraconfig.toml")
-                            && contents == "[display]\nfont_size = 18\n"
+                            && contents == &native_configuration_contents("[display]\nfont_size = 18\n")
                 )
             }),
         )

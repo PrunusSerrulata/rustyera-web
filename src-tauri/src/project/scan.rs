@@ -170,6 +170,7 @@ pub(super) fn indexed_file(file: &SubmittedFile) -> Result<IndexedFile, String> 
         source_path: None,
         category: file.category,
         content_hash,
+        configuration_digest: configuration_digest(file),
         byte_length: match &file.payload {
             FilePayload::Utf8(text) => text.len() as u64,
             FilePayload::Bytes(bytes) => bytes.as_slice().len() as u64,
@@ -180,6 +181,20 @@ pub(super) fn indexed_file(file: &SubmittedFile) -> Result<IndexedFile, String> 
         source_signature: None,
         index_reused: false,
     })
+}
+
+pub(super) fn configuration_digest(file: &SubmittedFile) -> Option<ProtocolBytes> {
+    if !file.relative_path.eq_ignore_ascii_case("reraconfig.toml") {
+        return None;
+    }
+    let FilePayload::Utf8(text) = &file.payload else {
+        return None;
+    };
+    Some(ProtocolBytes::new(
+        blake3::hash(normalize_configuration_text(text).as_bytes())
+            .as_bytes()
+            .to_vec(),
+    ))
 }
 
 pub(super) fn canonical_source_roots(root: &Path) -> Result<BTreeSet<String>, String> {
@@ -506,7 +521,7 @@ pub(super) fn native_configuration_contents(contents: &str) -> String {
     let normalized = contents.replace("\r\n", "\n").replace('\r', "\n");
     #[cfg(windows)]
     {
-        return normalized.replace('\n', "\r\n");
+        normalized.replace('\n', "\r\n")
     }
     #[cfg(not(windows))]
     normalized
@@ -663,7 +678,11 @@ pub(super) fn scan_indexed_entry(
     let metadata =
         fs::metadata(path).map_err(|error| format!("cannot stat {relative_path}: {error}"))?;
     let signature = metadata_signature(&metadata);
-    let prior = reused_source_index_entry(previous, &relative_path, category, signature);
+    // The portable index stores the source hash, not the line-ending-normalized
+    // configuration digest. Read the small root config even on a warm scan.
+    let prior = (!relative_path.eq_ignore_ascii_case("reraconfig.toml"))
+        .then(|| reused_source_index_entry(previous, &relative_path, category, signature))
+        .flatten();
     let (content_hash, size, pending_file, signature, index_reused) =
         if let Some((hash, size, metadata)) = prior {
             let mut image_metadata = metadata.and_then(IndexedImageMetadata::into_protocol);
@@ -738,6 +757,7 @@ pub(super) fn scan_indexed_entry(
             source_path: Some(path.to_owned()),
             category,
             content_hash,
+            configuration_digest: pending_file.as_ref().and_then(configuration_digest),
             byte_length: size,
             pending_file,
             source_signature: Some(signature),

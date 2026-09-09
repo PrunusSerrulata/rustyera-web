@@ -43,6 +43,7 @@ struct IndexedFile {
     source_path: Option<PathBuf>,
     category: FileCategory,
     content_hash: [u8; 32],
+    configuration_digest: Option<ProtocolBytes>,
     byte_length: u64,
     pending_file: Option<SubmittedFile>,
     source_signature: Option<[u64; 5]>,
