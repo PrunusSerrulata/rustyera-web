@@ -351,7 +351,10 @@ describe("Tauri performance trace schema 3", () => {
       );
 
       const replayBrowser = traceBrowser();
+      const mismatchFile = join(directory, "mismatch.json.gz");
+      vi.stubEnv("RUSTYERA_TAURI_PERF_MISMATCH_EVIDENCE", mismatchFile);
       const replay = await replayPerformanceTrace(replayBrowser.browser, trace);
+      await expect(readFile(mismatchFile)).rejects.toMatchObject({ code: "ENOENT" });
       expect(Object.keys(summarizeRuns([replay]).byPath)).toEqual(
         Object.keys(performanceScenarioEvidence(scenario)),
       );
@@ -367,6 +370,10 @@ describe("Tauri performance trace schema 3", () => {
       await expect(replayPerformanceTrace(changedResourceBrowser.browser, trace)).rejects.toThrow(
         "scenario signature mismatch",
       );
+      const mismatch = JSON.parse(gunzipSync(await readFile(mismatchFile)).toString());
+      expect(mismatch.step).toBe(0);
+      expect(mismatch.after.value.coreProjection.normalizedState.resources.changed).toBe(true);
+      expect(mismatch.after.hash).not.toBe(trace.steps[0].expect.checkpointHash);
 
       const tampered = JSON.parse(await readFile(frozen, "utf8"));
       tampered.steps[0].action.button = "left";

@@ -144,6 +144,13 @@ export async function replayPerformanceTrace(browser, trace, onCheckpoint = () =
         protocolCursor,
       );
       protocolCursor = after.value.coreProjection.protocolCursor;
+      const mismatchEvidence = process.env.RUSTYERA_TAURI_PERF_MISMATCH_EVIDENCE;
+      if (after.hash !== step.expect.checkpointHash && mismatchEvidence)
+        await writeFile(
+          mismatchEvidence,
+          gzipSync(JSON.stringify({ path: pathClass, step: index, before, after })),
+          { flag: "wx" },
+        );
       assert.equal(
         after.hash,
         step.expect.checkpointHash,
