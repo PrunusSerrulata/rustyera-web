@@ -192,12 +192,12 @@ it("retains exact position identities and bounded source metadata only as diagno
   await capture.close();
   const record = JSON.parse(await readFile(path, "utf8"));
   expect(record.acceptanceTiming).toBe(false);
-  expect(record.profile.positions).toEqual(snapshot.positions);
+  expect(record.profile.positions).toEqual({ ...snapshot.positions, unprojectedPositions: 0 });
 });
 
 it.each([
-  { counts: Array(2049).fill(position) },
-  { locations: Array(65).fill(position) },
+  { counts: Array(65537).fill(position) },
+  { locations: Array(1025).fill(position) },
   { counts: [{ ...position, instruction: "18446744073709551616", samples: "1" }] },
   {
     counts: [
@@ -286,7 +286,10 @@ it("collects through the real callback using scalar WebDriver transport and excl
   await capture.close();
   const records = (await readFile(path, "utf8")).trim().split("\n").map(JSON.parse);
   expect(records.map((record) => record.sequence)).toEqual([0, 1]);
-  expect(records[1].profile).toEqual(profile());
+  expect(records[1].profile).toEqual({
+    ...profile(),
+    positions: { ...profile().positions, unprojectedPositions: 0 },
+  });
   expect(invoke).toHaveBeenNthCalledWith(1, "performance_audit_instruction_profile", {
     begin: true,
   });
@@ -302,7 +305,7 @@ it.each([
   {},
   "null",
   "{",
-  "x".repeat(1024 * 1024 + 1),
+  "x".repeat(32 * 1024 * 1024 + 1),
   JSON.stringify({ ...profile(), interval: 1 }),
   JSON.stringify({ ...profile(), counts: Array(4097).fill(0) }),
 ])("rejects malformed or oversized profile data", async (raw) => {
@@ -440,6 +443,13 @@ it("bounds cumulative file bytes before writing the overflowing record", async (
       name: "\0".repeat(64),
     })),
   };
+  large.positions.counts = Array.from({ length: 65536 }, (_, index) => ({
+    generation: maximum,
+    function: index.toString(16).padStart(32, "0"),
+    instruction: maximum,
+    samples: maximum,
+  }));
+  large.positions.unprojectedPositions = 65536;
   let written = 0;
   const capture = await createVmProfileCapture(
     { execute: async () => JSON.stringify(large) },
@@ -460,9 +470,84 @@ it("bounds cumulative file bytes before writing the overflowing record", async (
           await capture.capture({ kind: "after", command });
       })(),
     ).rejects.toThrow("output limit");
-    expect(written).toBeLessThanOrEqual(16 * 1024 * 1024);
-    expect(written).toBeGreaterThan(15 * 1024 * 1024);
+    expect(written).toBeLessThanOrEqual(256 * 1024 * 1024);
+    expect(written).toBeGreaterThan(240 * 1024 * 1024);
   } finally {
     await capture.close();
   }
+});
+
+it("retains independent opcode counts and exposes unprojected positions", async () => {
+  const snapshot = profile();
+  snapshot.opcodes = {
+    incomplete: false,
+    droppedSamples: "0",
+    counts: [{ opcode: 65535, samples: "2", secret: 1 }],
+  };
+  snapshot.positions.counts = [{ ...position, samples: "2" }];
+  snapshot.positions.unprojectedPositions = 1;
+  const path = await outputPath();
+  const capture = await createVmProfileCapture(
+    { execute: async () => JSON.stringify(snapshot) },
+    path,
+  );
+  await capture.capture({ kind: "after", command: 6 });
+  await capture.close();
+  const row = JSON.parse(await readFile(path, "utf8"));
+  expect(row.profile.opcodes.counts).toEqual([{ opcode: 65535, samples: "2" }]);
+  expect(row.profile.positions.unprojectedPositions).toBe(1);
+  expect(row.profile.positions.incomplete).toBe(false);
+});
+
+it.each(["duplicate", "range", "missing", "projection", "excess-loss", "excess-total"])(
+  "rejects malformed additive %s data",
+  async (kind) => {
+    const snapshot = profile();
+    snapshot.opcodes = {
+      incomplete: false,
+      droppedSamples: "0",
+      counts: [{ opcode: 1, samples: "2" }],
+    };
+    if (kind === "duplicate") snapshot.opcodes.counts.push({ opcode: 1, samples: "1" });
+    if (kind === "range") snapshot.opcodes.counts[0].opcode = 65536;
+    if (kind === "missing") snapshot.opcodes.counts[0].samples = "1";
+    if (kind === "projection") snapshot.positions.unprojectedPositions = 1;
+    if (kind === "excess-loss") {
+      snapshot.opcodes.incomplete = true;
+      snapshot.opcodes.droppedSamples = "18446744073709551615";
+    }
+    if (kind === "excess-total") {
+      snapshot.opcodes.incomplete = true;
+      snapshot.opcodes.counts[0].samples = "3";
+    }
+    const capture = await createVmProfileCapture(
+      { execute: async () => JSON.stringify(snapshot) },
+      await outputPath(),
+    );
+    try {
+      await expect(capture.capture({ kind: "after", command: 6 })).rejects.toThrow();
+    } finally {
+      await capture.close();
+    }
+  },
+);
+
+it("preserves a bounded incomplete opcode distribution", async () => {
+  const snapshot = profile();
+  snapshot.opcodes = {
+    incomplete: true,
+    droppedSamples: "1",
+    counts: [{ opcode: 1, samples: "1" }],
+  };
+  const path = await outputPath();
+  const capture = await createVmProfileCapture(
+    { execute: async () => JSON.stringify(snapshot) },
+    path,
+  );
+  try {
+    await capture.capture({ kind: "after", command: 6 });
+  } finally {
+    await capture.close();
+  }
+  expect(JSON.parse(await readFile(path, "utf8")).profile.opcodes).toEqual(snapshot.opcodes);
 });

@@ -4,8 +4,8 @@ import { open } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { parsePerformanceObservationJson } from "./tauri-performance-timing-evidence.mjs";
 
-const MAXIMUM_RECORD_BYTES = 1024 * 1024;
-const MAXIMUM_FILE_BYTES = 16 * 1024 * 1024;
+const MAXIMUM_RECORD_BYTES = 32 * 1024 * 1024;
+const MAXIMUM_FILE_BYTES = 256 * 1024 * 1024;
 
 export function vmProfileBuildFeature(enabled) {
   return enabled ? ",vm-instruction-profile" : "";
@@ -91,9 +91,38 @@ function validateProfile(profile) {
       name,
     })),
     positions: validatePositions(profile.positions, profile.dispatches),
+    ...(profile.opcodes === undefined
+      ? {}
+      : { opcodes: validateOpcodes(profile.opcodes, profile.dispatches) }),
   };
 }
 
+function validateOpcodes(opcodes, dispatches) {
+  assert.ok(opcodes && typeof opcodes === "object" && !Array.isArray(opcodes));
+  assert.equal(typeof opcodes.incomplete, "boolean");
+  u64(opcodes.droppedSamples);
+  assert.ok(opcodes.droppedSamples === "0" || opcodes.incomplete);
+  assert.ok(Array.isArray(opcodes.counts) && opcodes.counts.length <= 65536);
+  const keys = new Set();
+  let total = 0n;
+  const counts = opcodes.counts.map((entry) => {
+    assert.ok(entry && typeof entry === "object" && !Array.isArray(entry));
+    assert.ok(Number.isInteger(entry.opcode) && entry.opcode >= 0 && entry.opcode <= 65535);
+    assert.ok(!keys.has(entry.opcode), "duplicate VM opcode");
+    keys.add(entry.opcode);
+    u64(entry.samples);
+    assert.notEqual(entry.samples, "0");
+    total += BigInt(entry.samples);
+    return { opcode: entry.opcode, samples: entry.samples };
+  });
+  const opportunities = BigInt(dispatches) / 1024n;
+  assert.ok(
+    total + BigInt(opcodes.droppedSamples) <= opportunities,
+    "VM opcode count and loss exceed sampling opportunities",
+  );
+  if (!opcodes.incomplete) assert.equal(total, opportunities, "incomplete VM opcode distribution");
+  return { incomplete: opcodes.incomplete, droppedSamples: opcodes.droppedSamples, counts };
+}
 function validatePositions(positions, dispatches) {
   assert.ok(positions && typeof positions === "object");
   assert.equal(typeof positions.active, "boolean");
@@ -103,8 +132,15 @@ function validatePositions(positions, dispatches) {
   assert.ok(BigInt(positions.startedAtDispatches) <= BigInt(positions.endedAtDispatches));
   assert.ok(BigInt(positions.endedAtDispatches) <= BigInt(dispatches));
   assert.ok(positions.droppedSamples === "0" || positions.incomplete);
-  assert.ok(Array.isArray(positions.counts) && positions.counts.length <= 2048);
-  assert.ok(Array.isArray(positions.locations) && positions.locations.length <= 64);
+  assert.ok(Array.isArray(positions.counts) && positions.counts.length <= 65536);
+  assert.ok(Array.isArray(positions.locations) && positions.locations.length <= 1024);
+  const unprojectedPositions = positions.counts.length - positions.locations.length;
+  if (positions.unprojectedPositions !== undefined)
+    assert.equal(
+      positions.unprojectedPositions,
+      unprojectedPositions,
+      "VM projection count mismatch",
+    );
   const countKeys = new Set();
   for (const [entries, location] of [
     [positions.counts, false],
@@ -142,6 +178,7 @@ function validatePositions(positions, dispatches) {
   }
   return {
     active: positions.active,
+    unprojectedPositions,
     startedAtDispatches: positions.startedAtDispatches,
     endedAtDispatches: positions.endedAtDispatches,
     droppedSamples: positions.droppedSamples,
