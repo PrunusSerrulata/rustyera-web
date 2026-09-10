@@ -300,15 +300,23 @@ describe("Tauri performance trace schema 3", () => {
     );
   });
 
-  it.each([true, false])(
-    "isolates capture setup and diagnostic timing (acceptance=%s)",
-    async (acceptanceTiming) => {
-      vi.stubEnv("RUSTYERA_TEST_BACKGROUND_DOM", "0");
+  it.each([
+    [true, false],
+    [false, false],
+    [true, true],
+    [false, true],
+  ])(
+    "isolates capture setup and diagnostic timing (acceptance=%s, background=%s)",
+    async (acceptanceTiming, background) => {
+      vi.stubEnv("RUSTYERA_TEST_BACKGROUND_DOM", background ? "1" : "0");
       let now = 0;
       const boundaryOrder = [];
       let profileOpen = false;
       vi.spyOn(performance, "now").mockImplementation(() => now);
       const hooks = {
+        onTransport: () => {
+          now += 10_000;
+        },
         onTimings: () => {
           expect(profileOpen).toBe(false);
           now += 300;
@@ -373,7 +381,11 @@ describe("Tauri performance trace schema 3", () => {
         observations.every(
           (row) =>
             row.timingBasis ===
-            (acceptanceTiming ? "action-to-stable-observation" : "diagnostic-only"),
+            (acceptanceTiming
+              ? background
+                ? "dom-action-to-stable-observation"
+                : "action-to-stable-observation"
+              : "diagnostic-only"),
         ),
       ).toBe(true);
       const timing = JSON.parse(
@@ -386,6 +398,32 @@ describe("Tauri performance trace schema 3", () => {
       const replay = await replayPerformanceTrace(replayBrowser.browser, trace);
       expect(replay.paths.flatMap((path) => path.responseSamplesMs)).toEqual([7, 7, 7, 7]);
       const summary = summarizeRuns([replay]);
+      const basis = background
+        ? "dom-action-to-stable-observation"
+        : "action-to-stable-observation";
+      expect(summary.responseTimingBasis).toBe(basis);
+      const otherBasis = {
+        ...replay,
+        paths: replay.paths.map((path) => ({
+          ...path,
+          responseTimingBasis: background
+            ? "action-to-stable-observation"
+            : "dom-action-to-stable-observation",
+        })),
+      };
+      expect(() => summarizeRuns([replay, otherBasis])).toThrow("cannot mix action clock bases");
+      expect(summarizeRuns([replay, { ...otherBasis, acceptanceTiming: false }])).toEqual(summary);
+      const legacy = {
+        ...replay,
+        paths: replay.paths.map((path) => {
+          const entry = { ...path };
+          delete entry.responseTimingBasis;
+          return entry;
+        }),
+      };
+      if (background)
+        expect(() => summarizeRuns([legacy, replay])).toThrow("cannot mix action clock bases");
+      else expect(summarizeRuns([legacy])).toEqual(summary);
       expect(summarizeRuns([{ ...replay, acceptanceTiming: false }, replay])).toEqual(summary);
       expect(Object.values(summary.byPath).map((sample) => sample.p50)).toEqual([7, 7, 7, 7]);
       vi.stubEnv("RUSTYERA_TAURI_PERF_HEAVY_DIAGNOSTICS", "1");
@@ -402,6 +440,46 @@ describe("Tauri performance trace schema 3", () => {
       expect(Object.values(summary.harnessByPath).every((sample) => sample.p50 > 1_000)).toBe(true);
     },
   );
+
+  it("keeps background checkpoint-change actions on the diagnostic checkpoint and stable path", async () => {
+    vi.stubEnv("RUSTYERA_TEST_BACKGROUND_DOM", "1");
+    const directory = await temporaryDirectory();
+    const actions = join(directory, "checkpoint-actions.jsonl");
+    const candidate = join(directory, "checkpoint-candidate.json");
+    const commands = captureCommands().map((command) => ({
+      ...command,
+      settle: "checkpoint_change",
+    }));
+    await writeFile(
+      actions,
+      commands.concat({ type: "finish" }).map(JSON.stringify).join("\n") + "\n",
+    );
+    const stable = vi.fn();
+    const fixture = traceBrowser((state) => state, { onStable: stable });
+    const observations = [];
+    await runPerformanceTraceCapture(fixture.browser, {
+      templatePath: resolve("tests/fixtures/snake-runtime-performance-trace.v3.json"),
+      candidatePath: candidate,
+      actionInboxPath: actions,
+      projectDigest: "a".repeat(64),
+      onObservation: (row) => observations.push(row),
+    });
+    expect(stable).toHaveBeenCalledTimes(4);
+    expect(fixture.checkpointCalls()).toBe(12);
+    expect(observations.map((row) => row.timingBasis)).toEqual(
+      Array(4).fill("diagnostic-checkpoint-change"),
+    );
+    expect(
+      fixture.browser.execute.mock.calls.some(([operation]) => typeof operation === "string"),
+    ).toBe(false);
+    const { trace } = await freezePerformanceTrace(
+      candidate,
+      join(directory, "checkpoint-frozen.json"),
+    );
+    const replay = await replayPerformanceTrace(traceBrowser().browser, trace);
+    expect(replay.paths.flatMap((path) => path.responseSamplesMs)).toEqual([]);
+    expect(replay.paths.flatMap((path) => path.diagnosticResponseSamples)).toHaveLength(4);
+  });
 
   it("does not finish an action before the stable-observation gate resolves", async () => {
     vi.stubEnv("RUSTYERA_TEST_BACKGROUND_DOM", "0");
@@ -756,6 +834,19 @@ function traceBrowser(normalize = (state) => state, hooks = {}) {
   const browser = {
     execute: vi.fn(async (operation, _watches, protocolCursor) => {
       const source = operation.toString();
+      if (typeof operation === "string" && source.includes("measureBackgroundDomAction")) {
+        await hooks.onTransport?.();
+        advance();
+        const startedAt = performance.now();
+        await hooks.onStable?.();
+        const elapsedMs = performance.now() - startedAt;
+        await hooks.onTransport?.();
+        return { elapsedMs, inputEvidence: { mode: "background-dom", input: protocolCursor } };
+      }
+      if (operation.name === "applyBackgroundDomAction") {
+        if (protocolCursor !== "value") advance();
+        return { mode: "background-dom", input: protocolCursor };
+      }
       if (source.includes("waitForStableObservation")) {
         await hooks.onStable?.();
         return true;

@@ -225,12 +225,20 @@ describe("verified Tauri build reuse", () => {
           ["scripts/web-test-lib.d.mts", "old-node-helper-types"],
           ["scripts/project-export-cancel.mjs", "old-export-observer"],
           ["AGENTS.md", "old-delegation-policy"],
+          ["scripts/tauri-performance-dom-clock.mjs", "old-dom-clock"],
         ],
         coreSources: [["crates/runtime.rs", "same-core"]],
         environment: { RUSTFLAGS: "same-flags" },
         provider: { sha256: "same-provider" },
       };
       const withSources = { sha256: "with-sources", inputs };
+      const oldWithoutHelper = structuredClone(withSources);
+      oldWithoutHelper.sha256 = "before-dom-helper-existed";
+      oldWithoutHelper.inputs.webSources.pop();
+      await recordBuiltArtifact(manifest, oldWithoutHelper, binary);
+      expect(
+        await reusableArtifact(manifest, withSources, binary, { required: true }),
+      ).toBeDefined();
       await recordBuiltArtifact(manifest, withSources, binary);
       const changedHarness = structuredClone(withSources);
       changedHarness.sha256 = "changed-harness";
@@ -242,7 +250,7 @@ describe("verified Tauri build reuse", () => {
       changedRuntimeHelper.inputs.webSources[2][1] = "native-foreground-precondition";
       changedRuntimeHelper.inputs.webSources[4][1] = "transport-identity-before-image-gate";
       expect(await reusableArtifact(manifest, changedRuntimeHelper, binary)).toBeDefined();
-      for (const index of [5, 6, 7, 8, 9, 10, 11, 12, 13]) {
+      for (const index of [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
         const changedNodeHelper = structuredClone(changedRuntimeHelper);
         changedNodeHelper.inputs.webSources[index][1] = "node-only-observation-or-foreground";
         expect(compiledBuildInputs(changedNodeHelper.inputs)).toEqual(compiledBuildInputs(inputs));

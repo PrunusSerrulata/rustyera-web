@@ -77,8 +77,23 @@ map to the exact captured `input`, `service_response` or `storage_response` prot
 rejects a click or service sequence that cannot be mapped losslessly. Hover-only steps remain
 frontend-only. The emitted companion contains only fields accepted by Core's strict serde schema.
 Selector lookup, exact-label/enabled assertions, and prompt preparation complete before the action
-clock starts; their costs remain in the harness wall clock. Action latency starts immediately before the real WebDriver/DOM action and stops after the target
-change reaches the client's existing consecutive-stable-frame observation boundary. The full
+clock starts; their costs remain in the harness wall clock. For minimized/background DOM
+`wait_change` actions, `dom-action-to-stable-observation` measures in the WebView: immediately before
+the actual DOM event dispatch through the existing consecutive-stable-frame boundary. Target
+geometry/enabled checks and bounded input-evidence setup precede that clock. The same DOM handlers,
+secondary-button sequence, changed-wait and stable-frame checks remain; no game input is submitted
+through the test control. One WebDriver request awaits the bounded observation, so command transport,
+result polling (including the provider's 50 ms polling interval) and response serialization are not
+game latency. The action has one 30-second deadline. The existing 1-second secondary-action
+acknowledgment check remains.
+The 20 ms progress poll resumes via one action-local message channel, closed on success or error.
+This prevents a nested timer chain from carrying WebKit's timer throttling into the unchanged
+stable-frame timers; it does not change the runtime scheduler, window policy or system preferences.
+Bounded post-clock evidence reports dispatch, changed-wait and stable-frame intervals separately.
+Default visible mode retains the original WebDriver clock and
+`action-to-stable-observation` label; heavy and checkpoint-change diagnosis retain their prior paths.
+Older and new clock bases must not be pooled or reported as product speedups. The clock relocation
+does not establish negligible probe overhead, and no estimated cost is subtracted. The full
 post-action checkpoint is captured after that boundary for semantic verification, so debug
 inspection and checkpoint serialization do not inflate the reported response time. Capture
 observations use the same boundary as frozen replay. `summary.byPath` aggregates these response

@@ -2,7 +2,7 @@
 
 // Explicit background coverage: real DOM handlers and host transport, without
 // claiming trusted hardware input or bypassing the production interaction policy.
-export function applyBackgroundDomAction(element, action, value = null) {
+export function applyBackgroundDomAction(element, action, value = null, beforeDispatch = null) {
   if (!element?.isConnected) throw new Error("background input target is detached");
   const bounds = element.getBoundingClientRect();
   const style = getComputedStyle(element);
@@ -33,8 +33,10 @@ export function applyBackgroundDomAction(element, action, value = null) {
     };
     element.addEventListener(eventName, record, { once: true });
     try {
-      if (action === "click") element.click();
-      else {
+      if (action === "click") {
+        beforeDispatch?.();
+        element.click();
+      } else {
         if (!(element instanceof HTMLInputElement)) throw new Error("input element required");
         const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
         setter.call(element, value);
@@ -54,6 +56,7 @@ export function applyBackgroundDomAction(element, action, value = null) {
     element.addEventListener("pointermove", record, { once: true });
     element.addEventListener("mousemove", record, { once: true });
     try {
+      beforeDispatch?.();
       element.dispatchEvent(new PointerEvent("pointermove", { bubbles: true }));
       element.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
     } finally {
@@ -68,6 +71,7 @@ export function applyBackgroundDomAction(element, action, value = null) {
     evidence.clientX = clientX;
     evidence.clientY = clientY;
     evidence.events = [];
+    beforeDispatch?.();
     for (const [type, buttons] of [
       ["mousedown", 2],
       ["mouseup", 0],

@@ -34,6 +34,7 @@ export function assertSecondaryClickProtocolActions(
 export function summarizeSamples(samples: number[]): PerformanceSampleSummary;
 export function summarizeRuns(runs: Array<Record<string, unknown>>): {
   runs: number;
+  responseTimingBasis: string | null;
   byPath: Record<string, PerformanceSampleSummary>;
   harnessByPath: Record<string, PerformanceSampleSummary>;
 };

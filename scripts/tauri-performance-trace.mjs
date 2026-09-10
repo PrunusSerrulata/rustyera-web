@@ -14,6 +14,7 @@ import {
   secondaryClickTauriTestElement,
   setTauriTestInput,
 } from "./dom-test-input.mjs";
+import { backgroundDomClockScript } from "./tauri-performance-dom-clock.mjs";
 
 export const PERFORMANCE_PATHS = ["loading", "steady-runtime", "map-nf-sql", "save-load"];
 export const PERFORMANCE_TRACE_SCHEMA_VERSION = 3;
@@ -83,6 +84,7 @@ export async function replayPerformanceTrace(browser, trace, onCheckpoint = () =
     const steps = trace.steps.filter((step) => step.path === pathClass);
     const startedAt = performance.now();
     const inputSamples = [];
+    const responseTimingBases = new Set();
     const diagnosticSamples = [];
     for (let index = 0; index < steps.length; index += 1) {
       const step = steps[index];
@@ -112,15 +114,21 @@ export async function replayPerformanceTrace(browser, trace, onCheckpoint = () =
         `${pathClass}[${index}] scenario signature mismatch`,
       );
       const timingBasis = performanceTimingBasis(step.expect.settle);
-      if (timingBasis === "action-to-stable-observation") inputSamples.push(inputElapsedMs);
-      else diagnosticSamples.push({ elapsedMs: inputElapsedMs, timingBasis, step: index });
+      if (
+        ["action-to-stable-observation", "dom-action-to-stable-observation"].includes(timingBasis)
+      ) {
+        inputSamples.push(inputElapsedMs);
+        responseTimingBases.add(timingBasis);
+      } else diagnosticSamples.push({ elapsedMs: inputElapsedMs, timingBasis, step: index });
       await onCheckpoint({ path: pathClass, step: index, before, after, inputElapsedMs });
     }
+    assert.ok(responseTimingBases.size <= 1, "cannot mix action clock bases");
     paths.push({
       id: pathClass,
       class: pathClass,
       elapsedMs: performance.now() - startedAt,
       responseSamplesMs: inputSamples,
+      responseTimingBasis: [...responseTimingBases][0] ?? null,
       diagnosticResponseSamples: diagnosticSamples,
       inputMs: summarizeSamples(inputSamples),
     });
@@ -536,6 +544,14 @@ function semanticStorageBytes(container) {
 
 export function summarizeRuns(runs) {
   runs = runs.filter((run) => run.acceptanceTiming !== false);
+  const bases = new Set(
+    runs.flatMap((run) =>
+      run.paths
+        .filter((entry) => entry.responseSamplesMs?.length)
+        .map((entry) => entry.responseTimingBasis ?? "action-to-stable-observation"),
+    ),
+  );
+  assert.ok(bases.size <= 1, "cannot mix action clock bases");
   const byPath = Object.fromEntries(
     PERFORMANCE_PATHS.map((pathClass) => [
       pathClass,
@@ -558,7 +574,7 @@ export function summarizeRuns(runs) {
       ),
     ]),
   );
-  return { runs: runs.length, byPath, harnessByPath };
+  return { runs: runs.length, responseTimingBasis: [...bases][0] ?? null, byPath, harnessByPath };
 }
 
 export function summarizeSamples(samples) {
@@ -1078,7 +1094,11 @@ async function prepareAction(browser, action) {
       "trace submit unavailable",
     );
     await setTauriTestInput(browser, prompt, String(action.value));
-    return () => clickTauriTestElement(browser, submit);
+    return {
+      perform: () => clickTauriTestElement(browser, submit),
+      element: submit,
+      domAction: "click",
+    };
   }
   const element = await browser.$(action.selector);
   assert.ok(await element.isExisting(), `trace target does not exist: ${action.selector}`);
@@ -1086,18 +1106,43 @@ async function prepareAction(browser, action) {
     assert.equal((await element.getText()).trim(), action.expectedText);
   if (action.type === "click")
     return action.button === "right"
-      ? () => secondaryClickTauriTestElement(browser, element)
-      : () => clickTauriTestElement(browser, element);
-  return () => hoverTauriTestElement(browser, element);
+      ? {
+          perform: () => secondaryClickTauriTestElement(browser, element),
+          element,
+          domAction: "secondary-click",
+        }
+      : { perform: () => clickTauriTestElement(browser, element), element, domAction: "click" };
+  return { perform: () => hoverTauriTestElement(browser, element), element, domAction: "hover" };
 }
 
 async function performTimedAction(browser, action, before, settle, watches, beforeTiming) {
   // Selector resolution, exact-label validation and input preparation are harness
   // setup, not the response to the real input. Keep all assertions, outside its clock.
-  const performAction = await prepareAction(browser, action);
+  const prepared = await prepareAction(browser, action);
   await beforeTiming?.();
+  if (useDomActionClock(settle)) {
+    const measured = await browser.execute(
+      backgroundDomClockScript,
+      prepared.element,
+      prepared.domAction,
+      waitIdentity(before.value.wait),
+    );
+    assert.ok(
+      Number.isFinite(measured?.elapsedMs) && measured.elapsedMs >= 0,
+      "invalid DOM action timing",
+    );
+    console.log(JSON.stringify({ type: "background-dom-input", ...measured.inputEvidence }));
+    console.log(
+      JSON.stringify({
+        type: "tauri-performance-dom-clock",
+        elapsedMs: measured.elapsedMs,
+        phases: measured.phases,
+      }),
+    );
+    return measured.elapsedMs;
+  }
   const startedAt = performance.now();
-  await performAction();
+  await prepared.perform();
   await assertSecondaryActionStarted(browser, action, before);
   await waitForNextObservation(browser, before, settle, watches);
   return performance.now() - startedAt;
@@ -1105,9 +1150,18 @@ async function performTimedAction(browser, action, before, settle, watches, befo
 
 function performanceTimingBasis(settle) {
   if (process.env.RUSTYERA_TAURI_PERF_HEAVY_DIAGNOSTICS === "1") return "diagnostic-heavy-dom";
+  if (useDomActionClock(settle)) return "dom-action-to-stable-observation";
   return settle === "checkpoint_change"
     ? "diagnostic-checkpoint-change"
     : "action-to-stable-observation";
+}
+
+function useDomActionClock(settle) {
+  return (
+    settle === "wait_change" &&
+    process.env.RUSTYERA_TEST_BACKGROUND_DOM === "1" &&
+    process.env.RUSTYERA_TAURI_PERF_HEAVY_DIAGNOSTICS !== "1"
+  );
 }
 
 export async function assertSecondaryActionStarted(browser, action, before) {

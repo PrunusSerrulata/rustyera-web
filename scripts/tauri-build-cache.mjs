@@ -223,6 +223,7 @@ export function compiledBuildInputs(inputs) {
             "scripts/tauri-performance-timing-evidence.mjs",
             "scripts/tauri-performance-runner.mjs",
             "scripts/tauri-performance-trace.mjs",
+            "scripts/tauri-performance-dom-clock.mjs",
             "scripts/tauri-performance-trace.d.mts",
             "scripts/tauri-build-cache.mjs",
             "scripts/snake-service-lifecycle-test-support.mjs",
