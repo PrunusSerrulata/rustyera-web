@@ -2,7 +2,6 @@
 import { computed, inject, type CSSProperties } from "vue";
 
 import { htmlMeasurementProjectionKey } from "@/components/htmlMeasurementProjection";
-import { htmlMeasurementSegments } from "@/core/htmlMeasurement";
 import { useSceneDepthRank } from "@/core/sceneStacking";
 
 import { resolveCurrentSpriteReplay } from "@/core/replayResources";
@@ -336,7 +335,7 @@ function textSegments(value: unknown): HtmlTextSegment[] {
 
 const measurementSegments = computed(() =>
   measurement && props.node.type === "text"
-    ? htmlMeasurementSegments(props.node.text, store.replaceFullWidthSpaces)
+    ? htmlTextSegments(props.node.text, store.replaceFullWidthSpaces, false)
     : [],
 );
 

@@ -82,6 +82,50 @@ describe("bounded offscreen HTML measurement", () => {
     vi.unstubAllGlobals();
   });
 
+  it.each([false, true])(
+    "renders identical measurement segments without boundary metadata: replace=%s",
+    async (replace) => {
+      for (const text of ["fi", " A　─🙂é ", "┌─┐", ""]) {
+        const expected = measurementModel
+          .htmlMeasurementSegments(text, replace)
+          .map((segment, index) => ({
+            index: String(index),
+            text: segment.text,
+            space: segment.kind === "space",
+            box: segment.kind === "box",
+            width: segment.width ?? "",
+            continuation: segment.continuation == null ? null : String(segment.continuation),
+          }));
+        const inspect = vi.spyOn(measurementModel, "htmlMeasurementSegments");
+        let observed: unknown;
+        fontLoad.mockImplementation(async () => {
+          observed = [...document.querySelectorAll<HTMLElement>("[data-html-segment]")].map(
+            (segment) => ({
+              index: segment.getAttribute("data-html-segment"),
+              text: segment.textContent,
+              space: segment.classList.contains("html-ascii-space"),
+              box: segment.classList.contains("html-box-cell"),
+              width: segment.style.width,
+              continuation: segment.getAttribute("data-continuation"),
+            }),
+          );
+          return [];
+        });
+        const binding = measurementBinding(viewport);
+        binding.replaceFullWidthSpaces = replace;
+        await new HtmlMeasurementProvider().measure(
+          { document: queryText(text), mode: "text_part", cuts: [], style: queryStyle() },
+          binding,
+          { signal: new AbortController().signal, assertCurrent() {} },
+          "advance",
+        );
+        expect(observed ?? []).toEqual(expected);
+        expect(inspect).not.toHaveBeenCalled();
+        inspect.mockRestore();
+      }
+    },
+  );
+
   it("independently shapes a prefix and ignores the unrelated current-style bits", async () => {
     const register = vi.spyOn(pointerObservation, "registerPointerButton");
     const signal = new AbortController().signal;
