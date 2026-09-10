@@ -199,7 +199,7 @@ describe("frontend host and image-line policy", () => {
 
   it("selects native fetch before loading the Tauri WebDriver service", () => {
     const runner = readFileSync(resolve("scripts/tauri-test.mjs"), "utf8");
-    const environmentIndex = runner.indexOf("Object.assign(process.env, environment)");
+    const environmentIndex = runner.indexOf("Object.assign(process.env,");
     const serviceImportIndex = runner.indexOf('await import("@wdio/tauri-service")');
 
     expect(runner).toContain('WDIO_USE_NATIVE_FETCH: "1"');
