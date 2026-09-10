@@ -204,9 +204,28 @@ mod platform {
 
 #[cfg(target_os = "windows")]
 mod platform {
+    use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
 
     use super::{MemorySnapshot, whitespace_numbers};
+
+    fn memory_command(script: &str) -> Command {
+        // A GUI parent has no console to inherit. Prevent each periodic sample from
+        // allocating a console, rather than hiding it after PowerShell has started.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut command = Command::new("powershell.exe");
+        command
+            .creation_flags(CREATE_NO_WINDOW)
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ])
+            .stdin(Stdio::null());
+        command
+    }
 
     pub(super) fn snapshot() -> MemorySnapshot {
         let command = format!(
@@ -214,15 +233,7 @@ mod platform {
              $p.WorkingSet64, $p.PrivateMemorySize64, $p.PagedMemorySize64)",
             std::process::id()
         );
-        let output = Command::new("powershell.exe")
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &command,
-            ])
-            .stdin(Stdio::null())
+        let output = memory_command(&command)
             .output()
             .ok()
             .filter(|output| output.status.success())
@@ -233,6 +244,36 @@ mod platform {
             private_bytes: values.as_mut().and_then(Iterator::next),
             committed_bytes: values.as_mut().and_then(Iterator::next),
             ..MemorySnapshot::default()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn memory_sampler_child_has_no_console() {
+            let output = memory_command(
+                r#"$ErrorActionPreference = 'Stop';
+                Add-Type -MemberDefinition '[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();' -Name ConsoleProbe -Namespace RustyEra;
+                [Console]::WriteLine([RustyEra.ConsoleProbe]::GetConsoleWindow().ToInt64())"#,
+            )
+            .output()
+            .expect("start the Windows memory sampler");
+            assert!(
+                output.status.success(),
+                "console probe failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "0");
+        }
+
+        #[test]
+        fn hidden_memory_sampler_still_reads_process_counters() {
+            let snapshot = snapshot();
+            assert!(snapshot.resident_bytes.is_some_and(|bytes| bytes > 0));
+            assert!(snapshot.private_bytes.is_some_and(|bytes| bytes > 0));
+            assert!(snapshot.committed_bytes.is_some());
         }
     }
 }
