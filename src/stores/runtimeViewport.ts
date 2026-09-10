@@ -160,11 +160,7 @@ export class RuntimeViewportState {
     publishedRevision: ServiceInteger,
     environmentStyleIdentity = "",
   ): { width: number; height: number } | undefined {
-    const observed = [...this.submittedObservations.values()].find(
-      (candidate) =>
-        sameServiceInteger(context.environmentRevision, candidate.environmentRevision) &&
-        sameServiceInteger(context.projectionSpaceRevision, candidate.projectionSpaceRevision),
-    );
+    const observed = this.findEnvironmentObservation(context);
     if (
       observed != null &&
       sameServiceInteger(context.presentationRevision, publishedRevision) &&
@@ -180,11 +176,7 @@ export class RuntimeViewportState {
     measurement: Pick<GameViewportMeasurement, "width" | "height"> | undefined,
     environmentStyleIdentity = "",
   ): string {
-    const observed = [...this.submittedObservations.values()].find(
-      (candidate) =>
-        sameServiceInteger(context.environmentRevision, candidate.environmentRevision) &&
-        sameServiceInteger(context.projectionSpaceRevision, candidate.projectionSpaceRevision),
-    );
+    const observed = this.findEnvironmentObservation(context);
     return JSON.stringify({
       expected: {
         presentationRevision: String(context.presentationRevision),
@@ -202,6 +194,21 @@ export class RuntimeViewportState {
         : null,
       environmentStyleIdentity,
     });
+  }
+
+  private findEnvironmentObservation(
+    context: ProjectionQueryContext,
+  ): ViewportObservation | undefined {
+    // Observation keys are client-generated safe integers. Preserve mixed number/bigint
+    // protocol identities without rounding an out-of-range revision into a valid key.
+    const revision = context.environmentRevision;
+    const key = typeof revision === "bigint" ? Number(revision) : revision;
+    const observed = Number.isSafeInteger(key) ? this.submittedObservations.get(key) : undefined;
+    return observed &&
+      sameServiceInteger(revision, observed.environmentRevision) &&
+      sameServiceInteger(context.projectionSpaceRevision, observed.projectionSpaceRevision)
+      ? observed
+      : undefined;
   }
 
   reject(messageId: string): void {
