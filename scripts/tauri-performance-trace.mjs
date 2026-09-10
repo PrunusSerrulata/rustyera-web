@@ -1,6 +1,7 @@
 /* global window */
 import assert from "node:assert/strict";
 import { gzipSync } from "node:zlib";
+import { isAbsolute } from "node:path";
 import { createHash } from "node:crypto";
 import { blake3 } from "@noble/hashes/blake3.js";
 import { readFile, rename, stat, writeFile } from "node:fs/promises";
@@ -20,6 +21,16 @@ import { backgroundDomClockScript } from "./tauri-performance-dom-clock.mjs";
 export const PERFORMANCE_PATHS = ["loading", "steady-runtime", "map-nf-sql", "save-load"];
 export const PERFORMANCE_TRACE_SCHEMA_VERSION = 3;
 export const MAXIMUM_PERFORMANCE_TRACE_BYTES = 256 * 1024 * 1024;
+export function assertCpuWindowCapture(env) {
+  if (!env.RUSTYERA_TAURI_PERF_CPU_WINDOW_LOG) return;
+  assert.equal(env.RUSTYERA_TAURI_PERF_CAPTURE, "1", "CPU windows require diagnostic capture");
+  assert.equal(env.RUSTYERA_TAURI_PERF_AUDIT, "1", "CPU windows require performance audit");
+  assert.ok(isAbsolute(env.RUSTYERA_TAURI_PERF_CPU_WINDOW_LOG), "CPU window path must be absolute");
+  assert.ok(
+    !env.RUSTYERA_TAURI_PERF_CPU_SAMPLE && env.RUSTYERA_TAURI_PERF_VM_SAMPLE !== "1",
+    "CPU profilers must run separately",
+  );
+}
 const MAXIMUM_PROTOCOL_RESULT_BYTES = 64 * 1024 * 1024;
 const MAXIMUM_PROTOCOL_RESULTS = 65_536;
 const protocolResultBudgets = new WeakMap();
@@ -1236,7 +1247,8 @@ function performanceTimingBasis(settle) {
 function useDomActionClock(settle) {
   return (
     settle === "wait_change" &&
-    process.env.RUSTYERA_TEST_BACKGROUND_DOM === "1" &&
+    (process.env.RUSTYERA_TEST_BACKGROUND_DOM === "1" ||
+      (process.platform === "win32" && process.env.RUSTYERA_TAURI_PERF_AUDIT === "1")) &&
     process.env.RUSTYERA_TAURI_PERF_HEAVY_DIAGNOSTICS !== "1"
   );
 }

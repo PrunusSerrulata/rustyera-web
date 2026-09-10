@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, appendFile, readFile, writeFile } from "node:fs/promises";
 
 import { clickTauriTestElement } from "../../scripts/dom-test-input.mjs";
 import { startCpuSample, finishCpuSample } from "../../scripts/tauri-performance-diagnostics.mjs";
@@ -15,6 +15,7 @@ import {
   performanceTelemetryCompleteness,
 } from "../../scripts/tauri-performance-audit.mjs";
 import {
+  assertCpuWindowCapture,
   readPerformanceTrace,
   replayPerformanceTrace,
   runPerformanceTraceCapture,
@@ -28,6 +29,7 @@ const tracePath = process.env.RUSTYERA_TAURI_PERF_TRACE;
 enabled("Tauri snake runtime performance audit", () => {
   it("replays four versioned runtime paths with calibrated presentation", async () => {
     assert.ok(tracePath, "runner must provide an externally captured, frozen performance trace");
+    assertCpuWindowCapture(process.env);
     assertVmProfileMode(process.env);
     if (process.env.RUSTYERA_TAURI_PERF_CAPTURE === "1") {
       const template = JSON.parse(await readFile(tracePath, "utf8"));
@@ -40,6 +42,21 @@ enabled("Tauri snake runtime performance audit", () => {
         "capture runner omitted its isolated files or digest",
       );
       const samplePath = process.env.RUSTYERA_TAURI_PERF_CPU_SAMPLE;
+      const cpuWindowPath = process.env.RUSTYERA_TAURI_PERF_CPU_WINDOW_LOG;
+      const cpuPid = Number(process.env.RUSTYERA_TAURI_PERF_ROOT_PID);
+      if (cpuWindowPath) {
+        assert.ok(Number.isSafeInteger(cpuPid) && cpuPid > 0, "CPU window requires owned root PID");
+        await writeFile(cpuWindowPath, "", { flag: "wx" });
+      }
+      const recordCpuWindow = async (kind, command) => {
+        if (!cpuWindowPath) return;
+        // Correlate external CPU samples with the existing action hooks. These UTC
+        // markers are outside the action clock and never replace its elapsed time.
+        await appendFile(
+          cpuWindowPath,
+          JSON.stringify({ kind, command, pid: cpuPid, utc: new Date().toISOString() }) + "\n",
+        );
+      };
       const sampleCommand = Number(process.env.RUSTYERA_TAURI_PERF_CPU_SAMPLE_COMMAND ?? "6");
       assert.ok(
         Number.isSafeInteger(sampleCommand) && sampleCommand > 0,
@@ -54,7 +71,7 @@ enabled("Tauri snake runtime performance audit", () => {
       let captureError;
       try {
         candidate = await runPerformanceTraceCapture(browser, {
-          acceptanceTiming: !samplePath && !vmProfile,
+          acceptanceTiming: !samplePath && !vmProfile && !cpuWindowPath,
           templatePath: tracePath,
           candidatePath,
           actionInboxPath,
@@ -74,8 +91,10 @@ enabled("Tauri snake runtime performance audit", () => {
                 samplePath,
               });
             }
+            await recordCpuWindow("before", command);
           },
           afterTimedAction: async ({ command }) => {
+            await recordCpuWindow("after", command);
             const profile = await vmProfile?.capture({ kind: "after", command });
             if (profile && command === 7) await assertReadOnlyVmProfile(profile);
           },

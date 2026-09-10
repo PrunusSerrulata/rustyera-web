@@ -11,6 +11,7 @@ import {
 } from "../scripts/tauri-performance-vm-profile.mjs";
 
 import {
+  assertCpuWindowCapture,
   assertSecondaryActionStarted,
   assertSecondaryClickProtocolActions,
   capturePerformanceCheckpoint,
@@ -27,6 +28,31 @@ import {
 } from "../scripts/tauri-performance-trace.mjs";
 
 const temporaryDirectories = [];
+
+it("rejects external CPU windows outside diagnostic capture and mixed profiling", () => {
+  const enabled = {
+    RUSTYERA_TAURI_PERF_CPU_WINDOW_LOG: resolve("cpu-window.jsonl"),
+    RUSTYERA_TAURI_PERF_CAPTURE: "1",
+    RUSTYERA_TAURI_PERF_AUDIT: "1",
+  };
+  expect(() => assertCpuWindowCapture({})).not.toThrow();
+  expect(() => assertCpuWindowCapture(enabled)).not.toThrow();
+  for (const value of [undefined, "0"])
+    expect(() =>
+      assertCpuWindowCapture({ ...enabled, RUSTYERA_TAURI_PERF_CAPTURE: value }),
+    ).toThrow("diagnostic capture");
+  expect(() => assertCpuWindowCapture({ ...enabled, RUSTYERA_TAURI_PERF_AUDIT: "0" })).toThrow(
+    "performance audit",
+  );
+  expect(() =>
+    assertCpuWindowCapture({ ...enabled, RUSTYERA_TAURI_PERF_CPU_WINDOW_LOG: "relative.jsonl" }),
+  ).toThrow("absolute");
+  for (const other of [
+    { RUSTYERA_TAURI_PERF_CPU_SAMPLE: "sample.txt" },
+    { RUSTYERA_TAURI_PERF_VM_SAMPLE: "1" },
+  ])
+    expect(() => assertCpuWindowCapture({ ...enabled, ...other })).toThrow("separately");
+});
 
 afterEach(async () => {
   vi.unstubAllEnvs();
@@ -385,14 +411,18 @@ describe("Tauri performance trace schema 3", () => {
   );
 
   it.each([
-    [true, false],
-    [false, false],
-    [true, true],
-    [false, true],
+    [true, false, false],
+    [false, false, false],
+    [true, true, false],
+    [false, true, false],
+    [true, false, true],
+    [false, false, true],
   ])(
-    "isolates capture setup and diagnostic timing (acceptance=%s, background=%s)",
-    async (acceptanceTiming, background) => {
+    "isolates capture setup and diagnostic timing (acceptance=%s, background=%s, audit=%s)",
+    async (acceptanceTiming, background, audit) => {
       vi.stubEnv("RUSTYERA_TEST_BACKGROUND_DOM", background ? "1" : "0");
+      vi.stubEnv("RUSTYERA_TAURI_PERF_AUDIT", audit ? "1" : "0");
+      const domClock = background || (audit && process.platform === "win32");
       let now = 0;
       const boundaryOrder = [];
       let profileOpen = false;
@@ -466,7 +496,7 @@ describe("Tauri performance trace schema 3", () => {
           (row) =>
             row.timingBasis ===
             (acceptanceTiming
-              ? background
+              ? domClock
                 ? "dom-action-to-stable-observation"
                 : "action-to-stable-observation"
               : "diagnostic-only"),
@@ -482,15 +512,13 @@ describe("Tauri performance trace schema 3", () => {
       const replay = await replayPerformanceTrace(replayBrowser.browser, trace);
       expect(replay.paths.flatMap((path) => path.responseSamplesMs)).toEqual([7, 7, 7, 7]);
       const summary = summarizeRuns([replay]);
-      const basis = background
-        ? "dom-action-to-stable-observation"
-        : "action-to-stable-observation";
+      const basis = domClock ? "dom-action-to-stable-observation" : "action-to-stable-observation";
       expect(summary.responseTimingBasis).toBe(basis);
       const otherBasis = {
         ...replay,
         paths: replay.paths.map((path) => ({
           ...path,
-          responseTimingBasis: background
+          responseTimingBasis: domClock
             ? "action-to-stable-observation"
             : "dom-action-to-stable-observation",
         })),
@@ -505,7 +533,7 @@ describe("Tauri performance trace schema 3", () => {
           return entry;
         }),
       };
-      if (background)
+      if (domClock)
         expect(() => summarizeRuns([legacy, replay])).toThrow("cannot mix action clock bases");
       else expect(summarizeRuns([legacy])).toEqual(summary);
       expect(summarizeRuns([{ ...replay, acceptanceTiming: false }, replay])).toEqual(summary);

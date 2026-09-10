@@ -117,7 +117,8 @@ The 20 ms progress poll resumes via one action-local message channel, closed on 
 This prevents a nested timer chain from carrying WebKit's timer throttling into the unchanged
 stable-frame timers; it does not change the runtime scheduler, window policy or system preferences.
 Bounded post-clock evidence reports dispatch, changed-wait and stable-frame intervals separately.
-Default visible mode retains the original WebDriver clock and
+Windows performance-audit mode uses this same in-WebView clock for its embedded DOM input,
+including visible sessions. Other default visible modes retain the original WebDriver clock and
 `action-to-stable-observation` label; heavy and checkpoint-change diagnosis retain their prior paths.
 Older and new clock bases must not be pooled or reported as product speedups. The clock relocation
 does not establish negligible probe overhead, and no estimated cost is subtracted. The full
@@ -224,6 +225,14 @@ or result logging also fails. These observations and timing boundaries carry
 `acceptanceTiming: false` and `timingBasis: "diagnostic-only"`; they are excluded from acceptance
 aggregation. Bounded post-action presentation inventory counts metadata, never image byte payloads,
 under one shared 100,000-entry traversal cap. Neither diagnostic runs in ordinary capture.
+
+A separately supervised external CPU recorder can set `RUSTYERA_TAURI_PERF_CPU_WINDOW_LOG`
+to a fresh output path. Capture then records the owned root PID and UTC before/after markers
+through the existing action hooks, outside the action clock and full checkpoints. The capture
+is diagnostic-only and cannot run concurrently with the other CPU/VM profiling modes. These
+markers only select intervals in an external trace; they are not latency measurements and do
+not start or stop an OS recorder. Verify the external recorder's identity, process lifetime,
+event loss and stack completeness separately.
 
 Native pump samples additionally distinguish `nativeSetupMs` (the initial interval containing
 host lock acquisition and, on fused input, message submission) and `nativeThreadCpuMs`. The latter

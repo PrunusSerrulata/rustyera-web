@@ -10,6 +10,7 @@ export interface PerformanceSampleSummary {
 
 export const PERFORMANCE_TRACE_SCHEMA_VERSION: 3;
 export const MAXIMUM_PERFORMANCE_TRACE_BYTES: number;
+export function assertCpuWindowCapture(env: Record<string, string | undefined>): void;
 export function coreTraceAction(action: Record<string, unknown>): Record<string, unknown>;
 export function performanceCheckpointBehaviorHash(value: Record<string, unknown>): string;
 
