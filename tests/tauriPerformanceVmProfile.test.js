@@ -56,6 +56,150 @@ function boundaryProfile(begin) {
 
 const position = { generation: "1", function: "a".repeat(32), instruction: "9007199254740993" };
 
+function dispatchBoundaryProfile(begin) {
+  const snapshot = boundaryProfile(begin);
+  snapshot.dispatchWindows = {
+    active: begin,
+    startedAtDispatches: "0",
+    endedAtDispatches: snapshot.dispatches,
+    maximumLength: 8,
+    maximumPatterns: 4096,
+    incomplete: false,
+    restartedWhileActive: false,
+    opportunities: begin ? "0" : "2",
+    startedWindows: begin ? "0" : "2",
+    excludedContinuations: "0",
+    droppedWindows: "0",
+    counts: begin ? [] : [{ opcodes: [1, 2], termination: "action_end", samples: "2" }],
+    pending: null,
+  };
+  return snapshot;
+}
+
+it.each([false, true])("persists optional dispatch windows: present=%s", async (present) => {
+  const path = await outputPath();
+  const browser = {
+    execute: async (_callback, begin) => {
+      const snapshot = present ? dispatchBoundaryProfile(begin) : boundaryProfile(begin);
+      return JSON.stringify(snapshot);
+    },
+  };
+  const capture = await createVmProfileCapture(browser, path);
+  try {
+    await capture.capture({ kind: "before", command: 8 });
+    const end = await capture.capture({ kind: "after", command: 8 });
+    const rows = (await readFile(path, "utf8")).trim().split("\n").map(JSON.parse);
+    if (present) {
+      expect(rows[0].dispatchWindow).toEqual({ valid: false, reason: "window-open" });
+      expect(rows[1].dispatchWindow).toEqual({ valid: true, reason: null });
+      expect(rows[1].profile.dispatchWindows).toEqual(end.dispatchWindows);
+      expect(end.dispatchWindows.counts).toEqual([
+        { opcodes: [1, 2], termination: "action_end", samples: "2" },
+      ]);
+    } else {
+      expect(rows[1].profile).not.toHaveProperty("dispatchWindows");
+      expect(rows[1]).not.toHaveProperty("dispatchWindow");
+    }
+  } finally {
+    await capture.close();
+  }
+});
+
+it.each([
+  ["stale start", (s) => (s.dispatchWindows.startedAtDispatches = "1")],
+  [
+    "stale end",
+    (s) => {
+      s.dispatchWindows.endedAtDispatches = "2047";
+      s.dispatchWindows.opportunities = "1";
+      s.dispatchWindows.startedWindows = "1";
+      s.dispatchWindows.counts[0].samples = "1";
+    },
+  ],
+  ["still active", (s) => (s.dispatchWindows.active = true)],
+])("rejects dispatch after-boundary %s", async (_name, change) => {
+  const capture = await createVmProfileCapture(
+    {
+      execute: async (_callback, begin) => {
+        const snapshot = dispatchBoundaryProfile(begin);
+        if (!begin) change(snapshot);
+        return JSON.stringify(snapshot);
+      },
+    },
+    await outputPath(),
+  );
+  try {
+    await capture.capture({ kind: "before", command: 8 });
+    await expect(capture.capture({ kind: "after", command: 8 })).rejects.toThrow(/dispatch window/);
+  } finally {
+    await capture.close();
+  }
+});
+
+it.each([
+  "counts",
+  "pending",
+  "opportunities",
+  "startedWindows",
+  "excludedContinuations",
+  "droppedWindows",
+  "incomplete",
+  "restartedWhileActive",
+])("rejects uncleared dispatch begin %s", async (field) => {
+  const capture = await createVmProfileCapture(
+    {
+      execute: async () => {
+        const snapshot = dispatchBoundaryProfile(true);
+        const window = snapshot.dispatchWindows;
+        window.incomplete = true;
+        if (field === "counts")
+          window.counts = [{ opcodes: [1], termination: "fault", samples: "1" }];
+        else if (field === "pending") window.pending = { opcodes: [1] };
+        else if (field === "restartedWhileActive") window.restartedWhileActive = true;
+        else if (field !== "incomplete") window[field] = "1";
+        return JSON.stringify(snapshot);
+      },
+    },
+    await outputPath(),
+  );
+  try {
+    await expect(capture.capture({ kind: "before", command: 8 })).rejects.toThrow(
+      /dispatch window/,
+    );
+  } finally {
+    await capture.close();
+  }
+});
+
+it.each(["positions", "dispatchWindows"])("keeps %s loss independently invalid", async (field) => {
+  const path = await outputPath();
+  const capture = await createVmProfileCapture(
+    {
+      execute: async (_callback, begin) => {
+        const snapshot = dispatchBoundaryProfile(begin);
+        if (!begin) snapshot[field].incomplete = true;
+        return JSON.stringify(snapshot);
+      },
+    },
+    path,
+  );
+  try {
+    await capture.capture({ kind: "before", command: 8 });
+    await capture.capture({ kind: "after", command: 8 });
+    const rows = (await readFile(path, "utf8")).trim().split("\n").map(JSON.parse);
+    expect(rows[1].window).toEqual({
+      valid: field !== "positions",
+      reason: field === "positions" ? "incomplete" : null,
+    });
+    expect(rows[1].dispatchWindow).toEqual({
+      valid: field !== "dispatchWindows",
+      reason: field === "dispatchWindows" ? "incomplete" : null,
+    });
+  } finally {
+    await capture.close();
+  }
+});
+
 it("rejects checkpoint-backed sampling before the native window opens", () => {
   expect(() => assertVmProfileAction("checkpoint_change")).toThrow("excludes checkpoint_change");
   expect(() => assertVmProfileAction("wait_change")).not.toThrow();

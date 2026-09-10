@@ -3,6 +3,12 @@ import assert from "node:assert/strict";
 import { open } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { parsePerformanceObservationJson } from "./tauri-performance-timing-evidence.mjs";
+import {
+  assertDispatchWindowBoundary,
+  dispatchWindowVerdict,
+  validateDispatchWindows,
+  validateProfileU64 as u64,
+} from "./tauri-performance-dispatch-windows.mjs";
 
 const MAXIMUM_RECORD_BYTES = 32 * 1024 * 1024;
 const MAXIMUM_FILE_BYTES = 256 * 1024 * 1024;
@@ -35,12 +41,6 @@ export async function finishProfileCapture(cleanups, primaryFailure) {
     }
   }
   if (failure) throw failure.error;
-}
-
-function u64(value) {
-  assert.equal(typeof value, "string");
-  assert.match(value, /^(0|[1-9]\d{0,19})$/);
-  assert.ok(BigInt(value) <= 18446744073709551615n, "VM profile u64 overflow");
 }
 
 function validateProfile(profile) {
@@ -94,6 +94,9 @@ function validateProfile(profile) {
     ...(profile.opcodes === undefined
       ? {}
       : { opcodes: validateOpcodes(profile.opcodes, profile.dispatches) }),
+    ...(profile.dispatchWindows === undefined
+      ? {}
+      : { dispatchWindows: validateDispatchWindows(profile.dispatchWindows, profile.dispatches) }),
   };
 }
 
@@ -204,6 +207,7 @@ function validatePositions(positions, dispatches) {
 }
 
 function validateWindow(profile, boundary, pending) {
+  assertDispatchWindowBoundary(profile, boundary);
   const positions = profile.positions;
   if (boundary.kind === "before") {
     assert.equal(pending, undefined, "VM profile window already open");
@@ -263,6 +267,7 @@ export async function createVmProfileCapture(browser, path, dependencies = {}) {
       );
       if (boundary.kind === "after") windowOpen = false;
       const windowVerdict = validateWindow(profile, boundary, pending);
+      const dispatchVerdict = dispatchWindowVerdict(profile, windowVerdict);
       pending =
         boundary.kind === "before"
           ? {
@@ -279,6 +284,7 @@ export async function createVmProfileCapture(browser, path, dependencies = {}) {
           boundary: boundedBoundary,
           profile,
           window: windowVerdict,
+          ...(dispatchVerdict === undefined ? {} : { dispatchWindow: dispatchVerdict }),
         }) + "\n";
       const size = Buffer.byteLength(line);
       assert.ok(

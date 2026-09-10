@@ -193,7 +193,7 @@ exhaustion sets `incomplete` (identity exhaustion uses reserved instance `0` wit
 VM replacement/fork starts a new instance identity; counters are not persisted.
 Before and after actions, outside their clocks, the audit reads cumulative counters and resolves
 at most 128 hot names (64 Unicode scalars each). It writes `<candidate>.vm-profile.jsonl` using
-exclusive creation, bounded scalar WebDriver transport, 1 MiB per record, 16 MiB per file and
+exclusive creation, bounded scalar WebDriver transport, 32 MiB per record, 256 MiB per file and
 64 boundaries. No DOM, variable values, per-instruction trace, or source contents are collected.
 Compare before/after only for matching VM instances and generations; keep this evidence separate
 from the unprofiled latency baseline and verify the same semantic checkpoints.
@@ -208,13 +208,26 @@ cleanup also closes an outstanding window. This excludes checkpoint VM execution
 the latency clock. VM replacement resets the window and identity, so crossing instances is not a
 valid position sample. The collector checks command/instance/start counters and empty begin state;
 replacement, incomplete and missing-before windows are explicitly excluded by their `window` verdict.
-Only schema-whitelisted fields are written. The map holds at most 2,048 generation/function/instruction keys and reports
+Only schema-whitelisted fields are written. The map holds at most 65,536 generation/function/instruction keys and reports
 drops and overflow explicitly. Source projection uses the existing instruction source index only
-outside execution: at most 64 hot locations, function names capped at 64 Unicode scalars and paths
+outside execution: at most 1,024 hot locations, function names capped at 64 Unicode scalars and paths
 at 160 with an explicit truncation flag; missing/reclaimed locations stay null. No source text,
-DOM or variable snapshots are collected. The existing 1 MiB record/16 MiB file caps remain unchanged.
+DOM or variable snapshots are collected. The 32 MiB record/256 MiB file caps apply to all fields.
 Every profile envelope explicitly carries `acceptanceTiming: false`; sampling builds are diagnostic
 only regardless of how small their observed overhead appears. Never subtract estimated overhead.
+
+The optional `dispatchWindows` field samples at most eight consecutive attempted dispatches
+starting at each 1,024-dispatch opportunity. Windows stop on control flow (including untaken
+branches), bulk execution, diagnostics, faults, scheduler slice boundaries or a change of
+generation, function, fiber, frame or consecutive instruction index. Runtime-form continuations
+are counted as excluded opportunities because their source position is not the opcode being
+executed. At most 4,096 opcode-pattern/termination pairs are retained, with explicit loss and
+overflow flags. A `length_limit` record means eight attempts, not eight successful operations.
+Snapshots are read-only; a pending partial window is reported separately and closed at action end.
+Start, exclusion, saved and dropped counts obey explicit accounting identities when complete.
+Patterns aggregate across sites and cannot be assigned to individual source locations using the
+independent position histogram. Use them to select further diagnostics or optimizations, never
+as CPU weights or direct estimates of end-to-end speedup.
 
 For a separately labelled native CPU diagnostic, `RUSTYERA_TAURI_PERF_CPU_SAMPLE` may name a fresh
 absolute output file. The fixed capture samples the runner-owned Tauri PID for ten seconds before
