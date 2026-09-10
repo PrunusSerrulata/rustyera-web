@@ -18,7 +18,7 @@ vi.mock("node:child_process", async (importOriginal) => ({
           args[0] === "ls-files"
             ? options.cwd.endsWith("rustyera-web")
               ? "scripts/tauri-performance-timing-evidence.mjs\0src-tauri/src/native_host.rs\0Cargo.lock\0"
-              : "tools/sqlite-native/build.mjs\0"
+              : "tools/sqlite-native/build.mjs\0tools/sqlite-native/windows.mjs\0tools/sqlite-native/windows.test.mjs\0"
             : "fake tool identity",
         stderr: "",
       }),
@@ -79,6 +79,8 @@ writeFileSync("Cargo.lock", "child changed lock");
   if (prebuild) {
     const directory = path.join(root, "rustyera-core/tools/sqlite-native");
     await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, "windows.mjs"), "// Windows production inputs v1\n");
+    await writeFile(path.join(directory, "windows.test.mjs"), "// Windows helper tests v1\n");
     await writeFile(
       path.join(directory, "build.mjs"),
       `import { appendFileSync } from "node:fs";
@@ -127,6 +129,24 @@ async function contract(files, args, extra = {}) {
 }
 
 describe("native SQL launcher feature and legacy environment opt-in", () => {
+  it("invalidates native application reuse when the Windows toolchain helper changes", async () => {
+    const files = await fixture({ prebuild: true });
+    const args = ["build", "--features=native-sql"];
+    const before = await contract(files, args);
+    const binary = path.join(files.repository, "fake-binary");
+    const manifest = `${binary}.json`;
+    await writeFile(binary, "same binary");
+    await recordBuiltArtifact(manifest, before, binary);
+    const directory = path.join(files.root, "rustyera-core/tools/sqlite-native");
+    await writeFile(path.join(directory, "windows.test.mjs"), "// tests v2\n");
+    await expect(
+      reusableArtifact(manifest, await contract(files, args), binary, { required: true }),
+    ).resolves.toBeDefined();
+    await writeFile(path.join(directory, "windows.mjs"), "// production inputs v2\n");
+    await expect(
+      reusableArtifact(manifest, await contract(files, args), binary, { required: true }),
+    ).rejects.toThrow("coreSources");
+  });
   it.each(
     [
       ["--features", "native-sql"],
@@ -479,6 +499,42 @@ describe("native SQL launcher feature and legacy environment opt-in", () => {
     expect(calls).toHaveLength(2);
     expect(calls[0].target).toBe(calls[1].target);
     expect(cached.inputs.featureIdentity).toEqual(cargoCommandIdentity(args).featureIdentity);
+  });
+
+  it.each(
+    [
+      ["C:\\tools\\nodejs\\node_modules\\npm\\bin\\npm-cli.js"],
+      ["C:\\project\\scripts\\cargo-local.mjs", "C:\\tools\\npm\\bin\\npm-cli.js"],
+      ["/project/scripts/cargo-local.mjs"],
+    ].map((prefix) => [prefix]),
+  )("retains the real Tauri runner's wrapper identity for %j", async (prefix) => {
+    const files = await fixture({ prebuild: true });
+    const args = [
+      ...prefix,
+      "run",
+      "tauri",
+      "--",
+      "build",
+      "--features",
+      "webdriver,performance-audit,native-sql",
+      "--target",
+      "x86_64-pc-windows-msvc",
+    ];
+    expect(cargoCommandIdentity(args)).toMatchObject({
+      command: "build",
+      buildsNative: true,
+      target: "x86_64-pc-windows-msvc",
+      featureIdentity: { features: ["native-sql", "performance-audit", "webdriver"] },
+    });
+    const cached = await contract(files, args);
+    expect(cached.inputs).toHaveProperty("nativeSqlite");
+    expect(cached.inputs.featureIdentity).toEqual(cargoCommandIdentity(args).featureIdentity);
+    const result = run(files, args);
+    expect(result.status, result.stderr).toBe(0);
+    const childEnv = JSON.parse(
+      await readFile(path.join(files.repository, "child-env.json"), "utf8"),
+    );
+    expect(childEnv.SQLITE3_LIB_DIR).toBe("/fake/verified");
   });
 
   it("ignores every identity-looking application argument after the Cargo separator", async () => {

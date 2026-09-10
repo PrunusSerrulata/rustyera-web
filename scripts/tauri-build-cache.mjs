@@ -98,7 +98,9 @@ async function sourceIdentity(root, core = false, nativeSql = false) {
       ? (/^(crates\/|Cargo\.|rust-toolchain)/.test(name) &&
           (nativeSql || !name.startsWith("crates/era-sql-provider/"))) ||
         (nativeSql &&
-          /^tools\/sqlite-native\/(build\.mjs$|source\/(manifest\.json|sqlite3\.[ch])$)/.test(name))
+          /^tools\/sqlite-native\/((build|windows)\.mjs$|source\/(manifest\.json|sqlite3\.[ch])$)/.test(
+            name,
+          ))
       : !name.includes("/") || /^(src\/|src-tauri\/|crates\/|scripts\/|public\/)/.test(name),
   );
   const identities = [];

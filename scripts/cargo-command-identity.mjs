@@ -6,7 +6,9 @@ export function cargoCommandIdentity(
   executable = environment.RUSTYERA_CARGO || "cargo",
 ) {
   let options = args;
-  if (/^(?:.*[/\\])?npm(?:\.cmd)?$/.test(options[0] || "")) options = options.slice(1);
+  if (/^(?:.*[/\\])?cargo-local\.mjs$/.test(options[0] || "")) options = options.slice(1);
+  if (/^(?:.*[/\\])?(?:npm(?:\.cmd)?|npm-cli\.js)$/.test(options[0] || ""))
+    options = options.slice(1);
   if (options[0] === "run" && options[1] === "tauri" && options[2] === "--")
     options = options.slice(3);
   const separator = options.indexOf("--");

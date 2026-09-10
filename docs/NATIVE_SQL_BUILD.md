@@ -4,7 +4,7 @@
 feature; ordinary builds without it retain the existing product configuration and
 do not prebuild SQLite. Current local integration uses the outer workspace Cargo
 patch for actual core sources. The recorded core pin is
-`b55f3a06d5683814311c10270895283d027e7135`; these local commits are not yet remotely
+`4b353db03670c13f5bb1a4c8d7d4dc4ba19c11fd`; these local commits are not yet remotely
 published. This does not establish a remotely reproducible release binding.
 
 From `rustyera-web`, the official local launcher automatically prepares the exact
@@ -22,11 +22,20 @@ Cargo arguments after its `--` separator do not enable features. The official
 nested `npm run tauri -- build ...` command's forwarded feature list is recognized.
 The launcher's lockfile backup and restoration preserve the existing local lockfile.
 
-The existing exact builder supports native macOS arm64/x64 and Linux GNU arm64/x64
-only. Target must equal the compiler host and supported local platform/ABI.
-Cross compilation, Windows and Linux musl are not supported by this opt-in path.
+The exact builder supports native macOS arm64/x64, Linux GNU arm64/x64, and Windows
+x64 MSVC. Target must equal the compiler host and supported local platform/ABI.
+Cross compilation, Windows GNU/arm64 and Linux musl are not supported by this opt-in path.
 No browser, SDK, compiler or replacement SQLite is downloaded. Use the appropriate
 native target on those supported hosts; the example above is for macOS arm64.
+
+Windows uses an existing LLVM `clang` and `llvm-lib`, selected by the absolute
+`RUSTYERA_SQLITE_CC` and `RUSTYERA_SQLITE_AR` paths. Set
+`RUSTYERA_SQLITE_WINDOWS_TOOLCHAIN` to an absolute JSON configuration path with
+`schemaVersion: 1`, canonical directory paths `vcTools`, `sdkRoot`, `clangResource`,
+and the selected `sdkVersion`. See core's `tools/sqlite-native/README.md` for the
+configuration contract. The resulting `sqlite3.lib` uses the dynamic MSVC CRT;
+Rust `crt-static` is rejected. The builder verifies the selected SDK headers and
+CRT libraries, and the local launcher forwards its exact `LIB` search directories.
 
 `--target` selects the Rust target, followed by `CARGO_BUILD_TARGET`, then the
 builder's `rustc -vV` host detection. `RUSTYERA_SQLITE_NATIVE_OUTPUT` selects an
