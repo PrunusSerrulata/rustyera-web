@@ -82,6 +82,118 @@ describe("bounded offscreen HTML measurement", () => {
     vi.unstubAllGlobals();
   });
 
+  it("independently shapes a prefix and ignores the unrelated current-style bits", async () => {
+    const register = vi.spyOn(pointerObservation, "registerPointerButton");
+    const signal = new AbortController().signal;
+    const provider = new HtmlMeasurementProvider();
+    const regular: string[] = [];
+    fontLoad.mockImplementation(async () => {
+      regular.push(
+        window.document.body.querySelector<HTMLElement>("[data-html-measurement-line]")!.style
+          .fontWeight,
+      );
+      return [];
+    });
+    const result = await provider.measure(
+      {
+        document: queryText("fi"),
+        mode: "text_part",
+        cuts: [{ id: 7, textNodePath: [0], decodedUtf8Offset: 1, decodedUtf16Offset: 1 }],
+        style: queryStyle(),
+      },
+      measurementBinding(viewport),
+      { signal, assertCurrent() {} },
+    );
+    expect(result.advancePx).toBe(9);
+    expect(result.cuts).toEqual([{ id: 7, advancePx: 6 }]);
+    expect(regular).toEqual(["normal"]);
+    expect(register).not.toHaveBeenCalled();
+    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
+  });
+
+  it.each([true, false, undefined])(
+    "checks current font readiness before loading: %s",
+    async (ready) => {
+      const check = ready === undefined ? undefined : vi.fn().mockReturnValue(ready);
+      Object.defineProperty(document, "fonts", {
+        configurable: true,
+        value: { check, load: fontLoad, ready: Promise.resolve() },
+      });
+      const provider = new HtmlMeasurementProvider();
+      const probe: HtmlMeasurementProbe = {
+        document: queryText("fi"),
+        mode: "text_part",
+        cuts: [],
+        style: queryStyle(),
+      };
+      const guard = { signal: new AbortController().signal, assertCurrent() {} };
+      expect(
+        (await provider.measure(probe, measurementBinding(viewport), guard, "advance")).advancePx,
+      ).toBe(9);
+      expect(fontLoad).toHaveBeenCalledTimes(ready === true ? 0 : 1);
+      if (check) {
+        expect(check).toHaveBeenCalledWith(expect.any(String), "fi");
+        check.mockReturnValue(false);
+        await provider.measure(probe, measurementBinding(viewport), guard, "advance");
+        expect(check).toHaveBeenCalledTimes(2);
+        expect(fontLoad).toHaveBeenCalledTimes(ready === true ? 1 : 2);
+      }
+      expect(document.body.querySelector(".html-measurement-host")).toBeNull();
+    },
+  );
+
+  it.each([false, true])(
+    "keeps the ready barrier and cancellation after a loaded-font check: cancel=%s",
+    async (cancel) => {
+      let finishReady!: () => void;
+      const controller = new AbortController();
+      const check = vi.fn().mockReturnValue(true);
+      Object.defineProperty(document, "fonts", {
+        configurable: true,
+        value: {
+          check,
+          load: fontLoad,
+          ready: new Promise<void>((resolve) => {
+            finishReady = resolve;
+          }),
+        },
+      });
+      let completed = false;
+      const pending = new HtmlMeasurementProvider()
+        .measure(
+          { document: queryText("fi"), mode: "text_part", cuts: [], style: queryStyle() },
+          measurementBinding(viewport),
+          { signal: controller.signal, assertCurrent() {} },
+          "advance",
+        )
+        .then((value) => {
+          completed = true;
+          return value;
+        });
+      // Observe rejection before aborting so the test never creates an unhandled promise.
+      const outcome = pending.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      await flushPromises();
+      expect(check).toHaveBeenCalledOnce();
+      expect(fontLoad).not.toHaveBeenCalled();
+      expect(completed).toBe(false);
+      if (cancel) controller.abort();
+      else finishReady();
+      try {
+        const result = await outcome;
+        if (cancel) {
+          expect(result).toMatchObject({ error: { category: "stale_projection" } });
+          expect(completed).toBe(false);
+        } else expect(result).toMatchObject({ value: { advancePx: 9 } });
+        expect(document.body.querySelector(".html-measurement-host")).toBeNull();
+      } finally {
+        finishReady();
+      }
+    },
+  );
+
   it.each([false, true])(
     "renders identical measurement segments without boundary metadata: replace=%s",
     async (replace) => {
@@ -126,34 +238,55 @@ describe("bounded offscreen HTML measurement", () => {
     },
   );
 
-  it("independently shapes a prefix and ignores the unrelated current-style bits", async () => {
-    const register = vi.spyOn(pointerObservation, "registerPointerButton");
-    const signal = new AbortController().signal;
-    const provider = new HtmlMeasurementProvider();
-    const regular: string[] = [];
-    fontLoad.mockImplementation(async () => {
-      regular.push(
-        window.document.body.querySelector<HTMLElement>("[data-html-measurement-line]")!.style
-          .fontWeight,
-      );
-      return [];
-    });
-    const result = await provider.measure(
-      {
+  it.each(["check-syntax", "check-error", "load-error"])(
+    "preserves font failure ordering and subsequent request availability: %s",
+    async (failure) => {
+      const error =
+        failure === "check-syntax" ? new SyntaxError("invalid font") : new Error("font failure");
+      const check = vi.fn().mockReturnValue(false);
+      if (failure === "load-error") fontLoad.mockRejectedValue(error);
+      else
+        check.mockImplementation(() => {
+          throw error;
+        });
+      Object.defineProperty(document, "fonts", {
+        configurable: true,
+        value: { check, load: fontLoad, ready: Promise.resolve() },
+      });
+      const provider = new HtmlMeasurementProvider();
+      const first: HtmlMeasurementProbe = {
         document: queryText("fi"),
         mode: "text_part",
-        cuts: [{ id: 7, textNodePath: [0], decodedUtf8Offset: 1, decodedUtf16Offset: 1 }],
+        cuts: [],
         style: queryStyle(),
-      },
-      measurementBinding(viewport),
-      { signal, assertCurrent() {} },
-    );
-    expect(result.advancePx).toBe(9);
-    expect(result.cuts).toEqual([{ id: 7, advancePx: 6 }]);
-    expect(regular).toEqual(["normal"]);
-    expect(register).not.toHaveBeenCalled();
-    expect(document.body.querySelector(".html-measurement-host")).toBeNull();
-  });
+      };
+      const invalid = {
+        ...first,
+        cuts: [{ id: 0, textNodePath: [0], decodedUtf8Offset: 10, decodedUtf16Offset: 10 }],
+      };
+      const binding = measurementBinding(viewport);
+      const guard = { signal: new AbortController().signal, assertCurrent() {} };
+      await expect(provider.measureBatch([invalid, first], binding, guard)).rejects.toMatchObject({
+        category: "invalid_request",
+      });
+      expect(check).not.toHaveBeenCalled();
+      expect(fontLoad).not.toHaveBeenCalled();
+      expect(document.body.querySelector(".html-measurement-host")).toBeNull();
+      await expect(provider.measureBatch([first, invalid], binding, guard)).rejects.toMatchObject({
+        category: "backend_failure",
+        message: error.message,
+      });
+      expect(check).toHaveBeenCalledOnce();
+      expect(fontLoad).toHaveBeenCalledTimes(failure === "load-error" ? 1 : 0);
+      expect(document.body.querySelector(".html-measurement-host")).toBeNull();
+      check.mockReturnValue(true);
+      fontLoad.mockResolvedValue([]);
+      expect(await provider.measureBatch([first], binding, guard)).toMatchObject([
+        { advancePx: 9 },
+      ]);
+      expect(document.body.querySelector(".html-measurement-host")).toBeNull();
+    },
+  );
 
   it("returns identical advances without collecting unused first-row range geometry", async () => {
     const provider = new HtmlMeasurementProvider();

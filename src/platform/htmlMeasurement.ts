@@ -1116,7 +1116,12 @@ async function loadFonts(host: HTMLElement, scope: HtmlMeasurementScope): Promis
       `${style.fontStyle || "normal"} ${style.fontWeight || "normal"} ${style.fontSize} ${style.fontFamily}`;
     samples.set(font, (samples.get(font) ?? "") + (segment.textContent ?? ""));
   }
-  for (const [font, text] of samples) await scope.wait(fonts.load(font, text), "font-load");
+  for (const [font, text] of samples) {
+    // check() observes current faces without queuing another font-loading task for ready fonts.
+    // Do not cache this answer: later requests may see newly registered faces or different glyphs.
+    if (typeof fonts.check !== "function" || !fonts.check(font, text))
+      await scope.wait(fonts.load(font, text), "font-load");
+  }
   await scope.wait(fonts.ready, "font-ready");
 }
 
