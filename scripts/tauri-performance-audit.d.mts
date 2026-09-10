@@ -101,6 +101,24 @@ export function resolvePerformanceRootPid(
   binary: string,
   platform?: NodeJS.Platform,
 ): Promise<number>;
+export interface PerformanceProcess {
+  pid: number;
+  parentPid: number;
+  rssBytes: number;
+  cpuPercent: number | null;
+  command: string;
+  executable?: string | null;
+}
+export function parseWindowsPerformanceProcesses(stdout: string): PerformanceProcess[];
+export function selectPerformanceProcessTree(
+  rows: PerformanceProcess[],
+  rootPid: number,
+): PerformanceProcess[];
+export function performanceProfilerMode(
+  arguments_: string[],
+  platform?: NodeJS.Platform,
+): "native" | "none";
+export function selectWindowsPerformanceRootPid(rows: PerformanceProcess[], binary: string): number;
 export function performanceTelemetryCompleteness(telemetry: {
   frontend: { timingSamplesDropped: number; longTasksDropped: number };
   native: { dropped: number };

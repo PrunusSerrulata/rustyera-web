@@ -27,6 +27,16 @@ export function performanceCommandTimeoutMs(performanceEnabled) {
   return performanceEnabled === true ? 30_000 : 5_000;
 }
 
+export function performanceProfilerMode(arguments_, platform = process.platform) {
+  const indexes = arguments_.flatMap((value, index) => (value === "--profilers" ? [index] : []));
+  if (indexes.length > 1) throw new Error("--profilers may be specified only once");
+  const mode = indexes.length === 0 ? "native" : arguments_[indexes[0] + 1];
+  if (!["native", "none"].includes(mode)) throw new Error("--profilers must be native or none");
+  if (mode === "native" && platform !== "darwin")
+    throw new Error("native audit profilers require macOS; use --profilers none for timing only");
+  return mode;
+}
+
 export function performanceTelemetryCompleteness(telemetry) {
   const timingSamplesDropped = telemetry.frontend.timingSamplesDropped;
   const longTasksDropped = telemetry.frontend.longTasksDropped;
@@ -80,7 +90,7 @@ export function performanceCaptureChildArguments(project, mode) {
 export async function refreshPerformanceSession(browser, projectCopy, waitForControl) {
   if (
     typeof projectCopy !== "string" ||
-    !projectCopy.startsWith("/") ||
+    !path.isAbsolute(projectCopy) ||
     projectCopy.includes("\0") ||
     projectCopy === "/__rustyera_test_picker_must_be_configured__"
   )
@@ -485,13 +495,15 @@ export async function observeForegroundApplication(platform = process.platform) 
 export async function capturePerformanceProcessTree(binary, platform = process.platform) {
   if (!Number.isSafeInteger(binary) || binary <= 0)
     throw new Error("performance process tree requires the exact launched Tauri PID");
-  const command = platform === "win32" ? "wmic" : "/bin/ps";
-  const args =
-    platform === "win32"
-      ? ["process", "get", "ProcessId,ParentProcessId,WorkingSetSize,Name", "/format:csv"]
-      : ["-axo", "pid=,ppid=,rss=,%cpu=,command="];
-  const { stdout } = await promisify(execFile)(command, args, { timeout: 3_000 });
-  if (platform === "win32") return [];
+  if (platform === "win32")
+    return selectPerformanceProcessTree(await readWindowsPerformanceProcesses(), binary);
+  const { stdout } = await promisify(execFile)(
+    "/bin/ps",
+    ["-axo", "pid=,ppid=,rss=,%cpu=,command="],
+    {
+      timeout: 3_000,
+    },
+  );
   const rows = stdout
     .split(/\r?\n/)
     .map((line) => /^\s*(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+(.*)$/.exec(line))
@@ -503,9 +515,13 @@ export async function capturePerformanceProcessTree(binary, platform = process.p
       cpuPercent: Number(match[4]),
       command: match[5],
     }));
-  if (!rows.some((row) => row.pid === binary))
-    throw new Error(`launched Tauri PID ${binary} is absent from the process table`);
-  const roots = new Set([binary]);
+  return selectPerformanceProcessTree(rows, binary);
+}
+
+export function selectPerformanceProcessTree(rows, rootPid) {
+  if (!rows.some((row) => row.pid === rootPid))
+    throw new Error(`launched Tauri PID ${rootPid} is absent from the process table`);
+  const roots = new Set([rootPid]);
   let changed = true;
   while (changed) {
     changed = false;
@@ -520,9 +536,15 @@ export async function capturePerformanceProcessTree(binary, platform = process.p
 }
 
 export async function resolvePerformanceRootPid(binary, platform = process.platform) {
-  if (platform === "win32")
-    throw new Error("performance PID resolution is not implemented on Windows");
   const resolvedBinary = await realpath(binary);
+  if (platform === "win32") {
+    // Restrict identity lookup to this runner's descendants, never another user's session.
+    const owned = selectPerformanceProcessTree(
+      await readWindowsPerformanceProcesses(),
+      process.pid,
+    );
+    return selectWindowsPerformanceRootPid(owned, resolvedBinary);
+  }
   const { stdout } = await promisify(execFile)("/bin/ps", ["-axo", "pid=,command="], {
     timeout: 3_000,
   });
@@ -535,6 +557,71 @@ export async function resolvePerformanceRootPid(binary, platform = process.platf
   if (matches.length !== 1)
     throw new Error(`expected exactly one launched performance binary, found ${matches.length}`);
   return matches[0];
+}
+
+async function readWindowsPerformanceProcesses() {
+  const script =
+    "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); " +
+    "ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | " +
+    "Select-Object ProcessId,ParentProcessId,WorkingSetSize,ExecutablePath,CommandLine)";
+  const { stdout } = await promisify(execFile)(
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+    { timeout: 10_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024, encoding: "utf8" },
+  );
+  return parseWindowsPerformanceProcesses(stdout);
+}
+
+export function parseWindowsPerformanceProcesses(stdout) {
+  const rows = JSON.parse(stdout.replace(/^\uFEFF/, ""));
+  if (!Array.isArray(rows)) throw new Error("Windows process inventory must be an array");
+  const seen = new Set();
+  return rows.map((row) => {
+    if (!row || typeof row !== "object" || Array.isArray(row))
+      throw new Error("invalid Windows process inventory row");
+    if (!(
+      typeof row.WorkingSetSize === "number" ||
+      (typeof row.WorkingSetSize === "string" && /^\d+$/.test(row.WorkingSetSize))
+    ))
+      throw new Error("invalid Windows process inventory RSS");
+    const pid = row.ProcessId;
+    const parentPid = row.ParentProcessId;
+    const rssBytes = Number(row.WorkingSetSize);
+    if (
+      !Number.isSafeInteger(pid) ||
+      pid < 0 ||
+      seen.has(pid) ||
+      !Number.isSafeInteger(parentPid) ||
+      parentPid < 0 ||
+      !Number.isSafeInteger(rssBytes) ||
+      rssBytes < 0 ||
+      (row.ExecutablePath != null && typeof row.ExecutablePath !== "string") ||
+      (row.CommandLine != null && typeof row.CommandLine !== "string")
+    )
+      throw new Error("invalid Windows process inventory row");
+    seen.add(pid);
+    return {
+      pid,
+      parentPid,
+      rssBytes,
+      cpuPercent: null,
+      executable: row.ExecutablePath ?? null,
+      command: row.CommandLine ?? "",
+    };
+  });
+}
+
+export function selectWindowsPerformanceRootPid(rows, binary) {
+  const normalize = (value) =>
+    path.win32
+      .normalize(value)
+      .replace(/^\\\\\?\\/, "")
+      .toLowerCase();
+  const expected = normalize(binary);
+  const matches = rows.filter((row) => row.executable && normalize(row.executable) === expected);
+  if (matches.length !== 1)
+    throw new Error(`expected exactly one launched performance binary, found ${matches.length}`);
+  return matches[0].pid;
 }
 
 function firstCommandArgument(command) {
