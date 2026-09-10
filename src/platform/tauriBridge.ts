@@ -124,6 +124,7 @@ export class TauriBridge implements FrontendBridge {
   }
 
   private refreshMemorySnapshot(): void {
+    if (!PERFORMANCE_AUDIT_ENABLED) return;
     const requestedAt = Date.now();
     if (this.memorySnapshotPending || requestedAt - this.lastMemorySnapshotRequestedAt < 5_000)
       return;

@@ -14,6 +14,7 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod export;
 mod image_metadata;
 mod ipc;
+#[cfg(feature = "performance-audit")]
 mod memory;
 #[cfg(feature = "native-sql")]
 mod native_host;
@@ -1165,7 +1166,6 @@ fn install_runtime_commands(builder: tauri::Builder<tauri::Wry>) -> tauri::Build
         traditional_save_inspect,
         traditional_save_write,
         list_fonts,
-        memory::memory_snapshot,
         preferences::load_preferences,
         preferences::save_preferences,
         preferences::load_project_preferences,
