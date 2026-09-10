@@ -40,6 +40,7 @@ sidecars containing each complete checkpoint and its behavior hash, outside acti
 The prefix's parent directory must already exist. Sidecars preserve the rejected state without
 relaxing comparison; disable them for ordinary latency runs. Windows embedded WebView2 element
 operations dispatch DOM events and do not establish trusted native mouse-input coverage.
+
 ## Frozen trace workflow
 
 On Windows, the audit resolves the exact executable among the runner's descendants using

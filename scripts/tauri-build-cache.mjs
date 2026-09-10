@@ -216,6 +216,7 @@ export function compiledBuildInputs(inputs) {
           ![
             "AGENTS.md",
             "scripts/tauri-test.mjs",
+            "scripts/tauri-webview-profile.mjs",
             "scripts/tauri-test-support.mjs",
             "scripts/tauri-performance-audit.mjs",
             "scripts/tauri-performance-audit.d.mts",

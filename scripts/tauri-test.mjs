@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import Mocha from "mocha";
 import { terminateOwnedChild } from "./owned-child-process.mjs";
+import { isolatedWebviewEnvironment } from "./tauri-webview-profile.mjs";
 import { assertVmProfileMode, vmProfileBuildFeature } from "./tauri-performance-vm-profile.mjs";
 
 import {
@@ -493,7 +494,7 @@ if (specName === "snake-interop.spec.mjs") {
   environment.RUSTYERA_TEST_NATIVE_STORAGE_TRACE = trace;
 }
 environment.RUSTYERA_SERVICE_CAPTURE_NATIVE_BINARY = binary;
-Object.assign(process.env, environment);
+Object.assign(process.env, await isolatedWebviewEnvironment(repository, environment));
 // The standalone service does not forward its logLevel option to remote(). Set
 // the logger's supported environment default before importing/starting it, so
 // remote's default "info" cannot log full checkpoint strings or retain them.
@@ -582,8 +583,12 @@ try {
   console.log(
     JSON.stringify({
       type: "tauri-input-mode",
-      mode: backgroundDom ? "background-dom" : "native",
-      trustedInputCoverage: !backgroundDom,
+      mode: backgroundDom
+        ? "background-dom"
+        : process.platform === "win32"
+          ? "embedded-dom"
+          : "native",
+      trustedInputCoverage: !backgroundDom && process.platform !== "win32",
     }),
   );
   if (nativeProvider && !backgroundDom) {
