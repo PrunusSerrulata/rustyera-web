@@ -155,6 +155,24 @@ exclusive creation, bounded scalar WebDriver transport, 1 MiB per record, 16 MiB
 Compare before/after only for matching VM instances and generations; keep this evidence separate
 from the unprofiled latency baseline and verify the same semantic checkpoints.
 
+Diagnostic profile schema 2 additionally records instruction indices in a separate per-action
+window, using the same 1,024-dispatch sampling interval. Only `wait_change` actions are accepted;
+`checkpoint_change` is rejected before opening a window because its wait performs full checkpoints.
+It is inactive during startup; each
+before-action boundary clears and opens it, and the after-action boundary closes it immediately
+after stable observation and before timing export or the complete post-checkpoint. Failed capture
+cleanup also closes an outstanding window. This excludes checkpoint VM execution without changing
+the latency clock. VM replacement resets the window and identity, so crossing instances is not a
+valid position sample. The collector checks command/instance/start counters and empty begin state;
+replacement, incomplete and missing-before windows are explicitly excluded by their `window` verdict.
+Only schema-whitelisted fields are written. The map holds at most 2,048 generation/function/instruction keys and reports
+drops and overflow explicitly. Source projection uses the existing instruction source index only
+outside execution: at most 64 hot locations, function names capped at 64 Unicode scalars and paths
+at 160 with an explicit truncation flag; missing/reclaimed locations stay null. No source text,
+DOM or variable snapshots are collected. The existing 1 MiB record/16 MiB file caps remain unchanged.
+Every profile envelope explicitly carries `acceptanceTiming: false`; sampling builds are diagnostic
+only regardless of how small their observed overhead appears. Never subtract estimated overhead.
+
 For a separately labelled native CPU diagnostic, `RUSTYERA_TAURI_PERF_CPU_SAMPLE` may name a fresh
 absolute output file. The fixed capture samples the runner-owned Tauri PID for ten seconds before
 action six, using the installed macOS `sample` executable. A 16 MiB process file-size limit bounds

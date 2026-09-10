@@ -11,6 +11,10 @@ export function vmProfileBuildFeature(enabled) {
   return enabled ? ",vm-instruction-profile" : "";
 }
 
+export function assertVmProfileAction(settle) {
+  assert.equal(settle, "wait_change", "VM position sampling excludes checkpoint_change actions");
+}
+
 export function assertVmProfileMode(env, { buildOnly = false, instrumentPerformance = true } = {}) {
   if (env.RUSTYERA_TAURI_PERF_VM_SAMPLE !== "1") return;
   assert.ok(instrumentPerformance, "VM instruction profiling requires performance audit");
@@ -40,7 +44,7 @@ function u64(value) {
 }
 
 function validateProfile(profile) {
-  assert.equal(profile.schemaVersion, 1);
+  assert.equal(profile.schemaVersion, 2);
   assert.equal(profile.interval, 1024);
   assert.equal(typeof profile.incomplete, "boolean");
   for (const key of ["instance", "dispatches", "droppedSamples"]) u64(profile[key]);
@@ -69,6 +73,122 @@ function validateProfile(profile) {
       } else u64(entry.samples);
     }
   }
+  return {
+    schemaVersion: 2,
+    instance: profile.instance,
+    interval: profile.interval,
+    dispatches: profile.dispatches,
+    droppedSamples: profile.droppedSamples,
+    incomplete: profile.incomplete,
+    counts: profile.counts.map(({ generation, function: name, samples }) => ({
+      generation,
+      function: name,
+      samples,
+    })),
+    symbols: profile.symbols.map(({ generation, function: key, name }) => ({
+      generation,
+      function: key,
+      name,
+    })),
+    positions: validatePositions(profile.positions, profile.dispatches),
+  };
+}
+
+function validatePositions(positions, dispatches) {
+  assert.ok(positions && typeof positions === "object");
+  assert.equal(typeof positions.active, "boolean");
+  assert.equal(typeof positions.incomplete, "boolean");
+  for (const key of ["startedAtDispatches", "endedAtDispatches", "droppedSamples"])
+    u64(positions[key]);
+  assert.ok(BigInt(positions.startedAtDispatches) <= BigInt(positions.endedAtDispatches));
+  assert.ok(BigInt(positions.endedAtDispatches) <= BigInt(dispatches));
+  assert.ok(positions.droppedSamples === "0" || positions.incomplete);
+  assert.ok(Array.isArray(positions.counts) && positions.counts.length <= 2048);
+  assert.ok(Array.isArray(positions.locations) && positions.locations.length <= 64);
+  const countKeys = new Set();
+  for (const [entries, location] of [
+    [positions.counts, false],
+    [positions.locations, true],
+  ]) {
+    const keys = new Set();
+    for (const entry of entries) {
+      assert.ok(entry && typeof entry === "object" && !Array.isArray(entry));
+      u64(entry.generation);
+      u64(entry.instruction);
+      assert.equal(typeof entry.function, "string");
+      assert.match(entry.function, /^[0-9a-f]{32}$/);
+      const key = `${entry.generation}:${entry.function}:${entry.instruction}`;
+      assert.ok(!keys.has(key), "duplicate VM position key");
+      keys.add(key);
+      if (!location) {
+        u64(entry.samples);
+        countKeys.add(key);
+      } else {
+        assert.ok(countKeys.has(key), "VM location has no sampled position");
+        assert.equal(typeof entry.name, "string");
+        assert.ok(Array.from(entry.name).length <= 64);
+        assert.equal(typeof entry.pathTruncated, "boolean");
+        if (entry.path === null) {
+          assert.equal(entry.line, null);
+          assert.equal(entry.pathTruncated, false);
+        } else {
+          assert.equal(typeof entry.path, "string");
+          assert.ok(Array.from(entry.path).length <= 160);
+          u64(entry.line);
+          assert.notEqual(entry.line, "0");
+        }
+      }
+    }
+  }
+  return {
+    active: positions.active,
+    startedAtDispatches: positions.startedAtDispatches,
+    endedAtDispatches: positions.endedAtDispatches,
+    droppedSamples: positions.droppedSamples,
+    incomplete: positions.incomplete,
+    counts: positions.counts.map(({ generation, function: name, instruction, samples }) => ({
+      generation,
+      function: name,
+      instruction,
+      samples,
+    })),
+    locations: positions.locations.map(
+      ({ generation, function: key, instruction, name, path, pathTruncated, line }) => ({
+        generation,
+        function: key,
+        instruction,
+        name,
+        path,
+        pathTruncated,
+        line,
+      }),
+    ),
+  };
+}
+
+function validateWindow(profile, boundary, pending) {
+  const positions = profile.positions;
+  if (boundary.kind === "before") {
+    assert.equal(pending, undefined, "VM profile window already open");
+    assert.equal(positions.startedAtDispatches, profile.dispatches, "VM window start mismatch");
+    assert.equal(positions.endedAtDispatches, profile.dispatches, "VM window end mismatch");
+    assert.equal(positions.counts.length, 0, "VM window was not cleared");
+    assert.equal(positions.locations.length, 0);
+    assert.equal(positions.droppedSamples, "0");
+    assert.equal(positions.incomplete, false);
+    return { valid: false, reason: "window-open" };
+  }
+  if (!pending) return { valid: false, reason: "missing-before" };
+  assert.equal(pending.command, boundary.command, "VM window command mismatch");
+  if (pending.instance !== profile.instance) return { valid: false, reason: "vm-replaced" };
+  assert.equal(
+    positions.startedAtDispatches,
+    pending.startedAtDispatches,
+    "VM window start changed",
+  );
+  if (positions.incomplete || profile.instance === "0")
+    return { valid: false, reason: "incomplete" };
+  return { valid: true, reason: null };
 }
 
 export async function createVmProfileCapture(browser, path, dependencies = {}) {
@@ -77,6 +197,8 @@ export async function createVmProfileCapture(browser, path, dependencies = {}) {
   let bytes = 0;
   let sequence = 0;
   let closed = false;
+  let windowOpen = false;
+  let pending;
   return {
     async capture(boundary) {
       assert.ok(!closed, "VM profile capture is closed");
@@ -84,15 +206,43 @@ export async function createVmProfileCapture(browser, path, dependencies = {}) {
       assert.ok(boundary && ["before", "after"].includes(boundary.kind));
       assert.ok(Number.isSafeInteger(boundary.command) && boundary.command > 0);
       const boundedBoundary = { kind: boundary.kind, command: boundary.command };
-      const json = await browser.execute(async () =>
-        JSON.stringify(
-          await window.__TAURI_INTERNALS__.invoke("performance_audit_instruction_profile"),
-        ),
+      if (boundary.kind === "before") windowOpen = true;
+      const json = await browser.execute(
+        async (begin) =>
+          JSON.stringify(
+            await window.__TAURI_INTERNALS__.invoke("performance_audit_instruction_profile", {
+              begin,
+            }),
+          ),
+        boundary.kind === "before",
       );
-      const profile = parsePerformanceObservationJson(json, "VM profile", MAXIMUM_RECORD_BYTES);
-      validateProfile(profile);
+      const profile = validateProfile(
+        parsePerformanceObservationJson(json, "VM profile", MAXIMUM_RECORD_BYTES),
+      );
+      assert.equal(
+        profile.positions.active,
+        boundary.kind === "before",
+        "VM position window state mismatch",
+      );
+      if (boundary.kind === "after") windowOpen = false;
+      const windowVerdict = validateWindow(profile, boundary, pending);
+      pending =
+        boundary.kind === "before"
+          ? {
+              command: boundary.command,
+              instance: profile.instance,
+              startedAtDispatches: profile.positions.startedAtDispatches,
+            }
+          : undefined;
       const line =
-        JSON.stringify({ schemaVersion: 1, sequence, boundary: boundedBoundary, profile }) + "\n";
+        JSON.stringify({
+          schemaVersion: 2,
+          acceptanceTiming: false,
+          sequence,
+          boundary: boundedBoundary,
+          profile,
+          window: windowVerdict,
+        }) + "\n";
       const size = Buffer.byteLength(line);
       assert.ok(
         size <= MAXIMUM_RECORD_BYTES && bytes + size <= MAXIMUM_FILE_BYTES,
@@ -101,11 +251,22 @@ export async function createVmProfileCapture(browser, path, dependencies = {}) {
       await file.writeFile(line);
       bytes += size;
       sequence += 1;
+      return profile;
     },
     async close() {
       if (!closed) {
         closed = true;
-        await file.close();
+        await finishProfileCapture([
+          async () => {
+            if (windowOpen)
+              await browser.execute(async () => {
+                await window.__TAURI_INTERNALS__.invoke("performance_audit_instruction_profile", {
+                  begin: false,
+                });
+              });
+          },
+          () => file.close(),
+        ]);
       }
     },
   };

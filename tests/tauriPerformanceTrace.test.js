@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  assertVmProfileAction,
+  finishProfileCapture,
+} from "../scripts/tauri-performance-vm-profile.mjs";
 
 import {
   assertSecondaryActionStarted,
@@ -301,18 +305,24 @@ describe("Tauri performance trace schema 3", () => {
     async (acceptanceTiming) => {
       vi.stubEnv("RUSTYERA_TEST_BACKGROUND_DOM", "0");
       let now = 0;
+      const boundaryOrder = [];
+      let profileOpen = false;
       vi.spyOn(performance, "now").mockImplementation(() => now);
       const hooks = {
         onTimings: () => {
+          expect(profileOpen).toBe(false);
           now += 300;
         },
         onPrepare: () => {
           now += 500;
         },
         onCheckpoint: () => {
+          expect(profileOpen).toBe(false);
+          boundaryOrder.push("checkpoint");
           now += 1_000;
         },
         onStable: () => {
+          boundaryOrder.push("stable");
           now += 7;
         },
       };
@@ -338,9 +348,25 @@ describe("Tauri performance trace schema 3", () => {
         projectDigest: "a".repeat(64),
         onObservation: (observation) => observations.push(observation),
         beforeTimedAction: () => {
+          profileOpen = true;
+          boundaryOrder.push("begin-profile");
           now += 200;
         },
+        afterTimedAction: () => {
+          profileOpen = false;
+          boundaryOrder.push("end-profile");
+          now += 2_000;
+        },
       });
+      expect(boundaryOrder).toEqual(
+        Array.from({ length: 4 }, () => [
+          "checkpoint",
+          "begin-profile",
+          "stable",
+          "end-profile",
+          "checkpoint",
+        ]).flat(),
+      );
       expect(observations.map((observation) => observation.inputElapsedMs)).toEqual([7, 7, 7, 7]);
       expect(observations.every((row) => row.acceptanceTiming === acceptanceTiming)).toBe(true);
       expect(
@@ -391,20 +417,79 @@ describe("Tauri performance trace schema 3", () => {
     });
     const fixture = traceBrowser((state) => state, { onStable: () => stable });
     let completed = false;
+    const afterTimedAction = vi.fn();
     const capture = runPerformanceTraceCapture(fixture.browser, {
       templatePath: resolve("tests/fixtures/snake-runtime-performance-trace.v3.json"),
       candidatePath: join(directory, "stable-candidate.json"),
       actionInboxPath: actions,
       projectDigest: "a".repeat(64),
+      afterTimedAction,
     }).then(() => {
       completed = true;
     });
     await vi.waitFor(() => expect(fixture.elements.right.click).toHaveBeenCalled());
     expect(completed).toBe(false);
+    expect(afterTimedAction).not.toHaveBeenCalled();
     releaseStable();
     await capture;
     expect(completed).toBe(true);
+    expect(afterTimedAction).toHaveBeenCalledOnce();
   });
+
+  it.each(["checkpoint_change", "stable", "end"])(
+    "closes diagnostic windows on %s failure without a second checkpoint",
+    async (failureStage) => {
+      vi.stubEnv("RUSTYERA_TEST_BACKGROUND_DOM", "0");
+      const directory = await temporaryDirectory();
+      const actions = join(directory, "profile-failure-actions.jsonl");
+      const command = captureCommands()[0];
+      if (failureStage === "checkpoint_change") command.settle = "checkpoint_change";
+      await writeFile(
+        actions,
+        JSON.stringify(command) + "\n" + JSON.stringify({ type: "finish" }) + "\n",
+      );
+      const error = new Error(failureStage);
+      const checkpoint = vi.fn();
+      const begin = vi.fn();
+      const end = vi.fn(() => {
+        if (failureStage === "end") throw error;
+      });
+      const close = vi.fn();
+      const fixture = traceBrowser((state) => state, {
+        onCheckpoint: checkpoint,
+        onStable: () => {
+          if (failureStage === "stable") throw error;
+        },
+      });
+      let failure;
+      try {
+        await runPerformanceTraceCapture(fixture.browser, {
+          acceptanceTiming: false,
+          templatePath: resolve("tests/fixtures/snake-runtime-performance-trace.v3.json"),
+          candidatePath: join(directory, "profile-failure-candidate.json"),
+          actionInboxPath: actions,
+          projectDigest: "a".repeat(64),
+          beforeTimedAction: ({ settle }) => {
+            assertVmProfileAction(settle);
+            begin();
+          },
+          afterTimedAction: end,
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeDefined();
+      await expect(finishProfileCapture([close], { error: failure })).rejects.toBe(failure);
+      expect(close).toHaveBeenCalledOnce();
+      expect(checkpoint).toHaveBeenCalledOnce();
+      if (failureStage === "checkpoint_change") {
+        expect(begin).not.toHaveBeenCalled();
+        expect(fixture.elements.right.click).not.toHaveBeenCalled();
+      } else expect(begin).toHaveBeenCalledOnce();
+      if (failureStage === "end") expect(end).toHaveBeenCalledOnce();
+      else expect(end).not.toHaveBeenCalled();
+    },
+  );
 
   it("compacts inline and post-observation Core mappings through one path", async () => {
     vi.stubEnv("RUSTYERA_TEST_BACKGROUND_DOM", "0");

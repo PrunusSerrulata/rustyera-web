@@ -18,17 +18,17 @@ fn instruction_profile_command_reports_feature_and_unconstructed_vm() {
     let state = AppState::default();
     #[cfg(feature = "vm-instruction-profile")]
     {
-        assert!(instruction_profile_for_state(&state).is_err());
+        assert!(instruction_profile_for_state(&state, Some(true)).is_err());
         *state.session.lock().unwrap() =
             Some(WebSession::new(WebSessionOptions::default()).unwrap());
         assert_eq!(
-            instruction_profile_for_state(&state).unwrap(),
+            instruction_profile_for_state(&state, Some(false)).unwrap(),
             serde_json::Value::Null
         );
     }
     #[cfg(not(feature = "vm-instruction-profile"))]
     assert_eq!(
-        instruction_profile_for_state(&state).unwrap_err(),
+        instruction_profile_for_state(&state, Some(true)).unwrap_err(),
         "VM instruction profiling is not compiled into this build"
     );
 }

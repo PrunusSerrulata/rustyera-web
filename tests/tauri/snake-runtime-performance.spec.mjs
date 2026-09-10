@@ -6,6 +6,7 @@ import { startCpuSample, finishCpuSample } from "../../scripts/tauri-performance
 import { readPerformanceAuditTelemetry } from "../../scripts/tauri-performance-timing-evidence.mjs";
 import {
   assertVmProfileMode,
+  assertVmProfileAction,
   createVmProfileCapture,
   finishProfileCapture,
 } from "../../scripts/tauri-performance-vm-profile.mjs";
@@ -58,8 +59,10 @@ enabled("Tauri snake runtime performance audit", () => {
           candidatePath,
           actionInboxPath,
           projectDigest,
-          beforeTimedAction: async ({ command }) => {
-            await vmProfile?.capture({ kind: "before", command });
+          beforeTimedAction: async ({ command, settle }) => {
+            if (vmProfile) assertVmProfileAction(settle);
+            const profile = await vmProfile?.capture({ kind: "before", command });
+            if (profile && command === 7) await assertReadOnlyVmProfile(profile);
             if (samplePath && command === sampleCommand) {
               sample = await startCpuSample(
                 Number(process.env.RUSTYERA_TAURI_PERF_ROOT_PID),
@@ -72,8 +75,11 @@ enabled("Tauri snake runtime performance audit", () => {
               });
             }
           },
+          afterTimedAction: async ({ command }) => {
+            const profile = await vmProfile?.capture({ kind: "after", command });
+            if (profile && command === 7) await assertReadOnlyVmProfile(profile);
+          },
           onObservation: async (observation) => {
-            await vmProfile?.capture({ kind: "after", command: observation.command });
             emit({ type: "tauri-performance-capture-observation", observation });
             if (samplePath && [3, 6, 7, 8, 10].includes(observation.command)) {
               const inventory = await browser.execute(() =>
@@ -204,6 +210,19 @@ async function calibrate() {
   assert.equal(calibration.requestedFrames, 100);
   assert.ok(calibration.observedFrames >= 0 && calibration.observedFrames <= 100);
   return calibration;
+}
+
+async function assertReadOnlyVmProfile(expected) {
+  const json = await browser.execute(async () =>
+    JSON.stringify(
+      await window.__TAURI_INTERNALS__.invoke("performance_audit_instruction_profile"),
+    ),
+  );
+  assert.deepEqual(
+    JSON.parse(json),
+    expected,
+    "omitting begin must not reset or close the live VM window",
+  );
 }
 
 async function startRun(trace) {

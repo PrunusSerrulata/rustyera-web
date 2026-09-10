@@ -249,6 +249,12 @@ impl WebSession {
         self.runtime.instruction_profile_snapshot()
     }
 
+    /// Open or close opt-in position diagnosis without changing runtime state.
+    #[cfg(feature = "vm-instruction-profile")]
+    pub fn instruction_profile_boundary(&mut self, begin: bool) {
+        self.runtime.instruction_profile_boundary(begin);
+    }
+
     /// Resolve project metadata through the shared public core parser after negotiation.
     ///
     /// # Errors

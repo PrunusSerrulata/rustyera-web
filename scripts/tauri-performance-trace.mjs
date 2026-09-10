@@ -151,6 +151,7 @@ async function capturePerformanceTraceWithTiming(
     onObservation = () => undefined,
     onTimingEvidence = () => undefined,
     beforeTimedAction = () => undefined,
+    afterTimedAction = () => undefined,
     acceptanceTiming = true,
   },
   timing,
@@ -167,6 +168,7 @@ async function capturePerformanceTraceWithTiming(
   const startupTiming = await timing.collect(
     {
       kind: "startup",
+      acceptanceTiming,
       sourceWebStep: null,
       projectDigest,
       profile: trace.profile,
@@ -227,6 +229,7 @@ async function capturePerformanceTraceWithTiming(
       await onTimingEvidence(
         await timing.collect({
           kind: "final",
+          acceptanceTiming,
           sourceWebStep: null,
           observationsComplete: pendingError == null,
         }),
@@ -284,14 +287,16 @@ async function capturePerformanceTraceWithTiming(
         await onTimingEvidence(
           await timing.collect({
             kind: "setup",
+            acceptanceTiming,
             command: processed,
             sourceWebStep: trace.steps.length,
             path: command.path,
           }),
         );
-        await beforeTimedAction({ command: processed, path: command.path });
+        await beforeTimedAction({ command: processed, path: command.path, settle });
       },
     );
+    await afterTimedAction({ command: processed, path: command.path });
     const actionTiming = await timing.collect({
       kind: "action",
       command: processed,

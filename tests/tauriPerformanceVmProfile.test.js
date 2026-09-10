@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   assertVmProfileMode,
+  assertVmProfileAction,
   createVmProfileCapture,
   finishProfileCapture,
   vmProfileBuildFeature,
@@ -24,7 +25,7 @@ async function outputPath() {
   return join(path, "profile.jsonl");
 }
 const profile = () => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   instance: "1",
   interval: 1024,
   dispatches: "2048",
@@ -32,6 +33,220 @@ const profile = () => ({
   incomplete: false,
   counts: [],
   symbols: [],
+  positions: {
+    active: false,
+    startedAtDispatches: "0",
+    endedAtDispatches: "2048",
+    droppedSamples: "0",
+    incomplete: false,
+    counts: [],
+    locations: [],
+  },
+});
+
+function boundaryProfile(begin) {
+  const snapshot = profile();
+  if (begin) {
+    snapshot.dispatches = "0";
+    snapshot.positions.active = true;
+    snapshot.positions.endedAtDispatches = "0";
+  }
+  return snapshot;
+}
+
+const position = { generation: "1", function: "a".repeat(32), instruction: "9007199254740993" };
+
+it("rejects checkpoint-backed sampling before the native window opens", () => {
+  expect(() => assertVmProfileAction("checkpoint_change")).toThrow("excludes checkpoint_change");
+  expect(() => assertVmProfileAction("wait_change")).not.toThrow();
+});
+
+it.each(["command", "start", "replacement"])(
+  "validates paired window %s identity",
+  async (change) => {
+    const path = await outputPath();
+    const browser = {
+      execute: async (_callback, begin) => {
+        const snapshot = boundaryProfile(begin);
+        if (!begin && change === "start") snapshot.positions.startedAtDispatches = "1";
+        if (!begin && change === "replacement") snapshot.instance = "2";
+        return JSON.stringify(snapshot);
+      },
+    };
+    const capture = await createVmProfileCapture(browser, path);
+    await capture.capture({ kind: "before", command: 7 });
+    const end = capture.capture({ kind: "after", command: change === "command" ? 8 : 7 });
+    if (change === "replacement") {
+      await end;
+      const rows = (await readFile(path, "utf8")).trim().split("\n").map(JSON.parse);
+      expect(rows[1].window).toEqual({ valid: false, reason: "vm-replaced" });
+    } else await expect(end).rejects.toThrow(/window (command|start)/);
+    await capture.close();
+  },
+);
+
+it.each(["counts", "start", "drops"])("requires begin to clear window %s", async (change) => {
+  const browser = {
+    execute: async (_callback, begin) => {
+      const snapshot = boundaryProfile(begin);
+      if (begin && change === "counts") snapshot.positions.counts = [{ ...position, samples: "1" }];
+      if (begin && change === "start") {
+        snapshot.dispatches = "10";
+        snapshot.positions.endedAtDispatches = "10";
+      }
+      if (begin && change === "drops") {
+        snapshot.positions.droppedSamples = "1";
+        snapshot.positions.incomplete = true;
+      }
+      return JSON.stringify(snapshot);
+    },
+  };
+  const capture = await createVmProfileCapture(browser, await outputPath());
+  await expect(capture.capture({ kind: "before", command: 7 })).rejects.toThrow();
+  await capture.close();
+});
+
+it("projects only schema fields and explicitly excludes unpaired samples", async () => {
+  const snapshot = profile();
+  snapshot.sourceContents = "SECRET_SOURCE";
+  snapshot.positions.variables = "SECRET_VARIABLES";
+  snapshot.counts = [
+    { generation: "1", function: "a".repeat(32), samples: "1", sourceText: "SECRET_SOURCE" },
+  ];
+  snapshot.positions.counts = [{ ...position, samples: "1", variableValue: "SECRET_VARIABLES" }];
+  const path = await outputPath();
+  const capture = await createVmProfileCapture(
+    { execute: async () => JSON.stringify(snapshot) },
+    path,
+  );
+  await capture.capture({ kind: "after", command: 7, sourceText: "SECRET_BOUNDARY" });
+  await capture.close();
+  const raw = await readFile(path, "utf8");
+  expect(raw).not.toContain("SECRET");
+  expect(JSON.parse(raw).window).toEqual({ valid: false, reason: "missing-before" });
+});
+
+it.each(["transport", "validation", "write", "end"])(
+  "preserves %s failure while closing native window and file",
+  async (stage) => {
+    const original = new Error(stage);
+    const cleanup = new Error("cleanup");
+    const invoke = vi.fn(async (_command, { begin }) => {
+      if (!begin) throw cleanup;
+      const snapshot = boundaryProfile(begin);
+      if (stage === "validation") snapshot.positions.counts = [{ ...position, samples: "bad" }];
+      return snapshot;
+    });
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    const close = vi.fn(async () => {
+      throw new Error("close");
+    });
+    const capture = await createVmProfileCapture(
+      {
+        execute: async (callback, ...args) => {
+          const value = await callback(...args);
+          if (args[0] && stage === "transport") throw original;
+          return value;
+        },
+      },
+      "/tmp/unused-vm-profile.jsonl",
+      {
+        open: async () => ({
+          writeFile: async () => {
+            if (stage === "write") throw original;
+          },
+          close,
+        }),
+      },
+    );
+    let failure;
+    try {
+      await capture.capture({ kind: "before", command: 7 });
+      await capture.capture({ kind: "after", command: 7 });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeDefined();
+    await expect(finishProfileCapture([() => capture.close()], { error: failure })).rejects.toBe(
+      failure,
+    );
+    expect(invoke).toHaveBeenLastCalledWith("performance_audit_instruction_profile", {
+      begin: false,
+    });
+    expect(close).toHaveBeenCalledOnce();
+  },
+);
+
+it("retains exact position identities and bounded source metadata only as diagnosis", async () => {
+  const snapshot = profile();
+  snapshot.positions.counts = [{ ...position, samples: "2" }];
+  snapshot.positions.locations = [
+    { ...position, name: "函😀", path: "ERB/路径.erb", pathTruncated: false, line: "42" },
+  ];
+  const path = await outputPath();
+  const capture = await createVmProfileCapture(
+    { execute: async () => JSON.stringify(snapshot) },
+    path,
+  );
+  await capture.capture({ kind: "after", command: 7 });
+  await capture.close();
+  const record = JSON.parse(await readFile(path, "utf8"));
+  expect(record.acceptanceTiming).toBe(false);
+  expect(record.profile.positions).toEqual(snapshot.positions);
+});
+
+it.each([
+  { counts: Array(2049).fill(position) },
+  { locations: Array(65).fill(position) },
+  { counts: [{ ...position, instruction: "18446744073709551616", samples: "1" }] },
+  {
+    counts: [
+      { ...position, samples: "1" },
+      { ...position, samples: "2" },
+    ],
+  },
+  { startedAtDispatches: "2049" },
+  { endedAtDispatches: "2049" },
+  { droppedSamples: "1", incomplete: false },
+  { locations: [{ ...position, name: "orphan", path: null, line: null, pathTruncated: false }] },
+  {
+    counts: [{ ...position, samples: "1" }],
+    locations: [{ ...position, name: "ok", path: "x".repeat(161), line: "1", pathTruncated: true }],
+  },
+])("rejects invalid position-window evidence", async (change) => {
+  const snapshot = { ...profile(), positions: { ...profile().positions, ...change } };
+  const writeFile = vi.fn();
+  const capture = await createVmProfileCapture(
+    { execute: async () => JSON.stringify(snapshot) },
+    "/tmp/unused-vm-profile.jsonl",
+    {
+      open: async () => ({ writeFile, close: async () => {} }),
+    },
+  );
+  await expect(capture.capture({ kind: "after", command: 7 })).rejects.toThrow();
+  expect(writeFile).not.toHaveBeenCalled();
+  await capture.close();
+});
+
+it("closes an outstanding native window on cancellation even when output close fails", async () => {
+  const invoke = vi.fn(async (_command, { begin }) => boundaryProfile(begin));
+  vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+  const close = vi.fn(async () => {
+    throw new Error("file close");
+  });
+  const capture = await createVmProfileCapture(
+    { execute: async (callback, ...args) => callback(...args) },
+    "/tmp/unused-vm-profile.jsonl",
+    {
+      open: async () => ({ writeFile: async () => {}, close }),
+    },
+  );
+  await capture.capture({ kind: "before", command: 7 });
+  await expect(capture.close()).rejects.toThrow("file close");
+  expect(invoke).toHaveBeenLastCalledWith("performance_audit_instruction_profile", {
+    begin: false,
+  });
+  expect(close).toHaveBeenCalledOnce();
 });
 
 it("retains explicit sampling feature identity after runtime environment cleanup", async () => {
@@ -59,9 +274,9 @@ it("retains explicit sampling feature identity after runtime environment cleanup
 });
 
 it("collects through the real callback using scalar WebDriver transport and exclusive output", async () => {
-  const invoke = vi.fn(async () => profile());
+  const invoke = vi.fn(async (_command, { begin }) => boundaryProfile(begin));
   vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
-  const browser = { execute: async (callback) => callback() };
+  const browser = { execute: async (callback, ...args) => callback(...args) };
   const path = await outputPath();
   const capture = await createVmProfileCapture(browser, path);
   await expect(createVmProfileCapture(browser, path)).rejects.toThrow();
@@ -72,7 +287,14 @@ it("collects through the real callback using scalar WebDriver transport and excl
   const records = (await readFile(path, "utf8")).trim().split("\n").map(JSON.parse);
   expect(records.map((record) => record.sequence)).toEqual([0, 1]);
   expect(records[1].profile).toEqual(profile());
-  expect(invoke).toHaveBeenCalledWith("performance_audit_instruction_profile");
+  expect(invoke).toHaveBeenNthCalledWith(1, "performance_audit_instruction_profile", {
+    begin: true,
+  });
+  expect(invoke).toHaveBeenNthCalledWith(2, "performance_audit_instruction_profile", {
+    begin: false,
+  });
+  expect(records.every((record) => record.acceptanceTiming === false)).toBe(true);
+  expect(records[1].window).toEqual({ valid: true, reason: null });
   await expect(capture.capture({})).rejects.toThrow("closed");
 });
 

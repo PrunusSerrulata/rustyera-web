@@ -965,22 +965,29 @@ fn list_fonts() -> Vec<String> {
 #[tauri::command]
 fn performance_audit_instruction_profile(
     state: State<'_, AppState>,
+    begin: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    instruction_profile_for_state(&state)
+    instruction_profile_for_state(&state, begin)
 }
 
 #[cfg(feature = "performance-audit")]
-fn instruction_profile_for_state(state: &AppState) -> Result<serde_json::Value, String> {
+fn instruction_profile_for_state(
+    state: &AppState,
+    begin: Option<bool>,
+) -> Result<serde_json::Value, String> {
     #[cfg(feature = "vm-instruction-profile")]
     {
         with_session(state, |session| {
+            if let Some(begin) = begin {
+                session.instruction_profile_boundary(begin);
+            }
             serde_json::to_value(session.instruction_profile_snapshot())
                 .map_err(|error| error.to_string())
         })
     }
     #[cfg(not(feature = "vm-instruction-profile"))]
     {
-        let _ = state;
+        let _ = (state, begin);
         Err("VM instruction profiling is not compiled into this build".into())
     }
 }
