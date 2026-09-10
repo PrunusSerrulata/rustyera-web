@@ -21,11 +21,11 @@ describe("AboutDialog", () => {
     expect(document.body.textContent).toContain("PrunusSerrulata");
     expect(document.body.textContent).toContain("前端版本");
     expect(document.body.querySelectorAll(".about-details dd")[1]?.textContent).toBe(
-      "0.10.0-alpha.1-wasm",
+      "0.10.1-alpha.1-wasm",
     );
     expect(document.body.textContent).toContain("core 版本");
     const coreRevision = readFileSync("rustyera-core.rev", "utf8").trim().slice(0, 8);
-    expect(document.body.textContent).toContain(`0.9.0-alpha.1 (${coreRevision})`);
+    expect(document.body.textContent).toContain(`0.9.1-alpha.1 (${coreRevision})`);
     expect(document.body.textContent).toContain("GPL-3.0-only");
     expect(document.body.textContent).toContain("仅适用于 RustyEra 相关组件");
     expect(
@@ -55,15 +55,15 @@ describe("AboutDialog", () => {
     });
 
     expect(document.body.querySelectorAll(".about-details dd")[1]?.textContent).toBe(
-      "0.10.0-alpha.1-tauri",
+      "0.10.1-alpha.1-tauri",
     );
 
     wrapper.unmount();
   });
 
   it.each([
-    ["abcd1234567890abcdef1234567890abcdef123456", "0.10.0-alpha.1-wasm (abcd1234)"],
-    ["", "0.10.0-alpha.1-wasm"],
+    ["abcd1234567890abcdef1234567890abcdef123456", "0.10.1-alpha.1-wasm (abcd1234)"],
+    ["", "0.10.1-alpha.1-wasm"],
   ])("shows the Pages commit when provided (%s)", (commit, expectedVersion) => {
     vi.stubEnv("VITE_RUSTYERA_FRONTEND_COMMIT", commit);
     const wrapper = mount(AboutDialog, {
