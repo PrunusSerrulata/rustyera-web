@@ -74,7 +74,11 @@ export function serviceInteger(value: unknown, name: string, signed = false): Se
 export function sameServiceInteger(left: unknown, right: unknown): boolean {
   const valid = (value: unknown): value is ServiceInteger =>
     typeof value === "bigint" || (typeof value === "number" && Number.isSafeInteger(value));
-  return valid(left) && valid(right) && BigInt(left) === BigInt(right);
+  return (
+    valid(left) &&
+    valid(right) &&
+    (typeof left === typeof right ? left === right : BigInt(left) === BigInt(right))
+  );
 }
 
 export function sameProjection(
