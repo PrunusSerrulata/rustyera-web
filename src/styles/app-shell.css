@@ -402,6 +402,7 @@ select {
   position: relative;
   min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
   overscroll-behavior: contain;
   background: var(--game-background);
