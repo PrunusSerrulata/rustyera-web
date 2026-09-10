@@ -1,5 +1,6 @@
 /* global window */
 import assert from "node:assert/strict";
+import { gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { blake3 } from "@noble/hashes/blake3.js";
 import { readFile, rename, stat, writeFile } from "node:fs/promises";
@@ -22,12 +23,34 @@ export const MAXIMUM_PERFORMANCE_TRACE_BYTES = 256 * 1024 * 1024;
 const MAXIMUM_PROTOCOL_RESULT_BYTES = 64 * 1024 * 1024;
 const MAXIMUM_PROTOCOL_RESULTS = 65_536;
 const protocolResultBudgets = new WeakMap();
+let checkpointEvidenceSequence = 0;
 const REQUIRED_EVIDENCE = {
   loading: ["title", "newGame", "qol", "sql", "map", "privateRoom", "day1"],
   "steady-runtime": ["dailyLoop", "longOutput", "dynamicCall", "formatting", "stringWork"],
   "map-nf-sql": ["mapRoundtrip", "hover", "click", "nf", "scene", "canvas", "sprite", "sqlPath"],
   "save-load": ["ordinarySave", "ordinaryLoad", "stableReturn"],
 };
+
+export function performanceScenarioEvidence(scenario) {
+  if (scenario === "snake-tw-runtime-four-paths") return REQUIRED_EVIDENCE;
+  if (scenario === "ordinary-save-runtime")
+    return {
+      "save-load": ["ordinaryLoad", "stableReturn"],
+      "steady-runtime": ["runtimeInteraction"],
+    };
+  throw new Error("unexpected performance scenario");
+}
+
+function assertScenarioPathOrder(scenario, paths) {
+  const order = Object.keys(performanceScenarioEvidence(scenario));
+  let previous = -1;
+  for (const path of paths) {
+    const index = order.indexOf(path);
+    assert.ok(index >= 0, `unexpected scenario path ${path}`);
+    assert.ok(index >= previous, "performance scenario paths are out of order");
+    previous = index;
+  }
+}
 
 export async function readPerformanceTrace(path) {
   const trace = await readBoundedTraceJson(path);
@@ -37,6 +60,7 @@ export async function readPerformanceTrace(path) {
 
 export async function freezePerformanceTrace(candidatePath, outputPath, coreOutputPath) {
   const trace = await readBoundedTraceJson(candidatePath);
+  assert.equal(trace.replayTarget, undefined, "Core companion requires a complete capture");
   validateTrace(trace, true);
   trace.captureRequired = false;
   trace.traceDigest = traceHash(trace);
@@ -47,7 +71,19 @@ export async function freezePerformanceTrace(candidatePath, outputPath, coreOutp
   return { trace, coreTrace };
 }
 
+export async function freezeTauriPerformanceTrace(candidatePath, outputPath) {
+  const trace = await readBoundedTraceJson(candidatePath);
+  validateTrace(trace, true);
+  trace.replayTarget = "tauri";
+  trace.captureRequired = false;
+  trace.traceDigest = traceHash(trace);
+  validateTrace(trace, false);
+  await writeJsonAtomically(outputPath, trace);
+  return trace;
+}
+
 export function coreTraceFromPerformanceTrace(trace) {
+  assert.equal(trace.replayTarget, undefined, "Tauri-only trace has no validated Core companion");
   validateTrace(trace, false);
   validateCoreCapture(trace.core, trace.steps, trace.protocolResults);
   const steps = trace.core.steps.map(({ id, checkpoint, expect, action }) => ({
@@ -80,7 +116,7 @@ export async function replayPerformanceTrace(browser, trace, onCheckpoint = () =
   validateTrace(trace, false);
   const paths = [];
   let protocolCursor = null;
-  for (const pathClass of PERFORMANCE_PATHS) {
+  for (const pathClass of Object.keys(performanceScenarioEvidence(trace.scenario))) {
     const steps = trace.steps.filter((step) => step.path === pathClass);
     const startedAt = performance.now();
     const inputSamples = [];
@@ -171,6 +207,7 @@ async function capturePerformanceTraceWithTiming(
     "unsupported performance trace schema",
   );
   assert.equal(trace.captureRequired, true, "capture must start from a candidate template");
+  const scenarioEvidence = performanceScenarioEvidence(trace.scenario);
   trace.projectDigest = projectDigest;
   trace.core.projectDigest = projectDigest;
   const startupTiming = await timing.collect(
@@ -200,7 +237,9 @@ async function capturePerformanceTraceWithTiming(
   trace.steps = [];
   trace.protocolResults = {};
   trace.core.steps = [];
-  trace.coverage = Object.fromEntries(PERFORMANCE_PATHS.map((pathClass) => [pathClass, {}]));
+  trace.coverage = Object.fromEntries(
+    Object.keys(scenarioEvidence).map((pathClass) => [pathClass, {}]),
+  );
   await writeJsonAtomically(candidatePath, trace);
   let processed = 0;
   let lastCheckpoint;
@@ -261,7 +300,14 @@ async function capturePerformanceTraceWithTiming(
       continue;
     }
     assert.equal(command.type, "action", "capture inbox accepts only action or finish records");
-    assert.ok(PERFORMANCE_PATHS.includes(command.path), `unknown capture path ${command.path}`);
+    assert.ok(
+      Object.hasOwn(scenarioEvidence, command.path),
+      `unknown capture path ${command.path}`,
+    );
+    assertScenarioPathOrder(trace.scenario, [
+      ...trace.steps.map((step) => step.path),
+      command.path,
+    ]);
     validatePerformanceTraceAction(command.action, command.path);
     assert.ok(
       Array.isArray(command.watches) && command.watches.length > 0,
@@ -393,7 +439,15 @@ export async function capturePerformanceCheckpoint(browser, watches, protocolCur
       raw.coreProjection.protocolActions,
     );
   const value = canonicalizeCheckpoint(raw);
-  return { value, hash: performanceCheckpointBehaviorHash(value) };
+  const checkpoint = { value, hash: performanceCheckpointBehaviorHash(value) };
+  const evidencePrefix = process.env.RUSTYERA_TAURI_PERF_CHECKPOINT_EVIDENCE;
+  if (evidencePrefix)
+    await writeFile(
+      `${evidencePrefix}.${checkpointEvidenceSequence++}.json.gz`,
+      gzipSync(JSON.stringify(checkpoint)),
+      { flag: "wx" },
+    );
+  return checkpoint;
 }
 
 async function restoreNativeReplayBytes(browser, actions) {
@@ -544,6 +598,7 @@ function semanticStorageBytes(container) {
 
 export function summarizeRuns(runs) {
   runs = runs.filter((run) => run.acceptanceTiming !== false);
+  const paths = [...new Set(runs.flatMap((run) => run.paths.map((entry) => entry.class)))];
   const bases = new Set(
     runs.flatMap((run) =>
       run.paths
@@ -553,7 +608,7 @@ export function summarizeRuns(runs) {
   );
   assert.ok(bases.size <= 1, "cannot mix action clock bases");
   const byPath = Object.fromEntries(
-    PERFORMANCE_PATHS.map((pathClass) => [
+    paths.map((pathClass) => [
       pathClass,
       summarizeSamples(
         runs.flatMap((run) =>
@@ -565,7 +620,7 @@ export function summarizeRuns(runs) {
     ]),
   );
   const harnessByPath = Object.fromEntries(
-    PERFORMANCE_PATHS.map((pathClass) => [
+    paths.map((pathClass) => [
       pathClass,
       summarizeSamples(
         runs.flatMap((run) =>
@@ -597,12 +652,16 @@ export function summarizeSamples(samples) {
 }
 
 function validateTrace(trace, candidate) {
+  assert.ok(
+    trace.replayTarget === undefined || trace.replayTarget === "tauri",
+    "unsupported replay target",
+  );
   assert.equal(
     trace.schemaVersion,
     PERFORMANCE_TRACE_SCHEMA_VERSION,
     "unsupported performance trace schema",
   );
-  assert.equal(trace.scenario, "snake-tw-runtime-four-paths", "unexpected performance scenario");
+  const requiredEvidence = performanceScenarioEvidence(trace.scenario);
   assert.equal(
     trace.profile,
     "emuera.skia.snake",
@@ -631,10 +690,14 @@ function validateTrace(trace, candidate) {
     "trace omitted the source project digest",
   );
   assert.ok(Array.isArray(trace.steps), "trace steps must be an array");
-  for (const pathClass of PERFORMANCE_PATHS) {
+  assertScenarioPathOrder(
+    trace.scenario,
+    trace.steps.map((step) => step.path),
+  );
+  for (const pathClass of Object.keys(requiredEvidence)) {
     const steps = trace.steps.filter((step) => step.path === pathClass);
     assert.ok(steps.length > 0, `trace omitted ${pathClass} actions`);
-    for (const evidence of REQUIRED_EVIDENCE[pathClass])
+    for (const evidence of requiredEvidence[pathClass])
       assert.equal(
         trace.coverage?.[pathClass]?.[evidence],
         true,
@@ -655,11 +718,17 @@ function validateTrace(trace, candidate) {
     trace.projectDigest,
     "Core and Tauri project digests differ",
   );
-  if (!candidate) validateCoreCapture(trace.core, trace.steps, trace.protocolResults);
+  if (!candidate)
+    validateCoreCapture(
+      trace.core,
+      trace.steps,
+      trace.protocolResults,
+      trace.replayTarget !== "tauri",
+    );
   if (!candidate) assert.equal(trace.traceDigest, traceHash(trace), "trace digest mismatch");
 }
 
-function validateCoreCapture(core, webSteps, protocolResults) {
+function validateCoreCapture(core, webSteps, protocolResults, requireMappings = true) {
   assert.match(core?.projectDigest ?? "", /^[0-9a-f]{64}$/, "Core capture omitted projectDigest");
   assert.ok(
     core?.client && typeof core.client === "object",
@@ -683,6 +752,7 @@ function validateCoreCapture(core, webSteps, protocolResults) {
     true,
     "captured Core client omitted storage revisions",
   );
+  if (!requireMappings) return;
   assert.ok(
     Array.isArray(core.steps) && core.steps.length > 0,
     "Core capture omitted normalized checkpoints",

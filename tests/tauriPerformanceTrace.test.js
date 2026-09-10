@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { gunzipSync } from "node:zlib";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -15,11 +16,14 @@ import {
   capturePerformanceCheckpoint,
   performanceCheckpointBehaviorHash,
   freezePerformanceTrace,
+  freezeTauriPerformanceTrace,
+  coreTraceFromPerformanceTrace,
   readPerformanceTrace,
   replayPerformanceTrace,
   runPerformanceTraceCapture,
   summarizeRuns,
   validatePerformanceTraceAction,
+  performanceScenarioEvidence,
 } from "../scripts/tauri-performance-trace.mjs";
 
 const temporaryDirectories = [];
@@ -32,6 +36,14 @@ afterEach(async () => {
 });
 
 describe("Tauri performance trace schema 3", () => {
+  it("keeps ordinary-save runtime coverage distinct from the complete four-path scenario", () => {
+    expect(performanceScenarioEvidence("ordinary-save-runtime")).toEqual({
+      "save-load": ["ordinaryLoad", "stableReturn"],
+      "steady-runtime": ["runtimeInteraction"],
+    });
+    expect(Object.keys(performanceScenarioEvidence("snake-tw-runtime-four-paths"))).toHaveLength(4);
+    expect(() => performanceScenarioEvidence("unknown")).toThrow("unexpected performance scenario");
+  });
   it("preserves WebDriver undefined-to-null fields and the existing checkpoint hash", async () => {
     const raw = {
       transfer: { importKind: undefined, export: null },
@@ -45,7 +57,15 @@ describe("Tauri performance trace schema 3", () => {
     };
     vi.stubGlobal("window", { __RUSTYERA_TEST__: { performanceCheckpoint: async () => raw } });
     const execute = vi.fn((callback, ...args) => callback(...args));
+    const directory = await mkdtemp(join(tmpdir(), "performance-checkpoint-"));
+    temporaryDirectories.push(directory);
+    vi.stubEnv("RUSTYERA_TAURI_PERF_CHECKPOINT_EVIDENCE", join(directory, "checkpoint"));
     const result = await capturePerformanceCheckpoint({ execute }, ["DAY"]);
+    const files = await readdir(directory);
+    expect(files).toHaveLength(1);
+    expect(JSON.parse(gunzipSync(await readFile(join(directory, files[0]))).toString())).toEqual(
+      result,
+    );
     expect(result.value).toEqual(expected);
     expect(result.hash).toBe(performanceCheckpointBehaviorHash(expected));
     expect(execute).toHaveBeenCalledOnce();
@@ -206,99 +226,156 @@ describe("Tauri performance trace schema 3", () => {
     ).rejects.toThrow(JSON.stringify(fault));
   });
 
-  it("captures, freezes, signs, reads, and replays left and right clicks", async () => {
-    vi.stubEnv("RUSTYERA_TEST_BACKGROUND_DOM", "0");
-    const directory = await temporaryDirectory();
-    const template = resolve("tests/fixtures/snake-runtime-performance-trace.v3.json");
-    const candidate = join(directory, "candidate.json");
-    const actions = join(directory, "actions.jsonl");
-    const frozen = join(directory, "trace.v3.json");
-    const core = join(directory, "core-trace.v2.json");
-    const commands = captureCommands();
-    const observations = [];
-    await writeFile(
-      actions,
-      `${commands.map((command) => JSON.stringify(command)).join("\n")}\n${JSON.stringify({ type: "finish" })}\n`,
-    );
+  it.each(["snake-tw-runtime-four-paths", "ordinary-save-runtime"])(
+    "captures, freezes, signs, reads, and replays %s",
+    async (scenario) => {
+      vi.stubEnv("RUSTYERA_TEST_BACKGROUND_DOM", "0");
+      const directory = await temporaryDirectory();
+      const template = join(directory, "template.json");
+      const templateData = JSON.parse(
+        await readFile(resolve("tests/fixtures/snake-runtime-performance-trace.v3.json"), "utf8"),
+      );
+      templateData.scenario = scenario;
+      await writeFile(template, JSON.stringify(templateData));
+      const candidate = join(directory, "candidate.json");
+      const actions = join(directory, "actions.jsonl");
+      const frozen = join(directory, "trace.v3.json");
+      const core = join(directory, "core-trace.v2.json");
+      const commands = captureCommands();
+      if (scenario === "ordinary-save-runtime") {
+        commands.forEach((command, index) => {
+          command.path = index === 0 ? "save-load" : "steady-runtime";
+          command.evidence =
+            index === 0 ? { ordinaryLoad: true, stableReturn: true } : { runtimeInteraction: true };
+        });
+      }
+      const observations = [];
+      await writeFile(
+        actions,
+        `${commands.map((command) => JSON.stringify(command)).join("\n")}\n${JSON.stringify({ type: "finish" })}\n`,
+      );
 
-    const captureBrowser = traceBrowser();
-    const captured = await runPerformanceTraceCapture(captureBrowser.browser, {
-      templatePath: template,
-      candidatePath: candidate,
-      actionInboxPath: actions,
-      projectDigest: "a".repeat(64),
-      onObservation: (observation) => observations.push(observation),
-    });
-    expect(captured.schemaVersion).toBe(3);
-    expect(Object.keys(captured.protocolResults)).toHaveLength(1);
-    expect(JSON.stringify(captured.steps)).not.toContain('"result":');
-    expect(JSON.stringify(captured)).not.toContain("large-resource-body");
-    expect(JSON.stringify(captured).length).toBeLessThan(50_000);
-    expect((await readFile(candidate)).byteLength).toBeLessThan(50_000);
-    expect(captured.steps.every((step) => step.expect.checkpoint === undefined)).toBe(true);
-    expect(captured.core.steps.every((step) => step.normalizedState === undefined)).toBe(true);
-    expect(JSON.stringify(observations)).not.toContain("large-resource-body");
-    expect(JSON.stringify(observations).length).toBeLessThan(50_000);
-    expect(captureBrowser.elements.right.click).toHaveBeenCalledWith({ button: "right" });
-    expect(captureBrowser.elements.left.click).toHaveBeenCalledWith();
-    expect(observations.every((observation) => observation.inputElapsedMs >= 0)).toBe(true);
+      const captureBrowser = traceBrowser();
+      const captured = await runPerformanceTraceCapture(captureBrowser.browser, {
+        templatePath: template,
+        candidatePath: candidate,
+        actionInboxPath: actions,
+        projectDigest: "a".repeat(64),
+        onObservation: (observation) => observations.push(observation),
+      });
+      expect(captured.schemaVersion).toBe(3);
+      expect(Object.keys(captured.protocolResults)).toHaveLength(1);
+      expect(JSON.stringify(captured.steps)).not.toContain('"result":');
+      expect(JSON.stringify(captured)).not.toContain("large-resource-body");
+      expect(JSON.stringify(captured).length).toBeLessThan(50_000);
+      expect((await readFile(candidate)).byteLength).toBeLessThan(50_000);
+      expect(captured.steps.every((step) => step.expect.checkpoint === undefined)).toBe(true);
+      expect(captured.core.steps.every((step) => step.normalizedState === undefined)).toBe(true);
+      expect(JSON.stringify(observations)).not.toContain("large-resource-body");
+      expect(JSON.stringify(observations).length).toBeLessThan(50_000);
+      expect(captureBrowser.elements.right.click).toHaveBeenCalledWith({ button: "right" });
+      expect(captureBrowser.elements.left.click).toHaveBeenCalledWith();
+      expect(observations.every((observation) => observation.inputElapsedMs >= 0)).toBe(true);
 
-    const { trace } = await freezePerformanceTrace(candidate, frozen, core);
-    expect(trace.traceDigest).toMatch(/^[0-9a-f]{64}$/);
-    expect(await readPerformanceTrace(frozen)).toEqual(trace);
-    const coreTrace = JSON.parse(await readFile(core, "utf8"));
-    expect(coreTrace.steps[0].action).toMatchObject({ message_skip: true });
-    expect(coreTrace.steps[0].action).not.toHaveProperty("messageSkip");
+      const { trace } = await freezePerformanceTrace(candidate, frozen, core);
+      const incomplete = structuredClone(captured);
+      incomplete.core.steps = [];
+      const incompletePath = join(directory, "tauri-only-candidate.json");
+      await writeFile(incompletePath, JSON.stringify(incomplete));
+      await expect(
+        freezePerformanceTrace(incompletePath, join(directory, "invalid-core.json")),
+      ).rejects.toThrow("normalized checkpoints");
+      const tauriOnly = await freezeTauriPerformanceTrace(
+        incompletePath,
+        join(directory, "tauri-only.json"),
+      );
+      expect(await readPerformanceTrace(join(directory, "tauri-only.json"))).toEqual(tauriOnly);
+      expect(() => coreTraceFromPerformanceTrace(tauriOnly)).toThrow("no validated Core companion");
+      expect(await replayPerformanceTrace(traceBrowser().browser, tauriOnly)).toMatchObject({
+        paths: expect.any(Array),
+      });
+      const reversedPaths = structuredClone(captured);
+      [reversedPaths.steps[0], reversedPaths.steps[1]] = [
+        reversedPaths.steps[1],
+        reversedPaths.steps[0],
+      ];
+      await expectFreezeFailure(
+        reversedPaths,
+        directory,
+        "reversed-paths",
+        "paths are out of order",
+      );
+      if (scenario === "ordinary-save-runtime") {
+        const regressedPath = structuredClone(captured);
+        regressedPath.steps.at(-1).path = "save-load";
+        await expectFreezeFailure(
+          regressedPath,
+          directory,
+          "regressed-path",
+          "paths are out of order",
+        );
+      }
+      expect(trace.traceDigest).toMatch(/^[0-9a-f]{64}$/);
+      expect(await readPerformanceTrace(frozen)).toEqual(trace);
+      const coreTrace = JSON.parse(await readFile(core, "utf8"));
+      expect(coreTrace.steps[0].action).toMatchObject({ message_skip: true });
+      expect(coreTrace.steps[0].action).not.toHaveProperty("messageSkip");
 
-    const invalidWait = structuredClone(captured);
-    invalidWait.core.steps[0].expect.waitKind = "input";
-    await expectFreezeFailure(invalidWait, directory, "invalid-wait", "invalid waitKind");
-    const invalidTag = structuredClone(captured);
-    invalidTag.core.steps[0].expect.outboundTags = ["bad"];
-    await expectFreezeFailure(invalidTag, directory, "invalid-tag", "invalid outboundTags");
-    const outOfOrder = structuredClone(captured);
-    [outOfOrder.core.steps[0], outOfOrder.core.steps[1]] = [
-      outOfOrder.core.steps[1],
-      outOfOrder.core.steps[0],
-    ];
-    await expectFreezeFailure(outOfOrder, directory, "out-of-order", "out of Web action order");
-    const duplicate = structuredClone(captured);
-    duplicate.core.steps.splice(1, 0, {
-      ...duplicate.core.steps[0],
-      id: "duplicate-map",
-      checkpoint: "duplicate-map",
-    });
-    await expectFreezeFailure(duplicate, directory, "duplicate-map", "not lossless");
-    const unusedResult = structuredClone(captured);
-    const unusedEntry = { kind: "service_response", result: { type: "ready", payload: [9] } };
-    unusedResult.protocolResults[testDigest(unusedEntry)] = unusedEntry;
-    await expectFreezeFailure(
-      unusedResult,
-      directory,
-      "unused-result",
-      "unreferenced protocol results",
-    );
+      const invalidWait = structuredClone(captured);
+      invalidWait.core.steps[0].expect.waitKind = "input";
+      await expectFreezeFailure(invalidWait, directory, "invalid-wait", "invalid waitKind");
+      const invalidTag = structuredClone(captured);
+      invalidTag.core.steps[0].expect.outboundTags = ["bad"];
+      await expectFreezeFailure(invalidTag, directory, "invalid-tag", "invalid outboundTags");
+      const outOfOrder = structuredClone(captured);
+      [outOfOrder.core.steps[0], outOfOrder.core.steps[1]] = [
+        outOfOrder.core.steps[1],
+        outOfOrder.core.steps[0],
+      ];
+      await expectFreezeFailure(outOfOrder, directory, "out-of-order", "out of Web action order");
+      const duplicate = structuredClone(captured);
+      duplicate.core.steps.splice(1, 0, {
+        ...duplicate.core.steps[0],
+        id: "duplicate-map",
+        checkpoint: "duplicate-map",
+      });
+      await expectFreezeFailure(duplicate, directory, "duplicate-map", "not lossless");
+      const unusedResult = structuredClone(captured);
+      const unusedEntry = { kind: "service_response", result: { type: "ready", payload: [9] } };
+      unusedResult.protocolResults[testDigest(unusedEntry)] = unusedEntry;
+      await expectFreezeFailure(
+        unusedResult,
+        directory,
+        "unused-result",
+        "unreferenced protocol results",
+      );
 
-    const replayBrowser = traceBrowser();
-    const replay = await replayPerformanceTrace(replayBrowser.browser, trace);
-    expect(replayBrowser.elements.right.click).toHaveBeenCalledWith({ button: "right" });
-    expect(replayBrowser.elements.left.click).toHaveBeenCalledWith();
-    expect(replay.paths.every((path) => path.responseSamplesMs.length === 1)).toBe(true);
-    const changedResourceBrowser = traceBrowser((state) => ({
-      ...state,
-      resources: { ...state.resources, changed: true },
-    }));
-    await expect(replayPerformanceTrace(changedResourceBrowser.browser, trace)).rejects.toThrow(
-      "scenario signature mismatch",
-    );
+      const replayBrowser = traceBrowser();
+      const replay = await replayPerformanceTrace(replayBrowser.browser, trace);
+      expect(Object.keys(summarizeRuns([replay]).byPath)).toEqual(
+        Object.keys(performanceScenarioEvidence(scenario)),
+      );
+      expect(replayBrowser.elements.right.click).toHaveBeenCalledWith({ button: "right" });
+      expect(replayBrowser.elements.left.click).toHaveBeenCalledWith();
+      expect(replay.paths.map((path) => path.responseSamplesMs.length)).toEqual(
+        scenario === "ordinary-save-runtime" ? [1, 3] : [1, 1, 1, 1],
+      );
+      const changedResourceBrowser = traceBrowser((state) => ({
+        ...state,
+        resources: { ...state.resources, changed: true },
+      }));
+      await expect(replayPerformanceTrace(changedResourceBrowser.browser, trace)).rejects.toThrow(
+        "scenario signature mismatch",
+      );
 
-    const tampered = JSON.parse(await readFile(frozen, "utf8"));
-    tampered.steps[0].action.button = "left";
-    await writeFile(join(directory, "tampered.json"), JSON.stringify(tampered));
-    await expect(readPerformanceTrace(join(directory, "tampered.json"))).rejects.toThrow(
-      "trace digest mismatch",
-    );
-  });
+      const tampered = JSON.parse(await readFile(frozen, "utf8"));
+      tampered.steps[0].action.button = "left";
+      await writeFile(join(directory, "tampered.json"), JSON.stringify(tampered));
+      await expect(readPerformanceTrace(join(directory, "tampered.json"))).rejects.toThrow(
+        "trace digest mismatch",
+      );
+    },
+  );
 
   it.each([
     [true, false],

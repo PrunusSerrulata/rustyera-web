@@ -34,7 +34,33 @@ directory. The unified JSONL sample schema always includes `schemaVersion`, `epo
 - Animation, audio and canvas clocks are functional scheduling state. They must not be interpreted
   as performance samples.
 
+For checkpoint mismatch diagnosis, `RUSTYERA_TAURI_PERF_CHECKPOINT_EVIDENCE` names an
+optional output file prefix. Capture and replay write numbered, exclusively created `.json.gz`
+sidecars containing each complete checkpoint and its behavior hash, outside action timing.
+The prefix's parent directory must already exist. Sidecars preserve the rejected state without
+relaxing comparison; disable them for ordinary latency runs. Windows embedded WebView2 element
+operations dispatch DOM events and do not establish trusted native mouse-input coverage.
 ## Frozen trace workflow
+
+On Windows, the audit resolves the exact executable among the runner's descendants using
+PowerShell CIM and records its WebView process tree. Paths are native absolute paths. The outer
+runner accepts `--profilers none` for timing-only measurement; its summary explicitly records that
+CPU/allocation profiling was not performed. Native profiler rounds remain macOS-only and reject
+unsupported platforms before copying a project or starting measurement.
+
+The `ordinary-save-runtime` scenario uses the same versioned checkpoints and Core companion rules,
+but requires only `save-load` (`ordinaryLoad`, `stableReturn`) followed by `steady-runtime`
+(`runtimeInteraction`). Capture the real title/load-menu operations first, then the supplied runtime
+operations. It does not claim new-game, map, or save-writing coverage. The existing
+`snake-tw-runtime-four-paths` scenario retains all of its coverage requirements.
+
+Service-heavy captures do not necessarily contain intermediate normalized Core checkpoints for
+every service response. Use the explicit `freeze-tauri --candidate PATH --output PATH` command for
+Tauri-only replay in that case. It signs `replayTarget: "tauri"`, preserves complete Tauri action,
+wait, protocol-result and post-checkpoint validation, and validates the captured client/setup
+identity. It does not certify the incomplete Core mappings or export a Core companion. The ordinary
+`freeze` command and Core export continue to require lossless intermediate mappings. A Tauri-only
+trace must never be passed off as a Core benchmark trace.
 
 The checked-in `tests/fixtures/snake-runtime-performance-trace.v3.json` is intentionally marked
 `captureRequired: true`. It is a schema/template, not fabricated evidence. A future autonomous

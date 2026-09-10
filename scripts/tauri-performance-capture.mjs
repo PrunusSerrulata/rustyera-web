@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { withOwnedChildCleanup } from "./owned-child-process.mjs";
 
 import {
   ensurePerformanceProjectCopy,
@@ -11,12 +12,29 @@ import {
   performanceWindowMode,
   validatePerformanceAuditProject,
 } from "./tauri-performance-audit.mjs";
-import { freezePerformanceTrace } from "./tauri-performance-trace.mjs";
+import { freezePerformanceTrace, freezeTauriPerformanceTrace } from "./tauri-performance-trace.mjs";
 
 const repository = fileURLToPath(new URL("..", import.meta.url));
 const arguments_ = process.argv.slice(2);
 const command = arguments_.shift();
-if (command === "freeze") {
+if (command === "freeze-tauri") {
+  const candidate = option("--candidate");
+  const output = option("--output");
+  rejectUnknown(new Set(["--candidate", "--output"]));
+  if (candidate === output)
+    throw new Error("freeze output must not overwrite the reviewed candidate");
+  await assertMissing(output);
+  const trace = await freezeTauriPerformanceTrace(candidate, output);
+  console.log(
+    JSON.stringify({
+      type: "tauri-performance-trace-frozen",
+      output,
+      traceDigest: trace.traceDigest,
+      replayTarget: "tauri",
+      coreCompanionAvailable: false,
+    }),
+  );
+} else if (command === "freeze") {
   const candidate = option("--candidate");
   const output = option("--output");
   const coreOutput = option("--core-output");
@@ -76,10 +94,14 @@ if (command === "freeze") {
     },
     stdio: "inherit",
   });
-  const exitCode = await new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", resolve);
-  });
+  const exitCode = await withOwnedChildCleanup(
+    child,
+    () =>
+      new Promise((resolve, reject) => {
+        child.once("error", reject);
+        child.once("exit", resolve);
+      }),
+  );
   if (exitCode !== 0) throw new Error(`performance capture exited ${exitCode}`);
 } else {
   throw new Error("usage: tauri-performance-capture.mjs capture|freeze [options]");
