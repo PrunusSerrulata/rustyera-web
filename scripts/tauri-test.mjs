@@ -19,6 +19,7 @@ import { execFile, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import Mocha from "mocha";
+import { terminateOwnedChild } from "./owned-child-process.mjs";
 import { assertVmProfileMode, vmProfileBuildFeature } from "./tauri-performance-vm-profile.mjs";
 
 import {
@@ -882,13 +883,7 @@ function withinDeadline(promise, deadline, describeDeadline) {
 }
 
 function terminateProcessTree(child, signal = "SIGTERM") {
-  if (child.pid == null) return;
-  try {
-    if (process.platform === "win32") child.kill(signal);
-    else process.kill(-child.pid, signal);
-  } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
-  }
+  terminateOwnedChild(child, signal, { processGroup: true });
 }
 
 function deadlineDiagnostic() {
