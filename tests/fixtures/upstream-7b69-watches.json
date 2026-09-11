@@ -1,0 +1,38 @@
+{
+  "FLAG:10": {
+    "type": "integer",
+    "value": "1"
+  },
+  "FLAG:11": {
+    "type": "integer",
+    "value": "3"
+  },
+  "FLAG:12": {
+    "type": "integer",
+    "value": "0"
+  },
+  "FLAG:13": {
+    "type": "integer",
+    "value": "42"
+  },
+  "FLAG:14": {
+    "type": "integer",
+    "value": "1"
+  },
+  "FLAG:15": {
+    "type": "integer",
+    "value": "0"
+  },
+  "FLAG:16": {
+    "type": "integer",
+    "value": "4"
+  },
+  "FLAG:17": {
+    "type": "integer",
+    "value": "4"
+  },
+  "FLAG:18": {
+    "type": "integer",
+    "value": "3"
+  }
+}

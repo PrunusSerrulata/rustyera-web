@@ -590,7 +590,7 @@ export async function runBrowserCompatibility(argv) {
         return window.__RUSTYERA_TEST__.protocolEvidence(["storage_request", "storage_response"]);
       });
       const storageEvidence = await persistCompatibilityEvidence("interop-storage", storage);
-      assertProjectStorage(storage);
+      if (traditionalState || snakeInterop) assertProjectStorage(storage);
       console.log(
         JSON.stringify({
           browser: browserName,
@@ -600,7 +600,9 @@ export async function runBrowserCompatibility(argv) {
           storageEvidence,
           restorePath: snakeInterop
             ? "visible title Continue → save1000 → confirm → LOADDATA"
-            : "lifecycle restore of explicit file bytes; not a Save/read claim",
+            : traditionalState
+              ? "lifecycle restore of explicit file bytes; not a Save/read claim"
+              : "fixed project observation without a traditional restore",
         }),
       );
       assert.deepEqual(values, expectedWatches, "restored save differs from reference state");

@@ -4,8 +4,8 @@ import type { CompatibilityIdentity } from "@/core/compatibility";
 export function referenceCompatibility(): CompatibilityIdentity {
   return {
     profile: "emuera.em",
-    semantic_version: 1,
-    policy_version: 1,
+    semantic_version: 3,
+    policy_version: 3,
     arithmetic: "wrapping_i64_v1",
     rng_algorithm: "sfmt19937",
     rng_state_version: 1,

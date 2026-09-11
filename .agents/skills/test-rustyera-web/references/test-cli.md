@@ -32,7 +32,9 @@ file input and handler while suppressing the OS sheet. It never injects a FileLi
 event. Unsupported driver uploads fail explicitly; do not fall back to computer use or injected
 files. `--traditional-state PATH` configures an ordinary save restore before the visible project
 open action; `--expect-watches PATH` compares a JSON watch/value object through read-only debug
-inspection after startup.
+inspection after startup. Standalone fixed-project watches do not claim a traditional restore;
+the GLOBAL project-storage read assertion applies only with `--traditional-state` or
+`--snake-interop`.
 
 For the actual TW round trip, use `--snake-interop --expect-watches PATH` instead of
 `--traditional-state`: it initializes the normal title and SQL connections, then clicks Continue,

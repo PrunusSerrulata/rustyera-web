@@ -12,6 +12,7 @@ export { cargoFeatureIdentity, nativeSqlFeatureEnabled } from "./cargo-command-i
 const execute = promisify(execFile);
 
 const reusableSpecs = new Set([
+  "upstream-compatibility.spec.mjs",
   "project-load-failure.spec.mjs",
   "native-input.spec.mjs",
   "preferences.spec.mjs",

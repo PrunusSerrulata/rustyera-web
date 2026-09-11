@@ -121,6 +121,9 @@ describe("verified Tauri build reuse", () => {
     expect(reusableBuildEnvironment(first, "snake-audio.spec.mjs", undefined, true)).toEqual(
       reusableBuildEnvironment(second, "snake-services.spec.mjs", undefined, true),
     );
+    expect(
+      reusableBuildEnvironment(first, "upstream-compatibility.spec.mjs", undefined, true),
+    ).toEqual(reusableBuildEnvironment(second, "snake-services.spec.mjs", undefined, true));
     const performance = reusableBuildEnvironment(
       {
         ...first,

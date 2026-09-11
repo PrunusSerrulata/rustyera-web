@@ -103,6 +103,10 @@ if (
 )
   throw new Error("--background-dom requires a supported DOM-only acceptance spec");
 const specProfiles = {
+  "upstream-compatibility.spec.mjs": {
+    environmentFlag: "VITE_RUSTYERA_TAURI_UPSTREAM_COMPATIBILITY",
+    copyProject: true,
+  },
   "snake-save-menu.spec.mjs": {
     environmentFlag: "VITE_RUSTYERA_TAURI_SNAKE_SAVE_MENU",
     copyProject: true,
