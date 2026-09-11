@@ -228,11 +228,21 @@ enabled("Tauri native input provider", () => {
       const focusTarget = await browser.createWindow("window");
       created.push(focusTarget.handle);
       await browser.switchToWindow(focusTarget.handle);
+      await browser.waitUntil(() => browser.execute(() => document.hasFocus()), {
+        timeout: 3000,
+        interval: 50,
+        timeoutMsg: "native focus target did not receive WebView focus",
+      });
       await assert.rejects(async () => {
         const unexpected = await browser.createWindow("window");
         created.push(unexpected.handle);
       }, /window limit reached/);
       await browser.switchToWindow(probe.handle);
+      await browser.waitUntil(async () => (await observation()).trustedBlur > beforeBlur, {
+        timeout: 3000,
+        interval: 50,
+        timeoutMsg: "native window switch did not deliver a trusted window blur",
+      });
       const restored = await observation();
       assert.ok(
         restored.trustedBlur > beforeBlur,

@@ -6,6 +6,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 
 import { remote } from "webdriverio";
+import { checkViewportResize } from "./viewport-layout-test.mjs";
 import { inspectWebdriverTyped, assertProjectStorage, typedValues } from "./interop-assertions.mjs";
 import { prepareNativeProjectUpload, uploadNativeProject } from "./native-project-upload.mjs";
 import { seedPackagedInteropStorage } from "./packaged-interop-storage.mjs";
@@ -646,6 +647,10 @@ export async function runBrowserCompatibility(argv) {
       await runCacheInputSmoke(browser, browserName, projectProgress, setup, opfsReset);
       if (logInputSmoke) await runLogInputSmoke(browser, browserName);
     } else if (startupOnly) {
+      if (argv.includes("--viewport-layout")) {
+        compatibilityStage = "checking viewport resize geometry";
+        await checkViewportResize(browser);
+      }
       compatibilityStage = "collecting cold-start report";
       const observed = await collectCompatibilityReport(browser);
       if (projectFile) assertPackagedStartup(observed.startupTelemetry);

@@ -559,7 +559,8 @@ select {
 .virtual-history {
   position: relative;
   width: 100%;
-  margin: 0;
+  flex-shrink: 0;
+  margin: auto 0 0;
 }
 .game-line {
   position: absolute;
@@ -819,6 +820,10 @@ select {
 }
 .scene-compositor {
   position: relative;
+  /* Bottom-align short history in the same layout pass as native scrollbars. Feeding the
+     previous clientHeight back into the scroll content makes classic scrollbars oscillate. */
+  display: flex;
+  flex-direction: column;
   isolation: isolate;
   width: 100%;
   min-height: 100%;

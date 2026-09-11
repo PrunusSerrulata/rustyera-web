@@ -29,6 +29,7 @@ const reusableSpecs = new Set([
   "snake-save-menu.spec.mjs",
   "full-project-export.spec.mjs",
   "snake-runtime-performance.spec.mjs",
+  "snake-window-resize.spec.mjs",
 ]);
 
 // These specs choose directories through the existing test-only picker configuration.

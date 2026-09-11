@@ -393,9 +393,9 @@ describe("game viewport", () => {
       await nextTick();
       const history = wrapper.get<HTMLElement>(".virtual-history");
       expect(history.classes()).toContain("history-bottom-aligned");
-      expect(history.attributes("style")).toContain("height: 720px");
+      expect(history.attributes("style")).toContain("height: 260px");
       expect(wrapper.get<HTMLElement>(".game-line").attributes("style")).toContain(
-        "translateY(460px)",
+        "translateY(0px)",
       );
       wrapper.unmount();
     } finally {

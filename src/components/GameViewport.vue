@@ -329,7 +329,6 @@ const measuredHistoryHeight = computed(() => {
   void items.value;
   return virtualizer.value.getTotalSize();
 });
-const historyHeight = computed(() => Math.max(viewportHeight.value, measuredHistoryHeight.value));
 const historyBottomInset = computed(() =>
   Math.max(0, viewportHeight.value - measuredHistoryHeight.value),
 );
@@ -756,13 +755,13 @@ watch(viewportLayoutIdentity, () => scheduleViewportSynchronization());
       :viewport-width="viewportWidth"
       :viewport-height="viewportHeight"
       :depth-ranks="sceneDepthRanks"
-      :style="{ height: `${historyHeight}px` }"
+      :style="{ height: `${measuredHistoryHeight}px` }"
     >
       <div
         ref="history"
         class="virtual-history"
         :class="{ 'history-bottom-aligned': historyBottomInset > 0 }"
-        :style="{ height: `${historyHeight}px` }"
+        :style="{ height: `${measuredHistoryHeight}px` }"
       >
         <div
           v-for="item in items"
@@ -779,7 +778,7 @@ watch(viewportLayoutIdentity, () => scheduleViewportSynchronization());
           :data-index="item.index"
           :data-line-id="String(store.presentation.lines[item.index].line_id)"
           :style="{
-            transform: `translateY(${item.start + historyBottomInset}px)`,
+            transform: `translateY(${item.start}px)`,
             minHeight: lineMinimumHeight(store.presentation.lines[item.index], item.index),
             backgroundColor: wholeLineBackground(store.presentation.lines[item.index]),
             '--game-media-line-offset': imageLayerOffset(item.index),
