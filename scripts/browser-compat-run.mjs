@@ -1,7 +1,7 @@
 /* global document, HTMLElement, MutationObserver, navigator, window */
 
 import { mkdirSync } from "node:fs";
-import { readFile, realpath } from "node:fs/promises";
+import { readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import assert from "node:assert/strict";
 
@@ -578,14 +578,29 @@ export async function runBrowserCompatibility(argv) {
         { timeout: 10_000, interval: 100, timeoutMsg: `missing output marker ${expectedOutput}` },
       );
     }
+    const upstreamScenario =
+      expectedWatches && ["UPSTREAM_READY", "SNAKE_UPSTREAM_READY"].includes(expectedOutput);
+    const upstreamExpressions = upstreamScenario
+      ? [
+          ...Object.keys(expectedWatches),
+          "FLAG:19",
+          ...(expectedOutput === "SNAKE_UPSTREAM_READY" ? ["FLAG:28", "FLAG:29"] : []),
+        ]
+      : [];
+    let upstreamInitialWatches;
     if (expectedWatches) {
       if (snakeInterop) await loadSnakeInteropSlot(browser);
       compatibilityStage = "comparing restored state through the debug protocol";
       const watches = {
-        values: await inspectWebdriverTyped(browser, Object.keys(expectedWatches)),
+        values: await inspectWebdriverTyped(
+          browser,
+          upstreamScenario ? upstreamExpressions : Object.keys(expectedWatches),
+        ),
       };
       const evidence = await persistCompatibilityEvidence("interop-watches", watches);
       const values = typedValues(watches.values, Object.keys(expectedWatches));
+      if (upstreamScenario)
+        upstreamInitialWatches = typedValues(watches.values, upstreamExpressions);
       const storage = await browser.execute(() => {
         return window.__RUSTYERA_TEST__.protocolEvidence(["storage_request", "storage_response"]);
       });
@@ -606,6 +621,70 @@ export async function runBrowserCompatibility(argv) {
         }),
       );
       assert.deepEqual(values, expectedWatches, "restored save differs from reference state");
+    }
+    if (upstreamScenario) {
+      const snake = expectedOutput === "SNAKE_UPSTREAM_READY";
+      const expressions = upstreamExpressions;
+      compatibilityStage = "continuing fixed upstream input after the initial observation";
+      const initial = await browser.execute(() => window.__RUSTYERA_TEST__.snapshot());
+      const initialDiagnostics = initial.serviceEvidence;
+      const initialWatches = upstreamInitialWatches;
+      const input = await browser.$(".prompt-bar input");
+      await input.waitForDisplayed({ timeout: 5_000 });
+      await input.setValue("7");
+      const submit = await browser.$(".prompt-bar button[type=submit]");
+      await submit.waitForClickable({ timeout: 5_000 });
+      await submit.click();
+      const marker = snake ? "SNAKE_UPSTREAM_CONTINUED" : "UPSTREAM_CONTINUED";
+      await browser.waitUntil(
+        async () =>
+          browser.execute((marker) => {
+            const state = window.__RUSTYERA_TEST__.snapshot();
+            if (state.fault) throw new Error(JSON.stringify(state.fault));
+            return (
+              state.canInteract &&
+              state.wait?.kind === "integer_value" &&
+              state.output.includes(marker)
+            );
+          }, marker),
+        { timeout: 10_000, interval: 100 },
+      );
+      const continued = await browser.execute(() => window.__RUSTYERA_TEST__.snapshot());
+      const continuedDiagnostics = continued.serviceEvidence;
+      const continuedWatches = typedValues(
+        await inspectWebdriverTyped(browser, expressions),
+        expressions,
+      );
+      console.log(
+        JSON.stringify({
+          type: "upstream-client-stages",
+          initial,
+          initialWatches,
+          initialDiagnostics,
+          continued,
+          continuedWatches,
+          continuedDiagnostics,
+        }),
+      );
+    }
+    if (expectedWatches) {
+      const packet = await browser.execute(() => ({
+        runtime: window.__RUSTYERA_TEST__.snapshotSummary(),
+        serviceEvidence: window.__RUSTYERA_TEST__.protocolEvidence([
+          "project_load_report",
+          "diagnostic",
+          "command_rejected",
+        ]),
+      }));
+      const evidencePath = path.join(snapshotDirectory, "final-runtime-evidence.json");
+      await writeFile(evidencePath, JSON.stringify(packet), { flag: "wx" });
+      console.log(
+        JSON.stringify({
+          browser: browserName,
+          type: "browser-compat-final-evidence",
+          path: evidencePath,
+        }),
+      );
     }
     if (projectFile && !startupOnly)
       projectPreferencesAfterLoad = await verifyProjectPreferencesAfterLoad(browser);

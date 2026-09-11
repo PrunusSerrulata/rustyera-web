@@ -600,7 +600,7 @@ describe("runtime store cache-input", () => {
       entry.message.includes("projection observation does not match the canonical presentation"),
     );
     expect(projectionLogs).toHaveLength(1);
-    expect(projectionLogs[0]?.message).toContain("profile=emuera.skia.snake@12/12 stage=protocol");
+    expect(projectionLogs[0]?.message).toContain("profile=emuera.skia.snake@15/15 stage=protocol");
     expect(
       store.logNotifications.filter((entry) =>
         entry.message.includes("projection observation does not match the canonical presentation"),
@@ -608,7 +608,7 @@ describe("runtime store cache-input", () => {
     ).toHaveLength(1);
     expect(
       store.logNotifications.filter(
-        (entry) => entry.message === "profile=emuera.skia.snake@12/12 stage=protocol",
+        (entry) => entry.message === "profile=emuera.skia.snake@15/15 stage=protocol",
       ),
     ).toHaveLength(0);
   });

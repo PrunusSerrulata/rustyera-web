@@ -19,8 +19,8 @@ export function snakeCompatibility(): CompatibilityIdentity {
   return {
     ...referenceCompatibility(),
     profile: "emuera.skia.snake",
-    semantic_version: 12,
-    policy_version: 12,
+    semantic_version: 15,
+    policy_version: 15,
     arithmetic: "snake_saturating_i64_v1",
     save_codec: "snake_emuera1808_interop_v1",
     services: [
