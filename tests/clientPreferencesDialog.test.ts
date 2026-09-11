@@ -15,6 +15,69 @@ async function setCheckbox(selector: string, checked: boolean): Promise<void> {
 describe("client preferences dialog", () => {
   afterEach(() => document.body.replaceChildren());
 
+  it("previews font enhancement without mutating saved preferences and preserves explicit project off", async () => {
+    const globalValue = defaultPreferences();
+    const wrapper = mount(ClientPreferencesDialog, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        globalValue,
+        projectValue: { settings: {} },
+        entries: [],
+        projectWritable: true,
+        gameFontFamily: "Test Game Font",
+        gameFontSize: "20px",
+      },
+    });
+    const preview = () => document.body.querySelector<HTMLElement>(".font-preview-current")!;
+    expect(preview().classList.contains("game-font-enhanced")).toBe(false);
+    expect(preview().style.fontFamily).toContain("Test Game Font");
+    expect(preview().style.fontSize).toBe("20px");
+    await setCheckbox("#preference-global-fontEnhancement", true);
+    expect(preview().classList.contains("game-font-enhanced")).toBe(true);
+    expect(document.body.querySelector(".font-preview-original.game-font-enhanced")).toBeNull();
+    expect(globalValue.fontEnhancement).toBe(false);
+    expect(wrapper.emitted("save")).toBeUndefined();
+    const buttons = () => [...document.body.querySelectorAll<HTMLButtonElement>("button")];
+    buttons()
+      .find((b) => b.textContent === "重置未保存更改")!
+      .click();
+    await nextTick();
+    expect(preview().classList.contains("game-font-enhanced")).toBe(false);
+    await setCheckbox("#preference-global-fontEnhancement", true);
+    buttons()
+      .find((b) => b.textContent === "取消")!
+      .click();
+    expect(wrapper.emitted("close")).toHaveLength(1);
+    expect(wrapper.emitted("save")).toBeUndefined();
+    await wrapper.setProps({ open: false });
+    await wrapper.setProps({ open: true, globalValue: { ...globalValue, fontEnhancement: true } });
+    document.body.querySelector<HTMLButtonElement>("#preference-tab-project")!.click();
+    await nextTick();
+    expect(preview().classList.contains("game-font-enhanced")).toBe(true);
+    expect(document.body.querySelector("#preference-project-fontEnhancement")).toBeNull();
+    await setCheckbox("#preference-project-fontEnhancement-override", true);
+    await setCheckbox("#preference-project-fontEnhancement", false);
+    document.body
+      .querySelector<HTMLFormElement>("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(wrapper.emitted("save")?.at(-1)).toEqual([
+      "project",
+      expect.objectContaining({ fontEnhancement: false }),
+    ]);
+    expect(preview().classList.contains("game-font-enhanced")).toBe(false);
+    await setCheckbox("#preference-project-fontEnhancement-override", false);
+    document.body
+      .querySelector<HTMLFormElement>("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(wrapper.emitted("save")?.at(-1)).toEqual([
+      "project",
+      expect.objectContaining({ fontEnhancement: undefined }),
+    ]);
+    expect(preview().classList.contains("game-font-enhanced")).toBe(true);
+    wrapper.unmount();
+  });
+
   it("edits sparse global and project overrides independently, including fixed project fields", async () => {
     const entry: ProjectConfigurationEntry = {
       code: "UseMouse",

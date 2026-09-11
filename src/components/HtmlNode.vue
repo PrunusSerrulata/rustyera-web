@@ -37,6 +37,12 @@ const props = defineProps<{
 const measurement = inject(htmlMeasurementProjectionKey, undefined);
 const children = computed<any[]>(() => props.node.children ?? []);
 const store = measurement?.state ?? useRuntimeStore();
+const fontEnhanced = computed(
+  () =>
+    !measurement &&
+    "fontEnhancement" in store.effectivePreferences &&
+    store.effectivePreferences.fontEnhancement === true,
+);
 const sceneDepthRank = useSceneDepthRank();
 const pointerButton = measurement
   ? undefined
@@ -365,7 +371,12 @@ const trailingTextChildIndex = computed(() =>
       >{{ segment.text }}</span
     >
   </span>
-  <template v-else-if="node.type === 'text'">
+  <span
+    v-else-if="node.type === 'text'"
+    class="html-text"
+    :class="{ 'game-font-enhanced': fontEnhanced }"
+    style="display: contents"
+  >
     <template v-for="(segment, index) in textSegments(node.text)" :key="index">
       <span
         v-if="segment.kind === 'space'"
@@ -394,7 +405,7 @@ const trailingTextChildIndex = computed(() =>
       >
       <template v-else>{{ segment.text }}</template>
     </template>
-  </template>
+  </span>
   <br
     v-else-if="node.kind === 'break'"
     :data-html-break-path="measurement ? measurementPath : undefined"

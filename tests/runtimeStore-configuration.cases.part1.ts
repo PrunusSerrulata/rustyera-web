@@ -599,6 +599,7 @@ describe("runtime store configuration", () => {
       settings: { FontSize: "24" },
       masterVolume: 0.4,
       interactionAssistMode: "off",
+      fontEnhancement: false,
     });
     bridge.createSession.mockResolvedValueOnce({
       ...emptyBatch(),
@@ -620,6 +621,7 @@ describe("runtime store configuration", () => {
     expect(store.projectPreferencesWritable).toBe(false);
     bridge.projectPreferencesWritable.mockReturnValue(true);
     store.preferences.settings.UseMouse = "NO";
+    store.preferences.fontEnhancement = true;
 
     await store.enableDebug();
 
@@ -636,6 +638,9 @@ describe("runtime store configuration", () => {
     );
     expect(store.effectivePreferences.masterVolume).toBe(0.4);
     expect(store.effectivePreferences.interactionAssistMode).toBe("off");
+    expect(store.effectivePreferences.fontEnhancement).toBe(false);
+    delete store.projectPreferences.fontEnhancement;
+    expect(store.effectivePreferences.fontEnhancement).toBe(true);
     expect(store.projectPreferencesWritable).toBe(true);
   });
 

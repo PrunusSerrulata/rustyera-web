@@ -171,6 +171,8 @@ onBeforeUnmount(() => store.teardown());
       @save="store.saveProjectSettings"
     />
     <ClientPreferencesDialog
+      :game-font-family="store.gameTextStyle.fontFamily"
+      :game-font-size="store.gameTextStyle.fontSize"
       :open="store.preferencesOpen"
       :global-value="store.preferences"
       :project-value="store.projectPreferences"

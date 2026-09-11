@@ -1,9 +1,15 @@
 :root {
+  --game-font-enhancement-stroke: 0.2px;
   color-scheme: dark;
   font-family: system-ui, sans-serif;
   color: #e8e9ed;
   background: #101114;
   font-synthesis: none;
+}
+
+/* Paint-only enhancement keeps the runtime text metrics and interaction geometry intact. */
+.game-font-enhanced {
+  -webkit-text-stroke: var(--game-font-enhancement-stroke) currentColor;
 }
 
 * {

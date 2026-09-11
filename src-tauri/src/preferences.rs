@@ -20,6 +20,8 @@ pub(super) struct Preferences {
     pub(super) settings: BTreeMap<String, String>,
     pub(super) font_family_override: Option<String>,
     pub(super) font_size_override_px: Option<u8>,
+    #[serde(default)]
+    pub(super) font_enhancement: bool,
     pub(super) image_scale: f64,
     pub(super) master_volume: f64,
     #[serde(default)]
@@ -33,6 +35,8 @@ pub(super) struct Preferences {
 pub(super) struct ProjectPreferences {
     #[serde(default)]
     pub(super) settings: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) font_enhancement: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) image_scale: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -206,6 +210,7 @@ pub(super) fn save_preferences(
         "tauri".into(),
         profile_from_values(
             preferences.settings.clone(),
+            Some(preferences.font_enhancement),
             Some(preferences.image_scale),
             Some(preferences.master_volume),
             Some(preferences.trust_project_file_metadata),
@@ -272,6 +277,7 @@ pub(super) fn save_project_preferences(
         "tauri".into(),
         profile_from_values(
             preferences.settings.clone(),
+            preferences.font_enhancement,
             preferences.image_scale,
             preferences.master_volume,
             preferences.trust_project_file_metadata,
@@ -295,6 +301,7 @@ pub(super) fn default_preferences() -> Preferences {
         settings: BTreeMap::new(),
         font_family_override: None,
         font_size_override_px: None,
+        font_enhancement: false,
         image_scale: 1.0,
         master_volume: 1.0,
         trust_project_file_metadata: false,
@@ -370,13 +377,27 @@ fn validate_active_profile(document: &ProjectPreferenceDocument) -> std::io::Res
     for key in profile.client.keys() {
         if !matches!(
             key.as_str(),
-            "imageScale" | "masterVolume" | "trustProjectFileMetadata" | "interactionAssistMode"
+            "fontEnhancement"
+                | "imageScale"
+                | "masterVolume"
+                | "trustProjectFileMetadata"
+                | "interactionAssistMode"
         ) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("tauri client preferences contain unknown field {key}"),
             ));
         }
+    }
+    if profile
+        .client
+        .get("fontEnhancement")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "fontEnhancement must be a boolean",
+        ));
     }
     validate_optional_number(&profile.client, "imageScale", 0.25, 4.0)?;
     validate_optional_number(&profile.client, "masterVolume", 0.0, 1.0)?;
@@ -429,6 +450,10 @@ fn profile_preferences(document: &ProjectPreferenceDocument) -> ProjectPreferenc
     };
     ProjectPreferences {
         settings: profile.settings.clone(),
+        font_enhancement: profile
+            .client
+            .get("fontEnhancement")
+            .and_then(Value::as_bool),
         image_scale: json_f64(&profile.client, "imageScale"),
         master_volume: json_f64(&profile.client, "masterVolume"),
         trust_project_file_metadata: profile
@@ -450,6 +475,7 @@ fn global_profile_preferences(document: &ProjectPreferenceDocument) -> Preferenc
         settings: project.settings,
         font_family_override: None,
         font_size_override_px: None,
+        font_enhancement: project.font_enhancement.unwrap_or(false),
         image_scale: project.image_scale.unwrap_or(1.0),
         master_volume: project.master_volume.unwrap_or(1.0),
         trust_project_file_metadata: project.trust_project_file_metadata.unwrap_or(false),
@@ -459,12 +485,16 @@ fn global_profile_preferences(document: &ProjectPreferenceDocument) -> Preferenc
 
 fn profile_from_values(
     settings: BTreeMap<String, String>,
+    font_enhancement: Option<bool>,
     image_scale: Option<f64>,
     master_volume: Option<f64>,
     trust_project_file_metadata: Option<bool>,
     interaction_assist_mode: Option<InteractionAssistMode>,
 ) -> ProjectPreferenceProfile {
     let mut client = serde_json::Map::new();
+    if let Some(value) = font_enhancement {
+        client.insert("fontEnhancement".into(), Value::from(value));
+    }
     if let Some(value) = image_scale {
         client.insert("imageScale".into(), Value::from(value));
     }
@@ -547,6 +577,7 @@ mod tests {
             "tauri".into(),
             profile_from_values(
                 BTreeMap::new(),
+                Some(false),
                 Some(1.5),
                 None,
                 Some(false),
@@ -558,6 +589,10 @@ mod tests {
 
         assert_eq!(rewritten["profiles"]["tui"], preserved);
         assert_eq!(rewritten["profiles"]["tauri"]["client"]["imageScale"], 1.5);
+        assert_eq!(
+            rewritten["profiles"]["tauri"]["client"]["fontEnhancement"],
+            false
+        );
         assert_eq!(
             rewritten["profiles"]["tauri"]["client"]["trustProjectFileMetadata"],
             false
@@ -574,6 +609,10 @@ mod tests {
         let path = directory.path().join("preferences-v1.json");
         for value in [
             serde_json::json!({ "schemaVersion": 2, "profiles": {} }),
+            serde_json::json!({
+                "schemaVersion": 1,
+                "profiles": { "tauri": { "client": { "fontEnhancement": "true" } } }
+            }),
             serde_json::json!({
                 "schemaVersion": 1,
                 "profiles": { "tauri": { "settings": {}, "client": { "future": true } } }
@@ -600,12 +639,41 @@ mod tests {
     }
 
     #[test]
+    fn font_enhancement_defaults_off_and_preserves_sparse_project_overrides() {
+        assert!(!default_preferences().font_enhancement);
+        let mut legacy = serde_json::to_value(default_preferences()).unwrap();
+        legacy.as_object_mut().unwrap().remove("fontEnhancement");
+        assert!(
+            !serde_json::from_value::<Preferences>(legacy)
+                .unwrap()
+                .font_enhancement
+        );
+        let mut document = ProjectPreferenceDocument::default();
+        assert!(!global_profile_preferences(&document).font_enhancement);
+        for value in [None, Some(true), Some(false)] {
+            document.profiles.insert(
+                "tauri".into(),
+                profile_from_values(BTreeMap::new(), value, None, None, None, None),
+            );
+            let encoded = serde_json::to_vec(&document).unwrap();
+            let restored = serde_json::from_slice(&encoded).unwrap();
+            validate_active_profile(&restored).unwrap();
+            assert_eq!(profile_preferences(&restored).font_enhancement, value);
+            assert_eq!(
+                global_profile_preferences(&restored).font_enhancement,
+                value.unwrap_or(false)
+            );
+        }
+    }
+
+    #[test]
     fn project_preference_values_normalize_only_finite_supported_ranges() {
         let normalized = ProjectPreferences {
             settings: BTreeMap::from([
                 ("UseMouse".into(), "NO".into()),
                 ("UseMenu".into(), "YES".into()),
             ]),
+            font_enhancement: Some(false),
             image_scale: Some(f64::INFINITY),
             master_volume: Some(-1.0),
             trust_project_file_metadata: Some(true),

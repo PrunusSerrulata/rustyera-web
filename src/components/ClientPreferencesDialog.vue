@@ -19,6 +19,8 @@ const props = withDefaults(
     globalValue: Preferences;
     projectValue: ProjectPreferences;
     entries: ProjectConfigurationEntry[];
+    gameFontFamily?: string;
+    gameFontSize?: string;
     fontFamilies?: string[];
     fontAccessStatus?: FontAccessStatus;
     fontAccessError?: string;
@@ -28,6 +30,8 @@ const props = withDefaults(
     error?: string;
   }>(),
   {
+    gameFontFamily: "monospace",
+    gameFontSize: "18px",
     fontFamilies: () => [],
     fontAccessStatus: "idle",
     fontAccessError: "",
@@ -93,10 +97,15 @@ const groups = computed(() => {
 });
 const title = computed(() => `RustyEra ${props.hostKind === "tauri" ? "Tauri" : "Web"} · 偏好设置`);
 const auxiliaryDescriptions = {
+  fontEnhancement:
+    "轻微增强游戏文字笔画，使其更饱满。效果因字体和显示设备而异，不影响图片及画布文字。",
   imageScale: "调整游戏图片和画布在当前客户端中的显示缩放比例。",
   trustProjectFileMetadata: "允许快速启动使用文件大小和修改时间判断项目文件是否变化。",
   interactionAssistMode: "控制是否在游戏主视口下方显示当前可用交互项的辅助按钮。",
 } as const;
+const previewEnhanced = computed(() => draft.fontEnhancement ?? props.globalValue.fontEnhancement);
+const fontPreviewText = "春风与文字 あいうえお RustyEra 0123456789，。！？ Aa";
+
 const interactionAssistModes = [
   { value: "off", label: "关闭" },
   { value: "on", label: "开启" },
@@ -123,6 +132,7 @@ function source(): ProjectPreferences {
   return scope.value === "global"
     ? {
         settings: props.globalValue.settings,
+        fontEnhancement: props.globalValue.fontEnhancement,
         imageScale: props.globalValue.imageScale,
         masterVolume: props.globalValue.masterVolume,
         trustProjectFileMetadata: props.globalValue.trustProjectFileMetadata,
@@ -134,6 +144,7 @@ function source(): ProjectPreferences {
 function resetDraft(): void {
   const value = source();
   draft.settings = { ...value.settings };
+  draft.fontEnhancement = value.fontEnhancement;
   draft.imageScale = value.imageScale;
   draft.masterVolume = value.masterVolume;
   draft.trustProjectFileMetadata = value.trustProjectFileMetadata;
@@ -167,16 +178,19 @@ function setBoolean(code: string, checked: boolean): void {
 }
 
 function auxiliaryOverridden(
-  key: "imageScale" | "trustProjectFileMetadata" | "interactionAssistMode",
+  key: "fontEnhancement" | "imageScale" | "trustProjectFileMetadata" | "interactionAssistMode",
 ) {
   return scope.value === "global" || draft[key] != null;
 }
 
 function toggleAuxiliary(
-  key: "imageScale" | "trustProjectFileMetadata" | "interactionAssistMode",
+  key: "fontEnhancement" | "imageScale" | "trustProjectFileMetadata" | "interactionAssistMode",
   enabled: boolean,
 ): void {
-  if (key === "imageScale") {
+  if (key === "fontEnhancement") {
+    draft.fontEnhancement =
+      !enabled && scope.value === "project" ? undefined : props.globalValue.fontEnhancement;
+  } else if (key === "imageScale") {
     draft.imageScale = !enabled && scope.value === "project" ? undefined : 1;
   } else if (key === "trustProjectFileMetadata") {
     draft.trustProjectFileMetadata = !enabled && scope.value === "project" ? undefined : false;
@@ -199,6 +213,7 @@ function settingItemClasses(field: SettingsField): Record<string, boolean> {
 function save(): void {
   emit("save", scope.value, {
     settings: { ...draft.settings },
+    fontEnhancement: draft.fontEnhancement,
     imageScale: draft.imageScale,
     masterVolume: draft.masterVolume,
     trustProjectFileMetadata: draft.trustProjectFileMetadata,
@@ -389,6 +404,67 @@ async function scopeKeydown(event: KeyboardEvent): Promise<void> {
         <fieldset class="settings-group">
           <legend>客户端显示与项目加载</legend>
           <div class="settings-grid">
+            <div class="setting-item setting-wide preference-font-enhancement-setting">
+              <label
+                class="preference-auxiliary-label"
+                :for="
+                  scope === 'project'
+                    ? `preference-${scope}-fontEnhancement-override`
+                    : `preference-${scope}-fontEnhancement`
+                "
+              >
+                <input
+                  v-if="scope === 'project'"
+                  :id="`preference-${scope}-fontEnhancement-override`"
+                  type="checkbox"
+                  :checked="auxiliaryOverridden('fontEnhancement')"
+                  :disabled="busy"
+                  @change="
+                    toggleAuxiliary('fontEnhancement', ($event.target as HTMLInputElement).checked)
+                  "
+                />
+                <span>游戏字体增强</span>
+                <small v-if="scope === 'project'">{{
+                  auxiliaryOverridden("fontEnhancement") ? "已覆盖" : "继承全局"
+                }}</small>
+              </label>
+              <label
+                v-if="auxiliaryOverridden('fontEnhancement')"
+                class="preference-boolean-control"
+                :for="`preference-${scope}-fontEnhancement`"
+              >
+                <input
+                  :id="`preference-${scope}-fontEnhancement`"
+                  v-model="draft.fontEnhancement"
+                  type="checkbox"
+                  :disabled="busy"
+                  :aria-describedby="`preference-${scope}-fontEnhancement-description`"
+                />
+                <span>启用</span>
+              </label>
+              <p :id="`preference-${scope}-fontEnhancement-description`" class="hint">
+                {{ auxiliaryDescriptions.fontEnhancement }}
+              </p>
+              <div class="font-enhancement-preview" aria-label="游戏字体效果预览">
+                <div>
+                  <small>原始</small
+                  ><span
+                    class="font-preview-original"
+                    :style="{ fontFamily: gameFontFamily, fontSize: gameFontSize }"
+                    >{{ fontPreviewText }}</span
+                  >
+                </div>
+                <div>
+                  <small>{{ previewEnhanced ? "增强" : "当前：关闭" }}</small
+                  ><span
+                    class="font-preview-current"
+                    :class="{ 'game-font-enhanced': previewEnhanced }"
+                    :style="{ fontFamily: gameFontFamily, fontSize: gameFontSize }"
+                    >{{ fontPreviewText }}</span
+                  >
+                </div>
+              </div>
+            </div>
             <div class="setting-item preference-auxiliary-item preference-image-scale-setting">
               <label
                 class="preference-auxiliary-label"

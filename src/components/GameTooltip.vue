@@ -6,6 +6,7 @@ import type { Color, TooltipFormatFlag, TooltipSettings } from "@/core/types";
 const props = defineProps<{
   scope?: HTMLElement;
   settings: TooltipSettings;
+  fontEnhancement?: boolean;
 }>();
 
 const tooltip = ref<HTMLElement>();
@@ -189,6 +190,7 @@ onBeforeUnmount(() => {
       id="game-tooltip"
       ref="tooltip"
       class="game-tooltip"
+      :class="{ 'game-font-enhanced': fontEnhancement }"
       role="tooltip"
       :style="style"
     >

@@ -1,0 +1,355 @@
+{
+  "schema_version": 1,
+  "project": "../../../../emuera.em/emuera-reference-cli/tests/fixture",
+  "mode": "fixed",
+  "seed": 123456,
+  "clock": "2026-01-01T00:00:00Z",
+  "actions": [
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".game-font-enhanced"
+      },
+      "expect": {
+        "count": 0
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "文件",
+        "exact": true
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "偏好设置…",
+        "exact": true
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": "#preference-tab-global"
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": "#preference-global-fontEnhancement:not(:checked)"
+      },
+      "expect": {
+        "count": 1
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": "#preference-global-fontEnhancement"
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".font-preview-current.game-font-enhanced"
+      },
+      "expect": {
+        "count": 1
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".font-preview-original.game-font-enhanced, .game-viewport .game-font-enhanced"
+      },
+      "expect": {
+        "count": 0
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "取消",
+        "exact": true
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".game-font-enhanced"
+      },
+      "expect": {
+        "count": 0
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "文件",
+        "exact": true
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "偏好设置…",
+        "exact": true
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": "#preference-tab-global"
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": "#preference-global-fontEnhancement:not(:checked)"
+      },
+      "expect": {
+        "count": 1
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": "#preference-global-fontEnhancement"
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "应用",
+        "exact": true
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".game-viewport .game-font-enhanced"
+      },
+      "expect": {
+        "visible": true
+      }
+    },
+    {
+      "type": "query",
+      "locator": {
+        "css": ".game-viewport .game-font-enhanced",
+        "nth": 0
+      },
+      "fields": ["text", "box", "attributes"]
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".menu-bar.game-font-enhanced, .prompt-bar .game-font-enhanced"
+      },
+      "expect": {
+        "count": 0
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "文件",
+        "exact": true
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "偏好设置…",
+        "exact": true
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": "#preference-tab-global"
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": "#preference-global-fontEnhancement:checked"
+      },
+      "expect": {
+        "count": 1
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": "#preference-tab-project"
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": "#preference-project-fontEnhancement-override"
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": "#preference-project-fontEnhancement:checked"
+      },
+      "expect": {
+        "count": 1
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": "#preference-project-fontEnhancement"
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "应用",
+        "exact": true
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".game-font-enhanced"
+      },
+      "expect": {
+        "count": 0
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "文件",
+        "exact": true
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "偏好设置…",
+        "exact": true
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": "#preference-tab-global"
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": "#preference-tab-project"
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": "#preference-project-fontEnhancement-override:checked"
+      },
+      "expect": {
+        "count": 1
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": "#preference-project-fontEnhancement:not(:checked)"
+      },
+      "expect": {
+        "count": 1
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": "#preference-project-fontEnhancement-override"
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "应用",
+        "exact": true
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".game-viewport .game-font-enhanced"
+      },
+      "expect": {
+        "visible": true
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "文件",
+        "exact": true
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "偏好设置…",
+        "exact": true
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": "#preference-tab-global"
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "css": "#preference-global-fontEnhancement"
+      }
+    },
+    {
+      "type": "click",
+      "locator": {
+        "role": "button",
+        "name": "应用",
+        "exact": true
+      }
+    },
+    {
+      "type": "assert_dom",
+      "locator": {
+        "css": ".game-font-enhanced"
+      },
+      "expect": {
+        "count": 0
+      }
+    }
+  ],
+  "goal": {},
+  "limits": {
+    "max_steps": 60,
+    "timeout_seconds": 90
+  }
+}

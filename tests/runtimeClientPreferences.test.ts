@@ -55,6 +55,7 @@ function fixture(withProject = true) {
   return {
     state,
     global,
+    project,
     open,
     send,
     savePreferences,
@@ -76,6 +77,7 @@ describe("runtime client preference transactions", () => {
       masterVolume: 0.4,
       trustProjectFileMetadata: true,
       interactionAssistMode: "on",
+      fontEnhancement: true,
     });
 
     expect(savePreferences).toHaveBeenCalledOnce();
@@ -84,10 +86,57 @@ describe("runtime client preference transactions", () => {
       masterVolume: 0.4,
       trustProjectFileMetadata: true,
       interactionAssistMode: "on",
+      fontEnhancement: true,
     });
     expect(send).not.toHaveBeenCalled();
     expect(open.value).toBe(false);
     expect(finishStatus).toHaveBeenCalledWith(1, "全局偏好已应用");
+  });
+
+  it("applies font-only changes without resending configuration or resizing the host", async () => {
+    const current = fixture();
+    await current.state.save("global", { settings: {}, fontEnhancement: true });
+    expect(current.global.value.fontEnhancement).toBe(true);
+    expect(current.open.value).toBe(false);
+    await current.state.save("project", { settings: {}, fontEnhancement: false });
+    expect(current.project.value.fontEnhancement).toBe(false);
+    await current.state.save("project", { settings: {} });
+    expect(current.project.value.fontEnhancement).toBeUndefined();
+    await current.state.save("global", { settings: {}, fontEnhancement: false });
+    expect(current.global.value.fontEnhancement).toBe(false);
+    expect(current.send).not.toHaveBeenCalled();
+    expect(current.applyHostConfiguration).not.toHaveBeenCalled();
+    expect(current.applyAudio).not.toHaveBeenCalled();
+  });
+
+  it("waits for an existing application before finishing a font-only save", async () => {
+    const current = fixture();
+    const startup = current.state.apply();
+    await flushMicrotasks();
+    const saving = current.state.save("global", { settings: {}, fontEnhancement: true });
+    await flushMicrotasks();
+    expect(current.open.value).toBe(true);
+    expect(current.send).toHaveBeenCalledOnce();
+    await current.state.handleApplied({ configuration: {} }, 7);
+    await startup;
+    await saving;
+    expect(current.open.value).toBe(false);
+    expect(current.send).toHaveBeenCalledOnce();
+  });
+
+  it("still applies configuration when other settings change alongside the font flag", async () => {
+    const current = fixture();
+    const saving = current.state.save("global", {
+      settings: { UseMouse: "NO" },
+      fontEnhancement: true,
+    });
+    await flushMicrotasks();
+    expect(current.send).toHaveBeenCalledOnce();
+    expect(current.open.value).toBe(true);
+    await current.state.handleApplied({ configuration: {} }, 7);
+    await saving;
+    expect(current.applyHostConfiguration).toHaveBeenCalledOnce();
+    expect(current.open.value).toBe(false);
   });
 
   it("does not report or close a save before the matching Applied response", async () => {

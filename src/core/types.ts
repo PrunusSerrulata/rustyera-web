@@ -35,6 +35,7 @@ export interface Preferences {
   settings: Record<string, string>;
   fontFamilyOverride: string | null;
   fontSizeOverridePx: number | null;
+  fontEnhancement: boolean;
   imageScale: number;
   masterVolume: number;
   trustProjectFileMetadata: boolean;
@@ -46,6 +47,7 @@ export const defaultPreferences = (): Preferences => ({
   settings: {},
   fontFamilyOverride: null,
   fontSizeOverridePx: null,
+  fontEnhancement: false,
   imageScale: 1,
   masterVolume: 1,
   trustProjectFileMetadata: false,
@@ -54,6 +56,7 @@ export const defaultPreferences = (): Preferences => ({
 
 export interface ProjectPreferences {
   settings: Record<string, string>;
+  fontEnhancement?: boolean;
   imageScale?: number;
   masterVolume?: number;
   trustProjectFileMetadata?: boolean;

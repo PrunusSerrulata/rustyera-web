@@ -16,6 +16,18 @@ describe("preference normalization", () => {
     });
   });
 
+  it("defaults missing or invalid font enhancement to off and preserves explicit booleans", () => {
+    expect(defaultPreferences().fontEnhancement).toBe(false);
+    for (const value of [undefined, null, "true", 1, false]) {
+      expect(
+        normalizePreferences({ ...defaultPreferences(), fontEnhancement: value }).fontEnhancement,
+      ).toBe(false);
+    }
+    expect(
+      normalizePreferences({ ...defaultPreferences(), fontEnhancement: true }).fontEnhancement,
+    ).toBe(true);
+  });
+
   it("clamps every user-controlled numeric projection", () => {
     expect(
       normalizePreferences({
@@ -30,6 +42,7 @@ describe("preference normalization", () => {
       settings: { FontSize: "72" },
       fontFamilyOverride: null,
       fontSizeOverridePx: null,
+      fontEnhancement: false,
       imageScale: 4,
       masterVolume: 0,
       trustProjectFileMetadata: false,
@@ -54,6 +67,7 @@ describe("preference normalization", () => {
         settings: {},
         fontFamilyOverride: null,
         fontSizeOverridePx: null,
+        fontEnhancement: false,
         imageScale: 1.75,
         masterVolume: 0.4,
         trustProjectFileMetadata: false,
@@ -77,6 +91,7 @@ describe("preference normalization", () => {
       settings: { FontName: "Accessible Font", FontSize: "72" },
       fontFamilyOverride: null,
       fontSizeOverridePx: null,
+      fontEnhancement: false,
       imageScale: 2,
       masterVolume: 0.5,
       trustProjectFileMetadata: false,

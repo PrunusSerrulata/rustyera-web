@@ -749,3 +749,24 @@
     border-width: 2px;
   }
 }
+
+.preference-font-enhancement-setting > .hint {
+  margin: 0;
+}
+
+.font-enhancement-preview {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid #424650;
+  border-radius: 5px;
+}
+
+.font-enhancement-preview > div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.font-enhancement-preview span {
+  overflow-wrap: anywhere;
+}

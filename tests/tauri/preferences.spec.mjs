@@ -61,8 +61,10 @@ preferences("Tauri client preferences", () => {
     await $("button=文件").click();
     await $("button=偏好设置…").click();
 
-    const dialog = await $(".dialog-panel[aria-label='RustyEra Tauri · 偏好设置']");
+    let dialog = await $(".dialog-panel[aria-label='RustyEra Tauri · 偏好设置']");
     await dialog.waitForDisplayed();
+    dialog = await verifyFontEnhancement(dialog);
+    if (process.env.RUSTYERA_TEST_FONT_ENHANCEMENT_ONLY === "1") return;
     await dialog.$("#preference-global-FontName-override").click();
     const fontInput = await dialog.$("#preference-global-FontName");
     assert.equal(await fontInput.getAttribute("type"), "text");
@@ -626,4 +628,144 @@ async function preferenceLayoutMetrics(scope) {
         fontSizeControl.right <= fontSizeItem.right,
     };
   }, scope);
+}
+
+async function verifyFontEnhancement(dialog) {
+  const open = async () => {
+    await $("button=文件").click();
+    await $("button=偏好设置…").click();
+    dialog = await $(".dialog-panel[aria-label='RustyEra Tauri · 偏好设置']");
+    await dialog.waitForDisplayed();
+    await dialog.$("#preference-tab-global").click();
+  };
+  const apply = async () => {
+    await dialog.$("button=应用").click();
+    await dialog.waitForDisplayed({ reverse: true });
+  };
+  const enhancedCount = () =>
+    browser.execute(() => document.querySelectorAll(".game-viewport .game-font-enhanced").length);
+  const projectClient = async () =>
+    JSON.parse(
+      await readFile(
+        path.join(process.env.VITE_RUSTYERA_TEST_PROJECT, ".rustyera", "preferences-v1.json"),
+        "utf8",
+      ),
+    ).profiles.tauri.client;
+  await dialog.$("#preference-tab-global").click();
+  assert.equal(await dialog.$("#preference-global-fontEnhancement").isSelected(), false);
+  await dialog.$("#preference-global-fontEnhancement").click();
+  assert.deepEqual(
+    await browser.execute(() => ({
+      preview: document.querySelectorAll(".font-preview-current.game-font-enhanced").length,
+      other: document.querySelectorAll(".game-font-enhanced:not(.font-preview-current)").length,
+    })),
+    { preview: 1, other: 0 },
+  );
+  await dialog.$("button=取消").click();
+  await dialog.waitForDisplayed({ reverse: true });
+  assert.equal(await enhancedCount(), 0);
+  const originalGeometry = await fontEnhancementGeometry();
+  await open();
+  assert.equal(await dialog.$("#preference-global-fontEnhancement").isSelected(), false);
+  await dialog.$("#preference-global-fontEnhancement").click();
+  await apply();
+  assert.ok((await enhancedCount()) > 0);
+  assert.deepEqual(await fontEnhancementGeometry(), originalGeometry);
+  const paint = await browser.execute(() => {
+    const text = document.querySelector(".game-viewport .game-font-enhanced");
+    return {
+      stroke: getComputedStyle(text).webkitTextStrokeWidth,
+      color: getComputedStyle(text).color,
+      strokeColor: getComputedStyle(text).webkitTextStrokeColor,
+    };
+  });
+  assert.equal(paint.stroke, "0.2px");
+  assert.equal(paint.strokeColor, paint.color);
+  // Compare all three paint states before pointer movement can scroll the viewport.
+  await open();
+  await dialog.$("#preference-global-fontEnhancement").click();
+  await apply();
+  assert.equal(await enhancedCount(), 0);
+  assert.deepEqual(await fontEnhancementGeometry(), originalGeometry);
+  await open();
+  await dialog.$("#preference-global-fontEnhancement").click();
+  await apply();
+  const textButton = await $(
+    ".game-viewport .game-button:has(.game-font-enhanced), .game-viewport button.html-node:has(.game-font-enhanced)",
+  );
+  await textButton.moveTo();
+  const hoverPaint = await browser.execute(() =>
+    [...document.querySelectorAll(".game-viewport .game-font-enhanced")].map((element) => {
+      const style = getComputedStyle(element);
+      return { color: style.color, strokeColor: style.webkitTextStrokeColor };
+    }),
+  );
+  assert.ok(hoverPaint.length > 0);
+  assert.ok(hoverPaint.every((item) => item.color === item.strokeColor));
+  console.log(
+    JSON.stringify({
+      fontEnhancementHoverColors: [...new Set(hoverPaint.map((item) => item.color))],
+    }),
+  );
+  await open();
+  assert.equal(await dialog.$("#preference-global-fontEnhancement").isSelected(), true);
+  await dialog.$("#preference-tab-project").click();
+  await dialog.$("#preference-project-fontEnhancement-override").click();
+  assert.equal(await dialog.$("#preference-project-fontEnhancement").isSelected(), true);
+  await dialog.$("#preference-project-fontEnhancement").click();
+  await apply();
+  assert.equal(await enhancedCount(), 0);
+  assert.equal((await projectClient()).fontEnhancement, false);
+  await open();
+  await dialog.$("#preference-tab-project").click();
+  assert.equal(await dialog.$("#preference-project-fontEnhancement-override").isSelected(), true);
+  assert.equal(await dialog.$("#preference-project-fontEnhancement").isSelected(), false);
+  await dialog.$("#preference-project-fontEnhancement-override").click();
+  await apply();
+  assert.ok((await enhancedCount()) > 0);
+  assert.equal((await projectClient()).fontEnhancement, undefined);
+  await open();
+  await dialog.$("#preference-global-fontEnhancement").click();
+  await apply();
+  assert.equal(await enhancedCount(), 0);
+  console.log(
+    JSON.stringify({
+      fontEnhancement: {
+        previewIsolated: true,
+        projectFalsePersisted: true,
+        inherited: true,
+        paint,
+      },
+    }),
+  );
+  await open();
+  return dialog;
+}
+
+async function fontEnhancementGeometry() {
+  return browser.execute(() => {
+    const viewport = document.querySelector(".game-viewport");
+    const walker = document.createTreeWalker(viewport, NodeFilter.SHOW_TEXT);
+    const text = [];
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (!node.textContent?.trim()) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      text.push({
+        text: range.toString(),
+        rects: [...range.getClientRects()].map((rect) => [rect.x, rect.y, rect.width, rect.height]),
+      });
+    }
+    const buttons = [...viewport.querySelectorAll("button")].map((button) => {
+      const rect = button.getBoundingClientRect();
+      return { text: button.textContent, rect: [rect.x, rect.y, rect.width, rect.height] };
+    });
+    const clientStroke = [
+      ...document.querySelectorAll(
+        ".menu-row button, .prompt-bar input, .prompt-bar button, canvas",
+      ),
+    ].map((element) => getComputedStyle(element).webkitTextStrokeWidth);
+    return { text, buttons, clientStroke };
+  });
 }

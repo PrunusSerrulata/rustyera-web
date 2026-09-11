@@ -83,6 +83,23 @@ describe("browser project preferences", () => {
     });
   });
 
+  it.each([true, false])(
+    "restores explicit font enhancement %s and removes the override when reset",
+    async (fontEnhancement) => {
+      const root = new MemoryDirectoryHandle("game");
+      const handle = root as unknown as FileSystemDirectoryHandle;
+      const store = await BrowserProjectPreferenceStore.source(handle);
+      expect(store.values().fontEnhancement).toBeUndefined();
+      await store.save({ settings: {}, fontEnhancement });
+      const restored = await BrowserProjectPreferenceStore.source(handle);
+      expect(restored.values().fontEnhancement).toBe(fontEnhancement);
+      await restored.save({ settings: {} });
+      expect(
+        (await BrowserProjectPreferenceStore.source(handle)).values().fontEnhancement,
+      ).toBeUndefined();
+    },
+  );
+
   it("preserves other client profiles when updating the browser partition", async () => {
     const root = new MemoryDirectoryHandle("game");
     const rustyera = await root.getDirectoryHandle(".rustyera", { create: true });
@@ -161,6 +178,13 @@ describe("browser project preferences", () => {
       document: {
         schemaVersion: 1,
         profiles: { browser: { settings: {}, client: { imageScale: 9 } } },
+      },
+    },
+    {
+      label: "invalid font enhancement",
+      document: {
+        schemaVersion: 1,
+        profiles: { browser: { settings: {}, client: { fontEnhancement: "true" } } },
       },
     },
     {

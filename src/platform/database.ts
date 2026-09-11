@@ -15,9 +15,14 @@ interface HandleRecord {
 
 type StoredPreferences = Omit<
   Preferences,
-  "schemaVersion" | "settings" | "trustProjectFileMetadata" | "interactionAssistMode"
+  | "schemaVersion"
+  | "settings"
+  | "trustProjectFileMetadata"
+  | "interactionAssistMode"
+  | "fontEnhancement"
 > & {
   schemaVersion: number;
+  fontEnhancement?: unknown;
   settings?: Record<string, string>;
   trustProjectFileMetadata?: boolean;
   interactionAssistMode?: unknown;
@@ -69,6 +74,7 @@ export function normalizePreferences(value: StoredPreferences): Preferences {
     settings,
     fontFamilyOverride: null,
     fontSizeOverridePx: null,
+    fontEnhancement: value.fontEnhancement === true,
     imageScale: Number.isFinite(value.imageScale)
       ? Math.min(4, Math.max(0.25, value.imageScale))
       : 1,

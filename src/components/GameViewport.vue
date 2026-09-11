@@ -804,5 +804,9 @@ watch(viewportLayoutIdentity, () => scheduleViewportSynchronization());
       </template>
     </SceneCompositor>
   </main>
-  <GameTooltip :scope="viewport" :settings="store.presentation.tooltip" />
+  <GameTooltip
+    :scope="viewport"
+    :settings="store.presentation.tooltip"
+    :font-enhancement="store.effectivePreferences.fontEnhancement"
+  />
 </template>

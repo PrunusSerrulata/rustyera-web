@@ -447,6 +447,15 @@ export function createBrowserCompatibilityHelpers({
     };
 
     let dialog = await openDialog();
+    const fontEnhancement = await dialog.$("#preference-global-fontEnhancement");
+    if (await fontEnhancement.isSelected()) throw new Error("font enhancement must default off");
+    await clickElement(activeBrowser, fontEnhancement);
+    const previewIsolation = await activeBrowser.execute(() => ({
+      enhanced: document.querySelectorAll(".font-preview-current.game-font-enhanced").length,
+      other: document.querySelectorAll(".game-font-enhanced:not(.font-preview-current)").length,
+    }));
+    if (previewIsolation.enhanced !== 1 || previewIsolation.other !== 0)
+      throw new Error(`font preview escaped its scope: ${JSON.stringify(previewIsolation)}`);
     const projectTab = await dialog.$("#preference-tab-project");
     const imageScale = await dialog.$("#preference-global-imageScale");
     const interactionAssistMode = await dialog.$("#preference-global-interactionAssistMode-auto");
@@ -496,6 +505,10 @@ export function createBrowserCompatibilityHelpers({
     );
 
     dialog = await openDialog();
+    const persistedFontEnhancement = await dialog.$("#preference-global-fontEnhancement");
+    if (!(await persistedFontEnhancement.isSelected()))
+      throw new Error("font enhancement did not persist");
+    await clickElement(activeBrowser, persistedFontEnhancement);
     const persisted = await (await dialog.$("#preference-global-imageScale")).getValue();
     const persistedInteractionAssistMode = (await (
       await dialog.$("#preference-global-interactionAssistMode-auto")
@@ -515,6 +528,8 @@ export function createBrowserCompatibilityHelpers({
       projectTabEnabled: false,
       imageScaleEditable: true,
       fontInputDetails,
+      previewIsolation,
+      fontEnhancementRestored: false,
       typedFont,
       persisted,
       persistedInteractionAssistMode,

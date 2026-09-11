@@ -43,6 +43,21 @@ interface PendingApplication {
   reject(error: Error): void;
 }
 
+function onlyFontEnhancementChanged(
+  before: ProjectPreferences,
+  after: ProjectPreferences,
+): boolean {
+  if (before.fontEnhancement === after.fontEnhancement) return false;
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of keys) {
+    if (key === "fontEnhancement" || key === "settings") continue;
+    const field = key as keyof ProjectPreferences;
+    if (before[field] !== after[field]) return false;
+  }
+  const codes = new Set([...Object.keys(before.settings), ...Object.keys(after.settings)]);
+  return [...codes].every((code) => before.settings[code] === after.settings[code]);
+}
+
 export class RuntimeClientPreferencesState {
   readonly busy = ref(false);
   readonly error = ref("");
@@ -223,12 +238,14 @@ export class RuntimeClientPreferencesState {
       if (elapsed >= 1) this.context.appendElapsed(statusToken, elapsed);
     }, 1000);
     try {
+      let fontOnly = false;
       if (scope === "global") {
         const saved = await this.persist(() =>
           generation === this.generation
             ? this.context.bridge.savePreferences({
                 ...this.context.global.value,
                 settings: { ...value.settings },
+                fontEnhancement: value.fontEnhancement ?? false,
                 imageScale: value.imageScale ?? 1,
                 masterVolume: value.masterVolume ?? 1,
                 trustProjectFileMetadata: value.trustProjectFileMetadata ?? false,
@@ -237,6 +254,7 @@ export class RuntimeClientPreferencesState {
             : Promise.reject(new Error("客户端偏好操作已取消")),
         );
         if (generation !== this.generation) return;
+        fontOnly = onlyFontEnhancementChanged(this.context.global.value, saved);
         this.context.global.value = saved;
       } else {
         const saved = await this.persist(() =>
@@ -245,9 +263,12 @@ export class RuntimeClientPreferencesState {
             : Promise.reject(new Error("客户端偏好操作已取消")),
         );
         if (generation !== this.generation) return;
+        fontOnly = onlyFontEnhancementChanged(this.context.project.value, saved);
         this.context.project.value = saved;
       }
-      await this.apply();
+      // The saved flag is reactive; reapplying host configuration would also resize the window.
+      if (fontOnly) await this.applicationTail;
+      else await this.apply();
       if (generation !== this.generation) return;
       this.context.open.value = false;
       this.context.finishStatus(

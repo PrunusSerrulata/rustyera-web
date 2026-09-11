@@ -117,7 +117,10 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
 <template>
   <span
     v-if="run.type === 'text' || run.type === 'text_layout'"
-    :class="{ 'text-layout': run.type === 'text_layout' }"
+    :class="{
+      'text-layout': run.type === 'text_layout',
+      'game-font-enhanced': store.effectivePreferences.fontEnhancement,
+    }"
     :data-columns="run.type === 'text_layout' ? run.columns : undefined"
     :style="[textStyle, textLayoutStyle]"
     >{{ renderedText }}</span
@@ -187,6 +190,7 @@ function pixelStyle(box: { width: number; height: number }): { width: string; he
   <span
     v-else-if="run.type === 'separator'"
     class="separator"
+    :class="{ 'game-font-enhanced': store.effectivePreferences.fontEnhancement }"
     :data-pattern="run.pattern"
     :style="[textStyle, { width: `${separatorColumns}ch` }]"
     >{{ separatorText }}</span

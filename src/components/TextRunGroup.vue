@@ -62,7 +62,10 @@ const presentedRuns = computed(() => {
   <span
     v-for="(presented, index) in presentedRuns"
     :key="index"
-    :class="{ 'text-layout': presented.type === 'text_layout' }"
+    :class="{
+      'text-layout': presented.type === 'text_layout',
+      'game-font-enhanced': store.effectivePreferences.fontEnhancement,
+    }"
     :data-columns="presented.columns"
     :style="presented.style"
     >{{ presented.text }}</span

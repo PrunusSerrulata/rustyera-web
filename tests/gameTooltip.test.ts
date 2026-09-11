@@ -47,6 +47,12 @@ describe("game tooltip", () => {
     expect(tooltip?.style.backgroundColor).toBe("rgb(4, 5, 6)");
     expect(tooltip?.style.fontFamily).toBe("monospace");
     expect(tooltip?.style.fontSize).toBe("11pt");
+    expect(tooltip?.classList.contains("game-font-enhanced")).toBe(false);
+    await wrapper.setProps({ fontEnhancement: true });
+    expect(tooltip?.classList.contains("game-font-enhanced")).toBe(true);
+    expect(tooltip?.textContent?.trim()).toBe("first\nsecond");
+    await wrapper.setProps({ fontEnhancement: false });
+    expect(tooltip?.classList.contains("game-font-enhanced")).toBe(false);
 
     await vi.advanceTimersByTimeAsync(400);
     await nextTick();

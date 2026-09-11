@@ -74,6 +74,8 @@ export class BrowserProjectPreferenceStore {
     const client = profile.client ?? {};
     return {
       settings: normalizeMenuSetting(profile.settings),
+      fontEnhancement:
+        typeof client.fontEnhancement === "boolean" ? client.fontEnhancement : undefined,
       imageScale: finite(client.imageScale),
       masterVolume: finite(client.masterVolume),
       trustProjectFileMetadata:
@@ -117,6 +119,7 @@ function preferenceProfile(value: ProjectPreferences): PreferenceDocument["profi
   return {
     settings: normalizeMenuSetting(value.settings),
     client: {
+      ...(value.fontEnhancement == null ? {} : { fontEnhancement: value.fontEnhancement }),
       ...(value.imageScale == null ? {} : { imageScale: value.imageScale }),
       ...(value.masterVolume == null ? {} : { masterVolume: value.masterVolume }),
       ...(value.trustProjectFileMetadata == null
@@ -159,6 +162,7 @@ function validateActiveProfile(value: unknown): void {
     Object.keys(value.client).some(
       (key) =>
         ![
+          "fontEnhancement",
           "imageScale",
           "masterVolume",
           "trustProjectFileMetadata",
@@ -167,6 +171,11 @@ function validateActiveProfile(value: unknown): void {
     )
   )
     throw new Error(`${PROFILE}.client 包含未知字段`);
+  if (
+    value.client.fontEnhancement !== undefined &&
+    typeof value.client.fontEnhancement !== "boolean"
+  )
+    throw new Error("fontEnhancement 必须是布尔值");
   const imageScale = value.client.imageScale;
   if (
     imageScale != null &&

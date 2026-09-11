@@ -412,6 +412,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     const global = preferences.value;
     return {
       ...global,
+      fontEnhancement: projectPreferences.value.fontEnhancement ?? global.fontEnhancement,
       imageScale: projectPreferences.value.imageScale ?? global.imageScale,
       masterVolume: projectPreferences.value.masterVolume ?? global.masterVolume,
       trustProjectFileMetadata:

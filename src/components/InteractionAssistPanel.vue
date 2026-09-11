@@ -195,7 +195,9 @@ onBeforeUnmount(() => {
               :disabled="!store.canInteract"
               @click="store.activate(item.token)"
             >
-              <span>{{ item.label }}</span>
+              <span :class="{ 'game-font-enhanced': store.effectivePreferences.fontEnhancement }">{{
+                item.label
+              }}</span>
             </button>
           </div>
         </template>
@@ -211,7 +213,9 @@ onBeforeUnmount(() => {
             :disabled="!store.canInteract"
             @click="store.activate(item.token)"
           >
-            <span>{{ item.label }}</span>
+            <span :class="{ 'game-font-enhanced': store.effectivePreferences.fontEnhancement }">{{
+              item.label
+            }}</span>
           </button>
         </div>
       </div>
