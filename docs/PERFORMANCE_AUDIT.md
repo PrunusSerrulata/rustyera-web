@@ -6,6 +6,12 @@ repository for both project loading and steady runtime. It is compiled only with
 `VITE_RUSTYERA_PERF_AUDIT=1`; normal Tauri and Web builds do not create telemetry buffers or run
 the audit timing branches.
 
+For Windows native CPU call-stack diagnostics, see the standalone
+[ETW/WPR tool](../tools/native-cpu-windows/README.md). It uses the existing CPU action-window
+markers, is excluded from product builds, and explicitly disables building on non-Windows hosts.
+Its profiles are diagnostic evidence, not an additional latency authority or a cross-platform
+replacement for the existing macOS profiler rounds.
+
 The audit defaults to a normal visible, focusable Tauri window and ordinary WebDriver element
 operations. For an invisible run, use `--window-mode minimized`: this is the sole background path.
 The outer capture and measurement runners add `--background-dom` for minimized children. After the

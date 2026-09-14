@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <Target Name="RequireWindows" BeforeTargets="Restore;PrepareForBuild">
+    <Error Condition="'$(OS)' != 'Windows_NT'" Text="Native CPU ETW tools are Windows-only; building on this operating system is disabled." />
+    <Error Condition="!Exists('$(TraceEventDirectory)/Microsoft.Diagnostics.Tracing.TraceEvent.dll')" Text="Set TraceEventDirectory to an existing local TraceEvent installation. No download fallback is provided." />
+    <Error Condition="!Exists('$(DiagnosticsClientAssembly)')" Text="Set DiagnosticsClientAssembly to an existing Microsoft.Diagnostics.NETCore.Client.dll." />
+  </Target>
+  <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
+    <Compile Include="Program.cs" />
+    <Compile Include="CpuUtc.cs" />
+    <Reference Include="Microsoft.Diagnostics.Tracing.TraceEvent"><HintPath>$(TraceEventDirectory)/Microsoft.Diagnostics.Tracing.TraceEvent.dll</HintPath></Reference>
+    <Reference Include="Microsoft.Diagnostics.FastSerialization"><HintPath>$(TraceEventDirectory)/Microsoft.Diagnostics.FastSerialization.dll</HintPath></Reference>
+    <Reference Include="Dia2Lib"><HintPath>$(TraceEventDirectory)/Dia2Lib.dll</HintPath></Reference>
+    <Reference Include="TraceReloggerLib"><HintPath>$(TraceEventDirectory)/TraceReloggerLib.dll</HintPath></Reference>
+    <Reference Include="Microsoft.Diagnostics.NETCore.Client"><HintPath>$(DiagnosticsClientAssembly)</HintPath></Reference>
+  </ItemGroup>
+</Project>
